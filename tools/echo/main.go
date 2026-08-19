@@ -778,7 +778,7 @@ func (a *app) build(release bool) error {
 	}
 	args := []string{"build", "-p", "echo-desktop", "--locked"}
 	if release {
-		args = append(args, "--release")
+		args = append(args, "--release", "--features", "custom-protocol")
 	}
 	return a.run("cargo", args...)
 }
@@ -850,7 +850,7 @@ func (a *app) acceptanceCommand(args []string) error {
 }
 
 func (a *app) runAcceptance(owner string) error {
-	if err := a.build(false); err != nil {
+	if err := a.build(true); err != nil {
 		return err
 	}
 	runRoot := filepath.Join(a.root, ".local", "echo")
@@ -874,7 +874,7 @@ func (a *app) runAcceptance(owner string) error {
 	if err != nil {
 		return err
 	}
-	exe := a.desktopExecutable(false)
+	exe := a.desktopExecutable(true)
 	logPath := filepath.Join(runDir, "echo.log")
 	logFile, err := os.Create(logPath)
 	if err != nil {
@@ -905,7 +905,8 @@ func (a *app) runAcceptance(owner string) error {
 		_ = logFile.Close()
 		return fmt.Errorf("Echo acceptance did not become ready: %w; log=%s", err, logPath)
 	}
-	args := []string{"exec", "playwright", "test", "--config", "tests/e2e/playwright.config.ts", filepath.Join("tests", "e2e", owner+".spec.ts")}
+	playwrightSpec := filepath.ToSlash(filepath.Join("tests", "e2e", owner+".spec.ts"))
+	args := []string{"exec", "playwright", "test", "--config", "tests/e2e/playwright.config.ts", playwrightSpec}
 	result := a.runWithEnv(env, "pnpm", args...)
 	stopErr := stopOwnedProcess(cmd, done)
 	_ = logFile.Close()

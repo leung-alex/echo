@@ -100,24 +100,28 @@ test("starts native window dragging from the topbar background", async ({
     )
     .toBe(true);
 
-  const dragCalls = await page.evaluate(() =>
-    (
-      window as Window & {
-        __echoMockState?: { calls: Array<{ command: string }> };
-      }
-    ).__echoMockState?.calls.filter(
-      (call) => call.command === "plugin:window|start_dragging",
-    ).length,
+  const dragCalls = await page.evaluate(
+    () =>
+      (
+        window as Window & {
+          __echoMockState?: { calls: Array<{ command: string }> };
+        }
+      ).__echoMockState?.calls.filter(
+        (call) => call.command === "plugin:window|start_dragging",
+      ).length,
   );
-  await page.getByRole("combobox", { name: "Search clipboard history" }).click();
-  const dragCallsAfterInput = await page.evaluate(() =>
-    (
-      window as Window & {
-        __echoMockState?: { calls: Array<{ command: string }> };
-      }
-    ).__echoMockState?.calls.filter(
-      (call) => call.command === "plugin:window|start_dragging",
-    ).length,
+  await page
+    .getByRole("combobox", { name: "Search clipboard history" })
+    .click();
+  const dragCallsAfterInput = await page.evaluate(
+    () =>
+      (
+        window as Window & {
+          __echoMockState?: { calls: Array<{ command: string }> };
+        }
+      ).__echoMockState?.calls.filter(
+        (call) => call.command === "plugin:window|start_dragging",
+      ).length,
   );
   expect(dragCallsAfterInput).toBe(dragCalls);
 });

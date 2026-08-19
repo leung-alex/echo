@@ -111,13 +111,15 @@ export function SettingsPage({
     if (
       target instanceof Element &&
       target.closest(
-        "button, input, textarea, select, a, [contenteditable=\"true\"]",
+        'button, input, textarea, select, a, [contenteditable="true"]',
       )
     ) {
       return;
     }
     event.preventDefault();
-    void getCurrentWindow().startDragging().catch(() => undefined);
+    void getCurrentWindow()
+      .startDragging()
+      .catch(() => undefined);
   };
 
   return (

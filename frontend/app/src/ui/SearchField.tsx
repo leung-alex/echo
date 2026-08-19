@@ -167,9 +167,7 @@ export const SearchField = forwardRef<HTMLInputElement, SearchFieldProps>(
       <div
         ref={rootRef}
         className={
-          className
-            ? `echo-search-field ${className}`
-            : "echo-search-field"
+          className ? `echo-search-field ${className}` : "echo-search-field"
         }
       >
         {startSlot ? (

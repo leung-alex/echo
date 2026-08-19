@@ -6,6 +6,9 @@ rust-version.workspace = true
 build = "build.rs"
 default-run = "echo-desktop"
 
+[features]
+custom-protocol = ["tauri/custom-protocol"]
+
 [lib]
 name = "echo_desktop_lib"
 path = "src/lib.rs"

@@ -153,8 +153,7 @@
   opacity: 1;
   animation: echo-search-caret-blink 1s step-end infinite;
 }
-html[data-page-hidden="true"]
-  .echo-search-field__caret[data-visible="true"] {
+html[data-page-hidden="true"] .echo-search-field__caret[data-visible="true"] {
   opacity: 0;
   animation: none;
 }

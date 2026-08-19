@@ -89,18 +89,32 @@ test.describe("Echo Clipboard acceptance", () => {
 
       const search = main.getByPlaceholder("Search clipboard history...");
       await search.fill(value);
-      await expect(main.getByText(value)).toBeVisible();
-      await main.getByRole("button", { name: "Favorite" }).click();
+      const escapedValue = value.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&");
+      const originalEntry = main.getByRole("row", {
+        name: new RegExp(`^${escapedValue}(?:\\s|$)`),
+      });
+      await expect(originalEntry).toBeVisible();
+      await originalEntry.hover();
+      await originalEntry.getByRole("button", { name: "Favorite" }).click();
       await expect(main.getByText("Added to Favorites")).toBeVisible();
       await invoke(main, "history_clear");
       await main.getByRole("tab", { name: "Favorites" }).click();
-      await expect(main.getByText(value)).toBeVisible();
+      await expect(
+        main.getByRole("row", {
+          name: new RegExp(`^${escapedValue}(?:\\s|$)`),
+        }),
+      ).toBeVisible();
       await hideEcho(main);
       await sendActivation("echo.open");
-      await expect(main.getByRole("tab", { name: "History" })).toHaveAttribute(
-        "aria-selected",
-        "true",
-      );
+      const reopenedBrowser = await connectToEcho();
+      try {
+        const reopened = await waitForMainPage(reopenedBrowser);
+        await expect(
+          reopened.getByRole("tab", { name: "History" }),
+        ).toHaveAttribute("aria-selected", "true");
+      } finally {
+        await reopenedBrowser.close();
+      }
     } finally {
       await invoke(main, "history_clear").catch(() => undefined);
       await browser.close();
@@ -117,6 +131,8 @@ async function copyClipboard(
     "-NoProfile",
     "-NonInteractive",
     "-Sta",
+    "-ExecutionPolicy",
+    "Bypass",
     "-File",
     fixture,
     "-Operation",

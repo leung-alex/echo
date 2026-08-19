@@ -69,8 +69,8 @@ export async function invoke<T = unknown>(
 }
 
 export async function hideEcho(page: Page): Promise<void> {
-  await page.getByRole("button", { name: "Hide window" }).click();
-  await page.waitForTimeout(150);
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
 }
 
 export async function sendActivation(
