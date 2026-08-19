@@ -5,7 +5,7 @@ mod windows_impl {
     use std::ffi::c_void;
     use std::mem::size_of;
     use std::path::Path;
-    use std::ptr;
+    use std::ptr::{self, null_mut};
     use std::sync::atomic::{AtomicIsize, Ordering};
     use std::sync::{mpsc, Arc, Mutex};
     use std::thread::{self, JoinHandle};
@@ -19,6 +19,10 @@ mod windows_impl {
     };
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::{CloseHandle, HANDLE, HGLOBAL, HWND, LPARAM, RECT, WPARAM};
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
+        COINIT_APARTMENTTHREADED,
+    };
     use windows::Win32::System::DataExchange::{
         AddClipboardFormatListener, CloseClipboard, EmptyClipboard, GetClipboardData,
         GetClipboardOwner, GetClipboardSequenceNumber, IsClipboardFormatAvailable, OpenClipboard,
@@ -27,19 +31,30 @@ mod windows_impl {
     use windows::Win32::System::Memory::{
         GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE,
     };
+    use windows::Win32::System::Ole::{
+        SafeArrayAccessData, SafeArrayDestroy, SafeArrayGetLBound, SafeArrayGetUBound,
+        SafeArrayUnaccessData,
+    };
     use windows::Win32::System::Threading::{
         GetProcessTimes, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
         PROCESS_QUERY_LIMITED_INFORMATION,
     };
-    use windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled;
+    use windows::Win32::UI::Accessibility::{
+        CUIAutomation, IUIAutomation, IUIAutomationElement, UIA_ComboBoxControlTypeId,
+        UIA_DocumentControlTypeId, UIA_EditControlTypeId,
+    };
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        IsWindowEnabled, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
+        VIRTUAL_KEY, VK_CONTROL, VK_V,
+    };
     use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DestroyWindow, GetAncestor, GetClassNameW, GetForegroundWindow,
         GetGUIThreadInfo, GetWindowLongW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
-        GetWindowThreadProcessId, IsWindow, IsWindowVisible, PostMessageW, RegisterClassW,
-        SendMessageW, SetForegroundWindow, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, ES_PASSWORD,
-        ES_READONLY, GA_ROOT, GWL_STYLE, HWND_MESSAGE, WM_CLIPBOARDUPDATE, WM_CLOSE, WM_PASTE,
-        WNDCLASSW, WS_OVERLAPPED,
+        GetWindowThreadProcessId, IsWindow, PostMessageW, RegisterClassW, SendMessageW,
+        SetForegroundWindow, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, ES_PASSWORD, ES_READONLY,
+        GA_ROOT, GWL_STYLE, HWND_MESSAGE, WM_CLIPBOARDUPDATE, WM_CLOSE, WM_PASTE, WNDCLASSW,
+        WS_OVERLAPPED,
     };
 
     const OPEN_ATTEMPTS: usize = 5;
@@ -233,10 +248,7 @@ mod windows_impl {
 
         fn paste_to_target(&self, target: &PasteTarget) -> Result<PasteDelivery, PlatformError> {
             let hwnd = HWND(target.window_id as *mut c_void);
-            if hwnd.0.is_null()
-                || !unsafe { IsWindow(Some(hwnd)) }.as_bool()
-                || !unsafe { IsWindowVisible(hwnd) }.as_bool()
-            {
+            if hwnd.0.is_null() || !unsafe { IsWindow(Some(hwnd)) }.as_bool() {
                 return Ok(PasteDelivery::Failed(
                     PasteDeliveryFailure::OriginalWindowUnavailable,
                 ));
@@ -260,35 +272,66 @@ mod windows_impl {
                     PasteDeliveryFailure::OriginalWindowUnavailable,
                 ));
             }
-            let thread_id = unsafe { GetWindowThreadProcessId(hwnd, None) };
-            let mut info = windows::Win32::UI::WindowsAndMessaging::GUITHREADINFO {
-                cbSize: size_of::<windows::Win32::UI::WindowsAndMessaging::GUITHREADINFO>() as u32,
-                ..Default::default()
+            let Some(current_control) = focused_input_identity(hwnd, target.process_id) else {
+                return Ok(PasteDelivery::Failed(
+                    PasteDeliveryFailure::InputUnavailable,
+                ));
             };
-            if unsafe { GetGUIThreadInfo(thread_id, &mut info) }.is_err()
-                || info.hwndFocus.0.is_null()
-            {
+            if target.focused_control.as_ref() != Some(&current_control) {
                 return Ok(PasteDelivery::Failed(
                     PasteDeliveryFailure::InputUnavailable,
                 ));
             }
-            if let Some(PasteControlIdentity::NativeWindow { handle, class_name }) =
-                &target.focused_control
-            {
-                if info.hwndFocus.0 as isize != *handle
-                    || window_class_name(info.hwndFocus).as_deref() != Some(class_name.as_str())
-                {
-                    return Ok(PasteDelivery::Failed(
-                        PasteDeliveryFailure::InputUnavailable,
-                    ));
+            match current_control {
+                PasteControlIdentity::NativeWindow { handle, .. } => {
+                    let control = HWND(handle as *mut c_void);
+                    unsafe {
+                        SendMessageW(control, WM_PASTE, Some(WPARAM(0)), Some(LPARAM(0)));
+                    }
+                    Ok(PasteDelivery::Pasted)
                 }
-            } else {
-                return Ok(PasteDelivery::Failed(
-                    PasteDeliveryFailure::InputUnavailable,
-                ));
+                PasteControlIdentity::AutomationRuntimeId(_) => send_paste_shortcut()
+                    .map(|_| PasteDelivery::Pasted)
+                    .map_err(|_| {
+                        PlatformError("Windows did not accept the paste shortcut".to_owned())
+                    }),
             }
-            unsafe { SendMessageW(info.hwndFocus, WM_PASTE, Some(WPARAM(0)), Some(LPARAM(0))) };
-            Ok(PasteDelivery::Pasted)
+        }
+    }
+
+    fn send_paste_shortcut() -> Result<(), PasteDeliveryFailure> {
+        let inputs = [
+            key_input(VK_CONTROL, false),
+            key_input(VK_V, false),
+            key_input(VK_V, true),
+            key_input(VK_CONTROL, true),
+        ];
+        let sent = unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) };
+        if sent == inputs.len() as u32 {
+            Ok(())
+        } else {
+            let release = [key_input(VK_CONTROL, true), key_input(VK_V, true)];
+            let _ = unsafe { SendInput(&release, size_of::<INPUT>() as i32) };
+            Err(PasteDeliveryFailure::KeyInjectionFailed)
+        }
+    }
+
+    fn key_input(key: VIRTUAL_KEY, released: bool) -> INPUT {
+        INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: key,
+                    wScan: 0,
+                    dwFlags: if released {
+                        KEYEVENTF_KEYUP
+                    } else {
+                        Default::default()
+                    },
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
         }
     }
 
@@ -485,52 +528,63 @@ mod windows_impl {
 
     fn capture_native_target() -> Result<Option<PasteTarget>, PlatformError> {
         let window = unsafe { GetForegroundWindow() };
-        if window.0.is_null() || !unsafe { IsWindowVisible(window) }.as_bool() {
+        if window.0.is_null() || !unsafe { IsWindow(Some(window)) }.as_bool() {
             return Ok(None);
         }
         let mut process_id = 0;
-        let thread_id = unsafe { GetWindowThreadProcessId(window, Some(&mut process_id)) };
+        unsafe { GetWindowThreadProcessId(window, Some(&mut process_id)) };
         if process_id == 0 || process_id == std::process::id() {
             return Ok(None);
         }
-        let mut info = windows::Win32::UI::WindowsAndMessaging::GUITHREADINFO {
-            cbSize: size_of::<windows::Win32::UI::WindowsAndMessaging::GUITHREADINFO>() as u32,
-            ..Default::default()
+        let focused_control = focused_input_identity(window, process_id).or_else(|| {
+            let thread_id = unsafe { GetWindowThreadProcessId(window, None) };
+            let mut info = windows::Win32::UI::WindowsAndMessaging::GUITHREADINFO {
+                cbSize: size_of::<windows::Win32::UI::WindowsAndMessaging::GUITHREADINFO>() as u32,
+                ..Default::default()
+            };
+            unsafe { GetGUIThreadInfo(thread_id, &mut info).ok() }
+                .filter(|_| !info.hwndFocus.0.is_null())
+                .map(|_| PasteControlIdentity::NativeWindow {
+                    handle: info.hwndFocus.0 as isize,
+                    class_name: window_class_name(info.hwndFocus).unwrap_or_default(),
+                })
+        });
+        let Some(focused_control) = focused_control else {
+            return Ok(None);
         };
-        if unsafe { GetGUIThreadInfo(thread_id, &mut info) }.is_err() || info.hwndFocus.0.is_null()
-        {
-            return Ok(None);
-        }
-        let focused = info.hwndFocus;
-        let class_name = window_class_name(focused).unwrap_or_default();
-        let style = unsafe { GetWindowLongW(focused, GWL_STYLE) } as u32;
-        let is_input = is_native_input_class(&class_name);
-        if !is_input
-            || !unsafe { IsWindowEnabled(focused) }.as_bool()
-            || style & ES_READONLY as u32 != 0
-            || style & ES_PASSWORD as u32 != 0
-        {
-            return Ok(None);
-        }
+        let focused_rect = match &focused_control {
+            PasteControlIdentity::NativeWindow { handle, class_name } => {
+                let focused = HWND(*handle as *mut c_void);
+                let style = unsafe { GetWindowLongW(focused, GWL_STYLE) } as u32;
+                if !is_native_input_class(class_name)
+                    || !unsafe { IsWindowEnabled(focused) }.as_bool()
+                    || style & ES_READONLY as u32 != 0
+                    || style & ES_PASSWORD as u32 != 0
+                {
+                    return Ok(None);
+                }
+                window_rect(focused)
+            }
+            PasteControlIdentity::AutomationRuntimeId(_) => None,
+        };
         let process_started_at = process_started_at(process_id).unwrap_or(0);
         if process_started_at == 0 {
             return Ok(None);
         }
-        let rect = window_rect(focused).unwrap_or(PhysicalRect {
-            x: 0,
-            y: 0,
-            width: 1,
-            height: 1,
-        });
+        let rect = focused_rect
+            .or_else(|| window_rect(window))
+            .unwrap_or(PhysicalRect {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            });
         Ok(Some(PasteTarget {
             window_id: window.0 as isize,
             window_class: window_class_name(window).unwrap_or_default(),
             process_id,
             process_started_at,
-            focused_control: Some(PasteControlIdentity::NativeWindow {
-                handle: focused.0 as isize,
-                class_name,
-            }),
+            focused_control: Some(focused_control),
             app_name: None,
             selected_text: None,
             is_single_line: None,
@@ -540,6 +594,136 @@ mod windows_impl {
                 dpi: 96,
             },
         }))
+    }
+
+    fn focused_input_identity(window: HWND, process_id: u32) -> Option<PasteControlIdentity> {
+        unsafe {
+            let initialization = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+            let initialized = initialization.is_ok();
+            let result = (|| {
+                let automation: IUIAutomation =
+                    match CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER).ok() {
+                        Some(value) => value,
+                        None => return None,
+                    };
+                let focused = match automation.GetFocusedElement().ok() {
+                    Some(value) => value,
+                    None => return None,
+                };
+                let focused_process = focused.CurrentProcessId().ok().map(|value| value as u32);
+                let belongs = automation_element_belongs_to(&automation, &focused, window);
+                let editable = automation_element_is_editable(&focused);
+                if focused_process != Some(process_id) || !belongs || !editable {
+                    return None;
+                }
+                focused
+                    .CurrentNativeWindowHandle()
+                    .ok()
+                    .filter(|control| native_control_belongs_to(*control, window, process_id))
+                    .and_then(|control| {
+                        let class_name = window_class_name(control)?;
+                        is_native_input_class(&class_name).then_some(
+                            PasteControlIdentity::NativeWindow {
+                                handle: control.0 as isize,
+                                class_name,
+                            },
+                        )
+                    })
+                    .or_else(|| {
+                        automation_runtime_id(&focused)
+                            .map(PasteControlIdentity::AutomationRuntimeId)
+                    })
+            })();
+            if initialized {
+                CoUninitialize();
+            }
+            result
+        }
+    }
+
+    fn native_control_belongs_to(control: HWND, window: HWND, process_id: u32) -> bool {
+        if control.0.is_null() || window.0.is_null() {
+            return false;
+        }
+        let mut owner_process_id = 0;
+        (unsafe { GetWindowThreadProcessId(control, Some(&mut owner_process_id)) }) != 0
+            && owner_process_id == process_id
+            && unsafe { GetAncestor(control, GA_ROOT) } == window
+    }
+
+    fn automation_element_is_editable(element: &IUIAutomationElement) -> bool {
+        unsafe {
+            element
+                .CurrentIsEnabled()
+                .is_ok_and(|value| value.as_bool())
+                && element
+                    .CurrentIsKeyboardFocusable()
+                    .is_ok_and(|value| value.as_bool())
+                && element
+                    .CurrentHasKeyboardFocus()
+                    .is_ok_and(|value| value.as_bool())
+                && element
+                    .CurrentIsPassword()
+                    .is_ok_and(|value| !value.as_bool())
+                && element.CurrentControlType().is_ok_and(|control_type| {
+                    control_type == UIA_EditControlTypeId
+                        || control_type == UIA_DocumentControlTypeId
+                        || control_type == UIA_ComboBoxControlTypeId
+                })
+        }
+    }
+
+    fn automation_element_belongs_to(
+        automation: &IUIAutomation,
+        element: &IUIAutomationElement,
+        window: HWND,
+    ) -> bool {
+        unsafe {
+            let Ok(root) = automation.ElementFromHandle(window) else {
+                return false;
+            };
+            let Ok(walker) = automation.ControlViewWalker() else {
+                return false;
+            };
+            let mut current = element.clone();
+            for _ in 0..256 {
+                if automation
+                    .CompareElements(&current, &root)
+                    .is_ok_and(|same| same.as_bool())
+                {
+                    return true;
+                }
+                let Ok(parent) = walker.GetParentElement(&current) else {
+                    return false;
+                };
+                current = parent;
+            }
+            false
+        }
+    }
+
+    fn automation_runtime_id(element: &IUIAutomationElement) -> Option<Vec<i32>> {
+        let array = unsafe { element.GetRuntimeId() }.ok()?;
+        if array.is_null() {
+            return None;
+        }
+        let result = (|| {
+            let lower = unsafe { SafeArrayGetLBound(array, 1) }.ok()?;
+            let upper = unsafe { SafeArrayGetUBound(array, 1) }.ok()?;
+            let length = usize::try_from(upper.checked_sub(lower)?.checked_add(1)?).ok()?;
+            if length == 0 {
+                return None;
+            }
+            let mut data = null_mut();
+            unsafe { SafeArrayAccessData(array, &mut data) }.ok()?;
+            let runtime_id = (!data.is_null()).then(|| unsafe {
+                std::slice::from_raw_parts(data.cast::<i32>(), length).to_vec()
+            });
+            let _ = unsafe { SafeArrayUnaccessData(array) };
+            runtime_id
+        })();
+        let _ = unsafe { SafeArrayDestroy(array) };
+        result
     }
 
     fn source_context(owner: HWND, foreground: HWND) -> SourceContext {

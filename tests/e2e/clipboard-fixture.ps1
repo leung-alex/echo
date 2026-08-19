@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("copy-text", "copy-html", "copy-rtf", "copy-image", "copy-files", "copy-unsupported")]
+    [ValidateSet("copy-text", "copy-html", "copy-rtf", "copy-image", "copy-files", "copy-unsupported", "read-text")]
     [string] $Operation,
     [string] $Value = "fixture"
 )
@@ -70,5 +70,8 @@ switch ($Operation) {
         $data = [System.Windows.Forms.DataObject]::new()
         $data.SetData("Echo.Unsupported", $Value)
         Set-ClipboardDataObject $data
+    }
+    "read-text" {
+        Write-Output ([System.Windows.Forms.Clipboard]::GetText())
     }
 }

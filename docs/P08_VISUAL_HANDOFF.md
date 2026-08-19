@@ -67,12 +67,17 @@ echo.cmd verify quick-insert: PASS
 echo.cmd build: PASS
 echo.cmd smoke: PASS (isolated Echo data root)
 echo.cmd package --dir: PASS
-echo.cmd acceptance clipboard: PASS guard; physical acceptance not run without authorization
+echo.cmd acceptance clipboard: PASS (1 native Windows test, isolated Echo data root)
+echo.cmd acceptance quick-insert: PASS (2 native Windows tests, isolated Echo data root)
 ```
 
-Physical Windows clipboard/system acceptance was not run. It remains explicit
-opt-in work requiring authorization and is not inferred from browser, Rust,
-build, smoke, or packaging gates.
+The authorized native run exercised the Echo clipboard listener against real
+Windows clipboard formats and exercised Quick Insert against a real WinForms
+target: text/HTML/RTF/image/files, deduplication, favorites, activation
+reopen, system copy, valid insertion, changed-focus rejection, password-input
+rejection, and destroyed-window rejection. This is physical Windows evidence
+for the Echo-owned fixture path, not a claim that every third-party WPF or
+elevated target has been accepted.
 
 ## Culsans cleanup boundary
 
@@ -84,5 +89,6 @@ consumer audit.
 
 ## Remaining blockers
 
-Physical Windows clipboard and WebView2 acceptance remains unexecuted pending
-explicit authorization.
+Broader third-party target coverage, including elevated and WPF-specific target
+matrices, remains unexecuted. The controlled Echo native fixture acceptance is
+green; browser visual evidence is still separate from physical acceptance.

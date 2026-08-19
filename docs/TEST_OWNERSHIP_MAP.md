@@ -54,3 +54,21 @@ physical Windows clipboard acceptance evidence.
 
 Physical Windows acceptance remains separately authorized. Local unit, browser,
 build, and smoke gates must not be reported as physical clipboard acceptance.
+
+## Current Echo coverage
+
+The Echo-owned native coverage now executes the extracted behaviors rather than
+only checking IPC responses:
+
+- `tests/e2e/clipboard.spec.ts` exercises the production listener with text,
+  HTML, RTF, image, files, unsupported formats, deduplication, favorites after
+  history clear, and activation reopen.
+- `tests/e2e/quick-insert.spec.ts` exercises snippet CRUD/search/copy, reads the
+  copied system text, inserts into a real WinForms text input, revalidates a
+  changed focus target, rejects password inputs, and rejects a destroyed target.
+- `tests/e2e/clipboard-target-fixture.ps1` and `target-fixture.ts` are Echo
+  fixtures only. They do not start Culsans and use run-scoped files and process
+  identities.
+
+The last authorized native run covered both `echo.cmd acceptance clipboard` and
+`echo.cmd acceptance quick-insert`; each passed with an isolated Echo data root.

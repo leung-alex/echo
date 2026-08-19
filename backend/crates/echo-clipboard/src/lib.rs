@@ -551,12 +551,16 @@ mod tests {
         PlatformChangePublisher,
     };
     use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
 
     struct TestPlatform {
         publisher: PlatformChangePublisher,
         sequence: AtomicU64,
         snapshots: Mutex<VecDeque<ClipboardSnapshot>>,
         writes: Mutex<Vec<Vec<ClipboardRepresentation>>>,
+        read_failures: AtomicUsize,
+        publish_during_write: AtomicBool,
+        startup_snapshot: Mutex<Option<ClipboardSnapshot>>,
     }
 
     impl TestPlatform {
@@ -566,7 +570,25 @@ mod tests {
                 sequence: AtomicU64::new(snapshot.sequence),
                 snapshots: Mutex::new(VecDeque::from([snapshot])),
                 writes: Mutex::new(Vec::new()),
+                read_failures: AtomicUsize::new(0),
+                publish_during_write: AtomicBool::new(false),
+                startup_snapshot: Mutex::new(None),
             }
+        }
+
+        fn fail_next_read(&self) {
+            self.read_failures.store(1, Ordering::Release);
+        }
+
+        fn publish_startup_snapshot(&self, snapshot: ClipboardSnapshot) {
+            self.snapshots.lock().unwrap().clear();
+            *self.startup_snapshot.lock().unwrap() = Some(snapshot);
+        }
+
+        fn set_snapshot(&self, snapshot: ClipboardSnapshot) {
+            self.sequence.store(snapshot.sequence, Ordering::Release);
+            self.snapshots.lock().unwrap().clear();
+            self.snapshots.lock().unwrap().push_back(snapshot);
         }
 
         fn publish(&self, sequence: u64) {
@@ -578,7 +600,12 @@ mod tests {
 
     impl ClipboardPlatform for TestPlatform {
         fn subscribe_changes(&self) -> PlatformChangeSubscription {
-            self.publisher.subscribe()
+            let subscription = self.publisher.subscribe();
+            if let Some(snapshot) = self.startup_snapshot.lock().unwrap().take() {
+                self.snapshots.lock().unwrap().push_back(snapshot.clone());
+                self.publish(snapshot.sequence);
+            }
+            subscription
         }
 
         fn clipboard_sequence(&self) -> u64 {
@@ -586,6 +613,10 @@ mod tests {
         }
 
         fn read_clipboard(&self) -> std::result::Result<Option<ClipboardSnapshot>, PlatformError> {
+            if self.read_failures.load(Ordering::Acquire) > 0 {
+                self.read_failures.fetch_sub(1, Ordering::AcqRel);
+                return Err(PlatformError("transient clipboard read failure".to_owned()));
+            }
             Ok(self
                 .snapshots
                 .lock()
@@ -602,6 +633,9 @@ mod tests {
                 .unwrap_or_else(|error| error.into_inner())
                 .push(representations.to_vec());
             let sequence = self.sequence.fetch_add(1, Ordering::AcqRel) + 1;
+            if self.publish_during_write.load(Ordering::Acquire) {
+                self.publish(sequence);
+            }
             Ok(sequence)
         }
 
@@ -696,6 +730,79 @@ mod tests {
             }])
             .unwrap();
         assert!(sink.records().is_empty());
+        service.shutdown();
+    }
+
+    #[test]
+    fn self_write_event_published_inside_platform_write_is_ignored() {
+        let platform = Arc::new(TestPlatform::new(text_snapshot(1, "hello")));
+        let sink = Arc::new(MemorySink::default());
+        let service = ClipboardService::new(platform.clone(), sink.clone());
+        platform.publish_during_write.store(true, Ordering::Release);
+        service
+            .copy_representations(&[ClipboardRepresentation {
+                format: "text".to_owned(),
+                mime_type: "text/plain".to_owned(),
+                bytes: b"copied".to_vec(),
+            }])
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        assert!(sink.records().is_empty());
+        service.shutdown();
+    }
+
+    #[test]
+    fn history_switch_disables_capture() {
+        let platform = Arc::new(TestPlatform::new(text_snapshot(1, "disabled")));
+        let sink = Arc::new(MemorySink::default());
+        sink.set_settings(CaptureSettings {
+            history_enabled: false,
+            ..CaptureSettings::default()
+        });
+        let service = ClipboardService::new(platform.clone(), sink.clone());
+        platform.set_snapshot(text_snapshot(2, "disabled"));
+        assert_eq!(service.capture_now().unwrap(), CaptureOutcome::Disabled);
+        assert!(sink.records().is_empty());
+        service.shutdown();
+    }
+
+    #[test]
+    fn retries_the_same_sequence_after_a_transient_read_error() {
+        let platform = Arc::new(TestPlatform::new(text_snapshot(1, "eventually captured")));
+        let sink = Arc::new(MemorySink::default());
+        let service = ClipboardService::new(platform.clone(), sink.clone());
+        platform.set_snapshot(text_snapshot(2, "eventually captured"));
+        platform.fail_next_read();
+        assert!(service.capture_now().is_err());
+        assert_eq!(sink.records().len(), 0);
+        assert!(matches!(
+            service.capture_now().unwrap(),
+            CaptureOutcome::Recorded(_)
+        ));
+        service.shutdown();
+    }
+
+    #[test]
+    fn startup_recheck_captures_a_change_that_races_subscription() {
+        let platform = Arc::new(TestPlatform::new(text_snapshot(1, "before")));
+        platform.publish_startup_snapshot(text_snapshot(2, "startup race"));
+        let sink = Arc::new(MemorySink::default());
+        let service = ClipboardService::new(platform, sink.clone());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        loop {
+            if sink
+                .records()
+                .iter()
+                .any(|capture| capture.preview_text.as_deref() == Some("startup race"))
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "startup clipboard change was lost"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
         service.shutdown();
     }
 

@@ -10,7 +10,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { QuickInsertSurface } from "../features/quick-insert/QuickInsertSurface";
-import { quickInsertClient } from "../features/quick-insert/api/quick-insert-client";
 import type { PasteSession } from "../features/quick-insert/model/types";
 import { SettingsPage } from "../features/settings/SettingsPage";
 
@@ -41,9 +40,9 @@ export function EchoApp(): ReactElement {
     if (payload.request_id && handled.current.has(payload.request_id)) return;
     if (payload.request_id) handled.current.add(payload.request_id);
     try {
-      if (payload.route === "quick_insert")
-        setSession(await quickInsertClient.beginSession());
-      else setSession(null);
+      // Native activation captures the target before showing Echo. Capturing
+      // again from the WebView would observe Echo itself and lose the target.
+      setSession(null);
       setRoute(payload.route);
       setQuery(payload.query ?? "");
       setSurfaceVersion((value) => value + 1);

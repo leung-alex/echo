@@ -884,6 +884,7 @@ func (a *app) runAcceptance(owner string) error {
 		"ECHO_WINDOWS_ACCEPTANCE":               "1",
 		"ECHO_ACCEPTANCE_CDP_PORT":              fmt.Sprint(port),
 		"ECHO_ACCEPTANCE_EXE":                   exe,
+		"ECHO_ACCEPTANCE_RUN_ROOT":              runDir,
 		"ECHO_DATA_DIR":                         dataDir,
 		"WEBVIEW2_USER_DATA_FOLDER":             webviewDir,
 		"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS": "--remote-debugging-port=" + fmt.Sprint(port),
@@ -898,6 +899,7 @@ func (a *app) runAcceptance(owner string) error {
 		_ = logFile.Close()
 		return fmt.Errorf("start Echo acceptance process: %w", err)
 	}
+	env["ECHO_ACCEPTANCE_PID"] = fmt.Sprint(cmd.Process.Pid)
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 	if err := waitForCDP(port, done); err != nil {

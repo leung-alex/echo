@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import {
   initialQuickInsertState,
@@ -45,6 +46,18 @@ export interface QuickInsertController {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+async function restoreAfterInsertFailure(focusSearch: () => void) {
+  try {
+    const window = getCurrentWindow();
+    await window.show();
+    await window.setFocusable(true);
+    await window.setFocus();
+  } catch {
+    // Browser-owned tests and an already-visible window can skip restoration.
+  }
+  focusSearch();
 }
 
 export function useQuickInsertController({
@@ -125,7 +138,16 @@ export function useQuickInsertController({
   const execute = useCallback(
     async (item: QuickInsertItem, action: QuickInsertAction = "insert") => {
       report(action === "insert" ? "Inserting..." : "Copying...");
+      let hiddenForInsert = false;
       try {
+        if (action === "insert") {
+          try {
+            await getCurrentWindow().hide();
+            hiddenForInsert = true;
+          } catch {
+            // Keep the command recoverable if the window cannot be hidden.
+          }
+        }
         const outcome = await client.execute(item.source, item.id, action);
         const message =
           outcome === "inserted"
@@ -134,10 +156,15 @@ export function useQuickInsertController({
               ? "Copied"
               : "Clipboard staged";
         report(message, "success");
-        if (outcome === "inserted") await onClose();
+        if (outcome === "inserted") {
+          if (!hiddenForInsert) await onClose();
+        } else if (hiddenForInsert) {
+          await restoreAfterInsertFailure(focusSearch);
+        }
       } catch (error) {
+        if (hiddenForInsert) await restoreAfterInsertFailure(focusSearch);
         report(errorMessage(error), "error");
-        focusSearch();
+        if (!hiddenForInsert) focusSearch();
       }
     },
     [client, focusSearch, onClose, report],
