@@ -1,8 +1,9 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use base64::Engine as _;
 use echo_clipboard::{ClipboardService, ClipboardSink};
-use echo_library::Library;
+use echo_library::{Library, LibraryItemKind};
 use echo_platform::ClipboardPlatform;
 #[cfg(not(windows))]
 use echo_platform::{
@@ -35,6 +36,12 @@ struct PendingActivation {
     request_id: String,
     route: String,
     query: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct ImagePreview {
+    mime_type: String,
+    base64: String,
 }
 
 impl EchoState {
@@ -122,6 +129,32 @@ fn quick_insert_delete(
     state
         .quick_insert
         .delete(source, id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn quick_insert_get_image(
+    state: State<'_, EchoState>,
+    source: QuickInsertSource,
+    id: i64,
+) -> Result<Option<ImagePreview>, String> {
+    let kind = match source {
+        QuickInsertSource::History => LibraryItemKind::History,
+        QuickInsertSource::Favorite => LibraryItemKind::Favorite,
+        QuickInsertSource::Snippet => LibraryItemKind::Snippet,
+    };
+    state
+        .library
+        .payload(kind, id)
+        .map(|representations| {
+            representations
+                .into_iter()
+                .find(|representation| representation.mime_type.starts_with("image/"))
+                .map(|representation| ImagePreview {
+                    mime_type: representation.mime_type,
+                    base64: base64::engine::general_purpose::STANDARD.encode(representation.bytes),
+                })
+        })
         .map_err(|error| error.to_string())
 }
 
@@ -406,6 +439,7 @@ pub fn run() {
             quick_insert_execute,
             quick_insert_set_favorite,
             quick_insert_delete,
+            quick_insert_get_image,
             settings_get,
             settings_update,
             history_clear,

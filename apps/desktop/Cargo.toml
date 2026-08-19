@@ -18,6 +18,7 @@ path = "src/main.rs"
 tauri-build.workspace = true
 
 [dependencies]
+base64.workspace = true
 echo-clipboard.workspace = true
 echo-library.workspace = true
 echo-platform.workspace = true
