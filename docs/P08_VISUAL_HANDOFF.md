@@ -72,8 +72,8 @@ echo.cmd acceptance quick-insert: PASS (2 native Windows tests, isolated Echo da
 ```
 
 The authorized native run exercised the Echo clipboard listener against real
-Windows clipboard formats and exercised Quick Insert against a real WinForms
-target: text/HTML/RTF/image/files, deduplication, favorites, activation
+Windows clipboard formats and exercised Quick Insert against a real Go-owned
+Win32 target: text/HTML/RTF/image/files, deduplication, favorites, activation
 reopen, system copy, valid insertion, changed-focus rejection, password-input
 rejection, and destroyed-window rejection. This is physical Windows evidence
 for the Echo-owned fixture path, not a claim that every third-party WPF or

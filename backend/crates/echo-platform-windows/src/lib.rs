@@ -272,7 +272,9 @@ mod windows_impl {
                     PasteDeliveryFailure::OriginalWindowUnavailable,
                 ));
             }
-            let Some(current_control) = focused_input_identity(hwnd, target.process_id) else {
+            let Some(current_control) = focused_input_identity(hwnd, target.process_id)
+                .or_else(|| focused_native_control_from_gui(hwnd, target.process_id))
+            else {
                 return Ok(PasteDelivery::Failed(
                     PasteDeliveryFailure::InputUnavailable,
                 ));
@@ -536,19 +538,8 @@ mod windows_impl {
         if process_id == 0 || process_id == std::process::id() {
             return Ok(None);
         }
-        let focused_control = focused_input_identity(window, process_id).or_else(|| {
-            let thread_id = unsafe { GetWindowThreadProcessId(window, None) };
-            let mut info = windows::Win32::UI::WindowsAndMessaging::GUITHREADINFO {
-                cbSize: size_of::<windows::Win32::UI::WindowsAndMessaging::GUITHREADINFO>() as u32,
-                ..Default::default()
-            };
-            unsafe { GetGUIThreadInfo(thread_id, &mut info).ok() }
-                .filter(|_| !info.hwndFocus.0.is_null())
-                .map(|_| PasteControlIdentity::NativeWindow {
-                    handle: info.hwndFocus.0 as isize,
-                    class_name: window_class_name(info.hwndFocus).unwrap_or_default(),
-                })
-        });
+        let focused_control = focused_input_identity(window, process_id)
+            .or_else(|| focused_native_control_from_gui(window, process_id));
         let Some(focused_control) = focused_control else {
             return Ok(None);
         };
@@ -639,6 +630,35 @@ mod windows_impl {
             }
             result
         }
+    }
+
+    fn focused_native_control_from_gui(
+        window: HWND,
+        process_id: u32,
+    ) -> Option<PasteControlIdentity> {
+        let thread_id = unsafe { GetWindowThreadProcessId(window, None) };
+        let mut info = windows::Win32::UI::WindowsAndMessaging::GUITHREADINFO {
+            cbSize: size_of::<windows::Win32::UI::WindowsAndMessaging::GUITHREADINFO>() as u32,
+            ..Default::default()
+        };
+        unsafe { GetGUIThreadInfo(thread_id, &mut info).ok()? };
+        let control = info.hwndFocus;
+        if control.0.is_null() || !native_control_belongs_to(control, window, process_id) {
+            return None;
+        }
+        let class_name = window_class_name(control)?;
+        let style = unsafe { GetWindowLongW(control, GWL_STYLE) } as u32;
+        if !is_native_input_class(&class_name)
+            || !unsafe { IsWindowEnabled(control) }.as_bool()
+            || style & ES_READONLY as u32 != 0
+            || style & ES_PASSWORD as u32 != 0
+        {
+            return None;
+        }
+        Some(PasteControlIdentity::NativeWindow {
+            handle: control.0 as isize,
+            class_name,
+        })
     }
 
     fn native_control_belongs_to(control: HWND, window: HWND, process_id: u32) -> bool {

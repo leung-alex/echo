@@ -1,7 +1,9 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
+
+import { nativeFixtureExecutable } from "./native-fixture";
 
 type TargetReady = {
   run_id: string;
@@ -44,21 +46,30 @@ export class EchoTargetFixture {
       Object.values(paths).map((path) => rm(path, { force: true })),
     );
     const title = `Echo target fixture ${runId}`;
-    const script = resolve(
-      process.cwd(),
-      "tests/e2e/clipboard-target-fixture.ps1",
-    );
+    const executable = nativeFixtureExecutable();
+    if (!isAbsolute(executable)) {
+      throw new Error("ECHO_ACCEPTANCE_FIXTURE_EXE must be absolute");
+    }
     const child = spawn(
-      "powershell.exe",
+      executable,
       [
-        "-NoLogo",
-        "-NoProfile",
-        "-NonInteractive",
-        "-STA",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        script,
+        "target",
+        "--run-id",
+        runId,
+        "--title",
+        title,
+        "--ready",
+        paths.ready,
+        "--command",
+        paths.command,
+        "--response",
+        paths.response,
+        "--primary",
+        paths.primary,
+        "--secondary",
+        paths.secondary,
+        "--password",
+        paths.password,
       ],
       {
         cwd: process.cwd(),

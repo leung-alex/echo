@@ -64,11 +64,12 @@ only checking IPC responses:
   HTML, RTF, image, files, unsupported formats, deduplication, favorites after
   history clear, and activation reopen.
 - `tests/e2e/quick-insert.spec.ts` exercises snippet CRUD/search/copy, reads the
-  copied system text, inserts into a real WinForms text input, revalidates a
-  changed focus target, rejects password inputs, and rejects a destroyed target.
-- `tests/e2e/clipboard-target-fixture.ps1` and `target-fixture.ts` are Echo
-  fixtures only. They do not start Culsans and use run-scoped files and process
-  identities.
+  copied system text, inserts into a real Go-owned Win32 Edit input,
+  revalidates a changed focus target, rejects password inputs, and rejects a
+  destroyed target.
+- `tools/echo/fixture` and `target-fixture.ts` are Echo fixtures only. The Go
+  fixture owns the Windows clipboard formats and native target window; it does
+  not start Culsans and uses run-scoped files and process identities.
 
 The last authorized native run covered both `echo.cmd acceptance clipboard` and
 `echo.cmd acceptance quick-insert`; each passed with an isolated Echo data root.

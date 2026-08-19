@@ -1,6 +1,3 @@
-import { execFile } from "node:child_process";
-import { resolve } from "node:path";
-import { promisify } from "node:util";
 import { expect, test } from "@playwright/test";
 
 import {
@@ -10,9 +7,8 @@ import {
   sendActivation,
   waitForMainPage,
 } from "./tauri";
+import { runClipboardFixture } from "./native-fixture";
 import { EchoTargetFixture } from "./target-fixture";
-
-const execFileAsync = promisify(execFile);
 
 test.describe("Echo Quick Insert acceptance", () => {
   test.skip(
@@ -141,17 +137,5 @@ test.describe("Echo Quick Insert acceptance", () => {
 });
 
 async function readClipboardText(): Promise<string> {
-  const result = await execFileAsync("powershell.exe", [
-    "-NoLogo",
-    "-NoProfile",
-    "-NonInteractive",
-    "-Sta",
-    "-ExecutionPolicy",
-    "Bypass",
-    "-File",
-    resolve(process.cwd(), "tests/e2e/clipboard-fixture.ps1"),
-    "-Operation",
-    "read-text",
-  ]);
-  return result.stdout.trim();
+  return runClipboardFixture("read-text");
 }

@@ -34,8 +34,8 @@ test layers are:
 
 The four legacy Clipboard/Quick Insert E2E files are rewritten or partially
 rewritten for Echo. Echo replaces the Culsans Tauri/evidence helpers and uses
-its own Windows PowerShell clipboard fixture. Native runs are isolated with
-Echo data, WebView2, CDP, process, and evidence roots.
+its own Go Windows clipboard and native-target fixture. Native runs are
+isolated with Echo data, WebView2, CDP, process, and evidence roots.
 
 The following remain Culsans-owned and were not deleted: Input Editor draft
 recovery and editor lifecycle, command scope, File Search, Browser, Capture,
@@ -43,6 +43,15 @@ and unrelated shell visual/system acceptance. No Culsans helper is safe to
 delete wholesale until its remaining consumers have been audited. The
 Echo-only portions of the four named Clipboard/Quick Insert specs and fixture
 cases are deletion candidates during Culsans cleanup review.
+
+## Native fixture migration
+
+The former test-only PowerShell fixtures were replaced by the Echo-owned Go
+binary under `tools/echo/fixture`. It provides the real Windows clipboard
+formats and a Win32 target window with primary, secondary, and password Edit
+controls. Each authorized acceptance run builds the fixture into its isolated
+run root and passes its absolute path to Playwright; no system PowerShell
+process or Culsans helper is required.
 
 ## P07 command surface
 

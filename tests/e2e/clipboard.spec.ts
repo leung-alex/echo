@@ -1,6 +1,3 @@
-import { execFile } from "node:child_process";
-import { resolve } from "node:path";
-import { promisify } from "node:util";
 import { expect, test } from "@playwright/test";
 
 import {
@@ -10,9 +7,7 @@ import {
   sendActivation,
   waitForMainPage,
 } from "./tauri";
-
-const execFileAsync = promisify(execFile);
-const fixture = resolve(process.cwd(), "tests/e2e/clipboard-fixture.ps1");
+import { runClipboardFixture } from "./native-fixture";
 
 test.describe("Echo Clipboard acceptance", () => {
   test.skip(
@@ -126,19 +121,5 @@ async function copyClipboard(
   operation: string,
   value: string,
 ): Promise<string> {
-  const result = await execFileAsync("powershell.exe", [
-    "-NoLogo",
-    "-NoProfile",
-    "-NonInteractive",
-    "-Sta",
-    "-ExecutionPolicy",
-    "Bypass",
-    "-File",
-    fixture,
-    "-Operation",
-    operation,
-    "-Value",
-    value,
-  ]);
-  return result.stdout.trim();
+  return runClipboardFixture(operation, value);
 }

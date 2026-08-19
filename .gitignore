@@ -6,5 +6,6 @@
 /apps/desktop/gen/
 /test-results/
 /.local/echo/
+/tools/echo/.local/
 /target/echo/
 .DS_Store

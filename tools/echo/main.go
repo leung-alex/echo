@@ -481,6 +481,7 @@ func (a *app) selfCheck() error {
 		"apps/desktop/tauri.conf.json",
 		"apps/desktop/icons/icon.ico",
 		"tools/echo/go.mod",
+		"tools/echo/fixture/main_windows.go",
 		"docs/TEST_OWNERSHIP_MAP.md",
 		"docs/VISUAL_PARITY_DEVIATIONS.md",
 		"docs/P08_VISUAL_HANDOFF.md",
@@ -508,6 +509,9 @@ func (a *app) selfCheck() error {
 	if err := a.checkGeneratedIgnore("apps/desktop/gen/schemas/desktop-schema.json"); err != nil {
 		return err
 	}
+	if err := a.checkNativeFixtureSources(); err != nil {
+		return err
+	}
 	content, err := os.ReadFile(filepath.Join(a.root, "docs", "TEST_OWNERSHIP_MAP.md"))
 	if err != nil {
 		return fmt.Errorf("read test ownership map: %w", err)
@@ -516,6 +520,35 @@ func (a *app) selfCheck() error {
 		if !bytes.Contains(content, []byte(required)) {
 			return fmt.Errorf("test ownership map is missing %q", required)
 		}
+	}
+	return nil
+}
+
+func (a *app) checkNativeFixtureSources() error {
+	for _, relative := range []string{
+		"tests/e2e/native-fixture.ts",
+		"tools/echo/fixture/main_windows.go",
+		"tools/echo/fixture/target_windows.go",
+	} {
+		if !fileExists(filepath.Join(a.root, filepath.FromSlash(relative))) {
+			return fmt.Errorf("native fixture source is missing: %s", relative)
+		}
+	}
+	var powershellFiles []string
+	err := filepath.WalkDir(filepath.Join(a.root, "tests", "e2e"), func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !entry.IsDir() && strings.EqualFold(filepath.Ext(path), ".ps1") {
+			powershellFiles = append(powershellFiles, relativeToRoot(a.root, path))
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("scan native fixture sources: %w", err)
+	}
+	if len(powershellFiles) != 0 {
+		return fmt.Errorf("legacy .ps1 native fixture remains: %s", strings.Join(powershellFiles, ", "))
 	}
 	return nil
 }
@@ -850,6 +883,9 @@ func (a *app) acceptanceCommand(args []string) error {
 }
 
 func (a *app) runAcceptance(owner string) error {
+	if runtime.GOOS != "windows" {
+		return fmt.Errorf("native acceptance requires Windows")
+	}
 	if err := a.build(true); err != nil {
 		return err
 	}
@@ -862,6 +898,10 @@ func (a *app) runAcceptance(owner string) error {
 		return fmt.Errorf("create acceptance run: %w", err)
 	}
 	defer os.RemoveAll(runDir)
+	fixtureExecutable, err := a.buildNativeFixture(runDir)
+	if err != nil {
+		return err
+	}
 	dataDir := filepath.Join(runDir, "data")
 	webviewDir := filepath.Join(runDir, "webview2")
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
@@ -884,6 +924,7 @@ func (a *app) runAcceptance(owner string) error {
 		"ECHO_WINDOWS_ACCEPTANCE":               "1",
 		"ECHO_ACCEPTANCE_CDP_PORT":              fmt.Sprint(port),
 		"ECHO_ACCEPTANCE_EXE":                   exe,
+		"ECHO_ACCEPTANCE_FIXTURE_EXE":           fixtureExecutable,
 		"ECHO_ACCEPTANCE_RUN_ROOT":              runDir,
 		"ECHO_DATA_DIR":                         dataDir,
 		"WEBVIEW2_USER_DATA_FOLDER":             webviewDir,
@@ -919,6 +960,20 @@ func (a *app) runAcceptance(owner string) error {
 		return stopErr
 	}
 	return nil
+}
+
+func (a *app) buildNativeFixture(outputDir string) (string, error) {
+	if runtime.GOOS != "windows" {
+		return "", fmt.Errorf("native fixture requires Windows")
+	}
+	output := filepath.Join(outputDir, "echo-native-fixture.exe")
+	if err := a.run("go", "-C", "tools/echo", "build", "-trimpath", "-o", output, "./fixture"); err != nil {
+		return "", fmt.Errorf("build Echo native fixture: %w", err)
+	}
+	if !fileExists(output) {
+		return "", fmt.Errorf("native fixture executable is missing: %s", output)
+	}
+	return output, nil
 }
 
 func (a *app) packageCommand(dirOnly bool) error {
@@ -1017,6 +1072,7 @@ func ownedCleanPaths(root string) []string {
 	return []string{
 		filepath.Join(root, "target", "echo"),
 		filepath.Join(root, ".local", "echo", "run"),
+		filepath.Join(root, "tools", "echo", ".local"),
 	}
 }
 
