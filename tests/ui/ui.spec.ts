@@ -82,6 +82,46 @@ test("keeps activation and successful insert behavior recoverable", async ({
   await expect(page.getByText("Inserted")).toBeVisible();
 });
 
+test("starts native window dragging from the topbar background", async ({
+  page,
+}) => {
+  await page.locator(".clipboard-topbar").click({ position: { x: 4, y: 4 } });
+  await expect
+    .poll(async () =>
+      page.evaluate(() =>
+        (
+          window as Window & {
+            __echoMockState?: { calls: Array<{ command: string }> };
+          }
+        ).__echoMockState?.calls.some(
+          (call) => call.command === "plugin:window|start_dragging",
+        ),
+      ),
+    )
+    .toBe(true);
+
+  const dragCalls = await page.evaluate(() =>
+    (
+      window as Window & {
+        __echoMockState?: { calls: Array<{ command: string }> };
+      }
+    ).__echoMockState?.calls.filter(
+      (call) => call.command === "plugin:window|start_dragging",
+    ).length,
+  );
+  await page.getByRole("combobox", { name: "Search clipboard history" }).click();
+  const dragCallsAfterInput = await page.evaluate(() =>
+    (
+      window as Window & {
+        __echoMockState?: { calls: Array<{ command: string }> };
+      }
+    ).__echoMockState?.calls.filter(
+      (call) => call.command === "plugin:window|start_dragging",
+    ).length,
+  );
+  expect(dragCallsAfterInput).toBe(dragCalls);
+});
+
 test("does not create markup from rendered content", async ({ page }) => {
   await expect(page.locator("#app script")).toHaveCount(0);
   expect(

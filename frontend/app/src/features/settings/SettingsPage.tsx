@@ -1,4 +1,5 @@
-import { useEffect, useState, type ReactElement } from "react";
+import { useEffect, useState, type MouseEvent, type ReactElement } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ArrowLeft, Plus, Pencil, Trash2 } from "lucide-react";
 
 import { Switch } from "../../ui/Switch";
@@ -104,10 +105,24 @@ export function SettingsPage({
       group_name: snippet.group_name ?? "",
     });
   };
+  const startHeaderDrag = (event: MouseEvent<HTMLElement>) => {
+    if (event.button !== 0) return;
+    const target = event.target;
+    if (
+      target instanceof Element &&
+      target.closest(
+        "button, input, textarea, select, a, [contenteditable=\"true\"]",
+      )
+    ) {
+      return;
+    }
+    event.preventDefault();
+    void getCurrentWindow().startDragging().catch(() => undefined);
+  };
 
   return (
     <main className="clipboard-settings-window">
-      <header className="settings-header">
+      <header className="settings-header" onMouseDown={startHeaderDrag}>
         <button type="button" aria-label="Back" title="Back" onClick={onBack}>
           <ArrowLeft size={17} aria-hidden="true" />
         </button>

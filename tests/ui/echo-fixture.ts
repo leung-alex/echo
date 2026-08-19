@@ -95,6 +95,7 @@ export async function installEchoFixture(page: Page): Promise<void> {
           case "plugin:window|hide":
           case "plugin:window|set_focus":
           case "plugin:window|set_focusable":
+          case "plugin:window|start_dragging":
             return null;
           case "activation_state":
             return null;

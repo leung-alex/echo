@@ -4,6 +4,7 @@ import {
   useRef,
   useState,
   type KeyboardEvent,
+  type MouseEvent,
   type ReactElement,
 } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -143,6 +144,20 @@ export function QuickInsertSurface({
     controller.setView(view);
     focusSearch();
   };
+  const startTopbarDrag = (event: MouseEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    const target = event.target;
+    if (
+      target instanceof Element &&
+      target.closest(
+        "button, input, textarea, select, a, [contenteditable=\"true\"], .echo-search-field",
+      )
+    ) {
+      return;
+    }
+    event.preventDefault();
+    void getCurrentWindow().startDragging().catch(() => undefined);
+  };
   const selectViewMode = (mode: ClipboardViewMode) => {
     setViewMode(mode);
     try {
@@ -161,7 +176,10 @@ export function QuickInsertSurface({
       onKeyDown={onKeyDown}
       data-testid="clipboard-panel"
     >
-      <div className="clipboard-topbar" data-tauri-drag-region>
+      <div
+        className="clipboard-topbar"
+        onMouseDown={startTopbarDrag}
+      >
         <SearchField
           ref={searchRef}
           className="clipboard-search-row"
