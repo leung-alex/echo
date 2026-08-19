@@ -128,6 +128,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "echo-library"
+version = "0.1.0"
+dependencies = [
+ "echo-clipboard",
+ "echo-platform",
+ "echo-storage",
+ "serde",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "echo-platform"
 version = "0.1.0"
 
