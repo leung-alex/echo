@@ -87,7 +87,7 @@ test.describe("Echo Clipboard acceptance", () => {
         .toEqual({ html: 1, rtf: 1, image: 1, files: 1 });
       expect(filePath).toContain("echo-clipboard-");
 
-      const search = main.getByPlaceholder("Search history");
+      const search = main.getByPlaceholder("Search clipboard history...");
       await search.fill(value);
       await expect(main.getByText(value)).toBeVisible();
       await main.getByRole("button", { name: "Favorite" }).click();
@@ -97,9 +97,10 @@ test.describe("Echo Clipboard acceptance", () => {
       await expect(main.getByText(value)).toBeVisible();
       await hideEcho(main);
       await sendActivation("echo.open");
-      await expect(
-        main.getByRole("heading", { name: "History" }),
-      ).toBeVisible();
+      await expect(main.getByRole("tab", { name: "History" })).toHaveAttribute(
+        "aria-selected",
+        "true",
+      );
     } finally {
       await invoke(main, "history_clear").catch(() => undefined);
       await browser.close();

@@ -1,6 +1,9 @@
 import { useEffect, useState } from "react";
 
-import { activeResultId, scrollActiveResultIntoView } from "../features/quick-insert/model/navigation";
+import {
+  activeResultId,
+  scrollActiveResultIntoView,
+} from "../features/quick-insert/model/navigation";
 
 export function useActiveResultNavigation({
   resultKeys,
@@ -14,7 +17,9 @@ export function useActiveResultNavigation({
   popupRole: "grid" | "listbox";
   visible: boolean;
 }) {
-  const [activeKey, setActiveKey] = useState<string | null>(resultKeys[0] ?? null);
+  const [activeKey, setActiveKey] = useState<string | null>(
+    resultKeys[0] ?? null,
+  );
   const resolvedKey =
     resultKeys.length === 0
       ? null
@@ -26,12 +31,15 @@ export function useActiveResultNavigation({
     setActiveKey(resultKeys[0] ?? null);
   }, [resetToken, resultKeys.length, resultKeys[0]]);
 
-  const activeIndex = resolvedKey === null ? -1 : resultKeys.indexOf(resolvedKey);
+  const activeIndex =
+    resolvedKey === null ? -1 : resultKeys.indexOf(resolvedKey);
   const getResultId = (key: string) => activeResultId(popupId, key);
-  const activeDescendantId = visible && resolvedKey ? getResultId(resolvedKey) : undefined;
+  const activeDescendantId =
+    visible && resolvedKey ? getResultId(resolvedKey) : undefined;
 
   useEffect(() => {
-    if (activeDescendantId) scrollActiveResultIntoView(document.getElementById(activeDescendantId));
+    if (activeDescendantId)
+      scrollActiveResultIntoView(document.getElementById(activeDescendantId));
   }, [activeDescendantId]);
 
   const activateIndex = (index: number) => {
@@ -40,7 +48,13 @@ export function useActiveResultNavigation({
   };
   const move = (direction: -1 | 1) => {
     if (resultKeys.length === 0) return;
-    const next = Math.max(0, Math.min((activeIndex < 0 ? 0 : activeIndex) + direction, resultKeys.length - 1));
+    const next = Math.max(
+      0,
+      Math.min(
+        (activeIndex < 0 ? 0 : activeIndex) + direction,
+        resultKeys.length - 1,
+      ),
+    );
     activateIndex(next);
   };
 

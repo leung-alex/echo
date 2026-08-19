@@ -13,7 +13,11 @@ export function nextSelection(
   direction: -1 | 1,
 ): number {
   if (count === 0) return -1;
-  return Math.max(0, Math.min((current < 0 ? 0 : current) + direction, count - 1));
+  if (current < 0) return 0;
+  return Math.max(
+    0,
+    Math.min((current < 0 ? 0 : current) + direction, count - 1),
+  );
 }
 
 export function selectionForKey(key: string, count: number): number | null {
@@ -23,5 +27,9 @@ export function selectionForKey(key: string, count: number): number | null {
 }
 
 export function scrollActiveResultIntoView(element: Element | null): void {
-  element?.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "auto" });
+  element?.scrollIntoView({
+    block: "nearest",
+    inline: "nearest",
+    behavior: "auto",
+  });
 }

@@ -72,12 +72,16 @@ export const quickInsertClient: QuickInsertClient = {
     ),
   setFavorite: (source, id, pinned) =>
     invoke<boolean>("quick_insert_set_favorite", { source, id, pinned }),
-  remove: (source, id) => invoke<boolean>("quick_insert_delete", { source, id }),
+  remove: (source, id) =>
+    invoke<boolean>("quick_insert_delete", { source, id }),
   getImage: async (source, id) => {
-    const preview = await invoke<ImagePreview | null>("quick_insert_get_image", {
-      source,
-      id,
-    });
+    const preview = await invoke<ImagePreview | null>(
+      "quick_insert_get_image",
+      {
+        source,
+        id,
+      },
+    );
     return preview
       ? `data:${preview.mime_type};base64,${preview.base64}`
       : null;

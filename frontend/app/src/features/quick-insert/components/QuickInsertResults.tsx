@@ -1,7 +1,10 @@
 import { useEffect, useState, type ReactElement } from "react";
 import { Copy, Star, Trash2 } from "lucide-react";
 
-import { getSearchMatchIndices, SearchMatchText } from "../../../ui/SearchMatchText";
+import {
+  getSearchMatchIndices,
+  SearchMatchText,
+} from "../../../ui/SearchMatchText";
 import type { QuickInsertItem, QuickInsertView } from "../model/types";
 
 const imagePreviewCache = new Map<string, string | null>();
@@ -18,7 +21,10 @@ interface QuickInsertResultsProps {
   execute: (item: QuickInsertItem, intent?: "insert" | "copy") => void;
   toggleFavorite: (item: QuickInsertItem) => void;
   remove: (item: QuickInsertItem) => void;
-  getImage: (source: QuickInsertItem["source"], id: number) => Promise<string | null>;
+  getImage: (
+    source: QuickInsertItem["source"],
+    id: number,
+  ) => Promise<string | null>;
 }
 
 export function QuickInsertResults({
@@ -39,7 +45,12 @@ export function QuickInsertResults({
 
   if (view === "snippets") {
     return (
-      <div id="echo-snippet-results" className="echo-result-list" role="listbox" aria-label="Snippet results">
+      <div
+        id="echo-snippet-results"
+        className="echo-result-list"
+        role="listbox"
+        aria-label="Snippet results"
+      >
         {items.map((item, index) => (
           <SnippetRow
             key={`${item.source}:${item.id}`}
@@ -58,13 +69,16 @@ export function QuickInsertResults({
     );
   }
 
-  const className = viewMode === "compact" ? "echo-compact-list" : "echo-history-list";
+  const className =
+    viewMode === "compact" ? "echo-compact-list" : "echo-history-list";
   return (
     <div
       id="echo-entry-results"
       className={className}
       role="grid"
-      aria-label={view === "favorites" ? "Favorite entries" : "Clipboard history"}
+      aria-label={
+        view === "favorites" ? "Favorite entries" : "Clipboard history"
+      }
     >
       {items.map((item, index) => (
         <div
@@ -75,21 +89,30 @@ export function QuickInsertResults({
           aria-selected={index === selected}
           tabIndex={-1}
           onPointerDown={(event) => {
-            if (event.target instanceof Element && event.target.closest("button, input, textarea, select, a")) return;
+            if (
+              event.target instanceof Element &&
+              event.target.closest("button, input, textarea, select, a")
+            )
+              return;
             event.preventDefault();
             select(index);
           }}
           onClick={() => execute(item)}
         >
           <span className="echo-type-mark" aria-hidden="true">
-            {item.content_type.startsWith("image") ? "IMG" : item.content_type.slice(0, 3).toUpperCase()}
+            {item.content_type.startsWith("image")
+              ? "IMG"
+              : item.content_type.slice(0, 3).toUpperCase()}
           </span>
           <span className="echo-history-copy" role="gridcell">
             <EntryContent item={item} query={query} getImage={getImage} />
             <span className="echo-history-meta">
               <SearchMatchText
                 text={item.source_app ?? "Unknown source"}
-                indices={getSearchMatchIndices(item.source_app ?? "Unknown source", query)}
+                indices={getSearchMatchIndices(
+                  item.source_app ?? "Unknown source",
+                  query,
+                )}
               />
               <span aria-hidden="true">·</span>
               <span>{relativeTime(item.updated_at)}</span>
@@ -119,7 +142,9 @@ function EntryContent({
   getImage: QuickInsertResultsProps["getImage"];
 }) {
   const cacheKey = `${item.source}:${item.id}`;
-  const [imageUrl, setImageUrl] = useState<string | null>(() => imagePreviewCache.get(cacheKey) ?? null);
+  const [imageUrl, setImageUrl] = useState<string | null>(
+    () => imagePreviewCache.get(cacheKey) ?? null,
+  );
   const isImage = item.content_type.startsWith("image");
 
   useEffect(() => {
@@ -139,7 +164,14 @@ function EntryContent({
   const preview = item.preview_text || item.title || "Empty content";
   return (
     <span className="echo-content-preview" title={preview}>
-      {imageUrl ? <img src={imageUrl} alt="Clipboard image preview" loading="lazy" /> : <SearchMatchText text={preview} indices={getSearchMatchIndices(preview, query)} />}
+      {imageUrl ? (
+        <img src={imageUrl} alt="Clipboard image preview" loading="lazy" />
+      ) : (
+        <SearchMatchText
+          text={preview}
+          indices={getSearchMatchIndices(preview, query)}
+        />
+      )}
     </span>
   );
 }
@@ -158,13 +190,46 @@ function EntryActions({
   const pinned = item.source === "favorite" || item.pinned;
   return (
     <div className="echo-row-actions">
-      <button type="button" aria-label="Copy" title="Copy" onPointerDown={(event) => event.preventDefault()} onClick={(event) => { event.stopPropagation(); copy(); }}>
+      <button
+        type="button"
+        aria-label="Copy"
+        title="Copy"
+        onPointerDown={(event) => event.preventDefault()}
+        onClick={(event) => {
+          event.stopPropagation();
+          copy();
+        }}
+      >
         <Copy size={16} aria-hidden="true" />
       </button>
-      <button type="button" aria-label={pinned ? "Unfavorite" : "Favorite"} aria-pressed={pinned} title={pinned ? "Unfavorite" : "Favorite"} onPointerDown={(event) => event.preventDefault()} onClick={(event) => { event.stopPropagation(); toggleFavorite(); }}>
-        <Star size={17} fill={pinned ? "currentColor" : "none"} aria-hidden="true" />
+      <button
+        type="button"
+        aria-label={pinned ? "Unfavorite" : "Favorite"}
+        aria-pressed={pinned}
+        title={pinned ? "Unfavorite" : "Favorite"}
+        onPointerDown={(event) => event.preventDefault()}
+        onClick={(event) => {
+          event.stopPropagation();
+          toggleFavorite();
+        }}
+      >
+        <Star
+          size={17}
+          fill={pinned ? "currentColor" : "none"}
+          aria-hidden="true"
+        />
       </button>
-      <button className="danger" type="button" aria-label="Delete" title="Delete" onPointerDown={(event) => event.preventDefault()} onClick={(event) => { event.stopPropagation(); remove(); }}>
+      <button
+        className="danger"
+        type="button"
+        aria-label="Delete"
+        title="Delete"
+        onPointerDown={(event) => event.preventDefault()}
+        onClick={(event) => {
+          event.stopPropagation();
+          remove();
+        }}
+      >
         <Trash2 size={16} aria-hidden="true" />
       </button>
     </div>
@@ -195,16 +260,69 @@ function SnippetRow({
   const title = item.title || "Untitled snippet";
   const preview = item.preview_text || "Empty snippet";
   return (
-    <div id={id} className="echo-snippet-row" role="option" aria-selected={selected} tabIndex={-1} onPointerDown={(event) => { if (event.target instanceof Element && event.target.closest("button, input, textarea, select, a")) return; event.preventDefault(); select(); }} onClick={execute}>
-      <span className="echo-snippet-icon" aria-hidden="true">S</span>
+    <div
+      id={id}
+      className="echo-snippet-row"
+      role="option"
+      aria-selected={selected}
+      tabIndex={-1}
+      onPointerDown={(event) => {
+        if (
+          event.target instanceof Element &&
+          event.target.closest("button, input, textarea, select, a")
+        )
+          return;
+        event.preventDefault();
+        select();
+      }}
+      onClick={execute}
+    >
+      <span className="echo-snippet-icon" aria-hidden="true">
+        S
+      </span>
       <span className="echo-snippet-copy">
-        <strong><SearchMatchText text={title} indices={getSearchMatchIndices(title, query)} /></strong>
-        <span><SearchMatchText text={preview} indices={getSearchMatchIndices(preview, query)} /></span>
-        <small>{item.group_name || "Ungrouped"} · {relativeTime(item.updated_at)}</small>
+        <strong>
+          <SearchMatchText
+            text={title}
+            indices={getSearchMatchIndices(title, query)}
+          />
+        </strong>
+        <span>
+          <SearchMatchText
+            text={preview}
+            indices={getSearchMatchIndices(preview, query)}
+          />
+        </span>
+        <small>
+          {item.group_name || "Ungrouped"} · {relativeTime(item.updated_at)}
+        </small>
       </span>
       <span className="echo-row-actions">
-        <button type="button" aria-label="Copy" title="Copy" onPointerDown={(event) => event.preventDefault()} onClick={(event) => { event.stopPropagation(); copy(); }}><Copy size={16} aria-hidden="true" /></button>
-        <button className="danger" type="button" aria-label="Delete" title="Delete" onPointerDown={(event) => event.preventDefault()} onClick={(event) => { event.stopPropagation(); remove(); }}><Trash2 size={16} aria-hidden="true" /></button>
+        <button
+          type="button"
+          aria-label="Copy"
+          title="Copy"
+          onPointerDown={(event) => event.preventDefault()}
+          onClick={(event) => {
+            event.stopPropagation();
+            copy();
+          }}
+        >
+          <Copy size={16} aria-hidden="true" />
+        </button>
+        <button
+          className="danger"
+          type="button"
+          aria-label="Delete"
+          title="Delete"
+          onPointerDown={(event) => event.preventDefault()}
+          onClick={(event) => {
+            event.stopPropagation();
+            remove();
+          }}
+        >
+          <Trash2 size={16} aria-hidden="true" />
+        </button>
       </span>
       <span className="sr-only">Result {index + 1}</span>
     </div>
@@ -214,7 +332,9 @@ function SnippetRow({
 function EmptyState({ message }: { message: string }) {
   return (
     <div className="echo-empty-state">
-      <span className="echo-empty-mark" aria-hidden="true">E</span>
+      <span className="echo-empty-mark" aria-hidden="true">
+        E
+      </span>
       <strong>{message}</strong>
       <small>Keep Echo running to capture new content.</small>
     </div>

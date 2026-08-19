@@ -23,7 +23,7 @@ from this repository and never start Culsans.
 | Layer             | Location               | Coverage                                                                                                                                                  |
 | ----------------- | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Domain/unit       | `backend/crates/*/src` | Listener races, self-write suppression, normalization, fingerprint, storage/blob GC, migration, Library views, Quick Insert actions, activation protocol. |
-| Browser UI        | `tests/ui/ui.spec.ts`  | Real DOM rendering with a controlled Tauri IPC boundary: History, Favorites, Snippets, search, copy, settings, escaping, and item-scoped actions.         |
+| Browser UI        | `tests/ui/ui.spec.ts`, `tests/ui/visual.spec.ts`, `tests/ui/echo-fixture.ts` | Real DOM rendering with a controlled Echo Tauri IPC boundary: first open, activation, hide/reopen, History/Favorites/Snippets, search, copy/insert, settings, snippet CRUD, escaping, responsive overflow, and screenshot evidence. |
 | Native acceptance | `tests/e2e/*.spec.ts`  | Direct Echo process over WebView2 CDP with isolated data, activation, clipboard system behavior, persistence, and target-safe insertion.                  |
 | Tooling           | `tools/echo/*_test.go` | Command dispatch, flags, root resolution, owner planning, bootstrap independence, and owned cleanup.                                                      |
 
@@ -45,6 +45,12 @@ Native tests require `ECHO_WINDOWS_ACCEPTANCE=1` and are launched by
 gets an isolated `ECHO_DATA_DIR`, optional `ECHO_LEGACY_DATA_DIR`, WebView2
 profile, CDP port, process record, and evidence directory. The runner validates
 the Echo executable identity and terminates only the owned process tree.
+
+P08 browser visual evidence is written to the ignored
+`test-results/p08-visual/` directory by `tests/ui/visual.spec.ts`. The fixed
+viewport matrix covers `1280x720` detailed/compact/favorites/snippets states
+and `680x480` Quick Insert/settings states. These browser screenshots are not
+physical Windows clipboard acceptance evidence.
 
 Physical Windows acceptance remains separately authorized. Local unit, browser,
 build, and smoke gates must not be reported as physical clipboard acceptance.

@@ -18,10 +18,10 @@ test.describe("Echo Quick Insert acceptance", () => {
         id: null,
         name,
         content: "Echo acceptance snippet",
-        groupName: "acceptance",
+        group_name: "acceptance",
       });
       await main.getByRole("tab", { name: "Snippets" }).click();
-      await main.getByPlaceholder("Search snippets").fill(name);
+      await main.getByPlaceholder("Search snippets...").fill(name);
       await expect(main.getByText("Echo acceptance snippet")).toBeVisible();
       await main.getByRole("button", { name: "Copy" }).click();
       await expect(main.getByText("Copied")).toBeVisible();

@@ -1,10 +1,7 @@
 export type QuickInsertView = "history" | "favorites" | "snippets";
 export type QuickInsertSource = "history" | "favorite" | "snippet";
 export type QuickInsertAction = "copy" | "insert";
-export type QuickInsertOutcome =
-  | "copied"
-  | "inserted"
-  | "clipboard_staged";
+export type QuickInsertOutcome = "copied" | "inserted" | "clipboard_staged";
 
 export interface QuickInsertItem {
   id: number;

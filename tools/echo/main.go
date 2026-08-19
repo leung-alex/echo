@@ -482,6 +482,8 @@ func (a *app) selfCheck() error {
 		"apps/desktop/icons/icon.ico",
 		"tools/echo/go.mod",
 		"docs/TEST_OWNERSHIP_MAP.md",
+		"docs/VISUAL_PARITY_DEVIATIONS.md",
+		"docs/P08_VISUAL_HANDOFF.md",
 	} {
 		if !fileExists(filepath.Join(a.root, filepath.FromSlash(relative))) {
 			return fmt.Errorf("self-check expected file is missing: %s", relative)
@@ -491,6 +493,9 @@ func (a *app) selfCheck() error {
 		return fmt.Errorf("self-check rejects Git submodules")
 	}
 	if err := a.checkManifestIndependence(); err != nil {
+		return err
+	}
+	if err := a.checkFrontendPresentation(); err != nil {
 		return err
 	}
 	metadata, err := a.runCapture("cargo", "metadata", "--no-deps", "--locked", "--format-version", "1")
@@ -513,6 +518,88 @@ func (a *app) selfCheck() error {
 		}
 	}
 	return nil
+}
+
+func (a *app) checkFrontendPresentation() error {
+	root := filepath.Join(a.root, "frontend", "app", "src")
+	defined := map[string]bool{}
+	used := map[string]bool{}
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		ext := strings.ToLower(filepath.Ext(path))
+		if ext != ".ts" && ext != ".tsx" && ext != ".css" {
+			return nil
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read frontend source %s: %w", relativeToRoot(a.root, path), err)
+		}
+		textContent := string(content)
+		lower := strings.ToLower(textContent)
+		if strings.Contains(lower, "innerhtml") {
+			return fmt.Errorf("temporary innerHTML presentation remains in %s", relativeToRoot(a.root, path))
+		}
+		if strings.Contains(lower, "culsans") {
+			return fmt.Errorf("Culsans UI/source reference remains in %s", relativeToRoot(a.root, path))
+		}
+		if ext != ".css" {
+			return nil
+		}
+		for _, occurrence := range echoTokenOccurrences(textContent) {
+			if occurrence.definition {
+				defined[occurrence.token] = true
+			} else {
+				used[occurrence.token] = true
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	for token := range used {
+		if !defined[token] {
+			return fmt.Errorf("unresolved Echo UI token: %s", token)
+		}
+	}
+	return nil
+}
+
+type echoTokenOccurrence struct {
+	token      string
+	definition bool
+}
+
+func echoTokenOccurrences(content string) []echoTokenOccurrence {
+	var tokens []echoTokenOccurrence
+	for offset := 0; offset < len(content); {
+		index := strings.Index(content[offset:], "--echo-")
+		if index < 0 {
+			break
+		}
+		start := offset + index
+		end := start + len("--echo-")
+		for end < len(content) {
+			character := content[end]
+			if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') || character == '-' || character == '_' {
+				end++
+				continue
+			}
+			break
+		}
+		token := content[start:end]
+		tokens = append(tokens, echoTokenOccurrence{
+			token:      token,
+			definition: strings.HasPrefix(strings.TrimSpace(content[end:]), ":"),
+		})
+		offset = end
+	}
+	return tokens
 }
 
 func requireGoVersion() error {
@@ -645,7 +732,7 @@ func (a *app) format(check bool) error {
 
 func prettierTargets() []string {
 	return []string{
-		"frontend/**/*.{ts,css,json,html}",
+		"frontend/**/*.{ts,tsx,css,json,html}",
 		"tests/**/*.ts",
 		"package.json",
 		"pnpm-workspace.yaml",

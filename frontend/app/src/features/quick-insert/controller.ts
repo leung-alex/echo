@@ -111,7 +111,8 @@ export function useQuickInsertController({
       const direction = key === "ArrowUp" || key === "k" ? -1 : 1;
       const numeric = selectionForKey(key, state.items.length);
       const selection =
-        numeric ?? nextSelection(state.selection, state.items.length, direction);
+        numeric ??
+        nextSelection(state.selection, state.items.length, direction);
       if (selection >= 0) select(selection);
     },
     [select, state.items.length, state.selection],
@@ -146,8 +147,11 @@ export function useQuickInsertController({
     async (item: QuickInsertItem) => {
       try {
         await client.setFavorite(item.source, item.id, !item.pinned);
-        report(item.pinned ? "Removed from Favorites" : "Added to Favorites", "success");
         await load();
+        report(
+          item.pinned ? "Removed from Favorites" : "Added to Favorites",
+          "success",
+        );
       } catch (error) {
         report(errorMessage(error), "error");
       }
@@ -159,8 +163,8 @@ export function useQuickInsertController({
     async (item: QuickInsertItem) => {
       try {
         await client.remove(item.source, item.id);
-        report("Deleted", "success");
         await load();
+        report("Deleted", "success");
       } catch (error) {
         report(errorMessage(error), "error");
       }

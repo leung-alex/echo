@@ -1,4 +1,10 @@
-import { forwardRef, useEffect, useRef, type InputHTMLAttributes, type ReactNode } from "react";
+import {
+  forwardRef,
+  useEffect,
+  useRef,
+  type InputHTMLAttributes,
+  type ReactNode,
+} from "react";
 
 export interface SearchFieldProps
   extends Omit<InputHTMLAttributes<HTMLInputElement>, "className"> {
@@ -8,7 +14,10 @@ export interface SearchFieldProps
 }
 
 export const SearchField = forwardRef<HTMLInputElement, SearchFieldProps>(
-  function SearchField({ className, startSlot, endSlot, ...props }, forwardedRef) {
+  function SearchField(
+    { className, startSlot, endSlot, ...props },
+    forwardedRef,
+  ) {
     const inputRef = useRef<HTMLInputElement | null>(null);
     const caretRef = useRef<HTMLSpanElement>(null);
 
@@ -36,8 +45,12 @@ export const SearchField = forwardRef<HTMLInputElement, SearchFieldProps>(
     }, []);
 
     return (
-      <div className={["echo-search-field", className].filter(Boolean).join(" ")}>
-        {startSlot ? <span className="echo-search-field__start">{startSlot}</span> : null}
+      <div
+        className={["echo-search-field", className].filter(Boolean).join(" ")}
+      >
+        {startSlot ? (
+          <span className="echo-search-field__start">{startSlot}</span>
+        ) : null}
         <input
           {...props}
           ref={(node) => {
@@ -48,8 +61,15 @@ export const SearchField = forwardRef<HTMLInputElement, SearchFieldProps>(
           className="echo-search-field__input"
           data-custom-caret="false"
         />
-        {endSlot ? <span className="echo-search-field__end">{endSlot}</span> : null}
-        <span ref={caretRef} className="echo-search-field__caret" data-visible="false" aria-hidden="true" />
+        {endSlot ? (
+          <span className="echo-search-field__end">{endSlot}</span>
+        ) : null}
+        <span
+          ref={caretRef}
+          className="echo-search-field__caret"
+          data-visible="false"
+          aria-hidden="true"
+        />
       </div>
     );
   },

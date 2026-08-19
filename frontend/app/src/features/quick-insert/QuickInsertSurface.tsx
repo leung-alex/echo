@@ -1,11 +1,21 @@
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type ReactElement } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type ReactElement,
+} from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { LayoutList, Search, Settings, Table2 } from "lucide-react";
 
 import { SearchField } from "../../ui/SearchField";
 import { useActiveResultNavigation } from "../../ui/useActiveResultNavigation";
 import { useQuickInsertController } from "./controller";
-import { quickInsertClient, type QuickInsertClient } from "./api/quick-insert-client";
+import {
+  quickInsertClient,
+  type QuickInsertClient,
+} from "./api/quick-insert-client";
 import { QuickInsertResults } from "./components/QuickInsertResults";
 import type { PasteSession, QuickInsertView } from "./model/types";
 
@@ -42,11 +52,16 @@ export function QuickInsertSurface({
   const [viewMode, setViewMode] = useState<ClipboardViewMode>(readViewMode);
   const focusSearch = useCallback(() => {
     searchRef.current?.focus();
-    void getCurrentWindow()
-      .setFocusable(true)
-      .then(() => getCurrentWindow().setFocus())
-      .then(() => searchRef.current?.focus())
-      .catch(() => undefined);
+    try {
+      const currentWindow = getCurrentWindow();
+      void currentWindow
+        .setFocusable(true)
+        .then(() => currentWindow.setFocus())
+        .then(() => searchRef.current?.focus())
+        .catch(() => undefined);
+    } catch {
+      // Browser-owned tests and non-Tauri previews can still focus the input.
+    }
   }, []);
   const controller = useQuickInsertController({
     initialSession,
@@ -56,7 +71,8 @@ export function QuickInsertSurface({
     client,
   });
   const { state } = controller;
-  const resultPopupId = state.view === "snippets" ? "echo-snippet-results" : "echo-entry-results";
+  const resultPopupId =
+    state.view === "snippets" ? "echo-snippet-results" : "echo-entry-results";
   const navigation = useActiveResultNavigation({
     resultKeys: state.items.map((item) => `${item.source}:${item.id}`),
     resetToken: `${state.view}:${state.query}`,
@@ -70,8 +86,14 @@ export function QuickInsertSurface({
   }, [focusRequest, focusSearch]);
 
   const onKeyDown = (event: KeyboardEvent<HTMLElement>) => {
-    const inputFocused = event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement;
-    if (event.nativeEvent.isComposing && ["ArrowUp", "ArrowDown", "Enter", "Escape"].includes(event.key)) return;
+    const inputFocused =
+      event.target instanceof HTMLInputElement ||
+      event.target instanceof HTMLTextAreaElement;
+    if (
+      event.nativeEvent.isComposing &&
+      ["ArrowUp", "ArrowDown", "Enter", "Escape"].includes(event.key)
+    )
+      return;
     if (event.ctrlKey && event.key.toLocaleLowerCase() === "f") {
       event.preventDefault();
       searchRef.current?.focus();
@@ -88,9 +110,13 @@ export function QuickInsertSurface({
       controller.handleEscape(event.nativeEvent.isComposing);
       return;
     }
-    if (event.target === searchRef.current && ["ArrowUp", "ArrowDown", "Enter"].includes(event.key)) {
+    if (
+      event.target === searchRef.current &&
+      ["ArrowUp", "ArrowDown", "Enter"].includes(event.key)
+    ) {
       event.preventDefault();
-      if (event.key === "Enter" && controller.selectedItem) void controller.execute(controller.selectedItem);
+      if (event.key === "Enter" && controller.selectedItem)
+        void controller.execute(controller.selectedItem);
       else if (event.key === "ArrowUp" || event.key === "ArrowDown") {
         controller.moveSelection(event.key);
         navigation.move(event.key === "ArrowUp" ? -1 : 1);
@@ -100,10 +126,14 @@ export function QuickInsertSurface({
     if (inputFocused || event.target instanceof HTMLButtonElement) return;
     if (event.key === "Enter") {
       event.preventDefault();
-      if (controller.selectedItem) void controller.execute(controller.selectedItem);
+      if (controller.selectedItem)
+        void controller.execute(controller.selectedItem);
       return;
     }
-    if (["i", "j", "k", "ArrowUp", "ArrowDown"].includes(event.key) || /^[1-9]$/.test(event.key)) {
+    if (
+      ["i", "j", "k", "ArrowUp", "ArrowDown"].includes(event.key) ||
+      /^[1-9]$/.test(event.key)
+    ) {
       event.preventDefault();
       controller.moveSelection(event.key);
     }
@@ -115,46 +145,159 @@ export function QuickInsertSurface({
   };
   const selectViewMode = (mode: ClipboardViewMode) => {
     setViewMode(mode);
-    try { window.localStorage.setItem(VIEW_MODE_KEY, mode); } catch { /* storage is optional */ }
+    try {
+      window.localStorage.setItem(VIEW_MODE_KEY, mode);
+    } catch {
+      /* storage is optional */
+    }
     focusSearch();
   };
   const isSnippetView = state.view === "snippets";
 
   return (
-    <main className="clipboard-window" tabIndex={0} onKeyDown={onKeyDown} data-testid="clipboard-panel">
+    <main
+      className="clipboard-window"
+      tabIndex={0}
+      onKeyDown={onKeyDown}
+      data-testid="clipboard-panel"
+    >
       <div className="clipboard-topbar" data-tauri-drag-region>
         <SearchField
           ref={searchRef}
           className="clipboard-search-row"
           value={state.query}
           onChange={(event) => controller.setQuery(event.target.value)}
-          placeholder={isSnippetView ? "Search snippets..." : "Search clipboard history..."}
-          aria-label={isSnippetView ? "Search snippets" : "Search clipboard history"}
+          placeholder={
+            isSnippetView ? "Search snippets..." : "Search clipboard history..."
+          }
+          aria-label={
+            isSnippetView ? "Search snippets" : "Search clipboard history"
+          }
           autoFocus
           autoComplete="off"
-          startSlot={<Search className="clipboard-search-icon" size={18} aria-hidden="true" />}
+          startSlot={
+            <Search
+              className="clipboard-search-icon"
+              size={18}
+              aria-hidden="true"
+            />
+          }
           endSlot={<kbd className="clipboard-search-shortcut">Ctrl + F</kbd>}
           {...navigation.comboboxProps}
         />
-        {onOpenSettings ? <button className="clipboard-topbar-action" type="button" aria-label="Open settings" title="Settings" onClick={onOpenSettings}><Settings size={17} aria-hidden="true" /></button> : null}
+        {onOpenSettings ? (
+          <button
+            className="clipboard-topbar-action"
+            type="button"
+            aria-label="Open settings"
+            title="Settings"
+            onClick={onOpenSettings}
+          >
+            <Settings size={17} aria-hidden="true" />
+          </button>
+        ) : null}
       </div>
       <nav className="clipboard-tabs" aria-label="Clipboard views">
         <div className="clipboard-tab-list" role="tablist">
           {(["history", "favorites", "snippets"] as const).map((view) => (
-            <button key={view} type="button" role="tab" className="clipboard-tab" aria-selected={state.view === view} aria-current={state.view === view ? "page" : undefined} onClick={() => selectView(view)}>{view[0].toUpperCase() + view.slice(1)}</button>
+            <button
+              key={view}
+              type="button"
+              role="tab"
+              className="clipboard-tab"
+              aria-selected={state.view === view}
+              aria-current={state.view === view ? "page" : undefined}
+              onClick={() => selectView(view)}
+            >
+              {view[0].toUpperCase() + view.slice(1)}
+            </button>
           ))}
         </div>
-        {!isSnippetView ? <div className="clipboard-view-toggle" role="group" aria-label="Clipboard history view">
-          <button type="button" aria-label="Detailed view" aria-pressed={viewMode === "detailed"} title="Detailed view" onClick={() => selectViewMode("detailed")}><Table2 size={15} aria-hidden="true" /></button>
-          <button type="button" aria-label="Compact view" aria-pressed={viewMode === "compact"} title="Compact view" onClick={() => selectViewMode("compact")}><LayoutList size={16} aria-hidden="true" /></button>
-        </div> : null}
+        {!isSnippetView ? (
+          <div
+            className="clipboard-view-toggle"
+            role="group"
+            aria-label="Clipboard history view"
+          >
+            <button
+              type="button"
+              aria-label="Detailed view"
+              aria-pressed={viewMode === "detailed"}
+              title="Detailed view"
+              onClick={() => selectViewMode("detailed")}
+            >
+              <Table2 size={15} aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              aria-label="Compact view"
+              aria-pressed={viewMode === "compact"}
+              title="Compact view"
+              onClick={() => selectViewMode("compact")}
+            >
+              <LayoutList size={16} aria-hidden="true" />
+            </button>
+          </div>
+        ) : null}
       </nav>
-      <section className={isSnippetView ? "clipboard-workspace" : `clipboard-entry-workspace clipboard-entry-workspace--${viewMode}`} aria-label={isSnippetView ? "Snippets" : state.view === "favorites" ? "Favorite entries" : "Clipboard entries"}>
-        {isSnippetView ? <div className="result-pane"><div className="pane-heading"><span>Snippets</span></div><QuickInsertResults {...resultProps(controller, navigation, client)} view="snippets" viewMode="detailed" /></div> : <div className="clipboard-history-layout"><QuickInsertResults {...resultProps(controller, navigation, client)} view={state.view} viewMode={viewMode} /></div>}
+      <section
+        className={
+          isSnippetView
+            ? "clipboard-workspace"
+            : `clipboard-entry-workspace clipboard-entry-workspace--${viewMode}`
+        }
+        aria-label={
+          isSnippetView
+            ? "Snippets"
+            : state.view === "favorites"
+              ? "Favorite entries"
+              : "Clipboard entries"
+        }
+      >
+        {isSnippetView ? (
+          <div className="result-pane">
+            <div className="pane-heading">
+              <span>Snippets</span>
+            </div>
+            <QuickInsertResults
+              {...resultProps(controller, navigation, client)}
+              view="snippets"
+              viewMode="detailed"
+            />
+          </div>
+        ) : (
+          <div className="clipboard-history-layout">
+            <QuickInsertResults
+              {...resultProps(controller, navigation, client)}
+              view={state.view}
+              viewMode={viewMode}
+            />
+          </div>
+        )}
       </section>
       <footer className="clipboard-footer">
-        <div className="key-hints" aria-label="Keyboard controls"><span><kbd>↑↓</kbd> Navigate</span><span><kbd>Enter</kbd> Paste</span><span><kbd>/</kbd> Search</span><span><kbd>Esc</kbd> Close</span></div>
-        <output role={state.statusKind === "error" ? "alert" : "status"} aria-live={state.statusKind === "error" ? "assertive" : "polite"} data-kind={state.statusKind} data-busy={state.loading}>{state.status}</output>
+        <div className="key-hints" aria-label="Keyboard controls">
+          <span>
+            <kbd>↑↓</kbd> Navigate
+          </span>
+          <span>
+            <kbd>Enter</kbd> Paste
+          </span>
+          <span>
+            <kbd>/</kbd> Search
+          </span>
+          <span>
+            <kbd>Esc</kbd> Close
+          </span>
+        </div>
+        <output
+          role={state.statusKind === "error" ? "alert" : "status"}
+          aria-live={state.statusKind === "error" ? "assertive" : "polite"}
+          data-kind={state.statusKind}
+          data-busy={state.loading}
+        >
+          {state.status}
+        </output>
       </footer>
     </main>
   );
@@ -171,10 +314,18 @@ function resultProps(
     selected: controller.state.selection,
     emptyMessage: controller.emptyMessage,
     getResultId: (key: string) => navigation.getResultId(key),
-    select: (index: number) => { controller.select(index); navigation.activateIndex(index); },
-    execute: (item: Parameters<typeof controller.execute>[0], intent?: "insert" | "copy") => void controller.execute(item, intent),
-    toggleFavorite: (item: Parameters<typeof controller.toggleFavorite>[0]) => void controller.toggleFavorite(item),
-    remove: (item: Parameters<typeof controller.remove>[0]) => void controller.remove(item),
+    select: (index: number) => {
+      controller.select(index);
+      navigation.activateIndex(index);
+    },
+    execute: (
+      item: Parameters<typeof controller.execute>[0],
+      intent?: "insert" | "copy",
+    ) => void controller.execute(item, intent),
+    toggleFavorite: (item: Parameters<typeof controller.toggleFavorite>[0]) =>
+      void controller.toggleFavorite(item),
+    remove: (item: Parameters<typeof controller.remove>[0]) =>
+      void controller.remove(item),
     getImage: client.getImage,
   };
 }
