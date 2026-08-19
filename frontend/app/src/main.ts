@@ -236,18 +236,42 @@ function bindEvents(): void {
   }));
 }
 
-void listen<{ route: string; query?: string }>("echo-activation", async ({ payload }) => {
-  if (payload.route === "settings") {
-    await loadSettings();
-    renderSettings();
-    return;
+type ActivationPayload = { route: string; query?: string; request_id?: string };
+const handledActivations = new Set<string>();
+
+async function applyActivation(payload: ActivationPayload): Promise<void> {
+  if (payload.request_id && handledActivations.has(payload.request_id)) return;
+  if (payload.request_id) handledActivations.add(payload.request_id);
+  try {
+    if (payload.route === "settings") {
+      await loadSettings();
+      renderSettings();
+    } else {
+      currentView = "history";
+      query = payload.query || "";
+      render();
+      if (payload.route === "quick_insert") await beginQuickInsert();
+      await loadItems();
+    }
+  } finally {
+    if (payload.request_id) await invoke("activation_ack", { requestId: payload.request_id }).catch(() => undefined);
   }
-  currentView = "history";
-  query = payload.query || "";
-  render();
-  if (payload.route === "quick_insert") await beginQuickInsert();
-  await loadItems();
+}
+
+void listen<ActivationPayload>("echo-activation", async ({ payload }) => {
+  await applyActivation(payload);
 });
 
 render();
-void loadItems();
+void (async () => {
+  try {
+    const pending = await invoke<ActivationPayload | null>("activation_state");
+    if (pending) {
+      await applyActivation(pending);
+      return;
+    }
+  } catch (error) {
+    setStatus(String(error));
+  }
+  await loadItems();
+})();

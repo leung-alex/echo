@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use echo_clipboard::{ClipboardService, ClipboardSink};
 use echo_library::Library;
@@ -27,6 +27,14 @@ pub struct EchoState {
     pub quick_insert: QuickInsertService,
     pub store: Arc<SharedClipboardStore>,
     pub clipboard: Arc<ClipboardService>,
+    pending_activation: Mutex<Option<PendingActivation>>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct PendingActivation {
+    request_id: String,
+    route: String,
+    query: Option<String>,
 }
 
 impl EchoState {
@@ -52,6 +60,7 @@ impl EchoState {
             quick_insert,
             store,
             clipboard,
+            pending_activation: Mutex::new(None),
         })
     }
 }
@@ -170,6 +179,29 @@ fn snippet_delete(state: State<'_, EchoState>, id: i64) -> Result<bool, String> 
         .map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+fn activation_state(state: State<'_, EchoState>) -> Option<PendingActivation> {
+    state
+        .pending_activation
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .take()
+}
+
+#[tauri::command]
+fn activation_ack(state: State<'_, EchoState>, request_id: String) {
+    let mut pending = state
+        .pending_activation
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if pending
+        .as_ref()
+        .is_some_and(|activation| activation.request_id == request_id)
+    {
+        *pending = None;
+    }
+}
+
 fn echo_data_dir() -> PathBuf {
     if let Some(path) = std::env::var_os("ECHO_DATA_DIR") {
         return PathBuf::from(path);
@@ -253,7 +285,12 @@ fn create_main_window(app: &tauri::AppHandle) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-fn show_main(app: &tauri::AppHandle, route: &str, query: Option<&str>) -> Result<(), String> {
+fn show_main(
+    app: &tauri::AppHandle,
+    route: &str,
+    query: Option<&str>,
+    request_id: &str,
+) -> Result<(), String> {
     create_main_window(app)?;
     let window = app
         .get_webview_window("main")
@@ -261,7 +298,10 @@ fn show_main(app: &tauri::AppHandle, route: &str, query: Option<&str>) -> Result
     window.show().map_err(|error| error.to_string())?;
     window.set_focus().map_err(|error| error.to_string())?;
     window
-        .emit("echo-activation", json!({"route": route, "query": query}))
+        .emit(
+            "echo-activation",
+            json!({"route": route, "query": query, "request_id": request_id}),
+        )
         .map_err(|error| error.to_string())
 }
 
@@ -270,13 +310,46 @@ fn handle_activation(app: &tauri::AppHandle, envelope: ActivationEnvelope) -> Re
         .try_state::<EchoState>()
         .ok_or_else(|| "Echo state is not initialized".to_owned())?;
     match envelope.action.as_str() {
-        "echo.open" => show_main(app, "history", None),
+        "echo.open" => {
+            *state
+                .pending_activation
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = Some(PendingActivation {
+                request_id: envelope.request_id.clone(),
+                route: "history".to_owned(),
+                query: None,
+            });
+            show_main(app, "history", None, &envelope.request_id)
+        }
         "echo.quick_insert" => {
             let payload = quick_insert_payload(&envelope).map_err(|error| error.to_string())?;
             let _ = state.quick_insert.begin_session();
-            show_main(app, "quick_insert", payload.query.as_deref())
+            *state
+                .pending_activation
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = Some(PendingActivation {
+                request_id: envelope.request_id.clone(),
+                route: "quick_insert".to_owned(),
+                query: payload.query.clone(),
+            });
+            show_main(
+                app,
+                "quick_insert",
+                payload.query.as_deref(),
+                &envelope.request_id,
+            )
         }
-        "echo.settings" => show_main(app, "settings", None),
+        "echo.settings" => {
+            *state
+                .pending_activation
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = Some(PendingActivation {
+                request_id: envelope.request_id.clone(),
+                route: "settings".to_owned(),
+                query: None,
+            });
+            show_main(app, "settings", None, &envelope.request_id)
+        }
         "echo.save_snippet" => {
             let payload = save_snippet_payload(&envelope).map_err(|error| error.to_string())?;
             state
@@ -310,7 +383,7 @@ fn create_tray(app: &tauri::AppHandle) -> Result<(), String> {
         .tooltip("Echo Recall")
         .on_menu_event(|app, event| match event.id().as_ref() {
             "open" => {
-                let _ = show_main(app, "history", None);
+                let _ = show_main(app, "history", None, "tray-open");
             }
             "quit" => app.exit(0),
             _ => {}
@@ -339,6 +412,8 @@ pub fn run() {
             snippets_list,
             snippet_save,
             snippet_delete,
+            activation_state,
+            activation_ack,
         ])
         .setup(|app| {
             let state = EchoState::build().map_err(std::io::Error::other)?;
