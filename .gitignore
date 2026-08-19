@@ -3,4 +3,5 @@
 /frontend/app/node_modules/
 /frontend/app/dist/
 /apps/desktop/target/
+/apps/desktop/gen/
 .DS_Store
