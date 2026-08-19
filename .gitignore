@@ -1,4 +1,5 @@
 /target/
+/node_modules/
 /frontend/app/node_modules/
 /frontend/app/dist/
 /apps/desktop/target/

@@ -6,6 +6,8 @@ members = [
     "backend/crates/echo-storage",
     "backend/crates/echo-library",
     "backend/crates/echo-quick-insert",
+    "backend/crates/echo-protocol",
+    "apps/desktop",
 ]
 resolver = "2"
 
@@ -22,12 +24,16 @@ echo-platform = { path = "backend/crates/echo-platform" }
 echo-platform-windows = { path = "backend/crates/echo-platform-windows" }
 echo-library = { path = "backend/crates/echo-library" }
 echo-quick-insert = { path = "backend/crates/echo-quick-insert" }
+echo-protocol = { path = "backend/crates/echo-protocol" }
 echo-storage = { path = "backend/crates/echo-storage" }
 rusqlite = { version = "0.40.1", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10.9"
 thiserror = "2"
+tauri = { version = "2.11.5", features = ["tray-icon"] }
+tauri-build = "2"
+tauri-plugin-single-instance = "2.4.3"
 windows = { version = "0.62.2", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",

@@ -4,6 +4,7 @@
 mod windows_impl {
     use std::ffi::c_void;
     use std::mem::size_of;
+    use std::path::Path;
     use std::ptr;
     use std::sync::atomic::{AtomicIsize, Ordering};
     use std::sync::{mpsc, Arc, Mutex};
@@ -11,34 +12,35 @@ mod windows_impl {
     use std::time::Duration;
 
     use echo_platform::{
-        ClipboardPlatform, ClipboardRepresentation, ClipboardSnapshot,
-        InputTargetGeometry, PasteControlIdentity, PasteDelivery,
-        PasteDeliveryFailure, PasteTarget, PhysicalRect, PlatformChange, PlatformChangePublisher,
-        PlatformChangeSubscription, PlatformError, SourceContext,
+        ClipboardPlatform, ClipboardRepresentation, ClipboardSnapshot, InputTargetGeometry,
+        PasteControlIdentity, PasteDelivery, PasteDeliveryFailure, PasteTarget, PhysicalRect,
+        PlatformChange, PlatformChangePublisher, PlatformChangeSubscription, PlatformError,
+        SourceContext,
     };
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::{CloseHandle, HANDLE, HGLOBAL, HWND, LPARAM, RECT, WPARAM};
     use windows::Win32::System::DataExchange::{
         AddClipboardFormatListener, CloseClipboard, EmptyClipboard, GetClipboardData,
-        GetClipboardOwner, GetClipboardSequenceNumber, IsClipboardFormatAvailable,
-        OpenClipboard, RegisterClipboardFormatW, RemoveClipboardFormatListener, SetClipboardData,
+        GetClipboardOwner, GetClipboardSequenceNumber, IsClipboardFormatAvailable, OpenClipboard,
+        RegisterClipboardFormatW, RemoveClipboardFormatListener, SetClipboardData,
     };
     use windows::Win32::System::Memory::{
         GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE,
     };
     use windows::Win32::System::Threading::{
-        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-    };
-    use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
-    use windows::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DestroyWindow, GetClassNameW, GetForegroundWindow,
-        GetGUIThreadInfo, GetWindowLongW, GetWindowRect, GetWindowThreadProcessId, IsWindow,
-        IsWindowVisible, PostMessageW, RegisterClassW,
-        SendMessageW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT,
-        ES_PASSWORD, ES_READONLY, GWL_STYLE, WNDCLASSW,
-        WM_CLIPBOARDUPDATE, WM_CLOSE, WM_PASTE, HWND_MESSAGE, WS_OVERLAPPED,
+        GetProcessTimes, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION,
     };
     use windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled;
+    use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DestroyWindow, GetAncestor, GetClassNameW, GetForegroundWindow,
+        GetGUIThreadInfo, GetWindowLongW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
+        GetWindowThreadProcessId, IsWindow, IsWindowVisible, PostMessageW, RegisterClassW,
+        SendMessageW, SetForegroundWindow, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, ES_PASSWORD,
+        ES_READONLY, GA_ROOT, GWL_STYLE, HWND_MESSAGE, WM_CLIPBOARDUPDATE, WM_CLOSE, WM_PASTE,
+        WNDCLASSW, WS_OVERLAPPED,
+    };
 
     const OPEN_ATTEMPTS: usize = 5;
 
@@ -60,7 +62,9 @@ mod windows_impl {
             let (ready_tx, ready_rx) = mpsc::sync_channel(1);
             let worker = thread::Builder::new()
                 .name("echo-clipboard-source".to_owned())
-                .spawn(move || clipboard_source_worker(worker_window, worker_source, worker_changes, ready_tx))
+                .spawn(move || {
+                    clipboard_source_worker(worker_window, worker_source, worker_changes, ready_tx)
+                })
                 .ok();
             if worker.is_some() {
                 if let Ok(handle) = ready_rx.recv_timeout(Duration::from_secs(2)) {
@@ -180,7 +184,9 @@ mod windows_impl {
                 }
             }
             if self.clipboard_sequence() != sequence {
-                return Err(PlatformError("clipboard changed while it was read".to_owned()));
+                return Err(PlatformError(
+                    "clipboard changed while it was read".to_owned(),
+                ));
             }
             Ok((!representations.is_empty()).then_some(ClipboardSnapshot {
                 sequence,
@@ -197,12 +203,21 @@ mod windows_impl {
             unsafe { EmptyClipboard() }.map_err(platform_error)?;
             for representation in representations {
                 match representation.format.as_str() {
-                    "text" => ClipboardGuard::write_unicode(&String::from_utf8_lossy(&representation.bytes))?,
-                    "html" => ClipboardGuard::write_global(register_format("HTML Format")?, nul_terminated(&representation.bytes))?,
-                    "rtf" => ClipboardGuard::write_global(register_format("Rich Text Format")?, nul_terminated(&representation.bytes))?,
+                    "text" => ClipboardGuard::write_unicode(&String::from_utf8_lossy(
+                        &representation.bytes,
+                    ))?,
+                    "html" => ClipboardGuard::write_global(
+                        register_format("HTML Format")?,
+                        nul_terminated(&representation.bytes),
+                    )?,
+                    "rtf" => ClipboardGuard::write_global(
+                        register_format("Rich Text Format")?,
+                        nul_terminated(&representation.bytes),
+                    )?,
                     "image" => {
-                        let dib = bmp_to_dib(&representation.bytes)
-                            .ok_or_else(|| PlatformError("image representation is not a BMP".to_owned()))?;
+                        let dib = bmp_to_dib(&representation.bytes).ok_or_else(|| {
+                            PlatformError("image representation is not a BMP".to_owned())
+                        })?;
                         ClipboardGuard::write_global(8, dib)?;
                     }
                     "files" => ClipboardGuard::write_file_paths(&representation.bytes)?,
@@ -221,7 +236,6 @@ mod windows_impl {
             if hwnd.0.is_null()
                 || !unsafe { IsWindow(Some(hwnd)) }.as_bool()
                 || !unsafe { IsWindowVisible(hwnd) }.as_bool()
-                || unsafe { GetForegroundWindow() } != hwnd
             {
                 return Ok(PasteDelivery::Failed(
                     PasteDeliveryFailure::OriginalWindowUnavailable,
@@ -229,21 +243,49 @@ mod windows_impl {
             }
             let mut process_id = 0;
             unsafe { GetWindowThreadProcessId(hwnd, Some(&mut process_id)) };
-            if process_id != target.process_id {
-                return Ok(PasteDelivery::Failed(PasteDeliveryFailure::OriginalWindowUnavailable));
+            if process_id != target.process_id
+                || process_started_at(process_id).unwrap_or_default() != target.process_started_at
+                || window_class_name(hwnd).as_deref() != Some(target.window_class.as_str())
+            {
+                return Ok(PasteDelivery::Failed(
+                    PasteDeliveryFailure::OriginalWindowUnavailable,
+                ));
+            }
+            if unsafe { GetForegroundWindow() } != hwnd {
+                let _ = unsafe { SetForegroundWindow(hwnd) };
+                thread::sleep(Duration::from_millis(20));
+            }
+            if unsafe { GetForegroundWindow() } != hwnd {
+                return Ok(PasteDelivery::Failed(
+                    PasteDeliveryFailure::OriginalWindowUnavailable,
+                ));
             }
             let thread_id = unsafe { GetWindowThreadProcessId(hwnd, None) };
             let mut info = windows::Win32::UI::WindowsAndMessaging::GUITHREADINFO {
                 cbSize: size_of::<windows::Win32::UI::WindowsAndMessaging::GUITHREADINFO>() as u32,
                 ..Default::default()
             };
-            if unsafe { GetGUIThreadInfo(thread_id, &mut info) }.is_err() || info.hwndFocus.0.is_null() {
-                return Ok(PasteDelivery::Failed(PasteDeliveryFailure::InputUnavailable));
+            if unsafe { GetGUIThreadInfo(thread_id, &mut info) }.is_err()
+                || info.hwndFocus.0.is_null()
+            {
+                return Ok(PasteDelivery::Failed(
+                    PasteDeliveryFailure::InputUnavailable,
+                ));
             }
-            if let Some(PasteControlIdentity::NativeWindow { handle, .. }) = &target.focused_control {
-                if info.hwndFocus.0 as isize != *handle {
-                    return Ok(PasteDelivery::Failed(PasteDeliveryFailure::InputUnavailable));
+            if let Some(PasteControlIdentity::NativeWindow { handle, class_name }) =
+                &target.focused_control
+            {
+                if info.hwndFocus.0 as isize != *handle
+                    || window_class_name(info.hwndFocus).as_deref() != Some(class_name.as_str())
+                {
+                    return Ok(PasteDelivery::Failed(
+                        PasteDeliveryFailure::InputUnavailable,
+                    ));
                 }
+            } else {
+                return Ok(PasteDelivery::Failed(
+                    PasteDeliveryFailure::InputUnavailable,
+                ));
             }
             unsafe { SendMessageW(info.hwndFocus, WM_PASTE, Some(WPARAM(0)), Some(LPARAM(0))) };
             Ok(PasteDelivery::Pasted)
@@ -297,19 +339,17 @@ mod windows_impl {
         }
         let mut message = windows::Win32::UI::WindowsAndMessaging::MSG::default();
         loop {
-            let status = unsafe { windows::Win32::UI::WindowsAndMessaging::GetMessageW(&mut message, None, 0, 0) };
+            let status = unsafe {
+                windows::Win32::UI::WindowsAndMessaging::GetMessageW(&mut message, None, 0, 0)
+            };
             if status.0 <= 0 || message.message == WM_CLOSE {
                 break;
             }
             if message.message == WM_CLIPBOARDUPDATE {
                 let owner = unsafe { GetClipboardOwner() }.ok().unwrap_or_default();
                 let foreground = unsafe { GetForegroundWindow() };
-                let verified = owner == foreground && !owner.0.is_null();
-                *source.lock().unwrap_or_else(|error| error.into_inner()) = SourceContext {
-                    is_source_verified: verified,
-                    is_sensitivity_verified: false,
-                    ..SourceContext::default()
-                };
+                *source.lock().unwrap_or_else(|error| error.into_inner()) =
+                    source_context(owner, foreground);
                 changes.publish(PlatformChange::Clipboard {
                     sequence: unsafe { u64::from(GetClipboardSequenceNumber()) },
                 });
@@ -345,7 +385,9 @@ mod windows_impl {
                 return Err(PlatformError("unable to lock clipboard memory".to_owned()));
             }
             let bytes = unsafe { std::slice::from_raw_parts(pointer.cast::<u8>(), size) }.to_vec();
-            unsafe { let _ = GlobalUnlock(global); }
+            unsafe {
+                let _ = GlobalUnlock(global);
+            }
             Ok(bytes)
         }
 
@@ -357,7 +399,9 @@ mod windows_impl {
             for index in 0..count {
                 let length = unsafe { DragQueryFileW(drop, index, None) };
                 let mut buffer = vec![0_u16; length as usize + 1];
-                unsafe { DragQueryFileW(drop, index, Some(&mut buffer)); }
+                unsafe {
+                    DragQueryFileW(drop, index, Some(&mut buffer));
+                }
                 paths.push(String::from_utf16_lossy(&buffer[..length as usize]));
             }
             Ok(paths)
@@ -367,7 +411,10 @@ mod windows_impl {
             let mut utf16 = text.encode_utf16().collect::<Vec<_>>();
             utf16.push(0);
             let bytes = unsafe {
-                std::slice::from_raw_parts(utf16.as_ptr().cast::<u8>(), utf16.len() * size_of::<u16>())
+                std::slice::from_raw_parts(
+                    utf16.as_ptr().cast::<u8>(),
+                    utf16.len() * size_of::<u16>(),
+                )
             };
             Self::write_global(13, bytes.to_vec())
         }
@@ -379,21 +426,44 @@ mod windows_impl {
                 .collect::<Vec<_>>();
             utf16.push(0);
             #[repr(C)]
-            struct DropFiles { files_offset: u32, point_x: i32, point_y: i32, non_client: i32, wide: i32 }
-            let header = DropFiles { files_offset: size_of::<DropFiles>() as u32, point_x: 0, point_y: 0, non_client: 0, wide: 1 };
+            struct DropFiles {
+                files_offset: u32,
+                point_x: i32,
+                point_y: i32,
+                non_client: i32,
+                wide: i32,
+            }
+            let header = DropFiles {
+                files_offset: size_of::<DropFiles>() as u32,
+                point_x: 0,
+                point_y: 0,
+                non_client: 0,
+                wide: 1,
+            };
             let mut payload = vec![0_u8; size_of::<DropFiles>() + utf16.len() * size_of::<u16>()];
             unsafe {
-                ptr::copy_nonoverlapping((&header as *const DropFiles).cast::<u8>(), payload.as_mut_ptr(), size_of::<DropFiles>());
-                ptr::copy_nonoverlapping(utf16.as_ptr().cast::<u8>(), payload.as_mut_ptr().add(size_of::<DropFiles>()), utf16.len() * size_of::<u16>());
+                ptr::copy_nonoverlapping(
+                    (&header as *const DropFiles).cast::<u8>(),
+                    payload.as_mut_ptr(),
+                    size_of::<DropFiles>(),
+                );
+                ptr::copy_nonoverlapping(
+                    utf16.as_ptr().cast::<u8>(),
+                    payload.as_mut_ptr().add(size_of::<DropFiles>()),
+                    utf16.len() * size_of::<u16>(),
+                );
             }
             Self::write_global(15, payload)
         }
 
         fn write_global(format: u32, bytes: Vec<u8>) -> Result<(), PlatformError> {
-            let global = unsafe { GlobalAlloc(GMEM_MOVEABLE, bytes.len()) }.map_err(platform_error)?;
+            let global =
+                unsafe { GlobalAlloc(GMEM_MOVEABLE, bytes.len()) }.map_err(platform_error)?;
             let pointer = unsafe { GlobalLock(global) };
             if pointer.is_null() {
-                return Err(PlatformError("unable to allocate clipboard memory".to_owned()));
+                return Err(PlatformError(
+                    "unable to allocate clipboard memory".to_owned(),
+                ));
             }
             unsafe {
                 ptr::copy_nonoverlapping(bytes.as_ptr(), pointer.cast::<u8>(), bytes.len());
@@ -407,7 +477,9 @@ mod windows_impl {
 
     impl Drop for ClipboardGuard {
         fn drop(&mut self) {
-            unsafe { let _ = CloseClipboard(); }
+            unsafe {
+                let _ = CloseClipboard();
+            }
         }
     }
 
@@ -425,44 +497,146 @@ mod windows_impl {
             cbSize: size_of::<windows::Win32::UI::WindowsAndMessaging::GUITHREADINFO>() as u32,
             ..Default::default()
         };
-        if unsafe { GetGUIThreadInfo(thread_id, &mut info) }.is_err() || info.hwndFocus.0.is_null() {
+        if unsafe { GetGUIThreadInfo(thread_id, &mut info) }.is_err() || info.hwndFocus.0.is_null()
+        {
             return Ok(None);
         }
         let focused = info.hwndFocus;
         let class_name = window_class_name(focused).unwrap_or_default();
         let style = unsafe { GetWindowLongW(focused, GWL_STYLE) } as u32;
         let is_input = is_native_input_class(&class_name);
-        if !is_input || !unsafe { IsWindowEnabled(focused) }.as_bool() || style & ES_READONLY as u32 != 0 || style & ES_PASSWORD as u32 != 0 {
+        if !is_input
+            || !unsafe { IsWindowEnabled(focused) }.as_bool()
+            || style & ES_READONLY as u32 != 0
+            || style & ES_PASSWORD as u32 != 0
+        {
             return Ok(None);
         }
         let process_started_at = process_started_at(process_id).unwrap_or(0);
         if process_started_at == 0 {
             return Ok(None);
         }
-        let rect = window_rect(focused).unwrap_or(PhysicalRect { x: 0, y: 0, width: 1, height: 1 });
+        let rect = window_rect(focused).unwrap_or(PhysicalRect {
+            x: 0,
+            y: 0,
+            width: 1,
+            height: 1,
+        });
         Ok(Some(PasteTarget {
             window_id: window.0 as isize,
             window_class: window_class_name(window).unwrap_or_default(),
             process_id,
             process_started_at,
-            focused_control: Some(PasteControlIdentity::NativeWindow { handle: focused.0 as isize, class_name }),
+            focused_control: Some(PasteControlIdentity::NativeWindow {
+                handle: focused.0 as isize,
+                class_name,
+            }),
             app_name: None,
             selected_text: None,
             is_single_line: None,
-            geometry: InputTargetGeometry { target: rect, work_area: rect, dpi: 96 },
+            geometry: InputTargetGeometry {
+                target: rect,
+                work_area: rect,
+                dpi: 96,
+            },
         }))
     }
 
+    fn source_context(owner: HWND, foreground: HWND) -> SourceContext {
+        if owner.0.is_null() || foreground.0.is_null() {
+            return SourceContext::default();
+        }
+        let owner_root = unsafe { GetAncestor(owner, GA_ROOT) };
+        let mut owner_process = 0;
+        let mut foreground_process = 0;
+        unsafe {
+            GetWindowThreadProcessId(owner_root, Some(&mut owner_process));
+            GetWindowThreadProcessId(foreground, Some(&mut foreground_process));
+        }
+        let verified =
+            owner_root == foreground && owner_process != 0 && owner_process == foreground_process;
+        if !verified {
+            return SourceContext::default();
+        }
+        let (executable, app_name) = process_path(foreground_process)
+            .map(|path| {
+                let app_name = Path::new(&path)
+                    .file_stem()
+                    .and_then(|name| name.to_str())
+                    .map(str::to_owned);
+                (Some(path), app_name)
+            })
+            .unwrap_or((None, None));
+        let window_title = window_title(foreground);
+        let thread_id = unsafe { GetWindowThreadProcessId(foreground, None) };
+        let mut info = windows::Win32::UI::WindowsAndMessaging::GUITHREADINFO {
+            cbSize: size_of::<windows::Win32::UI::WindowsAndMessaging::GUITHREADINFO>() as u32,
+            ..Default::default()
+        };
+        let sensitivity_verified = unsafe { GetGUIThreadInfo(thread_id, &mut info) }.is_ok()
+            && !info.hwndFocus.0.is_null();
+        let is_password_input = sensitivity_verified
+            && is_native_input_class(&window_class_name(info.hwndFocus).unwrap_or_default())
+            && (unsafe { GetWindowLongW(info.hwndFocus, GWL_STYLE) } as u32 & ES_PASSWORD as u32
+                != 0);
+        SourceContext {
+            app_name,
+            executable,
+            window_title,
+            is_source_verified: true,
+            is_sensitivity_verified: sensitivity_verified,
+            is_password_input,
+            is_private_window: false,
+        }
+    }
+
+    fn process_path(process_id: u32) -> Option<String> {
+        let process =
+            unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id) }.ok()?;
+        let mut buffer = vec![0_u16; 32_768];
+        let mut length = buffer.len() as u32;
+        let result = unsafe {
+            QueryFullProcessImageNameW(
+                process,
+                PROCESS_NAME_WIN32,
+                windows::core::PWSTR(buffer.as_mut_ptr()),
+                &mut length,
+            )
+        }
+        .ok()
+        .map(|_| String::from_utf16_lossy(&buffer[..length as usize]));
+        unsafe {
+            let _ = CloseHandle(process);
+        }
+        result
+    }
+
+    fn window_title(window: HWND) -> Option<String> {
+        let length = unsafe { GetWindowTextLengthW(window) };
+        if length <= 0 {
+            return None;
+        }
+        let mut buffer = vec![0_u16; length as usize + 1];
+        let copied = unsafe { GetWindowTextW(window, &mut buffer) };
+        (copied > 0).then(|| String::from_utf16_lossy(&buffer[..copied as usize]))
+    }
+
     fn process_started_at(process_id: u32) -> Option<u64> {
-        let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id) }.ok()?;
+        let process =
+            unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id) }.ok()?;
         let mut creation = windows::Win32::Foundation::FILETIME::default();
         let mut exit = windows::Win32::Foundation::FILETIME::default();
         let mut kernel = windows::Win32::Foundation::FILETIME::default();
         let mut user = windows::Win32::Foundation::FILETIME::default();
-        let result = unsafe { GetProcessTimes(process, &mut creation, &mut exit, &mut kernel, &mut user) }
-            .ok()
-            .map(|_| (u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime));
-        unsafe { let _ = CloseHandle(process); }
+        let result =
+            unsafe { GetProcessTimes(process, &mut creation, &mut exit, &mut kernel, &mut user) }
+                .ok()
+                .map(|_| {
+                    (u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime)
+                });
+        unsafe {
+            let _ = CloseHandle(process);
+        }
         result
     }
 
@@ -477,7 +651,12 @@ mod windows_impl {
         unsafe { GetWindowRect(window, &mut rect) }.ok()?;
         let width = rect.right.checked_sub(rect.left)?;
         let height = rect.bottom.checked_sub(rect.top)?;
-        (width > 0 && height > 0).then_some(PhysicalRect { x: rect.left, y: rect.top, width, height })
+        (width > 0 && height > 0).then_some(PhysicalRect {
+            x: rect.left,
+            y: rect.top,
+            width,
+            height,
+        })
     }
 
     fn is_native_input_class(class_name: &str) -> bool {
@@ -488,7 +667,9 @@ mod windows_impl {
     fn register_format(name: &str) -> Result<u32, PlatformError> {
         let wide = wide(name);
         let format = unsafe { RegisterClipboardFormatW(PCWSTR(wide.as_ptr())) };
-        (format != 0).then_some(format).ok_or_else(|| PlatformError(format!("unable to register clipboard format {name}")))
+        (format != 0)
+            .then_some(format)
+            .ok_or_else(|| PlatformError(format!("unable to register clipboard format {name}")))
     }
 
     fn format_available(format: u32) -> bool {
@@ -496,32 +677,60 @@ mod windows_impl {
     }
 
     fn utf16_clipboard_text(bytes: &[u8]) -> String {
-        let words = bytes.chunks_exact(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])).take_while(|word| *word != 0).collect::<Vec<_>>();
+        let words = bytes
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .take_while(|word| *word != 0)
+            .collect::<Vec<_>>();
         String::from_utf16_lossy(&words)
     }
 
     fn trim_trailing_nuls(mut bytes: Vec<u8>) -> Vec<u8> {
-        while bytes.last() == Some(&0) { bytes.pop(); }
+        while bytes.last() == Some(&0) {
+            bytes.pop();
+        }
         bytes
     }
 
     fn nul_terminated(bytes: &[u8]) -> Vec<u8> {
         let mut result = bytes.to_vec();
-        if result.last() != Some(&0) { result.push(0); }
+        if result.last() != Some(&0) {
+            result.push(0);
+        }
         result
     }
 
     fn dib_to_bmp(dib: &[u8]) -> Option<Vec<u8>> {
-        if dib.len() < 40 { return None; }
+        if dib.len() < 40 {
+            return None;
+        }
         let header_size = u32::from_le_bytes(dib.get(0..4)?.try_into().ok()?) as usize;
-        if header_size < 40 || header_size > dib.len() { return None; }
+        if header_size < 40 || header_size > dib.len() {
+            return None;
+        }
         let bit_count = u16::from_le_bytes(dib.get(14..16)?.try_into().ok()?);
         let colors_used = u32::from_le_bytes(dib.get(32..36)?.try_into().ok()?) as usize;
-        let palette_entries = if colors_used > 0 { colors_used } else if bit_count <= 8 { 1_usize << bit_count } else { 0 };
+        let palette_entries = if colors_used > 0 {
+            colors_used
+        } else if bit_count <= 8 {
+            1_usize << bit_count
+        } else {
+            0
+        };
         let compression = u32::from_le_bytes(dib.get(16..20)?.try_into().ok()?);
-        let external_masks = if header_size == 40 { match compression { 3 => 12, 6 => 16, _ => 0 } } else { 0 };
+        let external_masks = if header_size == 40 {
+            match compression {
+                3 => 12,
+                6 => 16,
+                _ => 0,
+            }
+        } else {
+            0
+        };
         let pixel_offset = 14 + header_size + external_masks + palette_entries * 4;
-        if pixel_offset > 14 + dib.len() { return None; }
+        if pixel_offset > 14 + dib.len() {
+            return None;
+        }
         let file_size = 14 + dib.len();
         let mut bmp = Vec::with_capacity(file_size);
         bmp.extend_from_slice(b"BM");
@@ -546,7 +755,9 @@ mod windows_impl {
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> windows::Win32::Foundation::LRESULT {
-        unsafe { windows::Win32::UI::WindowsAndMessaging::DefWindowProcW(window, message, wparam, lparam) }
+        unsafe {
+            windows::Win32::UI::WindowsAndMessaging::DefWindowProcW(window, message, wparam, lparam)
+        }
     }
 
     fn wide(value: &str) -> Vec<u16> {

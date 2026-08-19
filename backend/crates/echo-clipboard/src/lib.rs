@@ -135,8 +135,8 @@ impl ClipboardService {
             ignored_sequence: AtomicU64::new(0),
             last_error: Mutex::new(None),
         });
-        let startup_sequence = (post_subscribe_sequence != baseline_sequence)
-            .then_some(post_subscribe_sequence);
+        let startup_sequence =
+            (post_subscribe_sequence != baseline_sequence).then_some(post_subscribe_sequence);
         let worker_shared = Arc::clone(&shared);
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
@@ -159,7 +159,9 @@ impl ClipboardService {
     pub fn copy_representations(&self, representations: &[ClipboardRepresentation]) -> Result<u64> {
         let _gate = lock(&self.shared.write_capture)?;
         let sequence = self.shared.platform.write_clipboard(representations)?;
-        self.shared.ignored_sequence.store(sequence, Ordering::Release);
+        self.shared
+            .ignored_sequence
+            .store(sequence, Ordering::Release);
         self.shared.last_sequence.store(sequence, Ordering::Release);
         Ok(sequence)
     }
@@ -326,13 +328,25 @@ fn normalize(snapshot: ClipboardSnapshot, settings: &CaptureSettings) -> Result<
             _ => {}
         }
     }
-    let content_type = if snapshot.representations.iter().any(|item| item.format == "image") {
+    let content_type = if snapshot
+        .representations
+        .iter()
+        .any(|item| item.format == "image")
+    {
         ContentType::Image
-    } else if snapshot.representations.iter().any(|item| item.format == "files") {
+    } else if snapshot
+        .representations
+        .iter()
+        .any(|item| item.format == "files")
+    {
         ContentType::Files
     } else if sanitized_html.is_some() {
         ContentType::Html
-    } else if snapshot.representations.iter().any(|item| item.format == "rtf") {
+    } else if snapshot
+        .representations
+        .iter()
+        .any(|item| item.format == "rtf")
+    {
         ContentType::Rtf
     } else {
         ContentType::Text
@@ -357,7 +371,7 @@ fn extract_html_fragment(html: &str) -> String {
     if let (Some(start), Some(end)) = (
         html.find("<!--StartFragment-->")
             .map(|offset| offset + "<!--StartFragment-->".len()),
-        html.find("<!--EndFragment-->") ,
+        html.find("<!--EndFragment-->"),
     ) {
         if start < end {
             return html[start..end].to_owned();
@@ -408,12 +422,39 @@ fn extract_html_fragment(html: &str) -> String {
 
 fn sanitize_html(html: &str) -> String {
     Builder::default()
-        .tags([
-            "p", "br", "b", "strong", "i", "em", "u", "s", "code", "pre",
-            "blockquote", "ul", "ol", "li", "table", "thead", "tbody", "tr", "th",
-            "td", "span", "div", "h1", "h2", "h3", "h4", "h5", "h6",
-        ]
-        .into())
+        .tags(
+            [
+                "p",
+                "br",
+                "b",
+                "strong",
+                "i",
+                "em",
+                "u",
+                "s",
+                "code",
+                "pre",
+                "blockquote",
+                "ul",
+                "ol",
+                "li",
+                "table",
+                "thead",
+                "tbody",
+                "tr",
+                "th",
+                "td",
+                "span",
+                "div",
+                "h1",
+                "h2",
+                "h3",
+                "h4",
+                "h5",
+                "h6",
+            ]
+            .into(),
+        )
         .clean(html)
         .to_string()
 }
@@ -544,9 +585,7 @@ mod tests {
             self.sequence.load(Ordering::Acquire)
         }
 
-        fn read_clipboard(
-            &self,
-        ) -> std::result::Result<Option<ClipboardSnapshot>, PlatformError> {
+        fn read_clipboard(&self) -> std::result::Result<Option<ClipboardSnapshot>, PlatformError> {
             Ok(self
                 .snapshots
                 .lock()
@@ -566,9 +605,7 @@ mod tests {
             Ok(sequence)
         }
 
-        fn capture_target(
-            &self,
-        ) -> std::result::Result<Option<PasteTarget>, PlatformError> {
+        fn capture_target(&self) -> std::result::Result<Option<PasteTarget>, PlatformError> {
             Ok(Some(PasteTarget {
                 window_id: 1,
                 window_class: "Edit".to_owned(),
@@ -579,8 +616,18 @@ mod tests {
                 selected_text: None,
                 is_single_line: Some(true),
                 geometry: InputTargetGeometry {
-                    target: PhysicalRect { x: 0, y: 0, width: 1, height: 1 },
-                    work_area: PhysicalRect { x: 0, y: 0, width: 1, height: 1 },
+                    target: PhysicalRect {
+                        x: 0,
+                        y: 0,
+                        width: 1,
+                        height: 1,
+                    },
+                    work_area: PhysicalRect {
+                        x: 0,
+                        y: 0,
+                        width: 1,
+                        height: 1,
+                    },
                     dpi: 96,
                 },
             }))
@@ -693,12 +740,18 @@ mod tests {
             mime_type: "text/html".to_owned(),
             bytes: b"<b>a</b>".to_vec(),
         };
-        assert_ne!(fingerprint(&[text.clone(), html.clone()]), fingerprint(&[html, text.clone()]));
-        assert_ne!(fingerprint(&[text]), fingerprint(&[ClipboardRepresentation {
-            format: "text".to_owned(),
-            mime_type: "text/plain".to_owned(),
-            bytes: b"b".to_vec(),
-        }]));
+        assert_ne!(
+            fingerprint(&[text.clone(), html.clone()]),
+            fingerprint(&[html, text.clone()])
+        );
+        assert_ne!(
+            fingerprint(&[text]),
+            fingerprint(&[ClipboardRepresentation {
+                format: "text".to_owned(),
+                mime_type: "text/plain".to_owned(),
+                bytes: b"b".to_vec(),
+            }])
+        );
     }
 
     #[test]
@@ -716,8 +769,18 @@ mod tests {
             selected_text: None,
             is_single_line: Some(true),
             geometry: InputTargetGeometry {
-                target: PhysicalRect { x: 0, y: 0, width: 1, height: 1 },
-                work_area: PhysicalRect { x: 0, y: 0, width: 1, height: 1 },
+                target: PhysicalRect {
+                    x: 0,
+                    y: 0,
+                    width: 1,
+                    height: 1,
+                },
+                work_area: PhysicalRect {
+                    x: 0,
+                    y: 0,
+                    width: 1,
+                    height: 1,
+                },
                 dpi: 96,
             },
         };

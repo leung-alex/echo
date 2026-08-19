@@ -33,7 +33,7 @@ pub enum StorageError {
 
 pub type Result<T> = std::result::Result<T, StorageError>;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ClipboardSettings {
     pub history_enabled: bool,
     pub record_sensitive: bool,
@@ -122,7 +122,7 @@ pub struct StoredSavedInsertItem {
     pub representations: Vec<StoredRepresentation>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Snippet {
     pub id: i64,
     pub name: String,
@@ -313,9 +313,18 @@ impl ClipboardStore {
                         history_enabled: row.get::<_, i64>(0)? != 0,
                         record_sensitive: row.get::<_, i64>(1)? != 0,
                         store_window_titles: row.get::<_, i64>(2)? != 0,
-                        max_entries: row.get::<_, i64>(3)?.try_into().unwrap_or(DEFAULT_MAX_ENTRIES),
-                        max_total_bytes: row.get::<_, i64>(4)?.try_into().unwrap_or(DEFAULT_MAX_TOTAL_BYTES),
-                        max_item_bytes: row.get::<_, i64>(5)?.try_into().unwrap_or(DEFAULT_MAX_ITEM_BYTES),
+                        max_entries: row
+                            .get::<_, i64>(3)?
+                            .try_into()
+                            .unwrap_or(DEFAULT_MAX_ENTRIES),
+                        max_total_bytes: row
+                            .get::<_, i64>(4)?
+                            .try_into()
+                            .unwrap_or(DEFAULT_MAX_TOTAL_BYTES),
+                        max_item_bytes: row
+                            .get::<_, i64>(5)?
+                            .try_into()
+                            .unwrap_or(DEFAULT_MAX_ITEM_BYTES),
                     })
                 },
             )
@@ -387,7 +396,12 @@ impl ClipboardStore {
                     id,
                 ],
             )?;
-            Self::refresh_fts_tx(&tx, id, capture.searchable_text.as_deref(), capture.source.app_name.as_deref())?;
+            Self::refresh_fts_tx(
+                &tx,
+                id,
+                capture.searchable_text.as_deref(),
+                capture.source.app_name.as_deref(),
+            )?;
             (id, true)
         } else {
             tx.execute(
@@ -414,7 +428,12 @@ impl ClipboardStore {
             for representation in prepared {
                 Self::insert_prepared_representation_tx(&tx, id, &representation)?;
             }
-            Self::refresh_fts_tx(&tx, id, capture.searchable_text.as_deref(), capture.source.app_name.as_deref())?;
+            Self::refresh_fts_tx(
+                &tx,
+                id,
+                capture.searchable_text.as_deref(),
+                capture.source.app_name.as_deref(),
+            )?;
             (id, false)
         };
         Self::enforce_capacity_tx(&tx, &settings)?;
@@ -514,10 +533,17 @@ impl ClipboardStore {
         searchable_text: Option<&str>,
         source_app: Option<&str>,
     ) -> Result<()> {
-        tx.execute("DELETE FROM clipboard_fts WHERE entry_id = ?", [id.to_string()])?;
+        tx.execute(
+            "DELETE FROM clipboard_fts WHERE entry_id = ?",
+            [id.to_string()],
+        )?;
         tx.execute(
             "INSERT INTO clipboard_fts (entry_id, searchable_text, source_app) VALUES (?, ?, ?)",
-            params![id.to_string(), searchable_text.unwrap_or_default(), source_app.unwrap_or_default()],
+            params![
+                id.to_string(),
+                searchable_text.unwrap_or_default(),
+                source_app.unwrap_or_default()
+            ],
         )?;
         Ok(())
     }
@@ -542,7 +568,10 @@ impl ClipboardStore {
                 )
                 .optional()?;
             let Some(oldest) = oldest else { break };
-            tx.execute("DELETE FROM clipboard_fts WHERE entry_id = ?", [oldest.to_string()])?;
+            tx.execute(
+                "DELETE FROM clipboard_fts WHERE entry_id = ?",
+                [oldest.to_string()],
+            )?;
             tx.execute("DELETE FROM clipboard_entries WHERE id = ?", [oldest])?;
         }
         Ok(())
@@ -559,7 +588,9 @@ impl ClipboardStore {
                  FROM clipboard_entries ORDER BY pinned DESC, updated_at DESC, id DESC LIMIT ?",
             )?;
             let rows = statement.query_map([limit], map_entry)?;
-            for row in rows { entries.push(row?); }
+            for row in rows {
+                entries.push(row?);
+            }
         } else {
             let pattern = format!("%{}%", query.trim());
             let mut statement = self.connection.prepare(
@@ -572,7 +603,9 @@ impl ClipboardStore {
                  ORDER BY e.pinned DESC, e.updated_at DESC, e.id DESC LIMIT ?",
             )?;
             let rows = statement.query_map(params![pattern, pattern, limit], map_entry)?;
-            for row in rows { entries.push(row?); }
+            for row in rows {
+                entries.push(row?);
+            }
         }
         Ok(entries)
     }
@@ -630,7 +663,9 @@ impl ClipboardStore {
             }
             bytes
         } else {
-            return Err(StorageError::Invalid("representation has no data".to_owned()));
+            return Err(StorageError::Invalid(
+                "representation has no data".to_owned(),
+            ));
         };
         Ok(ClipboardRepresentation {
             format: representation.format.clone(),
@@ -640,12 +675,15 @@ impl ClipboardStore {
     }
 
     pub fn set_pinned(&mut self, entry_id: i64, pinned: bool) -> Result<bool> {
-        let entry = self
-            .entry(entry_id)?
-            .ok_or_else(|| StorageError::Invalid(format!("clipboard entry {entry_id} does not exist")))?;
+        let entry = self.entry(entry_id)?.ok_or_else(|| {
+            StorageError::Invalid(format!("clipboard entry {entry_id} does not exist"))
+        })?;
         let tx = self.connection.transaction()?;
         if pinned {
-            tx.execute("DELETE FROM saved_insert_items WHERE source_entry_id = ?", [entry_id])?;
+            tx.execute(
+                "DELETE FROM saved_insert_items WHERE source_entry_id = ?",
+                [entry_id],
+            )?;
             tx.execute(
                 "INSERT INTO saved_insert_items
                  (source_entry_id, created_at, updated_at, source_app, source_executable,
@@ -683,7 +721,10 @@ impl ClipboardStore {
                 )?;
             }
         } else {
-            tx.execute("DELETE FROM saved_insert_items WHERE source_entry_id = ?", [entry_id])?;
+            tx.execute(
+                "DELETE FROM saved_insert_items WHERE source_entry_id = ?",
+                [entry_id],
+            )?;
         }
         tx.execute(
             "UPDATE clipboard_entries SET pinned = ? WHERE id = ?",
@@ -705,22 +746,25 @@ impl ClipboardStore {
              WHERE ? = '' OR preview_text LIKE ? OR searchable_text LIKE ? OR source_app LIKE ?
              ORDER BY updated_at DESC, id DESC LIMIT ?",
         )?;
-        let rows = statement.query_map(params![query.trim(), pattern, pattern, pattern, limit], |row| {
-            Ok(SavedInsertItem {
-                id: row.get(0)?,
-                source_entry_id: row.get(1)?,
-                created_at: row.get(2)?,
-                updated_at: row.get(3)?,
-                source_app: row.get(4)?,
-                source_executable: row.get(5)?,
-                source_window_title: row.get(6)?,
-                content_type: row.get(7)?,
-                preview_text: row.get(8)?,
-                searchable_text: row.get(9)?,
-                sanitized_html: row.get(10)?,
-                byte_size: row.get::<_, i64>(11)?.try_into().unwrap_or(0),
-            })
-        })?;
+        let rows = statement.query_map(
+            params![query.trim(), pattern, pattern, pattern, limit],
+            |row| {
+                Ok(SavedInsertItem {
+                    id: row.get(0)?,
+                    source_entry_id: row.get(1)?,
+                    created_at: row.get(2)?,
+                    updated_at: row.get(3)?,
+                    source_app: row.get(4)?,
+                    source_executable: row.get(5)?,
+                    source_window_title: row.get(6)?,
+                    content_type: row.get(7)?,
+                    preview_text: row.get(8)?,
+                    searchable_text: row.get(9)?,
+                    sanitized_html: row.get(10)?,
+                    byte_size: row.get::<_, i64>(11)?.try_into().unwrap_or(0),
+                })
+            },
+        )?;
         rows.map(|row| row.map_err(StorageError::from)).collect()
     }
 
@@ -767,8 +811,13 @@ impl ClipboardStore {
                 byte_size: row.get::<_, i64>(6)?.try_into().unwrap_or(0),
             })
         })?;
-        let representations = rows.map(|row| row.map_err(StorageError::from)).collect::<Result<Vec<_>>>()?;
-        Ok(Some(StoredSavedInsertItem { item, representations }))
+        let representations = rows
+            .map(|row| row.map_err(StorageError::from))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Some(StoredSavedInsertItem {
+            item,
+            representations,
+        }))
     }
 
     pub fn saved_item_payload(&self, id: i64) -> Result<Vec<ClipboardRepresentation>> {
@@ -784,9 +833,15 @@ impl ClipboardStore {
 
     pub fn delete_entry(&mut self, id: i64) -> Result<bool> {
         let tx = self.connection.transaction()?;
-        tx.execute("UPDATE saved_insert_items SET source_entry_id = NULL WHERE source_entry_id = ?", [id])?;
+        tx.execute(
+            "UPDATE saved_insert_items SET source_entry_id = NULL WHERE source_entry_id = ?",
+            [id],
+        )?;
         let deleted = tx.execute("DELETE FROM clipboard_entries WHERE id = ?", [id])? > 0;
-        tx.execute("DELETE FROM clipboard_fts WHERE entry_id = ?", [id.to_string()])?;
+        tx.execute(
+            "DELETE FROM clipboard_fts WHERE entry_id = ?",
+            [id.to_string()],
+        )?;
         tx.commit()?;
         self.reconcile_blob_store()?;
         Ok(deleted)
@@ -795,11 +850,18 @@ impl ClipboardStore {
     pub fn delete_saved_insert_item(&mut self, id: i64) -> Result<bool> {
         let tx = self.connection.transaction()?;
         let source_id: Option<i64> = tx
-            .query_row("SELECT source_entry_id FROM saved_insert_items WHERE id = ?", [id], |row| row.get(0))
+            .query_row(
+                "SELECT source_entry_id FROM saved_insert_items WHERE id = ?",
+                [id],
+                |row| row.get(0),
+            )
             .optional()?;
         let deleted = tx.execute("DELETE FROM saved_insert_items WHERE id = ?", [id])? > 0;
         if let Some(source_id) = source_id {
-            tx.execute("UPDATE clipboard_entries SET pinned = 0 WHERE id = ?", [source_id])?;
+            tx.execute(
+                "UPDATE clipboard_entries SET pinned = 0 WHERE id = ?",
+                [source_id],
+            )?;
         }
         tx.commit()?;
         self.reconcile_blob_store()?;
@@ -808,7 +870,8 @@ impl ClipboardStore {
 
     pub fn clear_history(&mut self) -> Result<()> {
         self.connection.execute("DELETE FROM clipboard_fts WHERE entry_id IN (SELECT CAST(entry_id AS INTEGER) FROM clipboard_fts)", [])?;
-        self.connection.execute("DELETE FROM clipboard_entries WHERE pinned = 0", [])?;
+        self.connection
+            .execute("DELETE FROM clipboard_entries WHERE pinned = 0", [])?;
         self.reconcile_blob_store()?;
         Ok(())
     }
@@ -820,16 +883,17 @@ impl ClipboardStore {
              FROM snippets WHERE ? = '' OR name LIKE ? OR content LIKE ? OR group_name LIKE ?
              ORDER BY updated_at DESC, id DESC",
         )?;
-        let rows = statement.query_map(params![query.trim(), pattern, pattern, pattern], |row| {
-            Ok(Snippet {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                content: row.get(2)?,
-                group_name: row.get(3)?,
-                created_at: row.get(4)?,
-                updated_at: row.get(5)?,
-            })
-        })?;
+        let rows =
+            statement.query_map(params![query.trim(), pattern, pattern, pattern], |row| {
+                Ok(Snippet {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    content: row.get(2)?,
+                    group_name: row.get(3)?,
+                    created_at: row.get(4)?,
+                    updated_at: row.get(5)?,
+                })
+            })?;
         rows.map(|row| row.map_err(StorageError::from)).collect()
     }
 
@@ -841,7 +905,9 @@ impl ClipboardStore {
         group_name: Option<&str>,
     ) -> Result<i64> {
         if name.trim().is_empty() {
-            return Err(StorageError::Invalid("snippet name cannot be empty".to_owned()));
+            return Err(StorageError::Invalid(
+                "snippet name cannot be empty".to_owned(),
+            ));
         }
         let now = now_millis();
         if let Some(id) = id {
@@ -850,7 +916,9 @@ impl ClipboardStore {
                 params![name, content, group_name, now, id],
             )?;
             if updated == 0 {
-                return Err(StorageError::Invalid(format!("snippet {id} does not exist")));
+                return Err(StorageError::Invalid(format!(
+                    "snippet {id} does not exist"
+                )));
             }
             Ok(id)
         } else {
@@ -863,7 +931,10 @@ impl ClipboardStore {
     }
 
     pub fn delete_snippet(&mut self, id: i64) -> Result<bool> {
-        Ok(self.connection.execute("DELETE FROM snippets WHERE id = ?", [id])? > 0)
+        Ok(self
+            .connection
+            .execute("DELETE FROM snippets WHERE id = ?", [id])?
+            > 0)
     }
 
     pub fn reconcile_blob_store(&mut self) -> Result<()> {
@@ -874,7 +945,9 @@ impl ClipboardStore {
                  UNION SELECT blob_hash FROM saved_insert_representations WHERE blob_hash IS NOT NULL",
             )?;
             let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-            for row in rows { referenced.insert(row?); }
+            for row in rows {
+                referenced.insert(row?);
+            }
         }
         for hash in &referenced {
             validate_hash(hash)?;
@@ -887,12 +960,15 @@ impl ClipboardStore {
                 return Err(StorageError::MissingBlob(hash.clone()));
             }
         }
-        let mut statement = self.connection.prepare("SELECT hash FROM clipboard_blobs")?;
+        let mut statement = self
+            .connection
+            .prepare("SELECT hash FROM clipboard_blobs")?;
         let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
         let database_hashes = rows.collect::<std::result::Result<Vec<_>, _>>()?;
         for hash in database_hashes {
             if !referenced.contains(&hash) {
-                self.connection.execute("DELETE FROM clipboard_blobs WHERE hash = ?", [&hash])?;
+                self.connection
+                    .execute("DELETE FROM clipboard_blobs WHERE hash = ?", [&hash])?;
             }
         }
         if self.blobs_dir.exists() {
@@ -901,7 +977,9 @@ impl ClipboardStore {
                 let path = item.path();
                 let name = item.file_name().to_string_lossy().to_string();
                 if name.starts_with('.') || name.ends_with(".tmp") || !referenced.contains(&name) {
-                    if path.is_file() { let _ = fs::remove_file(path); }
+                    if path.is_file() {
+                        let _ = fs::remove_file(path);
+                    }
                 }
             }
         }
@@ -912,12 +990,19 @@ impl ClipboardStore {
         let legacy_dir = legacy_dir.as_ref();
         let legacy_db = legacy_dir.join("culsans.sqlite3");
         if !legacy_db.is_file() {
-            return Err(StorageError::Migration(format!("legacy database is missing: {}", legacy_db.display())));
+            return Err(StorageError::Migration(format!(
+                "legacy database is missing: {}",
+                legacy_db.display()
+            )));
         }
         let marker_key = legacy_dir.canonicalize()?.to_string_lossy().to_string();
         if self
             .connection
-            .query_row("SELECT value FROM migration_state WHERE key = ?", [&marker_key], |row| row.get::<_, String>(0))
+            .query_row(
+                "SELECT value FROM migration_state WHERE key = ?",
+                [&marker_key],
+                |row| row.get::<_, String>(0),
+            )
             .optional()?
             .is_some()
         {
@@ -932,9 +1017,17 @@ impl ClipboardStore {
             });
         }
         let lock_path = legacy_dir.join(".echo-migration.lock");
-        let _lock = OpenOptions::new().write(true).create_new(true).open(&lock_path)
-            .map_err(|error| StorageError::Migration(format!("cannot acquire legacy migration lock: {error}")))?;
-        let backup_dir = self.data_dir.join("migration-backups").join(Uuid::new_v4().to_string());
+        let _lock = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+            .map_err(|error| {
+                StorageError::Migration(format!("cannot acquire legacy migration lock: {error}"))
+            })?;
+        let backup_dir = self
+            .data_dir
+            .join("migration-backups")
+            .join(Uuid::new_v4().to_string());
         let result = self.migrate_legacy_locked(legacy_dir, &legacy_db, &backup_dir, &marker_key);
         let _ = fs::remove_file(lock_path);
         result
@@ -952,17 +1045,23 @@ impl ClipboardStore {
         fs::copy(legacy_db, backup_dir.join("culsans.sqlite3"))?;
         for suffix in ["-wal", "-shm"] {
             let source = legacy_dir.join(format!("culsans.sqlite3{suffix}"));
-            if source.exists() { fs::copy(&source, backup_dir.join(format!("culsans.sqlite3{suffix}")))?; }
+            if source.exists() {
+                fs::copy(&source, backup_dir.join(format!("culsans.sqlite3{suffix}")))?;
+            }
         }
         let legacy_blobs = legacy_dir.join("blobs");
         if legacy_blobs.exists() {
             for item in fs::read_dir(&legacy_blobs)? {
                 let item = item?;
-                if item.path().is_file() { fs::copy(item.path(), backup_dir.join("blobs").join(item.file_name()))?; }
+                if item.path().is_file() {
+                    fs::copy(item.path(), backup_dir.join("blobs").join(item.file_name()))?;
+                }
             }
         }
         if file_fingerprint(legacy_db)? != before {
-            return Err(StorageError::Migration("legacy database changed while snapshotting".to_owned()));
+            return Err(StorageError::Migration(
+                "legacy database changed while snapshotting".to_owned(),
+            ));
         }
         let snapshot_db = backup_dir.join("culsans.sqlite3");
         let source = Connection::open_with_flags(&snapshot_db, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
@@ -970,13 +1069,17 @@ impl ClipboardStore {
         let representations_count = count_table_connection(&source, "clipboard_representations")?;
         let snippets_count = count_table_connection(&source, "snippets")?;
         let has_saved = table_exists_connection(&source, "saved_insert_items")?;
-        let saved_count = if has_saved { count_table_connection(&source, "saved_insert_items")? } else { 0 };
+        let saved_count = if has_saved {
+            count_table_connection(&source, "saved_insert_items")?
+        } else {
+            0
+        };
         let source_blobs = backup_dir.join("blobs");
         let tx = self.connection.transaction()?;
-        if count_table_tx(&tx, "clipboard_entries")? != 0
-            || count_table_tx(&tx, "snippets")? != 0
-        {
-            return Err(StorageError::Migration("destination already contains Echo data".to_owned()));
+        if count_table_tx(&tx, "clipboard_entries")? != 0 || count_table_tx(&tx, "snippets")? != 0 {
+            return Err(StorageError::Migration(
+                "destination already contains Echo data".to_owned(),
+            ));
         }
         copy_settings(&source, &tx)?;
         copy_legacy_entries(&source, &source_blobs, &tx, &self.blobs_dir)?;
@@ -994,10 +1097,14 @@ impl ClipboardStore {
             )));
         }
         if has_saved && favorites != saved_count {
-            return Err(StorageError::Migration(format!("legacy favorites changed during migration: {favorites}/{saved_count}")));
+            return Err(StorageError::Migration(format!(
+                "legacy favorites changed during migration: {favorites}/{saved_count}"
+            )));
         }
         if snippets != snippets_count {
-            return Err(StorageError::Migration(format!("legacy snippets changed during migration: {snippets}/{snippets_count}")));
+            return Err(StorageError::Migration(format!(
+                "legacy snippets changed during migration: {snippets}/{snippets_count}"
+            )));
         }
         tx.commit()?;
         self.rebuild_fts()?;
@@ -1020,9 +1127,15 @@ impl ClipboardStore {
 
     fn rebuild_fts(&mut self) -> Result<()> {
         self.connection.execute("DELETE FROM clipboard_fts", [])?;
-        let mut statement = self.connection.prepare("SELECT id, searchable_text, source_app FROM clipboard_entries")?;
+        let mut statement = self
+            .connection
+            .prepare("SELECT id, searchable_text, source_app FROM clipboard_entries")?;
         let rows = statement.query_map([], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, Option<String>>(2)?))
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
         })?;
         let entries = rows.collect::<std::result::Result<Vec<_>, _>>()?;
         for (id, searchable, source) in entries {
@@ -1035,9 +1148,12 @@ impl ClipboardStore {
     }
 
     fn count_table(&self, table: &str) -> Result<usize> {
-        Ok(self.connection.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get::<_, i64>(0))? as usize)
+        Ok(self
+            .connection
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get::<_, i64>(0)
+            })? as usize)
     }
-
 }
 
 #[derive(Clone)]
@@ -1053,11 +1169,19 @@ impl SharedClipboardStore {
     }
 
     pub fn from_store(store: ClipboardStore) -> Self {
-        Self { inner: Arc::new(Mutex::new(store)) }
+        Self {
+            inner: Arc::new(Mutex::new(store)),
+        }
     }
 
-    pub fn with_store<T>(&self, operation: impl FnOnce(&mut ClipboardStore) -> Result<T>) -> Result<T> {
-        let mut store = self.inner.lock().map_err(|_| StorageError::Invalid("storage lock poisoned".to_owned()))?;
+    pub fn with_store<T>(
+        &self,
+        operation: impl FnOnce(&mut ClipboardStore) -> Result<T>,
+    ) -> Result<T> {
+        let mut store = self
+            .inner
+            .lock()
+            .map_err(|_| StorageError::Invalid("storage lock poisoned".to_owned()))?;
         operation(&mut store)
     }
 
@@ -1070,41 +1194,68 @@ impl SharedClipboardStore {
     }
 
     pub fn list_entries(&self, query: &str, limit: u32) -> Result<Vec<ClipboardEntry>> {
-        let store = self.inner.lock().map_err(|_| StorageError::Invalid("storage lock poisoned".to_owned()))?;
+        let store = self
+            .inner
+            .lock()
+            .map_err(|_| StorageError::Invalid("storage lock poisoned".to_owned()))?;
         store.list_entries(query, limit)
     }
 
     pub fn entry(&self, id: i64) -> Result<Option<StoredClipboardEntry>> {
-        let store = self.inner.lock().map_err(|_| StorageError::Invalid("storage lock poisoned".to_owned()))?;
+        let store = self
+            .inner
+            .lock()
+            .map_err(|_| StorageError::Invalid("storage lock poisoned".to_owned()))?;
         store.entry(id)
     }
 
     pub fn entry_payload(&self, id: i64) -> Result<Vec<ClipboardRepresentation>> {
-        let store = self.inner.lock().map_err(|_| StorageError::Invalid("storage lock poisoned".to_owned()))?;
+        let store = self
+            .inner
+            .lock()
+            .map_err(|_| StorageError::Invalid("storage lock poisoned".to_owned()))?;
         store.entry_payload(id)
     }
 
     pub fn list_saved_items(&self, query: &str, limit: u32) -> Result<Vec<SavedInsertItem>> {
-        let store = self.inner.lock().map_err(|_| StorageError::Invalid("storage lock poisoned".to_owned()))?;
+        let store = self
+            .inner
+            .lock()
+            .map_err(|_| StorageError::Invalid("storage lock poisoned".to_owned()))?;
         store.list_saved_items(query, limit)
     }
 
     pub fn saved_insert_item(&self, id: i64) -> Result<Option<StoredSavedInsertItem>> {
-        let store = self.inner.lock().map_err(|_| StorageError::Invalid("storage lock poisoned".to_owned()))?;
+        let store = self
+            .inner
+            .lock()
+            .map_err(|_| StorageError::Invalid("storage lock poisoned".to_owned()))?;
         store.saved_insert_item(id)
     }
 
     pub fn saved_item_payload(&self, id: i64) -> Result<Vec<ClipboardRepresentation>> {
-        let store = self.inner.lock().map_err(|_| StorageError::Invalid("storage lock poisoned".to_owned()))?;
+        let store = self
+            .inner
+            .lock()
+            .map_err(|_| StorageError::Invalid("storage lock poisoned".to_owned()))?;
         store.saved_item_payload(id)
     }
 
     pub fn snippets(&self, query: &str) -> Result<Vec<Snippet>> {
-        let store = self.inner.lock().map_err(|_| StorageError::Invalid("storage lock poisoned".to_owned()))?;
+        let store = self
+            .inner
+            .lock()
+            .map_err(|_| StorageError::Invalid("storage lock poisoned".to_owned()))?;
         store.snippets(query)
     }
 
-    pub fn save_snippet(&self, id: Option<i64>, name: &str, content: &str, group_name: Option<&str>) -> Result<i64> {
+    pub fn save_snippet(
+        &self,
+        id: Option<i64>,
+        name: &str,
+        content: &str,
+        group_name: Option<&str>,
+    ) -> Result<i64> {
         self.with_store(|store| store.save_snippet(id, name, content, group_name))
     }
 
@@ -1150,7 +1301,8 @@ impl ClipboardSink for SharedClipboardStore {
     }
 
     fn reconcile(&self) -> std::result::Result<(), String> {
-        self.reconcile_blob_store().map_err(|error| error.to_string())
+        self.reconcile_blob_store()
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -1203,7 +1355,9 @@ fn hash_file(path: &Path) -> Result<String> {
     let mut buffer = [0_u8; 64 * 1024];
     loop {
         let read = file.read(&mut buffer)?;
-        if read == 0 { break; }
+        if read == 0 {
+            break;
+        }
         hasher.update(&buffer[..read]);
     }
     Ok(format!("{:x}", hasher.finalize()))
@@ -1211,7 +1365,12 @@ fn hash_file(path: &Path) -> Result<String> {
 
 fn file_fingerprint(path: &Path) -> Result<(u64, u128)> {
     let metadata = fs::metadata(path)?;
-    let modified = metadata.modified().ok().and_then(|value| value.duration_since(UNIX_EPOCH).ok()).map(|value| value.as_nanos()).unwrap_or(0);
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+        .map(|value| value.as_nanos())
+        .unwrap_or(0);
     Ok((metadata.len(), modified))
 }
 
@@ -1231,29 +1390,57 @@ fn table_exists_connection(connection: &Connection, table: &str) -> Result<bool>
 }
 
 fn count_table_connection(connection: &Connection, table: &str) -> Result<usize> {
-    if !table_exists_connection(connection, table)? { return Ok(0); }
-    Ok(connection.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get::<_, i64>(0))? as usize)
+    if !table_exists_connection(connection, table)? {
+        return Ok(0);
+    }
+    Ok(
+        connection.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+            row.get::<_, i64>(0)
+        })? as usize,
+    )
 }
 
 fn count_table_tx(tx: &Transaction<'_>, table: &str) -> Result<usize> {
-    Ok(tx.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get::<_, i64>(0))? as usize)
+    Ok(
+        tx.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+            row.get::<_, i64>(0)
+        })? as usize,
+    )
 }
 
 fn has_column(connection: &Connection, table: &str, column: &str) -> Result<bool> {
     let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
     let rows = statement.query_map([], |row| row.get::<_, String>(1))?;
-    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?.iter().any(|name| name == column))
+    Ok(rows
+        .collect::<std::result::Result<Vec<_>, _>>()?
+        .iter()
+        .any(|name| name == column))
 }
 
 fn copy_settings(source: &Connection, tx: &Transaction<'_>) -> Result<()> {
-    if !table_exists_connection(source, "clipboard_settings")? { return Ok(()); }
-    let record_sensitive = if has_column(source, "clipboard_settings", "record_sensitive")? { "record_sensitive" } else { "0" };
+    if !table_exists_connection(source, "clipboard_settings")? {
+        return Ok(());
+    }
+    let record_sensitive = if has_column(source, "clipboard_settings", "record_sensitive")? {
+        "record_sensitive"
+    } else {
+        "0"
+    };
     let sql = format!(
         "SELECT history_enabled, {record_sensitive}, store_window_titles, max_entries, max_total_bytes, max_item_bytes FROM clipboard_settings WHERE id = 1"
     );
-    let row: Option<(i64, i64, i64, i64, i64, i64)> = source.query_row(&sql, [], |row| {
-        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?))
-    }).optional()?;
+    let row: Option<(i64, i64, i64, i64, i64, i64)> = source
+        .query_row(&sql, [], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+            ))
+        })
+        .optional()?;
     if let Some((history, sensitive, titles, max_entries, max_total, max_item)) = row {
         tx.execute(
             "UPDATE clipboard_settings SET history_enabled = ?, record_sensitive = ?, store_window_titles = ?, max_entries = ?, max_total_bytes = ?, max_item_bytes = ? WHERE id = 1",
@@ -1269,7 +1456,9 @@ fn copy_legacy_entries(
     tx: &Transaction<'_>,
     destination_blobs: &Path,
 ) -> Result<()> {
-    if !table_exists_connection(source, "clipboard_entries")? { return Ok(()); }
+    if !table_exists_connection(source, "clipboard_entries")? {
+        return Ok(());
+    }
     let mut statement = source.prepare(
         "SELECT id, created_at, updated_at, source_app, source_executable, source_window_title,
                 content_type, preview_text, searchable_text, sanitized_html, fingerprint, pinned, byte_size
@@ -1277,41 +1466,81 @@ fn copy_legacy_entries(
     )?;
     let entries = statement.query_map([], |row| {
         Ok((
-            row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?,
-            row.get::<_, Option<String>>(3)?, row.get::<_, Option<String>>(4)?, row.get::<_, Option<String>>(5)?,
-            row.get::<_, String>(6)?, row.get::<_, Option<String>>(7)?, row.get::<_, Option<String>>(8)?,
-            row.get::<_, Option<String>>(9)?, row.get::<_, String>(10)?, row.get::<_, i64>(11)?, row.get::<_, i64>(12)?,
+            row.get::<_, i64>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, Option<String>>(3)?,
+            row.get::<_, Option<String>>(4)?,
+            row.get::<_, Option<String>>(5)?,
+            row.get::<_, String>(6)?,
+            row.get::<_, Option<String>>(7)?,
+            row.get::<_, Option<String>>(8)?,
+            row.get::<_, Option<String>>(9)?,
+            row.get::<_, String>(10)?,
+            row.get::<_, i64>(11)?,
+            row.get::<_, i64>(12)?,
         ))
     })?;
     let entries = entries.collect::<std::result::Result<Vec<_>, _>>()?;
-    for (id, created, updated, app, executable, title, content_type, preview, searchable, html, fingerprint, pinned, byte_size) in entries {
+    for (
+        id,
+        created,
+        updated,
+        app,
+        executable,
+        title,
+        content_type,
+        preview,
+        searchable,
+        html,
+        fingerprint,
+        pinned,
+        byte_size,
+    ) in entries
+    {
         tx.execute(
             "INSERT INTO clipboard_entries (id, created_at, updated_at, source_app, source_executable, source_window_title, content_type, preview_text, searchable_text, sanitized_html, fingerprint, pinned, byte_size) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![id, created, updated, app, executable, title, content_type, preview, searchable, html, fingerprint, pinned, byte_size],
         )?;
     }
-    if !table_exists_connection(source, "clipboard_representations")? { return Ok(()) }
+    if !table_exists_connection(source, "clipboard_representations")? {
+        return Ok(());
+    }
     let mut statement = source.prepare(
         "SELECT id, entry_id, format, mime_type, inline_data, blob_hash, byte_size FROM clipboard_representations ORDER BY id",
     )?;
     let representations = statement.query_map([], |row| {
         Ok((
-            row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?,
-            row.get::<_, Option<Vec<u8>>>(4)?, row.get::<_, Option<String>>(5)?, row.get::<_, i64>(6)?,
+            row.get::<_, i64>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, Option<Vec<u8>>>(4)?,
+            row.get::<_, Option<String>>(5)?,
+            row.get::<_, i64>(6)?,
         ))
     })?;
-    for (id, entry_id, format, mime, inline_data, blob_hash, byte_size) in representations.collect::<std::result::Result<Vec<_>, _>>()? {
+    for (id, entry_id, format, mime, inline_data, blob_hash, byte_size) in
+        representations.collect::<std::result::Result<Vec<_>, _>>()?
+    {
         let data = if let Some(bytes) = inline_data {
             (Some(bytes), None)
         } else if let Some(hash) = blob_hash {
             validate_hash(&hash)?;
-            let bytes = fs::read(source_blobs.join(&hash)).map_err(|_| StorageError::MissingBlob(hash.clone()))?;
-            if hash_bytes(&bytes) != hash { return Err(StorageError::MissingBlob(hash)); }
+            let bytes = fs::read(source_blobs.join(&hash))
+                .map_err(|_| StorageError::MissingBlob(hash.clone()))?;
+            if hash_bytes(&bytes) != hash {
+                return Err(StorageError::MissingBlob(hash));
+            }
             let destination = destination_blobs.join(&hash);
-            if !destination.exists() { fs::copy(source_blobs.join(&hash), destination)?; }
+            if !destination.exists() {
+                fs::copy(source_blobs.join(&hash), destination)?;
+            }
             (None, Some(hash))
         } else {
-            return Err(StorageError::Migration(format!("representation {id} has no inline or blob data")));
+            return Err(StorageError::Migration(format!(
+                "representation {id} has no inline or blob data"
+            )));
         };
         tx.execute(
             "INSERT INTO clipboard_representations (id, entry_id, format, mime_type, inline_data, blob_hash, byte_size) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -1337,14 +1566,36 @@ fn copy_legacy_saved_items(
     )?;
     let items = statement.query_map([], |row| {
         Ok((
-            row.get::<_, i64>(0)?, row.get::<_, Option<i64>>(1)?, row.get::<_, i64>(2)?, row.get::<_, i64>(3)?,
-            row.get::<_, Option<String>>(4)?, row.get::<_, Option<String>>(5)?, row.get::<_, Option<String>>(6)?,
-            row.get::<_, String>(7)?, row.get::<_, Option<String>>(8)?, row.get::<_, Option<String>>(9)?,
-            row.get::<_, Option<String>>(10)?, row.get::<_, i64>(11)?,
+            row.get::<_, i64>(0)?,
+            row.get::<_, Option<i64>>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, Option<String>>(4)?,
+            row.get::<_, Option<String>>(5)?,
+            row.get::<_, Option<String>>(6)?,
+            row.get::<_, String>(7)?,
+            row.get::<_, Option<String>>(8)?,
+            row.get::<_, Option<String>>(9)?,
+            row.get::<_, Option<String>>(10)?,
+            row.get::<_, i64>(11)?,
         ))
     })?;
     let items = items.collect::<std::result::Result<Vec<_>, _>>()?;
-    for (id, source_id, created, updated, app, executable, title, content_type, preview, searchable, html, byte_size) in &items {
+    for (
+        id,
+        source_id,
+        created,
+        updated,
+        app,
+        executable,
+        title,
+        content_type,
+        preview,
+        searchable,
+        html,
+        byte_size,
+    ) in &items
+    {
         tx.execute(
             "INSERT INTO saved_insert_items (id, source_entry_id, created_at, updated_at, source_app, source_executable, source_window_title, content_type, preview_text, searchable_text, sanitized_html, byte_size) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![id, source_id, created, updated, app, executable, title, content_type, preview, searchable, html, byte_size],
@@ -1355,19 +1606,37 @@ fn copy_legacy_saved_items(
     )?;
     let representations = statement.query_map([], |row| {
         Ok((
-            row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?,
-            row.get::<_, Option<Vec<u8>>>(4)?, row.get::<_, Option<String>>(5)?, row.get::<_, i64>(6)?,
+            row.get::<_, i64>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, Option<Vec<u8>>>(4)?,
+            row.get::<_, Option<String>>(5)?,
+            row.get::<_, i64>(6)?,
         ))
     })?;
-    for (id, saved_id, format, mime, inline_data, blob_hash, byte_size) in representations.collect::<std::result::Result<Vec<_>, _>>()? {
-        let (inline, blob) = if let Some(bytes) = inline_data { (Some(bytes), None) } else if let Some(hash) = blob_hash {
+    for (id, saved_id, format, mime, inline_data, blob_hash, byte_size) in
+        representations.collect::<std::result::Result<Vec<_>, _>>()?
+    {
+        let (inline, blob) = if let Some(bytes) = inline_data {
+            (Some(bytes), None)
+        } else if let Some(hash) = blob_hash {
             validate_hash(&hash)?;
-            let bytes = fs::read(source_blobs.join(&hash)).map_err(|_| StorageError::MissingBlob(hash.clone()))?;
-            if hash_bytes(&bytes) != hash { return Err(StorageError::MissingBlob(hash)); }
+            let bytes = fs::read(source_blobs.join(&hash))
+                .map_err(|_| StorageError::MissingBlob(hash.clone()))?;
+            if hash_bytes(&bytes) != hash {
+                return Err(StorageError::MissingBlob(hash));
+            }
             let destination = destination_blobs.join(&hash);
-            if !destination.exists() { fs::copy(source_blobs.join(&hash), destination)?; }
+            if !destination.exists() {
+                fs::copy(source_blobs.join(&hash), destination)?;
+            }
             (None, Some(hash))
-        } else { return Err(StorageError::Migration(format!("saved representation {id} has no data"))); };
+        } else {
+            return Err(StorageError::Migration(format!(
+                "saved representation {id} has no data"
+            )));
+        };
         tx.execute(
             "INSERT INTO saved_insert_representations (id, saved_item_id, format, mime_type, inline_data, blob_hash, byte_size) VALUES (?, ?, ?, ?, ?, ?, ?)",
             params![id, saved_id, format, mime, inline, blob, byte_size],
@@ -1382,15 +1651,50 @@ fn copy_legacy_saved_items(
 fn synthesize_pinned_items(tx: &Transaction<'_>) -> Result<usize> {
     let mut statement = tx.prepare("SELECT id, created_at, updated_at, source_app, source_executable, source_window_title, content_type, preview_text, searchable_text, sanitized_html, byte_size FROM clipboard_entries WHERE pinned = 1 ORDER BY id")?;
     let entries = statement.query_map([], |row| {
-        Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?, row.get::<_, Option<String>>(3)?, row.get::<_, Option<String>>(4)?, row.get::<_, Option<String>>(5)?, row.get::<_, String>(6)?, row.get::<_, Option<String>>(7)?, row.get::<_, Option<String>>(8)?, row.get::<_, Option<String>>(9)?, row.get::<_, i64>(10)?))
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, Option<String>>(3)?,
+            row.get::<_, Option<String>>(4)?,
+            row.get::<_, Option<String>>(5)?,
+            row.get::<_, String>(6)?,
+            row.get::<_, Option<String>>(7)?,
+            row.get::<_, Option<String>>(8)?,
+            row.get::<_, Option<String>>(9)?,
+            row.get::<_, i64>(10)?,
+        ))
     })?;
     let entries = entries.collect::<std::result::Result<Vec<_>, _>>()?;
-    for (entry_id, created, updated, app, executable, title, content_type, preview, searchable, html, byte_size) in &entries {
+    for (
+        entry_id,
+        created,
+        updated,
+        app,
+        executable,
+        title,
+        content_type,
+        preview,
+        searchable,
+        html,
+        byte_size,
+    ) in &entries
+    {
         tx.execute("INSERT INTO saved_insert_items (source_entry_id, created_at, updated_at, source_app, source_executable, source_window_title, content_type, preview_text, searchable_text, sanitized_html, byte_size) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params![entry_id, created, updated, app, executable, title, content_type, preview, searchable, html, byte_size])?;
         let saved_id = tx.last_insert_rowid();
         let mut reps = tx.prepare("SELECT format, mime_type, inline_data, blob_hash, byte_size FROM clipboard_representations WHERE entry_id = ? ORDER BY id")?;
-        let rows = reps.query_map([entry_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<Vec<u8>>>(2)?, row.get::<_, Option<String>>(3)?, row.get::<_, i64>(4)?)))?;
-        for (format, mime, inline, blob, size) in rows.collect::<std::result::Result<Vec<_>, _>>()? {
+        let rows = reps.query_map([entry_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<Vec<u8>>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        })?;
+        for (format, mime, inline, blob, size) in
+            rows.collect::<std::result::Result<Vec<_>, _>>()?
+        {
             tx.execute("INSERT INTO saved_insert_representations (saved_item_id, format, mime_type, inline_data, blob_hash, byte_size) VALUES (?, ?, ?, ?, ?, ?)", params![saved_id, format, mime, inline, blob, size])?;
         }
     }
@@ -1398,9 +1702,22 @@ fn synthesize_pinned_items(tx: &Transaction<'_>) -> Result<usize> {
 }
 
 fn copy_legacy_snippets(source: &Connection, tx: &Transaction<'_>) -> Result<usize> {
-    if !table_exists_connection(source, "snippets")? { return Ok(0); }
-    let mut statement = source.prepare("SELECT id, name, content, group_name, created_at, updated_at FROM snippets ORDER BY id")?;
-    let rows = statement.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, Option<String>>(3)?, row.get::<_, i64>(4)?, row.get::<_, i64>(5)?)))?;
+    if !table_exists_connection(source, "snippets")? {
+        return Ok(0);
+    }
+    let mut statement = source.prepare(
+        "SELECT id, name, content, group_name, created_at, updated_at FROM snippets ORDER BY id",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, Option<String>>(3)?,
+            row.get::<_, i64>(4)?,
+            row.get::<_, i64>(5)?,
+        ))
+    })?;
     let rows = rows.collect::<std::result::Result<Vec<_>, _>>()?;
     for (id, name, content, group, created, updated) in &rows {
         tx.execute("INSERT INTO snippets (id, name, content, group_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)", params![id, name, content, group, created, updated])?;
@@ -1468,7 +1785,10 @@ mod tests {
     fn favorites_survive_history_clear_and_source_delete() {
         let root = TempDir::new().unwrap();
         let mut store = ClipboardStore::open(root.path()).unwrap();
-        let id = store.record_capture(text_capture("favorite", 1)).unwrap().id;
+        let id = store
+            .record_capture(text_capture("favorite", 1))
+            .unwrap()
+            .id;
         store.set_pinned(id, true).unwrap();
         store.clear_history().unwrap();
         assert!(store.entry(id).unwrap().is_some());
@@ -1483,8 +1803,12 @@ mod tests {
     fn snippets_support_create_update_search_and_delete() {
         let root = TempDir::new().unwrap();
         let mut store = ClipboardStore::open(root.path()).unwrap();
-        let id = store.save_snippet(None, "Greeting", "Hello world", Some("Common")).unwrap();
-        store.save_snippet(Some(id), "Greeting", "Updated", Some("Common")).unwrap();
+        let id = store
+            .save_snippet(None, "Greeting", "Hello world", Some("Common"))
+            .unwrap();
+        store
+            .save_snippet(Some(id), "Greeting", "Updated", Some("Common"))
+            .unwrap();
         assert_eq!(store.snippets("Updated").unwrap()[0].id, id);
         assert!(store.delete_snippet(id).unwrap());
         assert!(store.snippets("").unwrap().is_empty());

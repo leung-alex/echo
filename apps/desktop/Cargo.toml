@@ -1,0 +1,33 @@
+[package]
+name = "echo-desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+build = "build.rs"
+default-run = "echo-desktop"
+
+[lib]
+name = "echo_desktop_lib"
+path = "src/lib.rs"
+
+[[bin]]
+name = "echo-desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build.workspace = true
+
+[dependencies]
+echo-clipboard.workspace = true
+echo-library.workspace = true
+echo-platform.workspace = true
+echo-protocol.workspace = true
+echo-quick-insert.workspace = true
+echo-storage.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tauri.workspace = true
+tauri-plugin-single-instance.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+echo-platform-windows.workspace = true

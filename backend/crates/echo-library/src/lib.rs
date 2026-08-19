@@ -2,8 +2,7 @@ use std::sync::Arc;
 
 use echo_platform::ClipboardRepresentation;
 use echo_storage::{
-    ClipboardEntry, ClipboardSettings, SavedInsertItem, SharedClipboardStore,
-    Snippet, StorageError,
+    ClipboardEntry, ClipboardSettings, SavedInsertItem, SharedClipboardStore, Snippet, StorageError,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -87,10 +86,7 @@ impl Library {
 
     pub fn payload(&self, kind: LibraryItemKind, id: i64) -> Result<Vec<ClipboardRepresentation>> {
         match kind {
-            LibraryItemKind::History => self
-                .store
-                .entry_payload(id)
-                .map_err(LibraryError::from),
+            LibraryItemKind::History => self.store.entry_payload(id).map_err(LibraryError::from),
             LibraryItemKind::Favorite => self
                 .store
                 .saved_item_payload(id)
@@ -101,7 +97,10 @@ impl Library {
                     .snippets("")?
                     .into_iter()
                     .find(|snippet| snippet.id == id)
-                    .ok_or(LibraryError::ItemNotFound { kind: "snippet", id })?;
+                    .ok_or(LibraryError::ItemNotFound {
+                        kind: "snippet",
+                        id,
+                    })?;
                 Ok(vec![ClipboardRepresentation {
                     format: "text".to_owned(),
                     mime_type: "text/plain;charset=utf-8".to_owned(),
@@ -236,12 +235,35 @@ mod tests {
     fn history_favorites_and_snippets_are_library_views() {
         let (_root, library) = library();
         let id = record(&library, "history value");
-        assert_eq!(library.list(LibraryView::History, "value", 20).unwrap().len(), 1);
+        assert_eq!(
+            library
+                .list(LibraryView::History, "value", 20)
+                .unwrap()
+                .len(),
+            1
+        );
         library.set_favorite(id, true).unwrap();
-        assert_eq!(library.list(LibraryView::Favorites, "value", 20).unwrap().len(), 1);
-        let snippet_id = library.save_snippet(None, "Snippet", "snippet value", Some("Group")).unwrap();
-        assert_eq!(library.list(LibraryView::Snippets, "value", 20).unwrap()[0].id, snippet_id);
-        assert_eq!(library.payload(LibraryItemKind::Snippet, snippet_id).unwrap()[0].bytes, b"snippet value");
+        assert_eq!(
+            library
+                .list(LibraryView::Favorites, "value", 20)
+                .unwrap()
+                .len(),
+            1
+        );
+        let snippet_id = library
+            .save_snippet(None, "Snippet", "snippet value", Some("Group"))
+            .unwrap();
+        assert_eq!(
+            library.list(LibraryView::Snippets, "value", 20).unwrap()[0].id,
+            snippet_id
+        );
+        assert_eq!(
+            library
+                .payload(LibraryItemKind::Snippet, snippet_id)
+                .unwrap()[0]
+                .bytes,
+            b"snippet value"
+        );
     }
 
     #[test]
@@ -250,7 +272,19 @@ mod tests {
         let id = record(&library, "persisted favorite");
         library.set_favorite(id, true).unwrap();
         library.delete(LibraryItemKind::History, id).unwrap();
-        assert_eq!(library.list(LibraryView::Favorites, "", 20).unwrap().len(), 1);
-        assert_eq!(library.payload(LibraryItemKind::Favorite, library.list(LibraryView::Favorites, "", 20).unwrap()[0].id).unwrap()[0].bytes, b"persisted favorite");
+        assert_eq!(
+            library.list(LibraryView::Favorites, "", 20).unwrap().len(),
+            1
+        );
+        assert_eq!(
+            library
+                .payload(
+                    LibraryItemKind::Favorite,
+                    library.list(LibraryView::Favorites, "", 20).unwrap()[0].id
+                )
+                .unwrap()[0]
+                .bytes,
+            b"persisted favorite"
+        );
     }
 }

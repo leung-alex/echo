@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use echo_clipboard::{ClipboardService, ClipboardError};
+use echo_clipboard::{ClipboardError, ClipboardService};
 use echo_library::{Library, LibraryError, LibraryItem, LibraryItemKind, LibraryView};
 use echo_platform::{ClipboardPlatform, PasteDelivery, PasteDeliveryFailure, PasteTarget};
 use serde::{Deserialize, Serialize};
@@ -177,7 +177,9 @@ impl QuickInsertService {
     pub fn set_favorite(&self, source: QuickInsertSource, id: i64, pinned: bool) -> Result<bool> {
         match source {
             QuickInsertSource::History => Ok(self.library.set_favorite(id, pinned)?),
-            QuickInsertSource::Favorite if !pinned => Ok(self.library.delete(LibraryItemKind::Favorite, id)?),
+            QuickInsertSource::Favorite if !pinned => {
+                Ok(self.library.delete(LibraryItemKind::Favorite, id)?)
+            }
             QuickInsertSource::Favorite => Ok(true),
             QuickInsertSource::Snippet => Ok(false),
         }
@@ -225,9 +227,8 @@ mod tests {
     use super::*;
     use echo_clipboard::{fingerprint, ContentType, MemorySink, NormalizedCapture};
     use echo_platform::{
-        ClipboardRepresentation, ClipboardSnapshot, InputTargetGeometry,
-        PasteControlIdentity, PhysicalRect, PlatformChangePublisher, PlatformError,
-        SourceContext,
+        ClipboardRepresentation, ClipboardSnapshot, InputTargetGeometry, PasteControlIdentity,
+        PhysicalRect, PlatformChangePublisher, PlatformError, SourceContext,
     };
     use std::collections::VecDeque;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -294,13 +295,26 @@ mod tests {
             window_class: "Edit".to_owned(),
             process_id: 20,
             process_started_at: 30,
-            focused_control: Some(PasteControlIdentity::NativeWindow { handle: 11, class_name: "Edit".to_owned() }),
+            focused_control: Some(PasteControlIdentity::NativeWindow {
+                handle: 11,
+                class_name: "Edit".to_owned(),
+            }),
             app_name: Some("Test".to_owned()),
             selected_text: None,
             is_single_line: Some(true),
             geometry: InputTargetGeometry {
-                target: PhysicalRect { x: 0, y: 0, width: 1, height: 1 },
-                work_area: PhysicalRect { x: 0, y: 0, width: 1, height: 1 },
+                target: PhysicalRect {
+                    x: 0,
+                    y: 0,
+                    width: 1,
+                    height: 1,
+                },
+                work_area: PhysicalRect {
+                    x: 0,
+                    y: 0,
+                    width: 1,
+                    height: 1,
+                },
                 dpi: 96,
             },
         }
@@ -313,23 +327,36 @@ mod tests {
         let sink = Arc::new(MemorySink::default());
         let platform = Arc::new(TestPlatform::new());
         let clipboard = Arc::new(ClipboardService::new(platform.clone(), sink));
-        (root, QuickInsertService::new(library, clipboard, platform.clone()), platform)
+        (
+            root,
+            QuickInsertService::new(library, clipboard, platform.clone()),
+            platform,
+        )
     }
 
     fn record(service: &QuickInsertService, text: &str) -> i64 {
         let representation = ClipboardRepresentation {
-            format: "text".to_owned(), mime_type: "text/plain".to_owned(), bytes: text.as_bytes().to_vec(),
+            format: "text".to_owned(),
+            mime_type: "text/plain".to_owned(),
+            bytes: text.as_bytes().to_vec(),
         };
-        service.library().store().with_store(|store| store.record_capture(NormalizedCapture {
-            sequence: 1,
-            source: SourceContext::default(),
-            content_type: ContentType::Text,
-            preview_text: Some(text.to_owned()),
-            searchable_text: Some(text.to_owned()),
-            sanitized_html: None,
-            fingerprint: fingerprint(std::slice::from_ref(&representation)),
-            representations: vec![representation],
-        })).unwrap().id
+        service
+            .library()
+            .store()
+            .with_store(|store| {
+                store.record_capture(NormalizedCapture {
+                    sequence: 1,
+                    source: SourceContext::default(),
+                    content_type: ContentType::Text,
+                    preview_text: Some(text.to_owned()),
+                    searchable_text: Some(text.to_owned()),
+                    sanitized_html: None,
+                    fingerprint: fingerprint(std::slice::from_ref(&representation)),
+                    representations: vec![representation],
+                })
+            })
+            .unwrap()
+            .id
     }
 
     #[test]
@@ -337,13 +364,45 @@ mod tests {
         let (_root, service, platform) = setup();
         let id = record(&service, "history");
         service.library().set_favorite(id, true).unwrap();
-        let favorite = service.list(&QuickInsertRequest { view: QuickInsertView::Favorites, query: String::new(), limit: 20 }).unwrap()[0].id;
-        let snippet = service.save_snippet(None, "Snippet", "snippet", None).unwrap();
+        let favorite = service
+            .list(&QuickInsertRequest {
+                view: QuickInsertView::Favorites,
+                query: String::new(),
+                limit: 20,
+            })
+            .unwrap()[0]
+            .id;
+        let snippet = service
+            .save_snippet(None, "Snippet", "snippet", None)
+            .unwrap();
         service.begin_session().unwrap();
-        assert_eq!(service.execute(QuickInsertSource::History, id, QuickInsertAction::Copy).unwrap(), QuickInsertOutcome::Copied);
-        assert_eq!(service.execute(QuickInsertSource::Favorite, favorite, QuickInsertAction::Insert).unwrap(), QuickInsertOutcome::Inserted);
+        assert_eq!(
+            service
+                .execute(QuickInsertSource::History, id, QuickInsertAction::Copy)
+                .unwrap(),
+            QuickInsertOutcome::Copied
+        );
+        assert_eq!(
+            service
+                .execute(
+                    QuickInsertSource::Favorite,
+                    favorite,
+                    QuickInsertAction::Insert
+                )
+                .unwrap(),
+            QuickInsertOutcome::Inserted
+        );
         service.begin_session().unwrap();
-        assert_eq!(service.execute(QuickInsertSource::Snippet, snippet, QuickInsertAction::Insert).unwrap(), QuickInsertOutcome::Inserted);
+        assert_eq!(
+            service
+                .execute(
+                    QuickInsertSource::Snippet,
+                    snippet,
+                    QuickInsertAction::Insert
+                )
+                .unwrap(),
+            QuickInsertOutcome::Inserted
+        );
         assert_eq!(platform.writes.lock().unwrap().len(), 3);
     }
 
@@ -353,11 +412,20 @@ mod tests {
         let id = record(&service, "value");
         *platform.target.lock().unwrap() = None;
         service.begin_session().unwrap();
-        assert!(matches!(service.execute(QuickInsertSource::History, id, QuickInsertAction::Insert), Err(QuickInsertError::NoTarget)));
+        assert!(matches!(
+            service.execute(QuickInsertSource::History, id, QuickInsertAction::Insert),
+            Err(QuickInsertError::NoTarget)
+        ));
         *platform.target.lock().unwrap() = Some(target());
-        *platform.paste_result.lock().unwrap() = PasteDelivery::Failed(PasteDeliveryFailure::InputUnavailable);
+        *platform.paste_result.lock().unwrap() =
+            PasteDelivery::Failed(PasteDeliveryFailure::InputUnavailable);
         service.begin_session().unwrap();
-        assert!(matches!(service.execute(QuickInsertSource::History, id, QuickInsertAction::Insert), Err(QuickInsertError::DeliveryFailed(PasteDeliveryFailure::InputUnavailable))));
+        assert!(matches!(
+            service.execute(QuickInsertSource::History, id, QuickInsertAction::Insert),
+            Err(QuickInsertError::DeliveryFailed(
+                PasteDeliveryFailure::InputUnavailable
+            ))
+        ));
         assert_eq!(platform.writes.lock().unwrap().len(), 1);
     }
 
@@ -365,7 +433,13 @@ mod tests {
     fn list_caps_the_view_limit_and_keeps_sources_explicit() {
         let (_root, service, _platform) = setup();
         record(&service, "one");
-        let items = service.list(&QuickInsertRequest { view: QuickInsertView::History, query: String::new(), limit: 10_000 }).unwrap();
+        let items = service
+            .list(&QuickInsertRequest {
+                view: QuickInsertView::History,
+                query: String::new(),
+                limit: 10_000,
+            })
+            .unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].source, QuickInsertSource::History);
     }
