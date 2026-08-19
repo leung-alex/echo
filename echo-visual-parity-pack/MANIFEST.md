@@ -1,0 +1,13 @@
+# Manifest
+
+- `ECHO_VISUAL_PARITY_MASTER_PLAN.md`
+- `README.md`
+- `docs/01_VISUAL_AUDIT.md`
+- `docs/02_VISUAL_REMEDIATION_PLAN.md`
+- `docs/03_VISUAL_ACCEPTANCE.md`
+- `handoff/TEMPLATE.md`
+- `prompts/EXECUTE_ECHO_VISUAL_PARITY.md`
+- `tickets/E08_1_RESTORE_REACT_PRESENTATION.md`
+- `tickets/E08_2_ECHO_UI_TOKENS_AND_CSS.md`
+- `tickets/E08_3_SETTINGS_PARITY.md`
+- `tickets/E08_4_REMOVE_TEMP_UI_AND_PROVE.md`
