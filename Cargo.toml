@@ -1,0 +1,32 @@
+[workspace]
+members = [
+    "backend/crates/echo-platform",
+    "backend/crates/echo-platform-windows",
+    "backend/crates/echo-clipboard",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+
+[workspace.dependencies]
+ammonia = "4.1.4"
+base64 = "0.22.1"
+echo-clipboard = { path = "backend/crates/echo-clipboard" }
+echo-platform = { path = "backend/crates/echo-platform" }
+echo-platform-windows = { path = "backend/crates/echo-platform-windows" }
+sha2 = "0.10.9"
+thiserror = "2"
+windows = { version = "0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+    "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }

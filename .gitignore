@@ -1,0 +1,5 @@
+/target/
+/frontend/app/node_modules/
+/frontend/app/dist/
+/apps/desktop/target/
+.DS_Store
