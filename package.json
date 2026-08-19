@@ -1,0 +1,16 @@
+{
+  "name": "echo-repository",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@11.21.0",
+  "scripts": {
+    "test:ui": "playwright test --config tests/ui/playwright.config.ts",
+    "format": "prettier --write \"frontend/**/*.{ts,css,json,html}\" \"tests/**/*.ts\" \"playwright*.ts\" package.json pnpm-workspace.yaml",
+    "format:check": "prettier --check \"frontend/**/*.{ts,css,json,html}\" \"tests/**/*.ts\" \"playwright*.ts\" package.json pnpm-workspace.yaml"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.60.0",
+    "@tauri-apps/cli": "2.11.4",
+    "prettier": "3.6.2"
+  }
+}

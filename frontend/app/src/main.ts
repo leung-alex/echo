@@ -34,17 +34,24 @@ let status = "Ready";
 let settings: Settings | null = null;
 
 function escapeHtml(value: string): string {
-  return value.replace(/[&<>'"]/g, (character) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    "'": "&#39;",
-    '"': "&quot;",
-  })[character] ?? character);
+  return value.replace(
+    /[&<>'"]/g,
+    (character) =>
+      ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        "'": "&#39;",
+        '"': "&quot;",
+      })[character] ?? character,
+  );
 }
 
 function formatTime(milliseconds: number): string {
-  return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(milliseconds);
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(milliseconds);
 }
 
 function setStatus(message: string): void {
@@ -55,7 +62,11 @@ function setStatus(message: string): void {
 
 async function loadItems(): Promise<void> {
   try {
-    items = await invoke<Item[]>("quick_insert_list", { view: currentView, query, limit: 200 });
+    items = await invoke<Item[]>("quick_insert_list", {
+      view: currentView,
+      query,
+      limit: 200,
+    });
     render();
   } catch (error) {
     items = [];
@@ -73,11 +84,25 @@ async function beginQuickInsert(): Promise<void> {
   }
 }
 
-async function runAction(source: Source, id: number, action: "copy" | "insert"): Promise<void> {
+async function runAction(
+  source: Source,
+  id: number,
+  action: "copy" | "insert",
+): Promise<void> {
   try {
-    const raw = await invoke<string>("quick_insert_execute", { source, id, action });
+    const raw = await invoke<string>("quick_insert_execute", {
+      source,
+      id,
+      action,
+    });
     const outcome = JSON.parse(raw) as string;
-    setStatus(outcome === "inserted" ? "Inserted" : outcome === "copied" ? "Copied" : "Clipboard staged");
+    setStatus(
+      outcome === "inserted"
+        ? "Inserted"
+        : outcome === "copied"
+          ? "Copied"
+          : "Clipboard staged",
+    );
     if (outcome === "inserted") window.close();
   } catch (error) {
     setStatus(String(error));
@@ -86,7 +111,11 @@ async function runAction(source: Source, id: number, action: "copy" | "insert"):
 
 async function toggleFavorite(item: Item): Promise<void> {
   try {
-    await invoke("quick_insert_set_favorite", { source: item.source, id: item.id, pinned: !item.pinned });
+    await invoke("quick_insert_set_favorite", {
+      source: item.source,
+      id: item.id,
+      pinned: !item.pinned,
+    });
     await loadItems();
     setStatus(item.pinned ? "Removed from Favorites" : "Added to Favorites");
   } catch (error) {
@@ -150,8 +179,12 @@ function renderEmpty(message: string): string {
 }
 
 function renderItem(item: Item): string {
-  const preview = escapeHtml(item.preview_text || item.title || "Empty content");
-  const source = item.source_app ? escapeHtml(item.source_app) : item.content_type;
+  const preview = escapeHtml(
+    item.preview_text || item.title || "Empty content",
+  );
+  const source = item.source_app
+    ? escapeHtml(item.source_app)
+    : item.content_type;
   const isSnippet = item.source === "snippet";
   return `<article class="item" data-id="${item.id}" data-source="${item.source}">
     <div class="item-main"><div class="item-meta"><span class="type">${escapeHtml(item.content_type)}</span><span>${source}</span><time>${formatTime(item.updated_at)}</time></div><div class="preview">${preview}</div>${item.group_name ? `<div class="group">${escapeHtml(item.group_name)}</div>` : ""}</div>
@@ -173,16 +206,47 @@ function renderSettings(): void {
       <label class="number-setting"><span>Maximum item bytes</span><input type="number" min="1" data-setting="max_item_bytes" value="${settings.max_item_bytes}"></label>
       <div class="setting-actions"><button class="primary" data-command="save-settings">Save settings</button><button class="danger" data-command="clear-history">Clear history</button></div>
     </div>`;
-  content.querySelectorAll<HTMLInputElement>("[data-setting]").forEach((input) => {
-    input.addEventListener("change", () => {
-      const key = input.dataset.setting as keyof Settings;
-      if (key === "history_enabled" || key === "record_sensitive" || key === "store_window_titles") {
-        settings![key] = input.checked;
-      } else if (key === "max_entries" || key === "max_total_bytes" || key === "max_item_bytes") {
-        settings![key] = Number(input.value);
+  content
+    .querySelectorAll<HTMLInputElement>("[data-setting]")
+    .forEach((input) => {
+      input.addEventListener("change", () => {
+        const key = input.dataset.setting as keyof Settings;
+        if (
+          key === "history_enabled" ||
+          key === "record_sensitive" ||
+          key === "store_window_titles"
+        ) {
+          settings![key] = input.checked;
+        } else if (
+          key === "max_entries" ||
+          key === "max_total_bytes" ||
+          key === "max_item_bytes"
+        ) {
+          settings![key] = Number(input.value);
+        }
+      });
+    });
+  content
+    .querySelector<HTMLButtonElement>('[data-command="save-settings"]')
+    ?.addEventListener("click", () => {
+      void saveSettings();
+    });
+  content
+    .querySelector<HTMLButtonElement>('[data-command="clear-history"]')
+    ?.addEventListener("click", async () => {
+      try {
+        await invoke("history_clear");
+        await loadItems();
+        setStatus("History cleared");
+      } catch (error) {
+        setStatus(String(error));
       }
     });
-  });
+  content
+    .querySelector<HTMLButtonElement>('[data-command="back"]')
+    ?.addEventListener("click", () => {
+      void loadItems();
+    });
 }
 
 function renderSnippetForm(): void {
@@ -193,7 +257,12 @@ function renderSnippetForm(): void {
     event.preventDefault();
     const form = new FormData(event.currentTarget as HTMLFormElement);
     try {
-      await invoke("snippet_save", { name: form.get("name"), content: form.get("content"), groupName: form.get("group_name") || null, id: null });
+      await invoke("snippet_save", {
+        name: form.get("name"),
+        content: form.get("content"),
+        groupName: form.get("group_name") || null,
+        id: null,
+      });
       currentView = "snippets";
       await loadItems();
       setStatus("Snippet saved");
@@ -201,39 +270,64 @@ function renderSnippetForm(): void {
       setStatus(String(error));
     }
   });
+  content
+    .querySelector<HTMLButtonElement>('[data-command="back"]')
+    ?.addEventListener("click", () => {
+      void loadItems();
+    });
 }
 
 function bindEvents(): void {
-  document.querySelectorAll<HTMLButtonElement>("[data-view]").forEach((button) => button.addEventListener("click", async () => {
-    currentView = button.dataset.view as View;
-    query = "";
-    await loadItems();
-  }));
-  document.querySelector<HTMLInputElement>("[data-search]")?.addEventListener("input", async (event) => {
-    query = (event.currentTarget as HTMLInputElement).value;
-    await loadItems();
-  });
-  document.querySelectorAll<HTMLElement>("[data-action]").forEach((button) => button.addEventListener("click", async () => {
-    const itemElement = button.closest<HTMLElement>("[data-id]");
-    if (!itemElement) return;
-    const item = items.find((candidate) => candidate.id === Number(itemElement.dataset.id) && candidate.source === itemElement.dataset.source);
-    if (!item) return;
-    const action = button.dataset.action;
-    if (action === "favorite") await toggleFavorite(item);
-    else if (action === "delete") await deleteItem(item);
-    else await runAction(item.source, item.id, action as "copy" | "insert");
-  }));
-  document.querySelectorAll<HTMLButtonElement>("[data-command]").forEach((button) => button.addEventListener("click", async () => {
-    const command = button.dataset.command;
-    if (command === "settings") {
-      await loadSettings();
-      renderSettings();
-    } else if (command === "new-snippet") renderSnippetForm();
-    else if (command === "save-settings") await saveSettings();
-    else if (command === "clear-history") { await invoke("history_clear"); await loadItems(); setStatus("History cleared"); }
-    else if (command === "back") { await loadItems(); }
-    else if (command === "close") window.close();
-  }));
+  document
+    .querySelectorAll<HTMLButtonElement>("[data-view]")
+    .forEach((button) =>
+      button.addEventListener("click", async () => {
+        currentView = button.dataset.view as View;
+        query = "";
+        await loadItems();
+      }),
+    );
+  document
+    .querySelector<HTMLInputElement>("[data-search]")
+    ?.addEventListener("input", async (event) => {
+      query = (event.currentTarget as HTMLInputElement).value;
+      await loadItems();
+    });
+  document.querySelectorAll<HTMLElement>("[data-action]").forEach((button) =>
+    button.addEventListener("click", async () => {
+      const itemElement = button.closest<HTMLElement>("[data-id]");
+      if (!itemElement) return;
+      const item = items.find(
+        (candidate) =>
+          candidate.id === Number(itemElement.dataset.id) &&
+          candidate.source === itemElement.dataset.source,
+      );
+      if (!item) return;
+      const action = button.dataset.action;
+      if (action === "favorite") await toggleFavorite(item);
+      else if (action === "delete") await deleteItem(item);
+      else await runAction(item.source, item.id, action as "copy" | "insert");
+    }),
+  );
+  document
+    .querySelectorAll<HTMLButtonElement>("[data-command]")
+    .forEach((button) =>
+      button.addEventListener("click", async () => {
+        const command = button.dataset.command;
+        if (command === "settings") {
+          await loadSettings();
+          renderSettings();
+        } else if (command === "new-snippet") renderSnippetForm();
+        else if (command === "save-settings") await saveSettings();
+        else if (command === "clear-history") {
+          await invoke("history_clear");
+          await loadItems();
+          setStatus("History cleared");
+        } else if (command === "back") {
+          await loadItems();
+        } else if (command === "close") window.close();
+      }),
+    );
 }
 
 type ActivationPayload = { route: string; query?: string; request_id?: string };
@@ -254,7 +348,10 @@ async function applyActivation(payload: ActivationPayload): Promise<void> {
       await loadItems();
     }
   } finally {
-    if (payload.request_id) await invoke("activation_ack", { requestId: payload.request_id }).catch(() => undefined);
+    if (payload.request_id)
+      await invoke("activation_ack", { requestId: payload.request_id }).catch(
+        () => undefined,
+      );
   }
 }
 

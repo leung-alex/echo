@@ -4,4 +4,7 @@
 /frontend/app/dist/
 /apps/desktop/target/
 /apps/desktop/gen/
+/test-results/
+/.local/echo/
+/target/echo/
 .DS_Store

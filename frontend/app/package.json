@@ -6,7 +6,7 @@
   "scripts": {
     "build": "tsc --noEmit && vite build",
     "dev": "vite --host 127.0.0.1 --port 5174",
-    "test": "tsc --noEmit",
+    "test": "tsc --noEmit && pnpm --dir ../.. test:ui",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
