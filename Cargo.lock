@@ -152,6 +152,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "echo-quick-insert"
+version = "0.1.0"
+dependencies = [
+ "echo-clipboard",
+ "echo-library",
+ "echo-platform",
+ "echo-storage",
+ "serde",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "echo-storage"
 version = "0.1.0"
 dependencies = [

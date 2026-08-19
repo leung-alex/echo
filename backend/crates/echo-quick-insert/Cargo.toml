@@ -1,0 +1,19 @@
+[package]
+name = "echo-quick-insert"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+echo-clipboard.workspace = true
+echo-library.workspace = true
+echo-platform.workspace = true
+echo-storage.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
