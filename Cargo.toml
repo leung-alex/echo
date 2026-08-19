@@ -3,6 +3,7 @@ members = [
     "backend/crates/echo-platform",
     "backend/crates/echo-platform-windows",
     "backend/crates/echo-clipboard",
+    "backend/crates/echo-storage",
 ]
 resolver = "2"
 
@@ -17,6 +18,9 @@ base64 = "0.22.1"
 echo-clipboard = { path = "backend/crates/echo-clipboard" }
 echo-platform = { path = "backend/crates/echo-platform" }
 echo-platform-windows = { path = "backend/crates/echo-platform-windows" }
+rusqlite = { version = "0.40.1", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 sha2 = "0.10.9"
 thiserror = "2"
 windows = { version = "0.62.2", features = [
