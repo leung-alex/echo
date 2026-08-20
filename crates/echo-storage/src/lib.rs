@@ -1118,6 +1118,7 @@ impl ClipboardStore {
                 params![now_millis(), id],
             )?;
         } else {
+            tx.execute("DELETE FROM saved_items_fts WHERE saved_item_id = ?", [id])?;
             tx.execute("DELETE FROM saved_items WHERE id = ?", [id])?;
         }
         tx.commit()?;
