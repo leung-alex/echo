@@ -7,7 +7,9 @@ pub(crate) fn history_clear(state: State<'_, EchoState>) -> Result<(), String> {
     state
         .library
         .clear_history()
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    state.quick_insert.request_maintenance();
+    Ok(())
 }
 
 #[tauri::command]

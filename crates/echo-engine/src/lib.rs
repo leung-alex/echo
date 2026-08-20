@@ -17,8 +17,10 @@ pub use history::{
     HistoryEntry, Library, LibraryError, LibraryItem, LibraryItemKind, LibraryStore, LibraryView,
 };
 pub use ingest::{
-    fingerprint, CaptureOutcome, CaptureSettings, ClipboardError, ClipboardService, ClipboardSink,
-    ContentType, MemorySink, NormalizedCapture, RecordResult,
+    fingerprint, CaptureCommit, CaptureEvent, CaptureEventPublisher, CaptureEventSubscription,
+    CaptureOutcome, CapturePolicy, CaptureSettings, CapturedCapture, ClipboardError,
+    ClipboardService, ClipboardSink, ContentIdentity, ContentType, MemorySink, NormalizedCapture,
+    RecordResult, RepresentationIdentity, DEFAULT_CAPTURE_LIMIT_BYTES, INGESTION_QUEUE_CAPACITY,
 };
 pub use quick_insert::{
     QuickInsertAction, QuickInsertError, QuickInsertItem, QuickInsertOutcome, QuickInsertRequest,

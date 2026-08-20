@@ -6,8 +6,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use echo_engine::{
-    is_text_like, normalize_name, normalize_tags, CaptureSettings, ClipboardRepresentation,
-    ClipboardSink, LibraryStore, NormalizedCapture, RecordResult, SavedItemDraft, SavedItemUpdate,
+    is_text_like, normalize_name, normalize_tags, CapturePolicy, CaptureSettings, CapturedCapture,
+    ClipboardRepresentation, ClipboardSink, ContentIdentity, LibraryStore, NormalizedCapture,
+    RecordResult, RepresentationIdentity, SavedItemDraft, SavedItemUpdate,
 };
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, Row, Transaction};
 use sha2::{Digest, Sha256};
@@ -283,34 +284,54 @@ impl ClipboardStore {
     }
 
     pub fn record_capture(&mut self, capture: NormalizedCapture) -> Result<RecordResult> {
+        self.record_captured(CapturedCapture::from_capture(capture))
+    }
+
+    pub fn record_captured(&mut self, captured: CapturedCapture) -> Result<RecordResult> {
+        self.record_capture_with_identity(captured.capture, captured.identity)
+    }
+
+    pub fn record_capture_with_identity(
+        &mut self,
+        mut capture: NormalizedCapture,
+        identity: ContentIdentity,
+    ) -> Result<RecordResult> {
         let settings = self.settings()?;
-        let byte_size = capture
-            .representations
-            .iter()
-            .try_fold(0_u64, |total, representation| {
-                total.checked_add(representation.bytes.len() as u64)
-            })
-            .ok_or_else(|| StorageError::Invalid("clipboard byte size overflow".to_owned()))?;
+        if identity.representations.len() != capture.representations.len() {
+            return Err(StorageError::Invalid(
+                "content identity does not match clipboard representations".to_owned(),
+            ));
+        }
+        capture.fingerprint = identity.fingerprint.clone();
+        let byte_size = identity.total_byte_size;
         if byte_size > settings.max_item_bytes {
             return Err(StorageError::Invalid(format!(
                 "clipboard item exceeds max_item_bytes ({byte_size} > {})",
                 settings.max_item_bytes
             )));
         }
-        let prepared = capture
-            .representations
-            .iter()
-            .map(|representation| self.prepare_representation(representation))
-            .collect::<Result<Vec<_>>>()?;
         let now = now_millis();
-        let tx = self.connection.transaction()?;
-        let existing = tx
+        let existing = self
+            .connection
             .query_row(
                 "SELECT id FROM clipboard_entries WHERE fingerprint = ?",
                 [&capture.fingerprint],
                 |row| row.get::<_, i64>(0),
             )
             .optional()?;
+        let prepared = if existing.is_none() {
+            capture
+                .representations
+                .iter()
+                .zip(identity.representations.iter())
+                .map(|(representation, identity)| {
+                    self.prepare_representation(representation, Some(identity))
+                })
+                .collect::<Result<Vec<_>>>()?
+        } else {
+            Vec::new()
+        };
+        let tx = self.connection.transaction()?;
         let (id, duplicate) = if let Some(id) = existing {
             tx.execute(
                 "UPDATE clipboard_entries SET updated_at = ?, source_app = ?,
@@ -370,15 +391,18 @@ impl ClipboardStore {
             )?;
             (id, false)
         };
-        Self::enforce_capacity_tx(&tx, &settings)?;
+        let evicted = Self::enforce_capacity_tx(&tx, &settings)?;
         tx.commit()?;
-        self.schedule_blob_gc()?;
+        if evicted {
+            self.schedule_blob_gc()?;
+        }
         Ok(RecordResult { id, duplicate })
     }
 
     fn prepare_representation(
         &self,
         representation: &ClipboardRepresentation,
+        identity: Option<&RepresentationIdentity>,
     ) -> Result<PreparedRepresentation> {
         let byte_size = representation.bytes.len() as u64;
         if representation.bytes.len() <= INLINE_LIMIT {
@@ -390,7 +414,9 @@ impl ClipboardStore {
                 byte_size,
             });
         }
-        let hash = hash_bytes(&representation.bytes);
+        let hash = identity
+            .map(|identity| identity.hash.clone())
+            .unwrap_or_else(|| hash_bytes(&representation.bytes));
         self.write_blob(&hash, &representation.mime_type, &representation.bytes)?;
         Ok(PreparedRepresentation {
             format: representation.format.clone(),
@@ -405,10 +431,6 @@ impl ClipboardStore {
         validate_hash(hash)?;
         let path = self.blobs_dir.join(hash);
         if path.exists() {
-            let existing = fs::read(&path)?;
-            if hash_bytes(&existing) != hash {
-                return Err(StorageError::MissingBlob(hash.to_owned()));
-            }
             return Ok(());
         }
         let temporary = self
@@ -421,10 +443,6 @@ impl ClipboardStore {
         }
         if let Err(error) = fs::rename(&temporary, &path) {
             if path.exists() {
-                let existing = fs::read(&path)?;
-                if hash_bytes(&existing) != hash {
-                    return Err(StorageError::MissingBlob(hash.to_owned()));
-                }
                 let _ = fs::remove_file(&temporary);
             } else {
                 return Err(StorageError::Io(error));
@@ -513,7 +531,8 @@ impl ClipboardStore {
         Ok(())
     }
 
-    fn enforce_capacity_tx(tx: &Transaction<'_>, settings: &ClipboardSettings) -> Result<()> {
+    fn enforce_capacity_tx(tx: &Transaction<'_>, settings: &ClipboardSettings) -> Result<bool> {
+        let mut evicted = false;
         loop {
             let (count, total): (i64, i64) = tx.query_row(
                 "SELECT COUNT(*), COALESCE(SUM(byte_size), 0) FROM clipboard_entries",
@@ -538,8 +557,9 @@ impl ClipboardStore {
                 [oldest.to_string()],
             )?;
             tx.execute("DELETE FROM clipboard_entries WHERE id = ?", [oldest])?;
+            evicted = true;
         }
-        Ok(())
+        Ok(evicted)
     }
 
     pub fn list_entries(&self, query: &str, limit: u32) -> Result<Vec<ClipboardEntry>> {
@@ -656,7 +676,7 @@ impl ClipboardStore {
         let payload = draft.canonical_payload(&source_payload);
         let prepared = payload
             .iter()
-            .map(|representation| self.prepare_representation(representation))
+            .map(|representation| self.prepare_representation(representation, None))
             .collect::<Result<Vec<_>>>()?;
         let byte_size = payload
             .iter()
@@ -790,7 +810,7 @@ impl ClipboardStore {
         };
         let prepared = text_payload
             .as_ref()
-            .map(|representation| self.prepare_representation(representation))
+            .map(|representation| self.prepare_representation(representation, None))
             .transpose()?;
         let byte_size = text_payload
             .as_ref()
@@ -1434,6 +1454,20 @@ impl ClipboardSink for SharedClipboardStore {
             .map_err(|error| error.to_string())
     }
 
+    fn capture_policy(&self) -> std::result::Result<CapturePolicy, String> {
+        self.settings()
+            .map(|settings| CapturePolicy::from_max_item_bytes(settings.max_item_bytes))
+            .map_err(|error| error.to_string())
+    }
+
+    fn record_captured(
+        &self,
+        captured: CapturedCapture,
+    ) -> std::result::Result<RecordResult, String> {
+        self.with_store(|store| store.record_captured(captured))
+            .map_err(|error| error.to_string())
+    }
+
     fn reconcile(&self) -> std::result::Result<(), String> {
         self.reconcile_blob_store()
             .map_err(|error| error.to_string())
@@ -2000,6 +2034,46 @@ mod tests {
         fs::write(root.path().join("blobs").join("orphan"), b"orphan").unwrap();
         store.reconcile_blob_store().unwrap();
         assert!(!root.path().join("blobs").join("orphan").exists());
+    }
+
+    #[test]
+    fn duplicate_large_capture_skips_blob_preparation_and_reconcile_is_not_hot_path() {
+        let root = TempDir::new().unwrap();
+        let mut store = ClipboardStore::open(root.path()).unwrap();
+        let mut capture = text_capture("large duplicate", 1);
+        capture.representations[0].bytes = vec![9; INLINE_LIMIT + 7];
+        capture.fingerprint = fingerprint(&capture.representations);
+        let first = store.record_capture(capture.clone()).unwrap();
+        let blob_hash = store
+            .entry(first.id)
+            .unwrap()
+            .unwrap()
+            .representations
+            .into_iter()
+            .next()
+            .unwrap()
+            .blob_hash
+            .unwrap();
+        fs::write(
+            root.path().join("blobs").join(&blob_hash),
+            b"not the original",
+        )
+        .unwrap();
+
+        capture.sequence = 2;
+        let duplicate = store.record_capture(capture).unwrap();
+        assert!(duplicate.duplicate);
+        assert_eq!(duplicate.id, first.id);
+        let pending: Option<String> = store
+            .connection
+            .query_row(
+                "SELECT value FROM migration_state WHERE key = 'blob_gc_pending'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap();
+        assert!(pending.is_none());
     }
 
     #[test]

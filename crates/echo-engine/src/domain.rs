@@ -2,6 +2,8 @@ use std::sync::mpsc::{self, Receiver, RecvError, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::ingest::CapturePolicy;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlatformError(pub String);
 
@@ -193,7 +195,10 @@ pub enum PasteDelivery {
 pub trait ClipboardPlatform: Send + Sync {
     fn subscribe_changes(&self) -> PlatformChangeSubscription;
     fn clipboard_sequence(&self) -> u64;
-    fn read_clipboard(&self) -> Result<Option<ClipboardSnapshot>, PlatformError>;
+    fn read_clipboard(
+        &self,
+        policy: &CapturePolicy,
+    ) -> Result<Option<ClipboardSnapshot>, PlatformError>;
     fn write_clipboard(
         &self,
         representations: &[ClipboardRepresentation],

@@ -12,10 +12,10 @@ mod windows_impl {
     use std::time::Duration;
 
     use echo_engine::{
-        ClipboardPlatform, ClipboardRepresentation, ClipboardSnapshot, InputTargetGeometry,
-        PasteControlIdentity, PasteDelivery, PasteDeliveryFailure, PasteTarget, PhysicalRect,
-        PlatformChange, PlatformChangePublisher, PlatformChangeSubscription, PlatformError,
-        SourceContext,
+        CapturePolicy, ClipboardPlatform, ClipboardRepresentation, ClipboardSnapshot,
+        InputTargetGeometry, PasteControlIdentity, PasteDelivery, PasteDeliveryFailure,
+        PasteTarget, PhysicalRect, PlatformChange, PlatformChangePublisher,
+        PlatformChangeSubscription, PlatformError, SourceContext,
     };
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::{CloseHandle, HANDLE, HGLOBAL, HWND, LPARAM, RECT, WPARAM};
@@ -135,7 +135,10 @@ mod windows_impl {
             unsafe { u64::from(GetClipboardSequenceNumber()) }
         }
 
-        fn read_clipboard(&self) -> Result<Option<ClipboardSnapshot>, PlatformError> {
+        fn read_clipboard(
+            &self,
+            policy: &CapturePolicy,
+        ) -> Result<Option<ClipboardSnapshot>, PlatformError> {
             let _clipboard = ClipboardGuard::open()?;
             let sequence = self.clipboard_sequence();
             let source = self
@@ -144,58 +147,85 @@ mod windows_impl {
                 .unwrap_or_else(|error| error.into_inner())
                 .clone();
             let mut representations = Vec::new();
-            if format_available(13) {
-                let bytes = ClipboardGuard::read_global(13)?;
-                let text = utf16_clipboard_text(&bytes);
-                if !text.is_empty() {
-                    representations.push(ClipboardRepresentation {
-                        format: "text".to_owned(),
-                        mime_type: "text/plain;charset=utf-8".to_owned(),
-                        bytes: text.into_bytes(),
-                    });
+            let mut total_bytes = 0_u64;
+            if policy.supports_format("text") && format_available(13) {
+                if let Some(bytes) =
+                    ClipboardGuard::read_global_if_allowed(13, "text", policy, &mut total_bytes)?
+                {
+                    let text = utf16_clipboard_text(&bytes);
+                    if !text.is_empty() {
+                        representations.push(ClipboardRepresentation {
+                            format: "text".to_owned(),
+                            mime_type: "text/plain;charset=utf-8".to_owned(),
+                            bytes: text.into_bytes(),
+                        });
+                    }
                 }
             }
-            let html = register_format("HTML Format")?;
-            if format_available(html) {
-                let bytes = trim_trailing_nuls(ClipboardGuard::read_global(html)?);
-                if !bytes.is_empty() {
-                    representations.push(ClipboardRepresentation {
-                        format: "html".to_owned(),
-                        mime_type: "text/html".to_owned(),
-                        bytes,
-                    });
+            let html = policy
+                .supports_format("html")
+                .then(|| register_format("HTML Format"))
+                .transpose()?;
+            if let Some(html) = html.filter(|format| format_available(*format)) {
+                if let Some(bytes) =
+                    ClipboardGuard::read_global_if_allowed(html, "html", policy, &mut total_bytes)?
+                {
+                    let bytes = trim_trailing_nuls(bytes);
+                    if !bytes.is_empty() {
+                        representations.push(ClipboardRepresentation {
+                            format: "html".to_owned(),
+                            mime_type: "text/html".to_owned(),
+                            bytes,
+                        });
+                    }
                 }
             }
-            let rtf = register_format("Rich Text Format")?;
-            if format_available(rtf) {
-                let bytes = trim_trailing_nuls(ClipboardGuard::read_global(rtf)?);
-                if !bytes.is_empty() {
-                    representations.push(ClipboardRepresentation {
-                        format: "rtf".to_owned(),
-                        mime_type: "text/rtf".to_owned(),
-                        bytes,
-                    });
+            let rtf = policy
+                .supports_format("rtf")
+                .then(|| register_format("Rich Text Format"))
+                .transpose()?;
+            if let Some(rtf) = rtf.filter(|format| format_available(*format)) {
+                if let Some(bytes) =
+                    ClipboardGuard::read_global_if_allowed(rtf, "rtf", policy, &mut total_bytes)?
+                {
+                    let bytes = trim_trailing_nuls(bytes);
+                    if !bytes.is_empty() {
+                        representations.push(ClipboardRepresentation {
+                            format: "rtf".to_owned(),
+                            mime_type: "text/rtf".to_owned(),
+                            bytes,
+                        });
+                    }
                 }
             }
             let image_format = if format_available(17) { 17 } else { 8 };
-            if format_available(image_format) {
-                let dib = ClipboardGuard::read_global(image_format)?;
-                if let Some(bytes) = dib_to_bmp(&dib) {
-                    representations.push(ClipboardRepresentation {
-                        format: "image".to_owned(),
-                        mime_type: "image/bmp".to_owned(),
-                        bytes,
-                    });
+            if policy.supports_format("image") && format_available(image_format) {
+                if let Some(dib) = ClipboardGuard::read_global_if_allowed(
+                    image_format,
+                    "image",
+                    policy,
+                    &mut total_bytes,
+                )? {
+                    if let Some(bytes) = dib_to_bmp(&dib) {
+                        representations.push(ClipboardRepresentation {
+                            format: "image".to_owned(),
+                            mime_type: "image/bmp".to_owned(),
+                            bytes,
+                        });
+                    }
                 }
             }
-            if format_available(15) {
-                let paths = ClipboardGuard::read_file_paths()?;
-                if !paths.is_empty() {
-                    representations.push(ClipboardRepresentation {
-                        format: "files".to_owned(),
-                        mime_type: "text/uri-list".to_owned(),
-                        bytes: paths.join("\n").into_bytes(),
-                    });
+            if policy.supports_format("files") && format_available(15) {
+                if let Some(paths) =
+                    ClipboardGuard::read_file_paths_if_allowed(policy, &mut total_bytes)?
+                {
+                    if !paths.is_empty() {
+                        representations.push(ClipboardRepresentation {
+                            format: "files".to_owned(),
+                            mime_type: "text/uri-list".to_owned(),
+                            bytes: paths.join("\n").into_bytes(),
+                        });
+                    }
                 }
             }
             if self.clipboard_sequence() != sequence {
@@ -436,6 +466,32 @@ mod windows_impl {
             Ok(bytes)
         }
 
+        fn global_size(format: u32) -> Result<usize, PlatformError> {
+            let handle = unsafe { GetClipboardData(format) }.map_err(platform_error)?;
+            Ok(unsafe { GlobalSize(HGLOBAL(handle.0)) })
+        }
+
+        fn read_global_if_allowed(
+            format: u32,
+            semantic_format: &str,
+            policy: &CapturePolicy,
+            total_bytes: &mut u64,
+        ) -> Result<Option<Vec<u8>>, PlatformError> {
+            let available_size = Self::global_size(format)? as u64;
+            if available_size != 0
+                && !policy.accepts_size(semantic_format, available_size, *total_bytes)
+            {
+                return Ok(None);
+            }
+            let bytes = Self::read_global(format)?;
+            let byte_size = bytes.len() as u64;
+            if !policy.accepts_size(semantic_format, byte_size, *total_bytes) {
+                return Ok(None);
+            }
+            *total_bytes = total_bytes.saturating_add(byte_size);
+            Ok(Some(bytes))
+        }
+
         fn read_file_paths() -> Result<Vec<String>, PlatformError> {
             let handle = unsafe { GetClipboardData(15) }.map_err(platform_error)?;
             let drop = HDROP(handle.0);
@@ -450,6 +506,23 @@ mod windows_impl {
                 paths.push(String::from_utf16_lossy(&buffer[..length as usize]));
             }
             Ok(paths)
+        }
+
+        fn read_file_paths_if_allowed(
+            policy: &CapturePolicy,
+            total_bytes: &mut u64,
+        ) -> Result<Option<Vec<String>>, PlatformError> {
+            let available_size = Self::global_size(15)? as u64;
+            if available_size != 0 && !policy.accepts_size("files", available_size, *total_bytes) {
+                return Ok(None);
+            }
+            let paths = Self::read_file_paths()?;
+            let byte_size = paths.join("\n").len() as u64;
+            if !policy.accepts_size("files", byte_size, *total_bytes) {
+                return Ok(None);
+            }
+            *total_bytes = total_bytes.saturating_add(byte_size);
+            Ok(Some(paths))
         }
 
         fn write_unicode(text: &str) -> Result<(), PlatformError> {

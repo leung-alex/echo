@@ -21,5 +21,9 @@ pub(crate) fn settings_update(
     state
         .library
         .update_settings(&settings.into())
+        .map_err(|error| error.to_string())?;
+    state
+        .quick_insert
+        .refresh_capture_configuration()
         .map_err(|error| error.to_string())
 }

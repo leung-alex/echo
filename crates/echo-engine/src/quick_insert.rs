@@ -176,24 +176,53 @@ impl<S: LibraryStore> QuickInsertService<S> {
 
     pub fn set_favorite(&self, source: QuickInsertSource, id: i64, saved: bool) -> Result<bool> {
         match source {
-            QuickInsertSource::History => Ok(self.library.set_favorite(id, saved)?),
+            QuickInsertSource::History => {
+                let changed = self.library.set_favorite(id, saved)?;
+                if changed {
+                    self.request_maintenance();
+                }
+                Ok(changed)
+            }
             QuickInsertSource::Favorite if !saved => {
-                Ok(self.library.delete(LibraryItemKind::SavedItem, id)?)
+                let deleted = self.library.delete(LibraryItemKind::SavedItem, id)?;
+                if deleted {
+                    self.request_maintenance();
+                }
+                Ok(deleted)
             }
             QuickInsertSource::Favorite => Ok(true),
         }
     }
 
     pub fn delete(&self, source: QuickInsertSource, id: i64) -> Result<bool> {
-        Ok(self.library.delete(source.kind(), id)?)
+        let deleted = self.library.delete(source.kind(), id)?;
+        if deleted {
+            self.request_maintenance();
+        }
+        Ok(deleted)
     }
 
     pub fn update_saved_item(&self, id: i64, update: SavedItemUpdate) -> Result<SavedItem> {
-        Ok(self.library.update_saved_item(id, update)?)
+        let item = self.library.update_saved_item(id, update)?;
+        self.request_maintenance();
+        Ok(item)
     }
 
     pub fn delete_saved_items(&self, ids: &[i64]) -> Result<usize> {
-        Ok(self.library.delete_saved_items(ids)?)
+        let deleted = self.library.delete_saved_items(ids)?;
+        if deleted != 0 {
+            self.request_maintenance();
+        }
+        Ok(deleted)
+    }
+
+    pub fn request_maintenance(&self) {
+        self.clipboard.request_maintenance();
+    }
+
+    pub fn refresh_capture_configuration(&self) -> Result<()> {
+        self.clipboard.refresh_configuration()?;
+        Ok(())
     }
 
     pub fn library(&self) -> &Library<S> {

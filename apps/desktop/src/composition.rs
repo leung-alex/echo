@@ -1,13 +1,13 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use echo_engine::{
-    ClipboardPlatform, ClipboardService, ClipboardSink, Library, QuickInsertService,
-};
 #[cfg(not(windows))]
 use echo_engine::{
-    ClipboardRepresentation, ClipboardSnapshot, PasteDelivery, PasteTarget,
+    CapturePolicy, ClipboardRepresentation, ClipboardSnapshot, PasteDelivery, PasteTarget,
     PlatformChangePublisher, PlatformError,
+};
+use echo_engine::{
+    ClipboardPlatform, ClipboardService, ClipboardSink, Library, QuickInsertService,
 };
 use echo_storage::SharedClipboardStore;
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
@@ -90,7 +90,10 @@ impl ClipboardPlatform for UnsupportedPlatform {
         0
     }
 
-    fn read_clipboard(&self) -> Result<Option<ClipboardSnapshot>, PlatformError> {
+    fn read_clipboard(
+        &self,
+        _policy: &CapturePolicy,
+    ) -> Result<Option<ClipboardSnapshot>, PlatformError> {
         Err(PlatformError(
             "native clipboard is only available on Windows".to_owned(),
         ))
