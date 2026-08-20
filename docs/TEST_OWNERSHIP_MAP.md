@@ -10,7 +10,7 @@
 | Activation | `crates/echo-activation/src` | Echo envelope encoding, validation, and `--echo-activate` parsing. |
 | Browser UI | `tests/ui/ui.spec.ts`, `tests/ui/visual.spec.ts`, `tests/ui/echo-fixture.ts` | History, Favorites, search, copy, insert recovery, settings, activation, responsive layout, and no-markup regressions. |
 | Native acceptance | `tests/e2e/*.spec.ts` | Actual Echo process over WebView2 CDP with isolated data, clipboard persistence, activation, and target-safe insertion. |
-| Tooling | `tools/echo/*_test.go` | Command dispatch, flags, root resolution, ownership planning, generated transport drift, bootstrap independence, and cleanup. |
+| Tooling | `tools/echo/*_test.go` | Command dispatch, flags, root resolution, ownership planning, architecture boundaries, generated transport drift, bootstrap independence, and cleanup. |
 
 Concrete native specs are `tests/e2e/clipboard.spec.ts` and
 `tests/e2e/quick-insert.spec.ts`; both are launched only through the authorized
@@ -32,9 +32,8 @@ Native tests require `ECHO_WINDOWS_ACCEPTANCE=1` and are launched by
 gets isolated data, WebView2, CDP, process, and evidence roots. Local unit,
 browser, build, and smoke gates are not physical Windows acceptance.
 
-## Culsans Boundary
+## Product Boundary
 
-Echo tests do not start Culsans or access its runtime/data directories. Culsans
-editor, File Search, Browser, and unrelated shell behavior remain outside this
-repository. Echo no longer exposes the removed legacy reusable-content product;
-Favorites are backed by Saved Items.
+Echo tests start only Echo-owned processes and use isolated data directories.
+Favorites are backed by Saved Items; no removed reusable-content product,
+compatibility route, or external runtime is part of this repository.

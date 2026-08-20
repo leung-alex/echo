@@ -32,7 +32,7 @@ func TestPlanForPathsMapsOwnersDeterministically(t *testing.T) {
 		"crates\\echo-storage\\src\\lib.rs",
 		"tests/e2e/quick-insert.spec.ts",
 	})
-	want := []string{"frontend", "library", "migration", "quick-insert", "storage", "tests"}
+	want := []string{"frontend", "quick-insert", "storage", "tests"}
 	if !reflect.DeepEqual(plan.Owners, want) {
 		t.Fatalf("owners = %#v, want %#v", plan.Owners, want)
 	}
@@ -48,6 +48,44 @@ func TestUnknownPathUsesConservativeFullPlan(t *testing.T) {
 	}
 	if len(plan.Reasons) != 1 || !strings.Contains(plan.Reasons[0], "scripts/unknown.bin") {
 		t.Fatalf("unexpected fallback reasons: %#v", plan.Reasons)
+	}
+}
+
+func TestHistoricalPlannerAliasesUseConservativeFallback(t *testing.T) {
+	plan := planForPaths([]string{"backend/crates/echo-storage/src/lib.rs", "frontend/app/main.ts"})
+	if !plan.Full {
+		t.Fatal("historical aliases did not select full verification")
+	}
+	if len(plan.Reasons) != 2 {
+		t.Fatalf("unexpected fallback reasons: %#v", plan.Reasons)
+	}
+}
+
+func TestArchitectureDependencyPolicyRejectsForbiddenEdges(t *testing.T) {
+	metadata := []byte(`{"packages":[{"name":"echo-engine","dependencies":[{"name":"echo-storage"}]}]}`)
+	if err := validateCargoArchitecture(metadata); err == nil {
+		t.Fatal("forbidden engine-to-storage edge was accepted")
+	}
+}
+
+func TestArchitectureDependencyPolicyAcceptsAdapterDirection(t *testing.T) {
+	metadata := []byte(`{"packages":[{"name":"echo-storage","dependencies":[{"name":"echo-engine"}]},{"name":"echo-windows","dependencies":[{"name":"echo-engine"}]},{"name":"echo-engine","dependencies":[]}]}`)
+	if err := validateCargoArchitecture(metadata); err != nil {
+		t.Fatalf("valid adapter graph was rejected: %v", err)
+	}
+}
+
+func TestCapturePathRejectsPerCaptureReconcile(t *testing.T) {
+	source := "pub fn record_capture(&mut self) { self.reconcile_blob_store(); }\n"
+	if err := rejectReconcileInCaptureFunctions(source); err == nil {
+		t.Fatal("per-capture reconcile was accepted")
+	}
+}
+
+func TestCapturePathAllowsExplicitRepair(t *testing.T) {
+	source := "pub fn record_capture(&mut self) {}\npub fn reconcile_blob_store(&mut self) {}\n"
+	if err := rejectReconcileInCaptureFunctions(source); err != nil {
+		t.Fatalf("explicit repair was rejected: %v", err)
 	}
 }
 

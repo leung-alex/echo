@@ -9,6 +9,6 @@ func (a *app) perf() error {
 		"--manifest-path",
 		"crates/echo-storage/Cargo.toml",
 		"--example",
-		"r5_storage_perf",
+		"storage_perf",
 	)
 }

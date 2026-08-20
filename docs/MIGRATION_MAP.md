@@ -1,8 +1,8 @@
-# Echo Migration Map
+# Echo Schema Migration Map
 
-Echo is an independent product extracted from Culsans clipboard and Quick
-Insert behavior. The source product is reference material only; Echo never
-opens Culsans runtime or UI code at build time.
+This document describes repository-owned upgrades for representative pre-R0,
+pre-R1, and pre-R2 Echo schemas. It is not an external import or compatibility
+runtime.
 
 ## Ownership Map
 
@@ -21,19 +21,10 @@ opens Culsans runtime or UI code at build time.
 | Clipboard settings and retention | `crates/echo-engine/settings` + `crates/echo-storage` | Preserve current behavior and limits. |
 | Activation and lifecycle | `crates/echo-activation` + `apps/desktop` | Canonical flag is `--echo-activate`. |
 
-## Legacy Data Boundary
+## Schema Boundary
 
-The migration preserves clipboard history, representations, referenced blobs,
-FTS data, settings, and saved-item snapshots. Legacy reusable-content tables
-that are not part of Saved Items are not created, copied, queried, or kept as a
-compatibility schema.
-
-The Culsans shell tables, drawing data, command/search data, and `input_draft`
-remain outside Echo. For older databases without saved-item tables, pinned
-clipboard entries are converted into idempotent Saved Item snapshots with all
-representations.
-
-Before reading, migration takes its lock and creates a read-only backup
-snapshot. It validates row counts, blob hashes, and representation references,
-then writes a marker only after destination writes succeed. There is no
-permanent legacy read, write, or dual-write path.
+The ordered migrations preserve clipboard history, representations, referenced
+blobs, FTS data, settings, and Saved Item snapshots. For pre-R0 schemas without
+Saved Item tables, pinned clipboard entries are converted into idempotent Saved
+Item snapshots with all representations. The current schema opens idempotently;
+normal runtime never scans an unrelated database or performs an external import.

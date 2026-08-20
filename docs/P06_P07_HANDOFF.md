@@ -1,3 +1,5 @@
+> Historical record only. It is not an active implementation contract; current routing is in `docs/architecture/overview.md` and `docs/architecture/locality.md`.
+
 # Echo P06/P07 Handoff
 
 ## Completion scope

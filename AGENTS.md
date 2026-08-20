@@ -8,6 +8,7 @@ Use the repository map and ownership rules below before changing code.
 - Architecture: `docs/architecture/overview.md`
 - Dependency direction: `docs/architecture/dependency-rules.md`
 - Domain language: `docs/domain/glossary.md`
+- Change locality: `docs/architecture/locality.md`
 - Test ownership: `docs/TEST_OWNERSHIP_MAP.md`
 - Workflow and gates: `docs/engineering/agent-workflow.md`
 
@@ -37,12 +38,14 @@ Use the repository map and ownership rules below before changing code.
 - Dependencies point from adapters and desktop toward engine; engine never
   imports Tauri, SQLite, Win32, or frontend types.
 - Keep transport DTOs separate from engine domain types.
-- Do not add a legacy Snippets product, route, command, schema, or compatibility
-  layer. Durable reusable content is represented by Saved Items.
+- Durable reusable content is represented only by Saved Items; do not recreate
+  a removed reusable-content surface or compatibility layer.
 - The canonical activation flag is `--echo-activate`.
 - Unsafe Win32 code stays in `crates/echo-windows`.
 
 ## Validation
 
-Run `.\echo.cmd verify` for the canonical developer gate. Native acceptance is
-opt-in and must use the authorized `ECHO_WINDOWS_ACCEPTANCE=1` gates.
+Run `.\echo.cmd self-check`, `.\echo.cmd format --check`,
+`.\echo.cmd bindings --check`, and `.\echo.cmd verify` for the canonical
+developer gates. Native acceptance is opt-in and must use the authorized
+`ECHO_WINDOWS_ACCEPTANCE=1` gates.

@@ -82,17 +82,17 @@ func ownersForPath(path string) (bool, []string) {
 		return true, []string{"tooling"}
 	case strings.HasPrefix(path, "tools/echo/"):
 		return true, []string{"tooling"}
-	case strings.HasPrefix(path, "crates/echo-engine/") || strings.HasPrefix(path, "backend/crates/echo-clipboard/") || strings.HasPrefix(path, "backend/crates/echo-library/") || strings.HasPrefix(path, "backend/crates/echo-quick-insert/") || strings.HasPrefix(path, "backend/crates/echo-platform/"):
+	case strings.HasPrefix(path, "crates/echo-engine/"):
 		return true, []string{"engine", "desktop"}
-	case strings.HasPrefix(path, "crates/echo-storage/") || strings.HasPrefix(path, "backend/crates/echo-storage/"):
-		return true, []string{"storage", "library", "migration"}
-	case strings.HasPrefix(path, "crates/echo-windows/") || strings.HasPrefix(path, "backend/crates/echo-platform-windows/"):
+	case strings.HasPrefix(path, "crates/echo-storage/"):
+		return true, []string{"storage"}
+	case strings.HasPrefix(path, "crates/echo-windows/"):
 		return true, []string{"windows", "desktop"}
-	case strings.HasPrefix(path, "crates/echo-activation/") || strings.HasPrefix(path, "backend/crates/echo-protocol/"):
+	case strings.HasPrefix(path, "crates/echo-activation/"):
 		return true, []string{"desktop", "activation"}
 	case strings.HasPrefix(path, "apps/desktop/"):
 		return true, []string{"desktop", "activation", "quick-insert"}
-	case strings.HasPrefix(path, "apps/ui/") || strings.HasPrefix(path, "frontend/app/"):
+	case strings.HasPrefix(path, "apps/ui/"):
 		return true, []string{"frontend", "quick-insert"}
 	case strings.HasPrefix(path, "tests/e2e/clipboard"):
 		return true, []string{"tests", "clipboard"}
@@ -141,7 +141,7 @@ func ownerGateNames(plan OwnerPlan, profile ValidationProfile) []string {
 		case "clipboard", "engine":
 			gateSet["cargo test -p echo-engine"] = true
 			gateSet["cargo test -p echo-storage"] = true
-		case "storage", "migration":
+		case "storage":
 			gateSet["cargo test -p echo-storage"] = true
 		case "library":
 			gateSet["cargo test -p echo-engine"] = true

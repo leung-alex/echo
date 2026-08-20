@@ -28,5 +28,12 @@ Interfaces live next to the engine behavior that needs them. Do not create
 repository-wide `common`, `helpers`, `utils`, `manager`, or `interfaces`
 dumping grounds.
 
-The old shallow crates are not workspace members. The old activation flag is
-not supported; `--echo-activate` is canonical.
+The engine/storage/windows/activation public surfaces expose domain contracts,
+not adapter implementation modules. The desktop transport is the sole source
+for checked-in TypeScript bindings, and frontend feature code reaches it only
+through shared IPC wrappers. Preview resources are binary-safe and never use a
+Base64 or data-URL transport. History invalidation is event-driven rather than
+polling. Capture persistence does not reconcile the whole blob store; cleanup
+is owned by the maintenance runtime.
+
+The canonical activation flag is `--echo-activate`.

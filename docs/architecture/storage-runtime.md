@@ -1,6 +1,6 @@
 # Storage Runtime
 
-R5 uses one dedicated storage writer and one dedicated read connection. The
+The storage runtime uses one dedicated storage writer and one dedicated read connection. The
 writer is an actor with a bounded request channel; history queries and preview
 file reads use the read connection and never wait on the writer actor. SQLite
 WAL keeps committed writes visible to the read connection without introducing
@@ -14,21 +14,23 @@ representation references its original content hash.
 
 `SharedClipboardStore::open` is the startup owner. Desktop composition does
 not schedule a second startup pass; the retained engine lifecycle hook is a
-compatibility no-op. Storage mutations schedule their own required cleanup,
-while higher layers may request maintenance only for explicit repair.
+hidden lifecycle probe exists only for the R5 verifier and performs no work.
+Storage mutations schedule their own required cleanup, while higher layers may
+request maintenance only for explicit repair.
 
 ## Schema Versions
 
 `PRAGMA user_version` is advanced one step at a time:
 
-- `1`: core Echo tables and legacy-compatible search placeholders;
+- `1`: core Echo tables and pre-R0 saved-item conversion;
 - `2`: representation content identities;
 - `3`: preview asset metadata;
 - `4`: FTS5 search tables and rebuilt documents.
 
 Opening an already-latest database is idempotent. The migration fixtures under
 `crates/echo-storage/fixtures/migrations` cover pre-R0, pre-R1, and pre-R2
-records. Legacy Culsans migration keeps its read-only backup behavior.
+records. The fixtures are repository-owned upgrade evidence, not an external
+import runtime. Opening the latest schema is idempotent.
 
 ## Instrumentation
 
@@ -41,7 +43,7 @@ availability. Metrics contain no clipboard text, file paths, or payload bytes.
 ## Deterministic Diagnostic
 
 Run `.\echo.cmd perf`. It prints one JSON object with schema
-`echo.r5.perf.v1` and fixed scenario fields for:
+`echo.storage.perf.v1` and fixed scenario fields for:
 
 - 5,000 text rows, cursor page count, and exact-match count;
 - 200 rows with 50 image rows;

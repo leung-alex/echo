@@ -1,3 +1,5 @@
+> Historical record only. It is not an active implementation contract; current routing is in `docs/architecture/overview.md` and `docs/architecture/locality.md`.
+
 # Echo P08 Visual Parity Handoff
 
 ## Baselines and commits
@@ -22,7 +24,7 @@
 - React entry and route orchestration live under `apps/ui/src/app`.
 - Quick Insert types, reducer, controller, client, surface, result rows, and local primitives live under `apps/ui/src/features/quick-insert` and `apps/ui/src/ui`.
 - Design tokens are defined with `--echo-*`; feature classes use Echo-local names.
-- `quick_insert_get_image` reads existing Echo payloads without changing storage schema.
+- The historical image preview command was superseded by the binary preview resource seam.
 - The temporary string-rendered `main.ts`/`styles.css` system was removed.
 
 ## Test ownership and evidence

@@ -48,7 +48,7 @@ Usage:
   echo.cmd smoke
       Start Echo with isolated data and verify its local bootstrap.
   echo.cmd perf
-      Run the deterministic R5 storage diagnostic and print JSON output.
+      Run the deterministic storage diagnostic and print JSON output.
   echo.cmd acceptance <clipboard|quick-insert>
       Run separately authorized native Windows acceptance.
   echo.cmd package [--dir]
@@ -399,7 +399,7 @@ func (a *app) runOwnerPlan(plan OwnerPlan, profile ValidationProfile) error {
 		switch owner {
 		case "clipboard", "engine":
 			packages["echo-engine"], packages["echo-storage"] = true, true
-		case "storage", "migration":
+		case "storage":
 			packages["echo-storage"] = true
 		case "library":
 			packages["echo-engine"] = true
@@ -525,6 +525,9 @@ func (a *app) selfCheck() error {
 	if err := a.checkGeneratedBindings(); err != nil {
 		return err
 	}
+	if err := a.checkArchitectureContracts([]byte(metadata)); err != nil {
+		return err
+	}
 	if err := a.checkNativeFixtureSources(); err != nil {
 		return err
 	}
@@ -592,9 +595,6 @@ func (a *app) checkFrontendPresentation() error {
 		lower := strings.ToLower(textContent)
 		if strings.Contains(lower, "innerhtml") {
 			return fmt.Errorf("temporary innerHTML presentation remains in %s", relativeToRoot(a.root, path))
-		}
-		if strings.Contains(lower, "culsans") {
-			return fmt.Errorf("Culsans UI/source reference remains in %s", relativeToRoot(a.root, path))
 		}
 		if ext != ".css" {
 			return nil
@@ -728,11 +728,6 @@ func containsForbiddenDependency(content string) bool {
 		"path='../",
 		"file:../",
 		"file:..//",
-		"../culsans",
-		"d:/project/culsans",
-		"culsans-storage",
-		"culsans-runtime",
-		"culsans-platform",
 	} {
 		if strings.Contains(lower, forbidden) {
 			return true
@@ -974,9 +969,6 @@ func (a *app) runAcceptance(owner string) error {
 		"ECHO_DATA_DIR":                         dataDir,
 		"WEBVIEW2_USER_DATA_FOLDER":             webviewDir,
 		"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS": "--remote-debugging-port=" + fmt.Sprint(port),
-	}
-	if legacy := os.Getenv("ECHO_LEGACY_DATA_DIR"); legacy != "" {
-		env["ECHO_LEGACY_DATA_DIR"] = legacy
 	}
 	cmd := a.command(exe)
 	cmd.Env = mergeEnv(nil, env)

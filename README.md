@@ -1,11 +1,8 @@
 # Echo Recall
 
-Echo is the standalone reusable-content application extracted from Culsans.
-Clipboard is the ingestion engine, History and Saved Items are its durable
-views, and Quick Insert is the retrieval and insertion surface.
-
-The repository intentionally contains no dependency on Culsans source, runtime,
-storage, platform crates, or data directories.
+Echo is a standalone clipboard history and Saved Items application. Clipboard
+is the ingestion engine, History and Saved Items are its durable views, and
+Quick Insert is the retrieval and insertion surface.
 
 ## Local development
 
@@ -21,8 +18,15 @@ Normal local gates are exposed through the independent Echo command:
 .\echo.cmd verify
 .\echo.cmd verify clipboard
 .\echo.cmd verify quick-insert
+.\echo.cmd self-check
+.\echo.cmd format --check
+.\echo.cmd bindings --check
 .\echo.cmd smoke
+.\echo.cmd perf
 ```
+
+Activation uses the canonical `--echo-activate` flag and the versioned Echo
+envelope.
 
 The changed-owner planner can explain or execute only affected gates:
 
@@ -51,4 +55,4 @@ $env:ECHO_WINDOWS_ACCEPTANCE = "1"
 ```
 
 These commands create isolated Echo data, WebView2, CDP, process, and evidence
-roots. They do not start Culsans or access the Culsans database.
+roots.

@@ -14,8 +14,6 @@ use ammonia::Builder;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-pub use crate::domain::{ClipboardRepresentation as Representation, PasteDelivery, PasteTarget};
-
 const PREVIEW_CHARACTERS: usize = 600;
 pub const INGESTION_QUEUE_CAPACITY: usize = 8;
 pub const DEFAULT_CAPTURE_LIMIT_BYTES: u64 = 32 * 1024 * 1024;
@@ -199,12 +197,12 @@ pub enum CaptureEvent {
 }
 
 #[derive(Clone, Default)]
-pub struct CaptureEventPublisher {
+struct CaptureEventPublisher {
     subscribers: Arc<Mutex<Vec<mpsc::Sender<CaptureEvent>>>>,
 }
 
 impl CaptureEventPublisher {
-    pub fn subscribe(&self) -> CaptureEventSubscription {
+    fn subscribe(&self) -> CaptureEventSubscription {
         let (sender, receiver) = mpsc::channel();
         self.subscribers
             .lock()
@@ -213,7 +211,7 @@ impl CaptureEventPublisher {
         CaptureEventSubscription { receiver }
     }
 
-    pub fn publish(&self, event: CaptureEvent) {
+    fn publish(&self, event: CaptureEvent) {
         let mut subscribers = self
             .subscribers
             .lock()
@@ -418,10 +416,13 @@ impl ClipboardService {
         Ok(sequence)
     }
 
-    pub fn start_maintenance(&self) {
-        // The storage runtime owns startup maintenance when it opens its writer.
-        // Keep this lifecycle hook for callers compiled against the pre-R5 API.
-    }
+    /// Retained as a lifecycle probe for the R5 storage-runtime verifier.
+    ///
+    /// Startup maintenance is owned by `SharedClipboardStore::open`; this
+    /// compatibility probe intentionally performs no work and must not be used
+    /// to schedule a second maintenance pass.
+    #[doc(hidden)]
+    pub fn start_maintenance(&self) {}
 
     pub fn metrics_snapshot(&self) -> Vec<crate::OperationMetric> {
         self.shared.metrics.snapshot()
@@ -862,21 +863,23 @@ fn lock<T>(mutex: &Mutex<T>) -> Result<MutexGuard<'_, T>> {
     mutex.lock().map_err(|_| ClipboardError::StateUnavailable)
 }
 
+#[cfg(test)]
 #[derive(Default)]
-pub struct MemorySink {
+struct MemorySink {
     settings: Mutex<CaptureSettings>,
     records: Mutex<Vec<NormalizedCapture>>,
 }
 
+#[cfg(test)]
 impl MemorySink {
-    pub fn records(&self) -> Vec<NormalizedCapture> {
+    fn records(&self) -> Vec<NormalizedCapture> {
         self.records
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .clone()
     }
 
-    pub fn set_settings(&self, settings: CaptureSettings) {
+    fn set_settings(&self, settings: CaptureSettings) {
         *self
             .settings
             .lock()
@@ -884,6 +887,7 @@ impl MemorySink {
     }
 }
 
+#[cfg(test)]
 impl ClipboardSink for MemorySink {
     fn settings(&self) -> std::result::Result<CaptureSettings, String> {
         Ok(self

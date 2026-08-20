@@ -28,13 +28,6 @@ impl EchoState {
         let data_dir = echo_data_dir();
         let store =
             Arc::new(SharedClipboardStore::open(&data_dir).map_err(|error| error.to_string())?);
-        if let Some(legacy_dir) = legacy_data_dir() {
-            if legacy_dir.join("culsans.sqlite3").is_file() {
-                store
-                    .migrate_legacy(&legacy_dir)
-                    .map_err(|error| error.to_string())?;
-            }
-        }
         let platform = make_platform()?;
         let sink: Arc<dyn ClipboardSink> = store.clone();
         let clipboard = Arc::new(ClipboardService::new(platform.clone(), sink));
@@ -76,14 +69,6 @@ pub(crate) fn echo_data_dir() -> PathBuf {
         .map(PathBuf::from)
         .map(|path| path.join("Echo"))
         .unwrap_or_else(|| PathBuf::from(".echo"))
-}
-
-fn legacy_data_dir() -> Option<PathBuf> {
-    std::env::var_os("ECHO_LEGACY_DATA_DIR")
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("LOCALAPPDATA").map(|path| PathBuf::from(path).join("Culsans"))
-        })
 }
 
 #[cfg(windows)]

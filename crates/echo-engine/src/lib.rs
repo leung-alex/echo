@@ -1,12 +1,12 @@
 mod domain;
-pub mod instrumentation;
+mod instrumentation;
 
-pub mod history;
-pub mod ingest;
-pub mod preview;
-pub mod quick_insert;
-pub mod saved_items;
-pub mod settings;
+mod history;
+mod ingest;
+mod preview;
+mod quick_insert;
+mod saved_items;
+mod settings;
 
 pub use domain::{
     ClipboardPlatform, ClipboardRepresentation, ClipboardSnapshot, FocusSafety, FocusedTarget,
@@ -19,10 +19,10 @@ pub use history::{
     LibraryView, PageCursor, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE,
 };
 pub use ingest::{
-    fingerprint, CaptureCommit, CaptureEvent, CaptureEventPublisher, CaptureEventSubscription,
-    CaptureOutcome, CapturePolicy, CaptureSettings, CapturedCapture, ClipboardError,
-    ClipboardService, ClipboardSink, ContentIdentity, ContentType, MemorySink, NormalizedCapture,
-    RecordResult, RepresentationIdentity, DEFAULT_CAPTURE_LIMIT_BYTES, INGESTION_QUEUE_CAPACITY,
+    fingerprint, CaptureCommit, CaptureEvent, CaptureEventSubscription, CaptureOutcome,
+    CapturePolicy, CaptureSettings, CapturedCapture, ClipboardError, ClipboardService,
+    ClipboardSink, ContentIdentity, ContentType, NormalizedCapture, RecordResult,
+    RepresentationIdentity, DEFAULT_CAPTURE_LIMIT_BYTES, INGESTION_QUEUE_CAPACITY,
 };
 pub use instrumentation::{OperationMetric, OperationMetrics};
 pub use preview::{PreviewAsset, Thumbnail, DEFAULT_THUMBNAIL_MAX_EDGE, THUMBNAIL_MIME_TYPE};

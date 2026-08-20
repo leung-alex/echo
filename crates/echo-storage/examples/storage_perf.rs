@@ -53,16 +53,16 @@ fn main() {
     let root = PathBuf::from(
         std::env::var_os("ECHO_PERF_ROOT")
             .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(".local/echo/perf-r5")),
+            .unwrap_or_else(|| PathBuf::from(".local/echo/perf")),
     );
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).expect("create perf root");
-    let report = run(&root).expect("R5 storage perf diagnostic");
+    let report = run(&root).expect("storage perf diagnostic");
     let _ = fs::remove_dir_all(&root);
     println!(
         "{}",
         serde_json::to_string(&PerfReport {
-            schema: "echo.r5.perf.v1",
+            schema: "echo.storage.perf.v1",
             scenarios: report,
         })
         .expect("serialize perf report")
@@ -75,13 +75,13 @@ fn run(root: &Path) -> Result<Scenarios, String> {
     for sequence in 0..5_000 {
         history
             .record_capture(text_capture(
-                &format!("r5-perf-text-{sequence:04}"),
+                &format!("echo-perf-text-{sequence:04}"),
                 sequence as u64,
             ))
             .map_err(|error| error.to_string())?;
     }
     let exact_matches = history
-        .list_entries("r5-perf-text-4999", 100)
+        .list_entries("echo-perf-text-4999", 100)
         .map_err(|error| error.to_string())?
         .len();
     let mut pages = 0;
@@ -113,7 +113,7 @@ fn run(root: &Path) -> Result<Scenarios, String> {
             .record_capture(if is_image {
                 image_capture(sequence as u64)
             } else {
-                text_capture(&format!("r5-perf-mixed-{sequence:03}"), sequence as u64)
+                text_capture(&format!("echo-perf-mixed-{sequence:03}"), sequence as u64)
             })
             .map_err(|error| error.to_string())?;
     }
@@ -251,8 +251,8 @@ fn image_capture(sequence: u64) -> NormalizedCapture {
         sequence,
         source: SourceContext::default(),
         content_type: ContentType::Image,
-        preview_text: Some(format!("r5-perf-image-{sequence:03}")),
-        searchable_text: Some(format!("r5-perf-image-{sequence:03}")),
+        preview_text: Some(format!("echo-perf-image-{sequence:03}")),
+        searchable_text: Some(format!("echo-perf-image-{sequence:03}")),
         sanitized_html: None,
         fingerprint: fingerprint(std::slice::from_ref(&representation)),
         representations: vec![representation],

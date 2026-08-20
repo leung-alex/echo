@@ -1,7 +1,7 @@
 use std::any::Any;
 use std::collections::HashSet;
-use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::fs::{self, File};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Mutex};
@@ -40,7 +40,7 @@ pub enum StorageError {
     Invalid(String),
     #[error("blob is missing or invalid: {0}")]
     MissingBlob(String),
-    #[error("legacy migration failed: {0}")]
+    #[error("schema migration failed: {0}")]
     Migration(String),
 }
 
@@ -78,16 +78,6 @@ pub struct StoredSavedItem {
     pub representations: Vec<StoredRepresentation>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MigrationReport {
-    pub backup_dir: PathBuf,
-    pub entries: usize,
-    pub representations: usize,
-    pub blobs: usize,
-    pub favorites: usize,
-    pub already_migrated: bool,
-}
-
 #[derive(Debug, Clone)]
 struct PreparedRepresentation {
     format: String,
@@ -100,7 +90,6 @@ struct PreparedRepresentation {
 
 pub struct ClipboardStore {
     connection: Connection,
-    data_dir: PathBuf,
     blobs_dir: PathBuf,
     thumbnails_dir: PathBuf,
     metrics: Arc<OperationMetrics>,
@@ -122,33 +111,8 @@ impl ClipboardStore {
         let connection = Connection::open(database)?;
         let mut store = Self {
             connection,
-            data_dir,
             blobs_dir,
             thumbnails_dir,
-            metrics,
-        };
-        store.configure()?;
-        store.ensure_schema()?;
-        Ok(store)
-    }
-
-    pub fn open_in_memory(data_dir: impl AsRef<Path>) -> Result<Self> {
-        Self::open_in_memory_with_metrics(data_dir.as_ref(), Arc::new(OperationMetrics::default()))
-    }
-
-    fn open_in_memory_with_metrics(
-        data_dir: &Path,
-        metrics: Arc<OperationMetrics>,
-    ) -> Result<Self> {
-        let data_dir = data_dir.to_path_buf();
-        fs::create_dir_all(data_dir.join("blobs"))?;
-        fs::create_dir_all(data_dir.join("thumbnails"))?;
-        let connection = Connection::open_in_memory()?;
-        let mut store = Self {
-            connection,
-            blobs_dir: data_dir.join("blobs"),
-            thumbnails_dir: data_dir.join("thumbnails"),
-            data_dir,
             metrics,
         };
         store.configure()?;
@@ -166,7 +130,6 @@ impl ClipboardStore {
             connection,
             blobs_dir: data_dir.join("blobs"),
             thumbnails_dir: data_dir.join("thumbnails"),
-            data_dir,
             metrics,
         };
         store.configure_read_only()?;
@@ -233,7 +196,7 @@ impl ClipboardStore {
     fn migrate_schema_v1(&mut self) -> Result<()> {
         self.ensure_base_objects()?;
         if table_exists_connection(&self.connection, "saved_insert_items")? {
-            self.migrate_legacy_saved_tables()?;
+            self.migrate_pre_r0_saved_tables()?;
         } else if has_column(&self.connection, "clipboard_entries", "pinned")?
             && self.count_table("saved_items")? == 0
         {
@@ -242,7 +205,7 @@ impl ClipboardStore {
         Ok(())
     }
 
-    fn migrate_legacy_saved_tables(&mut self) -> Result<()> {
+    fn migrate_pre_r0_saved_tables(&mut self) -> Result<()> {
         let items = {
             let mut statement = self.connection.prepare(
                 "SELECT id, source_entry_id, created_at, updated_at, source_app,
@@ -310,7 +273,7 @@ impl ClipboardStore {
                     source_id,
                     created,
                     updated,
-                    legacy_saved_name(content_type, preview.as_deref()),
+                    default_saved_item_name(content_type, preview.as_deref()),
                     content_type,
                     is_text_like(content_type)
                         .then(|| searchable.clone().or_else(|| preview.clone()).unwrap_or_default()),
@@ -404,7 +367,7 @@ impl ClipboardStore {
                     entry_id,
                     created,
                     updated,
-                    legacy_saved_name(&content_type, preview.as_deref()),
+                    default_saved_item_name(&content_type, preview.as_deref()),
                     content_type,
                     is_text_like(&content_type)
                         .then(|| searchable.clone().or_else(|| preview.clone()).unwrap_or_default()),
@@ -638,10 +601,6 @@ impl ClipboardStore {
             );"
         ))?;
         Ok(())
-    }
-
-    pub fn data_dir(&self) -> &Path {
-        &self.data_dir
     }
 
     pub fn metrics_snapshot(&self) -> Vec<OperationMetric> {
@@ -1894,137 +1853,6 @@ impl ClipboardStore {
         Ok(())
     }
 
-    pub fn migrate_legacy(&mut self, legacy_dir: impl AsRef<Path>) -> Result<MigrationReport> {
-        let legacy_dir = legacy_dir.as_ref();
-        let legacy_db = legacy_dir.join("culsans.sqlite3");
-        if !legacy_db.is_file() {
-            return Err(StorageError::Migration(format!(
-                "legacy database is missing: {}",
-                legacy_db.display()
-            )));
-        }
-        let marker_key = legacy_dir.canonicalize()?.to_string_lossy().to_string();
-        if self
-            .connection
-            .query_row(
-                "SELECT value FROM migration_state WHERE key = ?",
-                [&marker_key],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?
-            .is_some()
-        {
-            return Ok(MigrationReport {
-                backup_dir: self.data_dir.join("migration-backups"),
-                entries: self.count_table("clipboard_entries")?,
-                representations: self.count_table("clipboard_representations")?,
-                blobs: self.count_table("clipboard_blobs")?,
-                favorites: self.count_table("saved_items")?,
-                already_migrated: true,
-            });
-        }
-        let lock_path = legacy_dir.join(".echo-migration.lock");
-        let _lock = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&lock_path)
-            .map_err(|error| {
-                StorageError::Migration(format!("cannot acquire legacy migration lock: {error}"))
-            })?;
-        let backup_dir = self
-            .data_dir
-            .join("migration-backups")
-            .join(Uuid::new_v4().to_string());
-        let result = self.migrate_legacy_locked(legacy_dir, &legacy_db, &backup_dir, &marker_key);
-        let _ = fs::remove_file(lock_path);
-        result
-    }
-
-    fn migrate_legacy_locked(
-        &mut self,
-        legacy_dir: &Path,
-        legacy_db: &Path,
-        backup_dir: &Path,
-        marker_key: &str,
-    ) -> Result<MigrationReport> {
-        let before = file_fingerprint(legacy_db)?;
-        fs::create_dir_all(backup_dir.join("blobs"))?;
-        fs::copy(legacy_db, backup_dir.join("culsans.sqlite3"))?;
-        for suffix in ["-wal", "-shm"] {
-            let source = legacy_dir.join(format!("culsans.sqlite3{suffix}"));
-            if source.exists() {
-                fs::copy(&source, backup_dir.join(format!("culsans.sqlite3{suffix}")))?;
-            }
-        }
-        let legacy_blobs = legacy_dir.join("blobs");
-        if legacy_blobs.exists() {
-            for item in fs::read_dir(&legacy_blobs)? {
-                let item = item?;
-                if item.path().is_file() {
-                    fs::copy(item.path(), backup_dir.join("blobs").join(item.file_name()))?;
-                }
-            }
-        }
-        if file_fingerprint(legacy_db)? != before {
-            return Err(StorageError::Migration(
-                "legacy database changed while snapshotting".to_owned(),
-            ));
-        }
-        let snapshot_db = backup_dir.join("culsans.sqlite3");
-        let source = Connection::open_with_flags(&snapshot_db, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-        let entries_count = count_table_connection(&source, "clipboard_entries")?;
-        let representations_count = count_table_connection(&source, "clipboard_representations")?;
-        let has_saved = table_exists_connection(&source, "saved_insert_items")?;
-        let saved_count = if has_saved {
-            count_table_connection(&source, "saved_insert_items")?
-        } else {
-            0
-        };
-        let source_blobs = backup_dir.join("blobs");
-        let tx = self.connection.transaction()?;
-        if count_table_tx(&tx, "clipboard_entries")? != 0 {
-            return Err(StorageError::Migration(
-                "destination already contains Echo data".to_owned(),
-            ));
-        }
-        copy_settings(&source, &tx)?;
-        copy_legacy_entries(&source, &source_blobs, &tx, &self.blobs_dir)?;
-        let favorites = if has_saved {
-            copy_legacy_saved_items(&source, &source_blobs, &tx, &self.blobs_dir)?
-        } else {
-            synthesize_pinned_items(&source, &tx)?
-        };
-        let actual_entries = count_table_tx(&tx, "clipboard_entries")?;
-        let actual_representations = count_table_tx(&tx, "clipboard_representations")?;
-        if actual_entries != entries_count || actual_representations != representations_count {
-            return Err(StorageError::Migration(format!(
-                "legacy row count changed during migration: entries {actual_entries}/{entries_count}, representations {actual_representations}/{representations_count}"
-            )));
-        }
-        if has_saved && favorites != saved_count {
-            return Err(StorageError::Migration(format!(
-                "legacy favorites changed during migration: {favorites}/{saved_count}"
-            )));
-        }
-        tx.commit()?;
-        self.rebuild_fts()?;
-        self.rebuild_saved_search()?;
-        self.reconcile_blob_store()?;
-        let destination_hash = hash_file(&snapshot_db)?;
-        self.connection.execute(
-            "INSERT INTO migration_state (key, value, completed_at) VALUES (?, ?, ?)",
-            params![marker_key, destination_hash, now_millis()],
-        )?;
-        Ok(MigrationReport {
-            backup_dir: backup_dir.to_path_buf(),
-            entries: entries_count,
-            representations: representations_count,
-            blobs: self.count_table("clipboard_blobs")?,
-            favorites,
-            already_migrated: false,
-        })
-    }
-
     fn rebuild_fts(&mut self) -> Result<()> {
         self.connection.execute("DELETE FROM clipboard_fts", [])?;
         let mut statement = self
@@ -2185,18 +2013,6 @@ impl WriterRuntime {
         }
     }
 
-    fn from_store(store: ClipboardStore) -> Self {
-        let (sender, receiver) = mpsc::sync_channel(32);
-        thread::Builder::new()
-            .name("echo-storage-writer".to_owned())
-            .spawn(move || {
-                let mut store = store;
-                writer_loop(&mut store, receiver);
-            })
-            .expect("Echo storage writer thread");
-        Self { sender }
-    }
-
     fn execute<T, F>(&self, operation: F) -> Result<T>
     where
         T: Send + 'static,
@@ -2236,15 +2052,6 @@ impl ReaderRuntime {
         Ok(Self {
             store: Mutex::new(ClipboardStore::open_read_only(data_dir, metrics)?),
         })
-    }
-
-    fn empty(data_dir: &Path, metrics: Arc<OperationMetrics>) -> Self {
-        Self {
-            store: Mutex::new(
-                ClipboardStore::open_in_memory_with_metrics(data_dir, metrics)
-                    .expect("Echo read runtime database"),
-            ),
-        }
     }
 
     fn read<T>(&self, operation: impl FnOnce(&ClipboardStore) -> Result<T>) -> Result<T> {
@@ -2327,29 +2134,7 @@ impl SharedClipboardStore {
         Ok(shared)
     }
 
-    pub fn from_store(store: ClipboardStore) -> Self {
-        let data_dir = store.data_dir().to_path_buf();
-        let metrics = Arc::new(OperationMetrics::default());
-        let writer = Arc::new(WriterRuntime::from_store(store));
-        let reader = Arc::new(
-            ReaderRuntime::open(&data_dir, Arc::clone(&metrics))
-                .unwrap_or_else(|_| ReaderRuntime::empty(&data_dir, Arc::clone(&metrics))),
-        );
-        let maintenance = Arc::new(MaintenanceRuntime::new(
-            Arc::clone(&writer),
-            Arc::clone(&metrics),
-        ));
-        let shared = Self {
-            writer,
-            reader,
-            maintenance,
-            metrics,
-        };
-        shared.request_maintenance_now();
-        shared
-    }
-
-    pub fn with_store<T, F>(&self, operation: F) -> Result<T>
+    fn with_store<T, F>(&self, operation: F) -> Result<T>
     where
         T: Send + 'static,
         F: FnOnce(&mut ClipboardStore) -> Result<T> + Send + 'static,
@@ -2361,7 +2146,7 @@ impl SharedClipboardStore {
         self.metrics.snapshot()
     }
 
-    pub fn request_maintenance(&self) {
+    fn request_maintenance(&self) {
         self.maintenance.request(Duration::from_millis(100));
     }
 
@@ -2492,12 +2277,6 @@ impl SharedClipboardStore {
 
     pub fn reconcile_blob_store(&self) -> Result<()> {
         self.with_store(|store| store.reconcile_blob_store())
-    }
-
-    pub fn migrate_legacy(&self, legacy_dir: impl AsRef<Path>) -> Result<MigrationReport> {
-        let legacy_dir = legacy_dir.as_ref().to_path_buf();
-        let report = self.with_store(move |store| store.migrate_legacy(&legacy_dir))?;
-        Ok(report)
     }
 }
 
@@ -2753,31 +2532,6 @@ fn hash_bytes(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
-fn hash_file(path: &Path) -> Result<String> {
-    let mut file = File::open(path)?;
-    let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; 64 * 1024];
-    loop {
-        let read = file.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-    }
-    Ok(format!("{:x}", hasher.finalize()))
-}
-
-fn file_fingerprint(path: &Path) -> Result<(u64, u128)> {
-    let metadata = fs::metadata(path)?;
-    let modified = metadata
-        .modified()
-        .ok()
-        .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
-        .map(|value| value.as_nanos())
-        .unwrap_or(0);
-    Ok((metadata.len(), modified))
-}
-
 fn validate_hash(hash: &str) -> Result<()> {
     if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(StorageError::Invalid(format!("invalid blob hash {hash}")));
@@ -2793,25 +2547,6 @@ fn table_exists_connection(connection: &Connection, table: &str) -> Result<bool>
     )? != 0)
 }
 
-fn count_table_connection(connection: &Connection, table: &str) -> Result<usize> {
-    if !table_exists_connection(connection, table)? {
-        return Ok(0);
-    }
-    Ok(
-        connection.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
-            row.get::<_, i64>(0)
-        })? as usize,
-    )
-}
-
-fn count_table_tx(tx: &Transaction<'_>, table: &str) -> Result<usize> {
-    Ok(
-        tx.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
-            row.get::<_, i64>(0)
-        })? as usize,
-    )
-}
-
 fn has_column(connection: &Connection, table: &str, column: &str) -> Result<bool> {
     let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
     let rows = statement.query_map([], |row| row.get::<_, String>(1))?;
@@ -2821,311 +2556,7 @@ fn has_column(connection: &Connection, table: &str, column: &str) -> Result<bool
         .any(|name| name == column))
 }
 
-fn copy_settings(source: &Connection, tx: &Transaction<'_>) -> Result<()> {
-    if !table_exists_connection(source, "clipboard_settings")? {
-        return Ok(());
-    }
-    let record_sensitive = if has_column(source, "clipboard_settings", "record_sensitive")? {
-        "record_sensitive"
-    } else {
-        "0"
-    };
-    let sql = format!(
-        "SELECT history_enabled, {record_sensitive}, store_window_titles, max_entries, max_total_bytes, max_item_bytes FROM clipboard_settings WHERE id = 1"
-    );
-    let row: Option<(i64, i64, i64, i64, i64, i64)> = source
-        .query_row(&sql, [], |row| {
-            Ok((
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get(3)?,
-                row.get(4)?,
-                row.get(5)?,
-            ))
-        })
-        .optional()?;
-    if let Some((history, sensitive, titles, max_entries, max_total, max_item)) = row {
-        tx.execute(
-            "UPDATE clipboard_settings SET history_enabled = ?, record_sensitive = ?, store_window_titles = ?, max_entries = ?, max_total_bytes = ?, max_item_bytes = ? WHERE id = 1",
-            params![history, sensitive, titles, max_entries, max_total, max_item],
-        )?;
-    }
-    Ok(())
-}
-
-fn copy_legacy_entries(
-    source: &Connection,
-    source_blobs: &Path,
-    tx: &Transaction<'_>,
-    destination_blobs: &Path,
-) -> Result<()> {
-    if !table_exists_connection(source, "clipboard_entries")? {
-        return Ok(());
-    }
-    let mut statement = source.prepare(
-        "SELECT id, created_at, updated_at, source_app, source_executable, source_window_title,
-                content_type, preview_text, searchable_text, sanitized_html, fingerprint, pinned, byte_size
-         FROM clipboard_entries ORDER BY id",
-    )?;
-    let entries = statement.query_map([], |row| {
-        Ok((
-            row.get::<_, i64>(0)?,
-            row.get::<_, i64>(1)?,
-            row.get::<_, i64>(2)?,
-            row.get::<_, Option<String>>(3)?,
-            row.get::<_, Option<String>>(4)?,
-            row.get::<_, Option<String>>(5)?,
-            row.get::<_, String>(6)?,
-            row.get::<_, Option<String>>(7)?,
-            row.get::<_, Option<String>>(8)?,
-            row.get::<_, Option<String>>(9)?,
-            row.get::<_, String>(10)?,
-            row.get::<_, i64>(11)?,
-            row.get::<_, i64>(12)?,
-        ))
-    })?;
-    let entries = entries.collect::<std::result::Result<Vec<_>, _>>()?;
-    for (
-        id,
-        created,
-        updated,
-        app,
-        executable,
-        title,
-        content_type,
-        preview,
-        searchable,
-        html,
-        fingerprint,
-        _pinned,
-        byte_size,
-    ) in entries
-    {
-        tx.execute(
-            "INSERT INTO clipboard_entries (id, created_at, updated_at, source_app, source_executable, source_window_title, content_type, preview_text, searchable_text, sanitized_html, fingerprint, byte_size) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            params![id, created, updated, app, executable, title, content_type, preview, searchable, html, fingerprint, byte_size],
-        )?;
-    }
-    if !table_exists_connection(source, "clipboard_representations")? {
-        return Ok(());
-    }
-    let mut statement = source.prepare(
-        "SELECT id, entry_id, format, mime_type, inline_data, blob_hash, byte_size FROM clipboard_representations ORDER BY id",
-    )?;
-    let representations = statement.query_map([], |row| {
-        Ok((
-            row.get::<_, i64>(0)?,
-            row.get::<_, i64>(1)?,
-            row.get::<_, String>(2)?,
-            row.get::<_, String>(3)?,
-            row.get::<_, Option<Vec<u8>>>(4)?,
-            row.get::<_, Option<String>>(5)?,
-            row.get::<_, i64>(6)?,
-        ))
-    })?;
-    for (id, entry_id, format, mime, inline_data, blob_hash, byte_size) in
-        representations.collect::<std::result::Result<Vec<_>, _>>()?
-    {
-        let data = if let Some(bytes) = inline_data {
-            (Some(bytes), None)
-        } else if let Some(hash) = blob_hash {
-            validate_hash(&hash)?;
-            let bytes = fs::read(source_blobs.join(&hash))
-                .map_err(|_| StorageError::MissingBlob(hash.clone()))?;
-            if hash_bytes(&bytes) != hash {
-                return Err(StorageError::MissingBlob(hash));
-            }
-            let destination = destination_blobs.join(&hash);
-            if !destination.exists() {
-                fs::copy(source_blobs.join(&hash), destination)?;
-            }
-            (None, Some(hash))
-        } else {
-            return Err(StorageError::Migration(format!(
-                "representation {id} has no inline or blob data"
-            )));
-        };
-        tx.execute(
-            "INSERT INTO clipboard_representations (id, entry_id, format, mime_type, inline_data, blob_hash, byte_size) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            params![id, entry_id, format, mime, data.0, data.1, byte_size],
-        )?;
-        if let Some(hash) = data.1 {
-            tx.execute("INSERT OR IGNORE INTO clipboard_blobs (hash, mime_type, byte_size) VALUES (?, ?, ?)", params![hash, mime, byte_size])?;
-        }
-    }
-    Ok(())
-}
-
-fn copy_legacy_saved_items(
-    source: &Connection,
-    source_blobs: &Path,
-    tx: &Transaction<'_>,
-    destination_blobs: &Path,
-) -> Result<usize> {
-    let mut statement = source.prepare(
-        "SELECT id, source_entry_id, created_at, updated_at, source_app, source_executable,
-                source_window_title, content_type, preview_text, searchable_text, sanitized_html, byte_size
-         FROM saved_insert_items ORDER BY id",
-    )?;
-    let items = statement.query_map([], |row| {
-        Ok((
-            row.get::<_, i64>(0)?,
-            row.get::<_, Option<i64>>(1)?,
-            row.get::<_, i64>(2)?,
-            row.get::<_, i64>(3)?,
-            row.get::<_, Option<String>>(4)?,
-            row.get::<_, Option<String>>(5)?,
-            row.get::<_, Option<String>>(6)?,
-            row.get::<_, String>(7)?,
-            row.get::<_, Option<String>>(8)?,
-            row.get::<_, Option<String>>(9)?,
-            row.get::<_, Option<String>>(10)?,
-            row.get::<_, i64>(11)?,
-        ))
-    })?;
-    let items = items.collect::<std::result::Result<Vec<_>, _>>()?;
-    for (
-        id,
-        source_id,
-        created,
-        updated,
-        app,
-        executable,
-        title,
-        content_type,
-        preview,
-        searchable,
-        _html,
-        byte_size,
-    ) in &items
-    {
-        tx.execute(
-            "INSERT INTO saved_items
-             (id, source_history_id, created_at, updated_at, name, content_type, editable_text,
-              source_app, source_executable, source_window_title, preview_text, byte_size, is_independent)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
-            params![
-                id,
-                source_id,
-                created,
-                updated,
-                legacy_saved_name(content_type, preview.as_deref()),
-                content_type,
-                is_text_like(content_type).then(|| searchable.clone().or_else(|| preview.clone()).unwrap_or_default()),
-                app,
-                executable,
-                title,
-                preview,
-                byte_size,
-            ],
-        )?;
-        replace_tags_tx(&tx, *id, &[])?;
-    }
-    let mut statement = source.prepare(
-        "SELECT id, saved_item_id, format, mime_type, inline_data, blob_hash, byte_size FROM saved_insert_representations ORDER BY id",
-    )?;
-    let representations = statement.query_map([], |row| {
-        Ok((
-            row.get::<_, i64>(0)?,
-            row.get::<_, i64>(1)?,
-            row.get::<_, String>(2)?,
-            row.get::<_, String>(3)?,
-            row.get::<_, Option<Vec<u8>>>(4)?,
-            row.get::<_, Option<String>>(5)?,
-            row.get::<_, i64>(6)?,
-        ))
-    })?;
-    for (id, saved_id, format, mime, inline_data, blob_hash, byte_size) in
-        representations.collect::<std::result::Result<Vec<_>, _>>()?
-    {
-        let (inline, blob) = if let Some(bytes) = inline_data {
-            (Some(bytes), None)
-        } else if let Some(hash) = blob_hash {
-            validate_hash(&hash)?;
-            let bytes = fs::read(source_blobs.join(&hash))
-                .map_err(|_| StorageError::MissingBlob(hash.clone()))?;
-            if hash_bytes(&bytes) != hash {
-                return Err(StorageError::MissingBlob(hash));
-            }
-            let destination = destination_blobs.join(&hash);
-            if !destination.exists() {
-                fs::copy(source_blobs.join(&hash), destination)?;
-            }
-            (None, Some(hash))
-        } else {
-            return Err(StorageError::Migration(format!(
-                "saved representation {id} has no data"
-            )));
-        };
-        tx.execute(
-            "INSERT INTO saved_item_representations (id, saved_item_id, format, mime_type, inline_data, blob_hash, byte_size) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            params![id, saved_id, format, mime, inline, blob, byte_size],
-        )?;
-        if let Some(hash) = blob {
-            tx.execute("INSERT OR IGNORE INTO clipboard_blobs (hash, mime_type, byte_size) VALUES (?, ?, ?)", params![hash, mime, byte_size])?;
-        }
-        refresh_saved_search_tx(&tx, saved_id)?;
-    }
-    Ok(items.len())
-}
-
-fn synthesize_pinned_items(source: &Connection, tx: &Transaction<'_>) -> Result<usize> {
-    let mut statement = source.prepare("SELECT id, created_at, updated_at, source_app, source_executable, source_window_title, content_type, preview_text, searchable_text, sanitized_html, byte_size FROM clipboard_entries WHERE pinned = 1 ORDER BY id")?;
-    let entries = statement.query_map([], |row| {
-        Ok((
-            row.get::<_, i64>(0)?,
-            row.get::<_, i64>(1)?,
-            row.get::<_, i64>(2)?,
-            row.get::<_, Option<String>>(3)?,
-            row.get::<_, Option<String>>(4)?,
-            row.get::<_, Option<String>>(5)?,
-            row.get::<_, String>(6)?,
-            row.get::<_, Option<String>>(7)?,
-            row.get::<_, Option<String>>(8)?,
-            row.get::<_, Option<String>>(9)?,
-            row.get::<_, i64>(10)?,
-        ))
-    })?;
-    let entries = entries.collect::<std::result::Result<Vec<_>, _>>()?;
-    for (
-        entry_id,
-        created,
-        updated,
-        app,
-        executable,
-        title,
-        content_type,
-        preview,
-        searchable,
-        _html,
-        byte_size,
-    ) in &entries
-    {
-        tx.execute("INSERT INTO saved_items (source_history_id, created_at, updated_at, name, content_type, editable_text, source_app, source_executable, source_window_title, preview_text, byte_size, is_independent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)", params![entry_id, created, updated, legacy_saved_name(content_type, preview.as_deref()), content_type, is_text_like(content_type).then(|| searchable.clone().or_else(|| preview.clone()).unwrap_or_default()), app, executable, title, preview, byte_size])?;
-        let saved_id = tx.last_insert_rowid();
-        replace_tags_tx(tx, saved_id, &[])?;
-        let mut reps = tx.prepare("SELECT format, mime_type, inline_data, blob_hash, byte_size FROM clipboard_representations WHERE entry_id = ? ORDER BY id")?;
-        let rows = reps.query_map([entry_id], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, Option<Vec<u8>>>(2)?,
-                row.get::<_, Option<String>>(3)?,
-                row.get::<_, i64>(4)?,
-            ))
-        })?;
-        for (format, mime, inline, blob, size) in
-            rows.collect::<std::result::Result<Vec<_>, _>>()?
-        {
-            tx.execute("INSERT INTO saved_item_representations (saved_item_id, format, mime_type, inline_data, blob_hash, byte_size) VALUES (?, ?, ?, ?, ?, ?)", params![saved_id, format, mime, inline, blob, size])?;
-        }
-        refresh_saved_search_tx(tx, saved_id)?;
-    }
-    Ok(entries.len())
-}
-
-fn legacy_saved_name(content_type: &str, preview: Option<&str>) -> String {
+fn default_saved_item_name(content_type: &str, preview: Option<&str>) -> String {
     preview
         .and_then(|value| value.lines().map(str::trim).find(|line| !line.is_empty()))
         .map(|value| value.chars().take(120).collect())
@@ -3674,36 +3105,5 @@ mod tests {
             store.saved_item_payload(saved.id).unwrap()[0].bytes,
             b"edited"
         );
-    }
-
-    #[test]
-    fn migrates_pinned_only_legacy_schema_and_is_idempotent() {
-        let legacy = TempDir::new().unwrap();
-        fs::create_dir_all(legacy.path().join("blobs")).unwrap();
-        let legacy_db = legacy.path().join("culsans.sqlite3");
-        let connection = Connection::open(&legacy_db).unwrap();
-        connection.execute_batch(
-            "CREATE TABLE clipboard_settings (id INTEGER PRIMARY KEY, history_enabled INTEGER, record_sensitive INTEGER, store_window_titles INTEGER, max_entries INTEGER, max_total_bytes INTEGER, max_item_bytes INTEGER);
-             INSERT INTO clipboard_settings VALUES (1, 1, 0, 1, 50, 1000, 1000);
-             CREATE TABLE clipboard_entries (id INTEGER PRIMARY KEY, created_at INTEGER, updated_at INTEGER, source_app TEXT, source_executable TEXT, source_window_title TEXT, content_type TEXT, preview_text TEXT, searchable_text TEXT, sanitized_html TEXT, fingerprint TEXT UNIQUE, pinned INTEGER, byte_size INTEGER);
-             CREATE TABLE clipboard_representations (id INTEGER PRIMARY KEY, entry_id INTEGER, format TEXT, mime_type TEXT, inline_data BLOB, blob_hash TEXT, byte_size INTEGER);
-             ",
-        ).unwrap();
-        let bytes = vec![4; INLINE_LIMIT + 1];
-        let hash = hash_bytes(&bytes);
-        fs::write(legacy.path().join("blobs").join(&hash), &bytes).unwrap();
-        connection.execute("INSERT INTO clipboard_entries VALUES (1, 1, 2, 'Editor', NULL, NULL, 'image', 'preview', 'search', NULL, ?, 1, ?)", params![hash, bytes.len() as i64]).unwrap();
-        connection.execute("INSERT INTO clipboard_representations VALUES (1, 1, 'image', 'image/bmp', NULL, ?, ?)", params![hash, bytes.len() as i64]).unwrap();
-        connection.close().unwrap();
-        let echo = TempDir::new().unwrap();
-        let mut store = ClipboardStore::open(echo.path()).unwrap();
-        let report = store.migrate_legacy(legacy.path()).unwrap();
-        assert_eq!(report.entries, 1);
-        assert_eq!(report.favorites, 1);
-        assert_eq!(store.list_saved_items("", 10).unwrap().len(), 1);
-        let again = store.migrate_legacy(legacy.path()).unwrap();
-        assert!(again.already_migrated);
-        assert_eq!(store.list_entries("", 10).unwrap().len(), 1);
-        assert!(report.backup_dir.join("blobs").join(&hash).exists());
     }
 }
