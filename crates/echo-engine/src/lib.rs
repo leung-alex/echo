@@ -1,4 +1,5 @@
 mod domain;
+pub mod instrumentation;
 
 pub mod history;
 pub mod ingest;
@@ -23,6 +24,7 @@ pub use ingest::{
     ClipboardService, ClipboardSink, ContentIdentity, ContentType, MemorySink, NormalizedCapture,
     RecordResult, RepresentationIdentity, DEFAULT_CAPTURE_LIMIT_BYTES, INGESTION_QUEUE_CAPACITY,
 };
+pub use instrumentation::{OperationMetric, OperationMetrics};
 pub use preview::{PreviewAsset, Thumbnail, DEFAULT_THUMBNAIL_MAX_EDGE, THUMBNAIL_MIME_TYPE};
 pub use quick_insert::{
     QuickInsertAction, QuickInsertError, QuickInsertItem, QuickInsertOutcome, QuickInsertPage,

@@ -1,10 +1,11 @@
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use crate::{
     ClipboardError, ClipboardPlatform, ClipboardService, Library, LibraryError, LibraryItem,
-    LibraryItemKind, LibraryPage, LibraryStore, LibraryView, PageCursor, PasteDelivery,
-    PasteDeliveryFailure, PasteTarget, SavedItem, SavedItemUpdate, Thumbnail, DEFAULT_PAGE_SIZE,
-    MAX_PAGE_SIZE,
+    LibraryItemKind, LibraryPage, LibraryStore, LibraryView, OperationMetrics, PageCursor,
+    PasteDelivery, PasteDeliveryFailure, PasteTarget, SavedItem, SavedItemUpdate, Thumbnail,
+    DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -98,6 +99,7 @@ pub struct QuickInsertService<S: LibraryStore> {
     clipboard: Arc<ClipboardService>,
     platform: Arc<dyn ClipboardPlatform>,
     target: Mutex<Option<PasteTarget>>,
+    metrics: OperationMetrics,
 }
 
 impl<S: LibraryStore> QuickInsertService<S> {
@@ -111,10 +113,12 @@ impl<S: LibraryStore> QuickInsertService<S> {
             clipboard,
             platform,
             target: Mutex::new(None),
+            metrics: OperationMetrics::default(),
         }
     }
 
     pub fn list(&self, request: &QuickInsertRequest) -> Result<QuickInsertPage> {
+        let started = Instant::now();
         let view = match request.view {
             QuickInsertView::History => LibraryView::History,
             QuickInsertView::Favorites => LibraryView::Favorites,
@@ -127,6 +131,11 @@ impl<S: LibraryStore> QuickInsertService<S> {
         let LibraryPage { items, next_cursor } =
             self.library
                 .list(view, &request.query, limit, request.cursor)?;
+        self.metrics.record(
+            "first_result_availability",
+            started.elapsed(),
+            u64::from(!items.is_empty()),
+        );
         Ok(QuickInsertPage {
             items: items.into_iter().map(to_item).collect(),
             next_cursor,
@@ -250,6 +259,10 @@ impl<S: LibraryStore> QuickInsertService<S> {
 
     pub fn library(&self) -> &Library<S> {
         &self.library
+    }
+
+    pub fn metrics_snapshot(&self) -> Vec<crate::OperationMetric> {
+        self.metrics.snapshot()
     }
 }
 

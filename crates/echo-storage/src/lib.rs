@@ -1,16 +1,19 @@
+use std::any::Any;
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use echo_engine::{
     is_text_like, normalize_name, normalize_tags, CapturePolicy, CaptureSettings, CapturedCapture,
     ClipboardRepresentation, ClipboardSink, ContentIdentity, LibraryPage, LibraryStore,
-    NormalizedCapture, PageCursor, PreviewAsset, RecordResult, RepresentationIdentity,
-    SavedItemDraft, SavedItemUpdate, Thumbnail, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE,
-    THUMBNAIL_MIME_TYPE,
+    NormalizedCapture, OperationMetric, OperationMetrics, PageCursor, PreviewAsset, RecordResult,
+    RepresentationIdentity, SavedItemDraft, SavedItemUpdate, Thumbnail, DEFAULT_PAGE_SIZE,
+    MAX_PAGE_SIZE, THUMBNAIL_MIME_TYPE,
 };
 use rusqlite::types::Value;
 use rusqlite::{
@@ -25,6 +28,7 @@ const DEFAULT_MAX_ENTRIES: u32 = 5_000;
 const DEFAULT_MAX_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
 const DEFAULT_MAX_ITEM_BYTES: u64 = 32 * 1024 * 1024;
 const SEARCH_FTS_SCHEMA_KEY: &str = "search_fts_schema";
+const CURRENT_SCHEMA_VERSION: i32 = 4;
 
 #[derive(Debug, Error)]
 pub enum StorageError {
@@ -99,11 +103,16 @@ pub struct ClipboardStore {
     data_dir: PathBuf,
     blobs_dir: PathBuf,
     thumbnails_dir: PathBuf,
+    metrics: Arc<OperationMetrics>,
 }
 
 impl ClipboardStore {
     pub fn open(data_dir: impl AsRef<Path>) -> Result<Self> {
-        let data_dir = data_dir.as_ref().to_path_buf();
+        Self::open_with_metrics(data_dir.as_ref(), Arc::new(OperationMetrics::default()))
+    }
+
+    fn open_with_metrics(data_dir: &Path, metrics: Arc<OperationMetrics>) -> Result<Self> {
+        let data_dir = data_dir.to_path_buf();
         fs::create_dir_all(&data_dir)?;
         let blobs_dir = data_dir.join("blobs");
         fs::create_dir_all(&blobs_dir)?;
@@ -116,6 +125,7 @@ impl ClipboardStore {
             data_dir,
             blobs_dir,
             thumbnails_dir,
+            metrics,
         };
         store.configure()?;
         store.ensure_schema()?;
@@ -123,7 +133,14 @@ impl ClipboardStore {
     }
 
     pub fn open_in_memory(data_dir: impl AsRef<Path>) -> Result<Self> {
-        let data_dir = data_dir.as_ref().to_path_buf();
+        Self::open_in_memory_with_metrics(data_dir.as_ref(), Arc::new(OperationMetrics::default()))
+    }
+
+    fn open_in_memory_with_metrics(
+        data_dir: &Path,
+        metrics: Arc<OperationMetrics>,
+    ) -> Result<Self> {
+        let data_dir = data_dir.to_path_buf();
         fs::create_dir_all(data_dir.join("blobs"))?;
         fs::create_dir_all(data_dir.join("thumbnails"))?;
         let connection = Connection::open_in_memory()?;
@@ -132,9 +149,27 @@ impl ClipboardStore {
             blobs_dir: data_dir.join("blobs"),
             thumbnails_dir: data_dir.join("thumbnails"),
             data_dir,
+            metrics,
         };
         store.configure()?;
         store.ensure_schema()?;
+        Ok(store)
+    }
+
+    fn open_read_only(data_dir: &Path, metrics: Arc<OperationMetrics>) -> Result<Self> {
+        let data_dir = data_dir.to_path_buf();
+        let connection = Connection::open_with_flags(
+            data_dir.join("echo.sqlite3"),
+            OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )?;
+        let store = Self {
+            connection,
+            blobs_dir: data_dir.join("blobs"),
+            thumbnails_dir: data_dir.join("thumbnails"),
+            data_dir,
+            metrics,
+        };
+        store.configure_read_only()?;
         Ok(store)
     }
 
@@ -143,6 +178,15 @@ impl ClipboardStore {
             "PRAGMA foreign_keys = ON;
              PRAGMA busy_timeout = 5000;
              PRAGMA journal_mode = WAL;",
+        )?;
+        Ok(())
+    }
+
+    fn configure_read_only(&self) -> Result<()> {
+        self.connection.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             PRAGMA busy_timeout = 5000;
+             PRAGMA query_only = ON;",
         )?;
         Ok(())
     }
@@ -157,6 +201,282 @@ impl ClipboardStore {
     }
 
     fn ensure_schema(&mut self) -> Result<()> {
+        self.connection.execute_batch(
+            "CREATE TABLE IF NOT EXISTS migration_state (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                completed_at INTEGER NOT NULL
+            );",
+        )?;
+        let version: i32 = self
+            .connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        if version > CURRENT_SCHEMA_VERSION {
+            return Err(StorageError::Migration(format!(
+                "database schema version {version} is newer than Echo supports"
+            )));
+        }
+        for next in (version + 1)..=CURRENT_SCHEMA_VERSION {
+            match next {
+                1 => self.migrate_schema_v1()?,
+                2 => self.migrate_schema_v2()?,
+                3 => self.migrate_schema_v3()?,
+                4 => self.ensure_search_schema()?,
+                _ => unreachable!("schema version is bounded above"),
+            }
+            self.connection
+                .execute_batch(&format!("PRAGMA user_version = {next};"))?;
+        }
+        Ok(())
+    }
+
+    fn migrate_schema_v1(&mut self) -> Result<()> {
+        self.ensure_base_objects()?;
+        if table_exists_connection(&self.connection, "saved_insert_items")? {
+            self.migrate_legacy_saved_tables()?;
+        } else if has_column(&self.connection, "clipboard_entries", "pinned")?
+            && self.count_table("saved_items")? == 0
+        {
+            self.migrate_pinned_saved_items()?;
+        }
+        Ok(())
+    }
+
+    fn migrate_legacy_saved_tables(&mut self) -> Result<()> {
+        let items = {
+            let mut statement = self.connection.prepare(
+                "SELECT id, source_entry_id, created_at, updated_at, source_app,
+                        source_executable, source_window_title, content_type, preview_text,
+                        searchable_text, byte_size
+                 FROM saved_insert_items ORDER BY id",
+            )?;
+            let rows = statement.query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Option<i64>>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                    row.get::<_, Option<String>>(9)?,
+                    row.get::<_, i64>(10)?,
+                ))
+            })?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        let representations = {
+            let mut statement = self.connection.prepare(
+                "SELECT id, saved_item_id, format, mime_type, inline_data, blob_hash, byte_size
+                 FROM saved_insert_representations ORDER BY id",
+            )?;
+            let rows = statement.query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<Vec<u8>>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, i64>(6)?,
+                ))
+            })?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        let tx = self.connection.transaction()?;
+        for (
+            id,
+            source_id,
+            created,
+            updated,
+            app,
+            executable,
+            title,
+            content_type,
+            preview,
+            searchable,
+            byte_size,
+        ) in &items
+        {
+            tx.execute(
+                "INSERT OR IGNORE INTO saved_items
+                 (id, source_history_id, created_at, updated_at, name, content_type, editable_text,
+                  source_app, source_executable, source_window_title, preview_text, byte_size, is_independent)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
+                params![
+                    id,
+                    source_id,
+                    created,
+                    updated,
+                    legacy_saved_name(content_type, preview.as_deref()),
+                    content_type,
+                    is_text_like(content_type)
+                        .then(|| searchable.clone().or_else(|| preview.clone()).unwrap_or_default()),
+                    app,
+                    executable,
+                    title,
+                    preview,
+                    byte_size,
+                ],
+            )?;
+            replace_tags_tx(&tx, *id, &[])?;
+        }
+        for (id, saved_id, format, mime, inline_data, blob_hash, byte_size) in representations {
+            tx.execute(
+                "INSERT OR IGNORE INTO saved_item_representations
+                 (id, saved_item_id, format, mime_type, inline_data, blob_hash, byte_size)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+                params![
+                    id,
+                    saved_id,
+                    format,
+                    mime,
+                    inline_data,
+                    blob_hash,
+                    byte_size
+                ],
+            )?;
+            if let Some(hash) = blob_hash {
+                tx.execute(
+                    "INSERT OR IGNORE INTO clipboard_blobs (hash, mime_type, byte_size)
+                     VALUES (?, ?, ?)",
+                    params![hash, mime, byte_size],
+                )?;
+            }
+            refresh_saved_search_tx(&tx, saved_id)?;
+        }
+        for (id, ..) in &items {
+            refresh_saved_search_tx(&tx, *id)?;
+        }
+        tx.execute_batch(
+            "DROP TABLE saved_insert_representations;
+             DROP TABLE saved_insert_items;",
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn migrate_pinned_saved_items(&mut self) -> Result<()> {
+        let entries = {
+            let mut statement = self.connection.prepare(
+                "SELECT id, created_at, updated_at, source_app, source_executable,
+                        source_window_title, content_type, preview_text, searchable_text, byte_size
+                 FROM clipboard_entries WHERE pinned = 1 ORDER BY id",
+            )?;
+            let rows = statement.query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                    row.get::<_, i64>(9)?,
+                ))
+            })?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        let tx = self.connection.transaction()?;
+        for (
+            entry_id,
+            created,
+            updated,
+            app,
+            executable,
+            title,
+            content_type,
+            preview,
+            searchable,
+            byte_size,
+        ) in entries
+        {
+            tx.execute(
+                "INSERT OR IGNORE INTO saved_items
+                 (source_history_id, created_at, updated_at, name, content_type, editable_text,
+                  source_app, source_executable, source_window_title, preview_text, byte_size, is_independent)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
+                params![
+                    entry_id,
+                    created,
+                    updated,
+                    legacy_saved_name(&content_type, preview.as_deref()),
+                    content_type,
+                    is_text_like(&content_type)
+                        .then(|| searchable.clone().or_else(|| preview.clone()).unwrap_or_default()),
+                    app,
+                    executable,
+                    title,
+                    preview,
+                    byte_size,
+                ],
+            )?;
+            let saved_id = tx.last_insert_rowid();
+            let representations = {
+                let mut statement = tx.prepare(
+                    "SELECT format, mime_type, inline_data, blob_hash, byte_size
+                     FROM clipboard_representations WHERE entry_id = ? ORDER BY id",
+                )?;
+                let rows = statement.query_map([entry_id], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<Vec<u8>>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, i64>(4)?,
+                    ))
+                })?;
+                rows.collect::<std::result::Result<Vec<_>, _>>()?
+            };
+            for (format, mime, inline_data, blob_hash, size) in representations {
+                tx.execute(
+                    "INSERT INTO saved_item_representations
+                     (saved_item_id, format, mime_type, inline_data, blob_hash, byte_size)
+                     VALUES (?, ?, ?, ?, ?, ?)",
+                    params![saved_id, format, mime, inline_data, blob_hash, size],
+                )?;
+                if let Some(hash) = blob_hash {
+                    tx.execute(
+                        "INSERT OR IGNORE INTO clipboard_blobs (hash, mime_type, byte_size)
+                         VALUES (?, ?, ?)",
+                        params![hash, mime, size],
+                    )?;
+                }
+            }
+            replace_tags_tx(&tx, saved_id, &[])?;
+            refresh_saved_search_tx(&tx, saved_id)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn migrate_schema_v2(&self) -> Result<()> {
+        self.ensure_column("clipboard_representations", "content_hash", "TEXT")?;
+        self.ensure_column("saved_item_representations", "content_hash", "TEXT")?;
+        Ok(())
+    }
+
+    fn migrate_schema_v3(&self) -> Result<()> {
+        self.connection.execute_batch(
+            "CREATE TABLE IF NOT EXISTS preview_assets (
+                source_hash TEXT PRIMARY KEY,
+                thumbnail_hash TEXT NOT NULL,
+                mime_type TEXT NOT NULL,
+                width INTEGER NOT NULL,
+                height INTEGER NOT NULL,
+                byte_size INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS preview_assets_thumbnail_idx
+                ON preview_assets(thumbnail_hash);",
+        )?;
+        Ok(())
+    }
+
+    fn ensure_base_objects(&mut self) -> Result<()> {
         self.connection.execute_batch(
             "CREATE TABLE IF NOT EXISTS clipboard_settings (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -201,20 +521,10 @@ impl ClipboardStore {
                 mime_type TEXT NOT NULL,
                 byte_size INTEGER NOT NULL
             );
-            CREATE TABLE IF NOT EXISTS preview_assets (
-                source_hash TEXT PRIMARY KEY,
-                thumbnail_hash TEXT NOT NULL,
-                mime_type TEXT NOT NULL,
-                width INTEGER NOT NULL,
-                height INTEGER NOT NULL,
-                byte_size INTEGER NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS preview_assets_thumbnail_idx
-                ON preview_assets(thumbnail_hash);
-            CREATE VIRTUAL TABLE IF NOT EXISTS clipboard_fts USING fts5(
-                entry_id UNINDEXED,
-                searchable_text,
-                source_app
+            CREATE TABLE IF NOT EXISTS clipboard_fts (
+                entry_id TEXT NOT NULL,
+                searchable_text TEXT NOT NULL,
+                source_app TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS saved_items (
                 id INTEGER PRIMARY KEY,
@@ -259,7 +569,7 @@ impl ClipboardStore {
             );
             CREATE INDEX IF NOT EXISTS saved_item_tags_tag_idx ON saved_item_tags(tag_id);
             CREATE TABLE IF NOT EXISTS saved_items_fts (
-                saved_item_id INTEGER PRIMARY KEY REFERENCES saved_items(id) ON DELETE CASCADE,
+                saved_item_id INTEGER PRIMARY KEY,
                 document TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS migration_state (
@@ -268,9 +578,6 @@ impl ClipboardStore {
                 completed_at INTEGER NOT NULL
             );",
         )?;
-        self.ensure_column("clipboard_representations", "content_hash", "TEXT")?;
-        self.ensure_column("saved_item_representations", "content_hash", "TEXT")?;
-        self.ensure_search_schema()?;
         Ok(())
     }
 
@@ -337,6 +644,10 @@ impl ClipboardStore {
         &self.data_dir
     }
 
+    pub fn metrics_snapshot(&self) -> Vec<OperationMetric> {
+        self.metrics.snapshot()
+    }
+
     pub fn settings(&self) -> Result<ClipboardSettings> {
         self.connection
             .query_row(
@@ -385,7 +696,14 @@ impl ClipboardStore {
     }
 
     pub fn record_capture(&mut self, capture: NormalizedCapture) -> Result<RecordResult> {
-        self.record_captured(CapturedCapture::from_capture(capture).prepare_preview())
+        let started = Instant::now();
+        let captured = CapturedCapture::from_capture(capture).prepare_preview();
+        self.metrics.record(
+            "thumbnail_generation",
+            started.elapsed(),
+            u64::from(captured.preview.is_some()),
+        );
+        self.record_captured(captured)
     }
 
     pub fn record_captured(&mut self, captured: CapturedCapture) -> Result<RecordResult> {
@@ -425,6 +743,7 @@ impl ClipboardStore {
             )));
         }
         let now = now_millis();
+        let dedupe_started = Instant::now();
         let existing = self
             .connection
             .query_row(
@@ -433,6 +752,11 @@ impl ClipboardStore {
                 |row| row.get::<_, i64>(0),
             )
             .optional()?;
+        self.metrics.record(
+            "dedupe",
+            dedupe_started.elapsed(),
+            u64::from(existing.is_some()),
+        );
         let prepared = if existing.is_none() {
             capture
                 .representations
@@ -530,7 +854,10 @@ impl ClipboardStore {
             }
         }
         let evicted = Self::enforce_capacity_tx(&tx, &settings)?;
+        let commit_started = Instant::now();
         tx.commit()?;
+        self.metrics
+            .record("db_commit", commit_started.elapsed(), 1);
         if evicted {
             self.schedule_blob_gc()?;
         }
@@ -569,6 +896,14 @@ impl ClipboardStore {
     }
 
     fn write_blob(&self, hash: &str, mime_type: &str, bytes: &[u8]) -> Result<()> {
+        let started = Instant::now();
+        let result = self.write_blob_inner(hash, mime_type, bytes);
+        self.metrics
+            .record("blob_write", started.elapsed(), u64::from(result.is_ok()));
+        result
+    }
+
+    fn write_blob_inner(&self, hash: &str, mime_type: &str, bytes: &[u8]) -> Result<()> {
         validate_hash(hash)?;
         let path = self.blobs_dir.join(hash);
         if path.exists() {
@@ -594,6 +929,17 @@ impl ClipboardStore {
     }
 
     fn persist_thumbnail(&self, asset: &PreviewAsset) -> Result<()> {
+        let started = Instant::now();
+        let result = self.persist_thumbnail_inner(asset);
+        self.metrics.record(
+            "thumbnail_write",
+            started.elapsed(),
+            u64::from(result.is_ok()),
+        );
+        result
+    }
+
+    fn persist_thumbnail_inner(&self, asset: &PreviewAsset) -> Result<()> {
         let metadata = &asset.thumbnail;
         validate_hash(&metadata.source_hash)?;
         validate_hash(&metadata.content_hash)?;
@@ -776,6 +1122,7 @@ impl ClipboardStore {
         limit: u32,
         cursor: Option<PageCursor>,
     ) -> Result<LibraryPage<ClipboardEntry>> {
+        let query_started = Instant::now();
         let page_size = if limit == 0 {
             DEFAULT_PAGE_SIZE
         } else {
@@ -862,6 +1209,11 @@ impl ClipboardStore {
                 })
             })
             .flatten();
+        self.metrics.record(
+            "history_query",
+            query_started.elapsed(),
+            entries.len() as u64,
+        );
         Ok(LibraryPage {
             items: entries,
             next_cursor,
@@ -970,6 +1322,20 @@ impl ClipboardStore {
     }
 
     pub fn read_thumbnail(&self, content_hash: &str) -> Result<Option<StoredThumbnail>> {
+        let started = Instant::now();
+        let result = self.read_thumbnail_inner(content_hash);
+        let count = result
+            .as_ref()
+            .ok()
+            .and_then(Option::as_ref)
+            .map(|thumbnail| thumbnail.bytes.len() as u64)
+            .unwrap_or(0);
+        self.metrics
+            .record("preview_open", started.elapsed(), count);
+        result
+    }
+
+    fn read_thumbnail_inner(&self, content_hash: &str) -> Result<Option<StoredThumbnail>> {
         validate_hash(content_hash)?;
         let metadata = self
             .connection
@@ -1202,6 +1568,7 @@ impl ClipboardStore {
         limit: u32,
         cursor: Option<PageCursor>,
     ) -> Result<LibraryPage<SavedItem>> {
+        let query_started = Instant::now();
         let page_size = if limit == 0 {
             DEFAULT_PAGE_SIZE
         } else {
@@ -1274,6 +1641,11 @@ impl ClipboardStore {
                 })
             })
             .flatten();
+        self.metrics.record(
+            "saved_item_query",
+            query_started.elapsed(),
+            items.len() as u64,
+        );
         Ok(LibraryPage { items, next_cursor })
     }
 
@@ -1408,6 +1780,14 @@ impl ClipboardStore {
         Ok(())
     }
 
+    fn maintenance_pending(&self) -> Result<bool> {
+        Ok(self.connection.query_row(
+            "SELECT EXISTS (SELECT 1 FROM migration_state WHERE key = 'blob_gc_pending')",
+            [],
+            |row| row.get::<_, i64>(0),
+        )? != 0)
+    }
+
     pub fn reconcile_blob_store(&mut self) -> Result<()> {
         let mut referenced = HashSet::new();
         {
@@ -1431,11 +1811,13 @@ impl ClipboardStore {
                 return Err(StorageError::MissingBlob(hash.clone()));
             }
         }
-        let mut statement = self
-            .connection
-            .prepare("SELECT hash FROM clipboard_blobs")?;
-        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        let database_hashes = rows.collect::<std::result::Result<Vec<_>, _>>()?;
+        let database_hashes = {
+            let mut statement = self
+                .connection
+                .prepare("SELECT hash FROM clipboard_blobs")?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()?
+        };
         for hash in database_hashes {
             if !referenced.contains(&hash) {
                 self.connection
@@ -1454,10 +1836,61 @@ impl ClipboardStore {
                 }
             }
         }
+        self.reconcile_thumbnail_store()?;
         self.connection.execute(
             "DELETE FROM migration_state WHERE key = 'blob_gc_pending'",
             [],
         )?;
+        Ok(())
+    }
+
+    fn reconcile_thumbnail_store(&mut self) -> Result<()> {
+        let mut referenced_sources = HashSet::new();
+        for table in ["clipboard_representations", "saved_item_representations"] {
+            let sql = format!(
+                "SELECT COALESCE(content_hash, blob_hash) FROM {table} WHERE COALESCE(content_hash, blob_hash) IS NOT NULL"
+            );
+            let mut statement = self.connection.prepare(&sql)?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            for row in rows {
+                referenced_sources.insert(row?);
+            }
+        }
+        let preview_rows = {
+            let mut statement = self
+                .connection
+                .prepare("SELECT source_hash, thumbnail_hash FROM preview_assets")?;
+            let rows = statement.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        let mut referenced_thumbnails = HashSet::new();
+        for (source_hash, thumbnail_hash) in preview_rows {
+            if referenced_sources.contains(&source_hash) {
+                referenced_thumbnails.insert(thumbnail_hash);
+            } else {
+                self.connection.execute(
+                    "DELETE FROM preview_assets WHERE source_hash = ?",
+                    [source_hash],
+                )?;
+            }
+        }
+        if self.thumbnails_dir.exists() {
+            for item in fs::read_dir(&self.thumbnails_dir)? {
+                let item = item?;
+                let path = item.path();
+                let name = item.file_name().to_string_lossy().to_string();
+                if name.starts_with('.')
+                    || name.ends_with(".tmp")
+                    || !referenced_thumbnails.contains(&name)
+                {
+                    if path.is_file() {
+                        let _ = fs::remove_file(path);
+                    }
+                }
+            }
+        }
         Ok(())
     }
 
@@ -1708,49 +2141,252 @@ fn preview_text(value: &str) -> String {
     value.chars().take(600).collect()
 }
 
+type BoxedWriteResult = Result<Box<dyn Any + Send>>;
+type WriteOperation = Box<dyn FnOnce(&mut ClipboardStore) -> BoxedWriteResult + Send>;
+
+struct WriteRequest {
+    operation: WriteOperation,
+    response: SyncSender<BoxedWriteResult>,
+}
+
+struct WriterRuntime {
+    sender: SyncSender<WriteRequest>,
+}
+
+impl WriterRuntime {
+    fn open(data_dir: &Path, metrics: Arc<OperationMetrics>) -> Result<Self> {
+        let (sender, receiver) = mpsc::sync_channel(32);
+        let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
+        let data_dir = data_dir.to_path_buf();
+        thread::Builder::new()
+            .name("echo-storage-writer".to_owned())
+            .spawn(move || {
+                let mut store = match ClipboardStore::open_with_metrics(&data_dir, metrics) {
+                    Ok(store) => {
+                        let _ = ready_sender.send(Ok(()));
+                        store
+                    }
+                    Err(error) => {
+                        let _ = ready_sender.send(Err(error.to_string()));
+                        return;
+                    }
+                };
+                writer_loop(&mut store, receiver);
+            })
+            .map_err(|error| {
+                StorageError::Invalid(format!("cannot start storage writer: {error}"))
+            })?;
+        match ready_receiver.recv() {
+            Ok(Ok(())) => Ok(Self { sender }),
+            Ok(Err(error)) => Err(StorageError::Invalid(error)),
+            Err(error) => Err(StorageError::Invalid(format!(
+                "storage writer did not start: {error}"
+            ))),
+        }
+    }
+
+    fn from_store(store: ClipboardStore) -> Self {
+        let (sender, receiver) = mpsc::sync_channel(32);
+        thread::Builder::new()
+            .name("echo-storage-writer".to_owned())
+            .spawn(move || {
+                let mut store = store;
+                writer_loop(&mut store, receiver);
+            })
+            .expect("Echo storage writer thread");
+        Self { sender }
+    }
+
+    fn execute<T, F>(&self, operation: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut ClipboardStore) -> Result<T> + Send + 'static,
+    {
+        let (response_sender, response_receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriteRequest {
+                operation: Box::new(move |store| {
+                    operation(store).map(|value| Box::new(value) as Box<dyn Any + Send>)
+                }),
+                response: response_sender,
+            })
+            .map_err(|_| StorageError::Invalid("storage writer is unavailable".to_owned()))?;
+        let result = response_receiver
+            .recv()
+            .map_err(|_| StorageError::Invalid("storage writer stopped".to_owned()))??;
+        result.downcast::<T>().map(|value| *value).map_err(|_| {
+            StorageError::Invalid("storage writer returned an invalid result".to_owned())
+        })
+    }
+}
+
+fn writer_loop(store: &mut ClipboardStore, receiver: mpsc::Receiver<WriteRequest>) {
+    while let Ok(request) = receiver.recv() {
+        let result = (request.operation)(store);
+        let _ = request.response.send(result);
+    }
+}
+
+struct ReaderRuntime {
+    store: Mutex<ClipboardStore>,
+}
+
+impl ReaderRuntime {
+    fn open(data_dir: &Path, metrics: Arc<OperationMetrics>) -> Result<Self> {
+        Ok(Self {
+            store: Mutex::new(ClipboardStore::open_read_only(data_dir, metrics)?),
+        })
+    }
+
+    fn empty(data_dir: &Path, metrics: Arc<OperationMetrics>) -> Self {
+        Self {
+            store: Mutex::new(
+                ClipboardStore::open_in_memory_with_metrics(data_dir, metrics)
+                    .expect("Echo read runtime database"),
+            ),
+        }
+    }
+
+    fn read<T>(&self, operation: impl FnOnce(&ClipboardStore) -> Result<T>) -> Result<T> {
+        let store = self
+            .store
+            .lock()
+            .map_err(|_| StorageError::Invalid("storage reader is unavailable".to_owned()))?;
+        operation(&store)
+    }
+}
+
+struct MaintenanceRuntime {
+    sender: SyncSender<Duration>,
+}
+
+impl MaintenanceRuntime {
+    fn new(writer: Arc<WriterRuntime>, metrics: Arc<OperationMetrics>) -> Self {
+        let (sender, receiver) = mpsc::sync_channel(32);
+        thread::Builder::new()
+            .name("echo-storage-maintenance".to_owned())
+            .spawn(move || {
+                while let Ok(delay) = receiver.recv() {
+                    let mut deadline = Instant::now() + delay;
+                    loop {
+                        let remaining = deadline.saturating_duration_since(Instant::now());
+                        if remaining.is_zero() {
+                            break;
+                        }
+                        match receiver.recv_timeout(remaining) {
+                            Ok(next_delay) => {
+                                deadline = deadline.max(Instant::now() + next_delay);
+                            }
+                            Err(mpsc::RecvTimeoutError::Timeout) => break,
+                            Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                        }
+                    }
+                    let started = Instant::now();
+                    let result = writer.execute(|store| store.reconcile_blob_store());
+                    metrics.record(
+                        "maintenance_reconcile",
+                        started.elapsed(),
+                        u64::from(result.is_ok()),
+                    );
+                }
+            })
+            .expect("Echo storage maintenance thread");
+        Self { sender }
+    }
+
+    fn request(&self, delay: Duration) {
+        let _ = self.sender.try_send(delay);
+    }
+}
+
 #[derive(Clone)]
 pub struct SharedClipboardStore {
-    inner: Arc<Mutex<ClipboardStore>>,
+    writer: Arc<WriterRuntime>,
+    reader: Arc<ReaderRuntime>,
+    maintenance: Arc<MaintenanceRuntime>,
+    metrics: Arc<OperationMetrics>,
 }
 
 impl SharedClipboardStore {
     pub fn open(data_dir: impl AsRef<Path>) -> Result<Self> {
-        Ok(Self {
-            inner: Arc::new(Mutex::new(ClipboardStore::open(data_dir)?)),
-        })
+        let data_dir = data_dir.as_ref().to_path_buf();
+        let metrics = Arc::new(OperationMetrics::default());
+        let writer = Arc::new(WriterRuntime::open(&data_dir, Arc::clone(&metrics))?);
+        let reader = Arc::new(ReaderRuntime::open(&data_dir, Arc::clone(&metrics))?);
+        let maintenance = Arc::new(MaintenanceRuntime::new(
+            Arc::clone(&writer),
+            Arc::clone(&metrics),
+        ));
+        let shared = Self {
+            writer,
+            reader,
+            maintenance,
+            metrics,
+        };
+        shared.request_maintenance_now();
+        Ok(shared)
     }
 
     pub fn from_store(store: ClipboardStore) -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(store)),
+        let data_dir = store.data_dir().to_path_buf();
+        let metrics = Arc::new(OperationMetrics::default());
+        let writer = Arc::new(WriterRuntime::from_store(store));
+        let reader = Arc::new(
+            ReaderRuntime::open(&data_dir, Arc::clone(&metrics))
+                .unwrap_or_else(|_| ReaderRuntime::empty(&data_dir, Arc::clone(&metrics))),
+        );
+        let maintenance = Arc::new(MaintenanceRuntime::new(
+            Arc::clone(&writer),
+            Arc::clone(&metrics),
+        ));
+        let shared = Self {
+            writer,
+            reader,
+            maintenance,
+            metrics,
+        };
+        shared.request_maintenance_now();
+        shared
+    }
+
+    pub fn with_store<T, F>(&self, operation: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut ClipboardStore) -> Result<T> + Send + 'static,
+    {
+        self.writer.execute(operation)
+    }
+
+    pub fn metrics_snapshot(&self) -> Vec<OperationMetric> {
+        self.metrics.snapshot()
+    }
+
+    pub fn request_maintenance(&self) {
+        self.maintenance.request(Duration::from_millis(100));
+    }
+
+    fn request_maintenance_now(&self) {
+        self.maintenance.request(Duration::ZERO);
+    }
+
+    fn request_after_pending_write(&self, pending: bool) {
+        if pending {
+            self.request_maintenance();
         }
     }
 
-    pub fn with_store<T>(
-        &self,
-        operation: impl FnOnce(&mut ClipboardStore) -> Result<T>,
-    ) -> Result<T> {
-        let mut store = self
-            .inner
-            .lock()
-            .map_err(|_| StorageError::Invalid("storage lock poisoned".to_owned()))?;
-        operation(&mut store)
-    }
-
     pub fn settings(&self) -> Result<ClipboardSettings> {
-        self.with_store(|store| store.settings())
+        self.reader.read(|store| store.settings())
     }
 
     pub fn update_settings(&self, settings: &ClipboardSettings) -> Result<()> {
-        self.with_store(|store| store.update_settings(settings))
+        let settings = settings.clone();
+        self.with_store(move |store| store.update_settings(&settings))
     }
 
     pub fn list_entries(&self, query: &str, limit: u32) -> Result<Vec<ClipboardEntry>> {
-        let store = self
-            .inner
-            .lock()
-            .map_err(|_| StorageError::Invalid("storage lock poisoned".to_owned()))?;
-        store.list_entries(query, limit)
+        let query = query.to_owned();
+        self.reader.read(|store| store.list_entries(&query, limit))
     }
 
     pub fn list_entries_page(
@@ -1759,19 +2395,13 @@ impl SharedClipboardStore {
         limit: u32,
         cursor: Option<PageCursor>,
     ) -> Result<LibraryPage<ClipboardEntry>> {
-        let store = self
-            .inner
-            .lock()
-            .map_err(|_| StorageError::Invalid("storage lock poisoned".to_owned()))?;
-        store.list_entries_page(query, limit, cursor)
+        let query = query.to_owned();
+        self.reader
+            .read(|store| store.list_entries_page(&query, limit, cursor))
     }
 
     pub fn entry(&self, id: i64) -> Result<Option<StoredClipboardEntry>> {
-        let store = self
-            .inner
-            .lock()
-            .map_err(|_| StorageError::Invalid("storage lock poisoned".to_owned()))?;
-        store.entry(id)
+        self.reader.read(|store| store.entry(id))
     }
 
     pub fn history_entry(&self, id: i64) -> Result<Option<ClipboardEntry>> {
@@ -1779,27 +2409,19 @@ impl SharedClipboardStore {
     }
 
     pub fn entry_payload(&self, id: i64) -> Result<Vec<ClipboardRepresentation>> {
-        let store = self
-            .inner
-            .lock()
-            .map_err(|_| StorageError::Invalid("storage lock poisoned".to_owned()))?;
-        store.entry_payload(id)
+        self.reader.read(|store| store.entry_payload(id))
     }
 
     pub fn read_thumbnail(&self, content_hash: &str) -> Result<Option<StoredThumbnail>> {
-        let store = self
-            .inner
-            .lock()
-            .map_err(|_| StorageError::Invalid("storage lock poisoned".to_owned()))?;
-        store.read_thumbnail(content_hash)
+        let content_hash = content_hash.to_owned();
+        self.reader
+            .read(|store| store.read_thumbnail(&content_hash))
     }
 
     pub fn list_saved_items(&self, query: &str, limit: u32) -> Result<Vec<SavedItem>> {
-        let store = self
-            .inner
-            .lock()
-            .map_err(|_| StorageError::Invalid("storage lock poisoned".to_owned()))?;
-        store.list_saved_items(query, limit)
+        let query = query.to_owned();
+        self.reader
+            .read(|store| store.list_saved_items(&query, limit))
     }
 
     pub fn list_saved_items_page(
@@ -1808,27 +2430,17 @@ impl SharedClipboardStore {
         limit: u32,
         cursor: Option<PageCursor>,
     ) -> Result<LibraryPage<SavedItem>> {
-        let store = self
-            .inner
-            .lock()
-            .map_err(|_| StorageError::Invalid("storage lock poisoned".to_owned()))?;
-        store.list_saved_items_page(query, limit, cursor)
+        let query = query.to_owned();
+        self.reader
+            .read(|store| store.list_saved_items_page(&query, limit, cursor))
     }
 
     pub fn saved_item(&self, id: i64) -> Result<Option<StoredSavedItem>> {
-        let store = self
-            .inner
-            .lock()
-            .map_err(|_| StorageError::Invalid("storage lock poisoned".to_owned()))?;
-        store.saved_item(id)
+        self.reader.read(|store| store.saved_item(id))
     }
 
     pub fn saved_item_payload(&self, id: i64) -> Result<Vec<ClipboardRepresentation>> {
-        let store = self
-            .inner
-            .lock()
-            .map_err(|_| StorageError::Invalid("storage lock poisoned".to_owned()))?;
-        store.saved_item_payload(id)
+        self.reader.read(|store| store.saved_item_payload(id))
     }
 
     pub fn save_history_item(
@@ -1836,27 +2448,46 @@ impl SharedClipboardStore {
         draft: SavedItemDraft,
         payload: Vec<ClipboardRepresentation>,
     ) -> Result<SavedItem> {
-        self.with_store(|store| store.save_history_item(draft, payload))
+        let saved = self.with_store(move |store| store.save_history_item(draft, payload))?;
+        self.request_maintenance();
+        Ok(saved)
     }
 
     pub fn unsave_history_item(&self, id: i64) -> Result<bool> {
-        self.with_store(|store| store.unsave_history_item(id))
+        let deleted = self.with_store(move |store| store.unsave_history_item(id))?;
+        if deleted {
+            self.request_maintenance();
+        }
+        Ok(deleted)
     }
 
     pub fn update_saved_item(&self, id: i64, update: SavedItemUpdate) -> Result<SavedItem> {
-        self.with_store(|store| store.update_saved_item(id, update))
+        let saved = self.with_store(move |store| store.update_saved_item(id, update))?;
+        self.request_maintenance();
+        Ok(saved)
     }
 
     pub fn delete_entry(&self, id: i64) -> Result<bool> {
-        self.with_store(|store| store.delete_entry(id))
+        let deleted = self.with_store(move |store| store.delete_entry(id))?;
+        if deleted {
+            self.request_maintenance();
+        }
+        Ok(deleted)
     }
 
     pub fn delete_saved_items(&self, ids: &[i64]) -> Result<usize> {
-        self.with_store(|store| store.delete_saved_items(ids))
+        let ids = ids.to_vec();
+        let deleted = self.with_store(move |store| store.delete_saved_items(&ids))?;
+        if deleted != 0 {
+            self.request_maintenance();
+        }
+        Ok(deleted)
     }
 
     pub fn clear_history(&self) -> Result<()> {
-        self.with_store(|store| store.clear_history())
+        self.with_store(|store| store.clear_history())?;
+        self.request_maintenance();
+        Ok(())
     }
 
     pub fn reconcile_blob_store(&self) -> Result<()> {
@@ -1864,7 +2495,12 @@ impl SharedClipboardStore {
     }
 
     pub fn migrate_legacy(&self, legacy_dir: impl AsRef<Path>) -> Result<MigrationReport> {
-        self.with_store(|store| store.migrate_legacy(legacy_dir))
+        let legacy_dir = legacy_dir.as_ref().to_path_buf();
+        let report = self.with_store(move |store| store.migrate_legacy(&legacy_dir))?;
+        if !report.already_migrated {
+            self.request_maintenance_now();
+        }
+        Ok(report)
     }
 }
 
@@ -1876,8 +2512,15 @@ impl ClipboardSink for SharedClipboardStore {
     }
 
     fn record(&self, capture: NormalizedCapture) -> std::result::Result<RecordResult, String> {
-        self.with_store(|store| store.record_capture(capture))
-            .map_err(|error| error.to_string())
+        let (result, pending) = self
+            .with_store(move |store| {
+                let result = store.record_capture(capture)?;
+                let pending = store.maintenance_pending()?;
+                Ok((result, pending))
+            })
+            .map_err(|error| error.to_string())?;
+        self.request_after_pending_write(pending);
+        Ok(result)
     }
 
     fn capture_policy(&self) -> std::result::Result<CapturePolicy, String> {
@@ -1890,8 +2533,19 @@ impl ClipboardSink for SharedClipboardStore {
         &self,
         captured: CapturedCapture,
     ) -> std::result::Result<RecordResult, String> {
-        self.with_store(|store| store.record_captured(captured))
-            .map_err(|error| error.to_string())
+        let (result, pending) = self
+            .with_store(move |store| {
+                let result = store.record_captured(captured)?;
+                let pending = store.maintenance_pending()?;
+                Ok((result, pending))
+            })
+            .map_err(|error| error.to_string())?;
+        self.request_after_pending_write(pending);
+        Ok(result)
+    }
+
+    fn request_maintenance(&self) {
+        SharedClipboardStore::request_maintenance(self);
     }
 
     fn reconcile(&self) -> std::result::Result<(), String> {
@@ -2768,6 +3422,219 @@ mod tests {
             )
             .unwrap();
         assert!(marker.starts_with("2:"));
+    }
+
+    #[test]
+    fn versioned_fixture_upgrades_preserve_records_and_are_idempotent() {
+        for (fixture, entries, favorites) in [
+            (include_str!("../fixtures/migrations/pre-r0.sql"), 1, 0),
+            (include_str!("../fixtures/migrations/pre-r1.sql"), 1, 1),
+            (include_str!("../fixtures/migrations/pre-r2.sql"), 1, 1),
+        ] {
+            let root = TempDir::new().unwrap();
+            let database = root.path().join("echo.sqlite3");
+            let connection = Connection::open(&database).unwrap();
+            connection.execute_batch(fixture).unwrap();
+            drop(connection);
+
+            let store = ClipboardStore::open(root.path()).unwrap();
+            let version: i32 = store
+                .connection
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(version, CURRENT_SCHEMA_VERSION);
+            assert_eq!(store.list_entries("", 20).unwrap().len(), entries);
+            assert_eq!(store.list_saved_items("", 20).unwrap().len(), favorites);
+            drop(store);
+
+            let reopened = ClipboardStore::open(root.path()).unwrap();
+            let reopened_version: i32 = reopened
+                .connection
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(reopened_version, CURRENT_SCHEMA_VERSION);
+            assert_eq!(reopened.list_entries("", 20).unwrap().len(), entries);
+            assert_eq!(reopened.list_saved_items("", 20).unwrap().len(), favorites);
+        }
+    }
+
+    #[test]
+    fn pre_r0_saved_item_fixture_migrates_payload_and_removes_legacy_tables() {
+        let root = TempDir::new().unwrap();
+        let database = root.path().join("echo.sqlite3");
+        let connection = Connection::open(&database).unwrap();
+        connection
+            .execute_batch(include_str!(
+                "../fixtures/migrations/pre-r0-saved-items.sql"
+            ))
+            .unwrap();
+        drop(connection);
+
+        let store = ClipboardStore::open(root.path()).unwrap();
+        let items = store.list_saved_items("saved text", 20).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].source_history_id, Some(41));
+        assert_eq!(
+            store.saved_item_payload(items[0].id).unwrap()[0].bytes,
+            b"pre-r0 saved text"
+        );
+        assert!(!table_exists_connection(&store.connection, "saved_insert_items").unwrap());
+        assert!(
+            !table_exists_connection(&store.connection, "saved_insert_representations").unwrap()
+        );
+
+        drop(store);
+        let reopened = ClipboardStore::open(root.path()).unwrap();
+        assert_eq!(
+            reopened.list_saved_items("saved text", 20).unwrap().len(),
+            1
+        );
+        assert_eq!(
+            reopened.saved_item_payload(61).unwrap()[0].bytes,
+            b"pre-r0 saved text"
+        );
+    }
+
+    #[test]
+    fn storage_reader_progresses_while_writer_is_blocked() {
+        let root = TempDir::new().unwrap();
+        let store = SharedClipboardStore::open(root.path()).unwrap();
+        let writer = store.clone();
+        let (entered, entered_receiver) = std::sync::mpsc::channel();
+        let (release, release_receiver) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            writer
+                .with_store(move |_| {
+                    entered.send(()).unwrap();
+                    release_receiver.recv().unwrap();
+                    Ok::<_, StorageError>(())
+                })
+                .unwrap();
+        });
+        entered_receiver
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
+        let started = Instant::now();
+        assert!(store.list_entries("", 20).unwrap().is_empty());
+        assert!(started.elapsed() < std::time::Duration::from_millis(500));
+        release.send(()).unwrap();
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn preview_file_reads_do_not_wait_for_the_writer_runtime() {
+        let root = TempDir::new().unwrap();
+        let store = SharedClipboardStore::open(root.path()).unwrap();
+        let mut capture = text_capture("preview", 1);
+        let original = one_pixel_png();
+        capture.content_type = ContentType::Image;
+        capture.representations = vec![ClipboardRepresentation {
+            format: "image".to_owned(),
+            mime_type: "image/png".to_owned(),
+            bytes: original,
+        }];
+        capture.fingerprint = fingerprint(&capture.representations);
+        let id = store
+            .with_store(move |store| Ok::<_, StorageError>(store.record_capture(capture)?.id))
+            .unwrap();
+        let hash = store
+            .entry(id)
+            .unwrap()
+            .unwrap()
+            .entry
+            .thumbnail
+            .unwrap()
+            .content_hash;
+
+        let writer = store.clone();
+        let (entered, entered_receiver) = std::sync::mpsc::channel();
+        let (release, release_receiver) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            writer
+                .with_store(move |_| {
+                    entered.send(()).unwrap();
+                    release_receiver.recv().unwrap();
+                    Ok::<_, StorageError>(())
+                })
+                .unwrap();
+        });
+        entered_receiver
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
+        assert!(store.read_thumbnail(&hash).unwrap().is_some());
+        release.send(()).unwrap();
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn maintenance_runs_on_startup_and_delete_not_on_normal_insert() {
+        let root = TempDir::new().unwrap();
+        let store = SharedClipboardStore::open(root.path()).unwrap();
+        let deadline = Instant::now() + std::time::Duration::from_secs(1);
+        while Instant::now() < deadline
+            && !store
+                .metrics_snapshot()
+                .iter()
+                .any(|metric| metric.operation == "maintenance_reconcile")
+        {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let startup_runs = store
+            .metrics_snapshot()
+            .into_iter()
+            .find(|metric| metric.operation == "maintenance_reconcile")
+            .map(|metric| metric.samples)
+            .unwrap_or(0);
+        assert_eq!(startup_runs, 1);
+
+        let id = store
+            .with_store(|store| {
+                Ok::<_, StorageError>(store.record_capture(text_capture("maintenance", 1))?.id)
+            })
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        let after_insert = store
+            .metrics_snapshot()
+            .into_iter()
+            .find(|metric| metric.operation == "maintenance_reconcile")
+            .map(|metric| metric.samples)
+            .unwrap_or(0);
+        assert_eq!(after_insert, startup_runs);
+
+        store.delete_entry(id).unwrap();
+        let deadline = Instant::now() + std::time::Duration::from_secs(1);
+        while Instant::now() < deadline
+            && store
+                .metrics_snapshot()
+                .into_iter()
+                .find(|metric| metric.operation == "maintenance_reconcile")
+                .map(|metric| metric.samples)
+                .unwrap_or(0)
+                < startup_runs + 1
+        {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let delete_runs = store
+            .metrics_snapshot()
+            .into_iter()
+            .find(|metric| metric.operation == "maintenance_reconcile")
+            .map(|metric| metric.samples)
+            .unwrap_or(0);
+        assert_eq!(delete_runs, startup_runs + 1);
+    }
+
+    #[test]
+    fn instrumentation_is_structured_and_redacts_capture_values() {
+        let root = TempDir::new().unwrap();
+        let mut store = ClipboardStore::open(root.path()).unwrap();
+        store
+            .record_capture(text_capture("never-log-this-payload", 1))
+            .unwrap();
+        let encoded = serde_json::to_string(&store.metrics_snapshot()).unwrap();
+        assert!(encoded.contains("dedupe"));
+        assert!(encoded.contains("db_commit"));
+        assert!(!encoded.contains("never-log-this-payload"));
+        assert!(!encoded.contains(root.path().to_string_lossy().as_ref()));
     }
 
     fn one_pixel_png() -> Vec<u8> {

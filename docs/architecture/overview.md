@@ -56,6 +56,10 @@ Windows clipboard event
 Quick Insert activation captures the paste target before Echo is shown. The UI
 must not capture it again after the native activation handoff.
 
+Storage runtime ownership, ordered schema migrations, instrumentation, and the
+deterministic R5 diagnostic are documented in
+`docs/architecture/storage-runtime.md`.
+
 ## Transport
 
 Commands carry requests and responses, events carry small invalidation signals,

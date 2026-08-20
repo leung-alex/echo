@@ -35,7 +35,7 @@ if not defined CACHE_KEY (
 
 set "CACHED_EXE=%CACHE_ROOT%\echo-%CACHE_KEY%.exe"
 if not exist "%CACHED_EXE%" (
-  echo [echo bootstrap] build %CACHE_KEY%
+  >&2 echo [echo bootstrap] build %CACHE_KEY%
   set "BUILD_EXE=%SESSION_ROOT%\echo-build.exe"
   go -C tools\echo build -trimpath -o "!BUILD_EXE!" .
   if errorlevel 1 (

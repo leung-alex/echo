@@ -2,13 +2,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::domain::{
     ClipboardPlatform, ClipboardRepresentation, ClipboardSnapshot, PlatformChange,
     PlatformChangeSubscription, PlatformError, SourceContext,
 };
 use crate::settings::ClipboardSettings;
+use crate::OperationMetrics;
 use ammonia::Builder;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -263,6 +264,7 @@ pub trait ClipboardSink: Send + Sync {
     ) -> std::result::Result<RecordResult, String> {
         self.record(captured.capture)
     }
+    fn request_maintenance(&self) {}
     fn reconcile(&self) -> std::result::Result<(), String> {
         Ok(())
     }
@@ -301,6 +303,7 @@ struct Shared {
     last_sequence: AtomicU64,
     ignored_sequence: AtomicU64,
     last_error: Mutex<Option<String>>,
+    metrics: Arc<OperationMetrics>,
 }
 
 #[derive(Clone)]
@@ -318,14 +321,6 @@ pub struct ClipboardService {
     shared: Arc<Shared>,
     listener: Mutex<Option<ClipboardListener>>,
     worker: Mutex<Option<JoinHandle<()>>>,
-    maintenance_state: Arc<Mutex<MaintenanceState>>,
-    maintenance: Mutex<Option<JoinHandle<()>>>,
-}
-
-#[derive(Default)]
-struct MaintenanceState {
-    running: bool,
-    pending: bool,
 }
 
 struct IngestionJob {
@@ -353,6 +348,7 @@ impl ClipboardService {
             last_sequence: AtomicU64::new(baseline_sequence),
             ignored_sequence: AtomicU64::new(0),
             last_error: Mutex::new(None),
+            metrics: Arc::new(OperationMetrics::default()),
         });
         let startup_sequence =
             (post_subscribe_sequence != baseline_sequence).then_some(post_subscribe_sequence);
@@ -372,8 +368,6 @@ impl ClipboardService {
             shared,
             listener: Mutex::new(Some(ClipboardListener { stop, handle })),
             worker: Mutex::new(Some(ingestion_worker)),
-            maintenance_state: Arc::new(Mutex::new(MaintenanceState::default())),
-            maintenance: Mutex::new(None),
         }
     }
 
@@ -425,75 +419,15 @@ impl ClipboardService {
     }
 
     pub fn start_maintenance(&self) {
-        self.spawn_maintenance(Duration::ZERO);
+        self.shared.sink.request_maintenance();
+    }
+
+    pub fn metrics_snapshot(&self) -> Vec<crate::OperationMetric> {
+        self.shared.metrics.snapshot()
     }
 
     pub fn request_maintenance(&self) {
-        self.spawn_maintenance(Duration::from_millis(100));
-    }
-
-    fn spawn_maintenance(&self, delay: Duration) {
-        let should_spawn = {
-            let mut state = self
-                .maintenance_state
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            if state.running {
-                state.pending = true;
-                false
-            } else {
-                state.running = true;
-                true
-            }
-        };
-        if !should_spawn {
-            return;
-        }
-        let mut maintenance = self
-            .maintenance
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        if let Some(handle) = maintenance.take() {
-            let _ = handle.join();
-        }
-        let shared = Arc::clone(&self.shared);
-        let state = Arc::clone(&self.maintenance_state);
-        let handle = thread::Builder::new()
-            .name("echo-clipboard-maintenance".to_owned())
-            .spawn(move || {
-                let mut wait = delay;
-                loop {
-                    if !wait.is_zero() {
-                        thread::sleep(wait);
-                    }
-                    if let Err(error) = shared.sink.reconcile() {
-                        if let Ok(mut last_error) = shared.last_error.lock() {
-                            *last_error = Some(error);
-                        }
-                    }
-                    let run_again = {
-                        let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
-                        if state.pending {
-                            state.pending = false;
-                            true
-                        } else {
-                            state.running = false;
-                            false
-                        }
-                    };
-                    if !run_again {
-                        break;
-                    }
-                    wait = Duration::from_millis(100);
-                }
-            })
-            .ok();
-        if let Some(handle) = handle {
-            *maintenance = Some(handle);
-        } else if let Ok(mut state) = self.maintenance_state.lock() {
-            state.running = false;
-            state.pending = false;
-        }
+        self.shared.sink.request_maintenance();
     }
 
     pub fn last_error(&self) -> Option<String> {
@@ -524,14 +458,6 @@ impl ClipboardService {
             .take()
         {
             let _ = worker.join();
-        }
-        if let Some(maintenance) = self
-            .maintenance
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .take()
-        {
-            let _ = maintenance.join();
         }
     }
 }
@@ -597,7 +523,18 @@ fn capture_sequence(
             }));
         }
         let policy = configuration.policy;
-        let Some(snapshot) = shared.platform.read_clipboard(&policy)? else {
+        let read_started = Instant::now();
+        let snapshot_result = shared.platform.read_clipboard(&policy);
+        let read_count = snapshot_result
+            .as_ref()
+            .ok()
+            .and_then(Option::as_ref)
+            .map(|snapshot| snapshot.representations.len() as u64)
+            .unwrap_or(0);
+        shared
+            .metrics
+            .record("capture_read", read_started.elapsed(), read_count);
+        let Some(snapshot) = snapshot_result? else {
             shared.last_sequence.store(sequence, Ordering::Release);
             return Ok(Some(CaptureCommit {
                 outcome: CaptureOutcome::Unsupported,
@@ -649,9 +586,14 @@ fn enqueue(shared: &Arc<Shared>, job: IngestionJob) -> Result<()> {
         .as_ref()
         .cloned()
         .ok_or(ClipboardError::StateUnavailable)?;
-    sender
+    let started = Instant::now();
+    let result = sender
         .send(job)
-        .map_err(|_| ClipboardError::StateUnavailable)
+        .map_err(|_| ClipboardError::StateUnavailable);
+    shared
+        .metrics
+        .record("queue_wait", started.elapsed(), u64::from(result.is_ok()));
+    result
 }
 
 fn ingest(shared: Arc<Shared>, receiver: Receiver<IngestionJob>) {
@@ -660,7 +602,14 @@ fn ingest(shared: Arc<Shared>, receiver: Receiver<IngestionJob>) {
             captured,
             completion,
         } = job;
-        let result = shared.sink.record_captured(captured.prepare_preview());
+        let preview_started = Instant::now();
+        let captured = captured.prepare_preview();
+        shared.metrics.record(
+            "thumbnail_generation",
+            preview_started.elapsed(),
+            u64::from(captured.preview.is_some()),
+        );
+        let result = shared.sink.record_captured(captured);
         match result {
             Ok(record) => {
                 let event = CaptureEvent::HistoryChanged {

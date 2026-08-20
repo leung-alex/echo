@@ -47,6 +47,8 @@ Usage:
       Start the Echo Tauri development application.
   echo.cmd smoke
       Start Echo with isolated data and verify its local bootstrap.
+  echo.cmd perf
+      Run the deterministic R5 storage diagnostic and print JSON output.
   echo.cmd acceptance <clipboard|quick-insert>
       Run separately authorized native Windows acceptance.
   echo.cmd package [--dir]
@@ -137,6 +139,8 @@ func (a *app) dispatch(args []string) error {
 		return noArgs(args[1:], a.dev)
 	case "smoke":
 		return noArgs(args[1:], a.smoke)
+	case "perf":
+		return noArgs(args[1:], a.perf)
 	case "acceptance":
 		return a.acceptanceCommand(args[1:])
 	case "package":
