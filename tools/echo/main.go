@@ -749,18 +749,14 @@ func (a *app) format(check bool) error {
 	}
 	if check {
 		if len(goFiles) != 0 {
-			output, err := a.runCapture("gofmt", append([]string{"-l"}, goFiles...)...)
-			if err != nil {
+			if err := a.checkGoFormatting(goFiles); err != nil {
 				return err
-			}
-			if strings.TrimSpace(output) != "" {
-				return fmt.Errorf("gofmt would rewrite:\n%s", output)
 			}
 		}
 		if err := a.run("cargo", "fmt", "--all", "--", "--check"); err != nil {
 			return err
 		}
-		args := append([]string{"exec", "prettier", "--check"}, prettierTargets()...)
+		args := append([]string{"exec", "prettier", "--check", "--end-of-line", "auto"}, prettierTargets()...)
 		return a.run("pnpm", args...)
 	}
 	if len(goFiles) != 0 {
@@ -771,8 +767,37 @@ func (a *app) format(check bool) error {
 	if err := a.run("cargo", "fmt", "--all"); err != nil {
 		return err
 	}
-	args := append([]string{"exec", "prettier", "--write"}, prettierTargets()...)
+	args := append([]string{"exec", "prettier", "--write", "--end-of-line", "auto"}, prettierTargets()...)
 	return a.run("pnpm", args...)
+}
+
+func (a *app) checkGoFormatting(files []string) error {
+	drift := make([]string, 0)
+	for _, path := range files {
+		source, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read Go source %s: %w", path, err)
+		}
+		cmd := a.command("gofmt")
+		cmd.Stdin = bytes.NewReader(canonicalizeLineEndings(source))
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		formatted, err := cmd.Output()
+		if err != nil {
+			detail := strings.TrimSpace(stderr.String())
+			if detail == "" {
+				return fmt.Errorf("gofmt %s: %w", path, err)
+			}
+			return fmt.Errorf("gofmt %s: %w: %s", path, err, detail)
+		}
+		if !bytes.Equal(canonicalizeLineEndings(source), formatted) {
+			drift = append(drift, path)
+		}
+	}
+	if len(drift) != 0 {
+		return fmt.Errorf("gofmt would rewrite:\n%s", strings.Join(drift, "\n"))
+	}
+	return nil
 }
 
 func prettierTargets() []string {

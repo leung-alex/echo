@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -59,11 +60,17 @@ func (a *app) checkGeneratedBindings() error {
 	if err != nil {
 		return fmt.Errorf("read generated transport bindings: %w", err)
 	}
-	expected := generatedTransportBindings()
-	if string(actual) != expected {
+	actual = canonicalizeLineEndings(actual)
+	expected := canonicalizeLineEndings([]byte(generatedTransportBindings()))
+	if !bytes.Equal(actual, expected) {
 		return fmt.Errorf("generated transport bindings are stale; run echo.cmd bindings")
 	}
 	return nil
+}
+
+func canonicalizeLineEndings(input []byte) []byte {
+	canonical := bytes.ReplaceAll(input, []byte{'\r', '\n'}, []byte{'\n'})
+	return bytes.ReplaceAll(canonical, []byte{'\r'}, []byte{'\n'})
 }
 
 func (a *app) writeGeneratedBindings() error {

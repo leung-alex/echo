@@ -133,4 +133,19 @@ func TestGeneratedBindingsDriftCheckFailsClosed(t *testing.T) {
 	if err := a.checkGeneratedBindings(); err != nil {
 		t.Fatalf("fresh generated bindings were rejected: %v", err)
 	}
+	windows := bytes.ReplaceAll([]byte(generatedTransportBindings()), []byte{'\n'}, []byte{'\r', '\n'})
+	if err := os.WriteFile(path, windows, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.checkGeneratedBindings(); err != nil {
+		t.Fatalf("Windows line endings were rejected: %v", err)
+	}
+}
+
+func TestCanonicalizeLineEndings(t *testing.T) {
+	input := []byte("one\r\ntwo\rthree\nfour")
+	want := []byte("one\ntwo\nthree\nfour")
+	if got := canonicalizeLineEndings(input); !bytes.Equal(got, want) {
+		t.Fatalf("canonicalizeLineEndings = %q, want %q", got, want)
+	}
 }
