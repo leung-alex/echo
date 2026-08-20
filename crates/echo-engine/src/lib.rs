@@ -14,7 +14,8 @@ pub use domain::{
     PlatformError, SourceContext,
 };
 pub use history::{
-    HistoryEntry, Library, LibraryError, LibraryItem, LibraryItemKind, LibraryStore, LibraryView,
+    HistoryEntry, Library, LibraryError, LibraryItem, LibraryItemKind, LibraryPage, LibraryStore,
+    LibraryView, PageCursor, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE,
 };
 pub use ingest::{
     fingerprint, CaptureCommit, CaptureEvent, CaptureEventPublisher, CaptureEventSubscription,
@@ -24,8 +25,8 @@ pub use ingest::{
 };
 pub use preview::{PreviewAsset, Thumbnail, DEFAULT_THUMBNAIL_MAX_EDGE, THUMBNAIL_MIME_TYPE};
 pub use quick_insert::{
-    QuickInsertAction, QuickInsertError, QuickInsertItem, QuickInsertOutcome, QuickInsertRequest,
-    QuickInsertService, QuickInsertSource, QuickInsertView,
+    QuickInsertAction, QuickInsertError, QuickInsertItem, QuickInsertOutcome, QuickInsertPage,
+    QuickInsertRequest, QuickInsertService, QuickInsertSource, QuickInsertView,
 };
 pub use saved_items::{
     is_text_like, normalize_name, normalize_tags, SavedItem, SavedItemDraft, SavedItemUpdate,

@@ -33,7 +33,8 @@ pub trait LibraryStore: Send + Sync {
         &self,
         query: &str,
         limit: u32,
-    ) -> std::result::Result<Vec<HistoryEntry>, Self::Error>;
+        cursor: Option<PageCursor>,
+    ) -> std::result::Result<LibraryPage<HistoryEntry>, Self::Error>;
     fn entry(&self, id: i64) -> std::result::Result<Option<HistoryEntry>, Self::Error>;
     fn entry_payload(
         &self,
@@ -59,12 +60,28 @@ pub trait LibraryStore: Send + Sync {
         &self,
         query: &str,
         limit: u32,
-    ) -> std::result::Result<Vec<SavedItem>, Self::Error>;
+        cursor: Option<PageCursor>,
+    ) -> std::result::Result<LibraryPage<SavedItem>, Self::Error>;
     fn saved_item_payload(
         &self,
         id: i64,
     ) -> std::result::Result<Vec<ClipboardRepresentation>, Self::Error>;
     fn delete_saved_items(&self, ids: &[i64]) -> std::result::Result<usize, Self::Error>;
+}
+
+pub const DEFAULT_PAGE_SIZE: u32 = 50;
+pub const MAX_PAGE_SIZE: u32 = 100;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PageCursor {
+    pub updated_at: i64,
+    pub id: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LibraryPage<T> {
+    pub items: Vec<T>,
+    pub next_cursor: Option<PageCursor>,
 }
 
 #[derive(Debug, Error)]
@@ -121,24 +138,35 @@ impl<S: LibraryStore> Library<S> {
         &self.store
     }
 
-    pub fn list(&self, view: LibraryView, query: &str, limit: u32) -> Result<Vec<LibraryItem>> {
-        let items = match view {
-            LibraryView::History => self
-                .store
-                .list_entries(query, limit)
-                .map_err(storage_error)?
-                .into_iter()
-                .map(history_item)
-                .collect(),
-            LibraryView::Favorites => self
-                .store
-                .list_saved_items(query, limit)
-                .map_err(storage_error)?
-                .into_iter()
-                .map(saved_item)
-                .collect(),
-        };
-        Ok(items)
+    pub fn list(
+        &self,
+        view: LibraryView,
+        query: &str,
+        limit: u32,
+        cursor: Option<PageCursor>,
+    ) -> Result<LibraryPage<LibraryItem>> {
+        match view {
+            LibraryView::History => {
+                let page = self
+                    .store
+                    .list_entries(query, limit, cursor)
+                    .map_err(storage_error)?;
+                Ok(LibraryPage {
+                    items: page.items.into_iter().map(history_item).collect(),
+                    next_cursor: page.next_cursor,
+                })
+            }
+            LibraryView::Favorites => {
+                let page = self
+                    .store
+                    .list_saved_items(query, limit, cursor)
+                    .map_err(storage_error)?;
+                Ok(LibraryPage {
+                    items: page.items.into_iter().map(saved_item).collect(),
+                    next_cursor: page.next_cursor,
+                })
+            }
+        }
     }
 
     pub fn payload(&self, kind: LibraryItemKind, id: i64) -> Result<Vec<ClipboardRepresentation>> {

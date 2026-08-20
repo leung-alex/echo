@@ -24,12 +24,12 @@ test.describe("Echo Quick Insert acceptance", () => {
       await runClipboardFixture("copy-text", content);
       await expect
         .poll(async () => {
-          const items = await invoke<Array<{ id: number }>>(
+          const page = await invoke<{ items: Array<{ id: number }> }>(
             main,
             "quick_insert_list",
             { view: "history", query: content, limit: 20 },
           );
-          return items.length;
+          return page.items.length;
         })
         .toBe(1);
       const item = main.getByRole("row", { name: new RegExp(content) });
@@ -41,12 +41,16 @@ test.describe("Echo Quick Insert acceptance", () => {
         invoke(main, "quick_insert_execute", {
           source: "history",
           id: (
-            await invoke<Array<{ id: number }>>(main, "quick_insert_list", {
-              view: "history",
-              query: content,
-              limit: 20,
-            })
-          )[0]?.id,
+            await invoke<{ items: Array<{ id: number }> }>(
+              main,
+              "quick_insert_list",
+              {
+                view: "history",
+                query: content,
+                limit: 20,
+              },
+            )
+          ).items[0]?.id,
           action: "insert",
         }),
       ).rejects.toThrow();

@@ -1,5 +1,5 @@
 import type {
-  QuickInsertItem,
+  QuickInsertPage,
   QuickInsertState,
   QuickInsertView,
   StatusKind,
@@ -12,8 +12,15 @@ export type QuickInsertReducerAction =
   | {
       type: "load_succeeded";
       generation: number;
-      items: QuickInsertItem[];
+      page: QuickInsertPage;
     }
+  | { type: "load_more_started"; generation: number }
+  | {
+      type: "load_more_succeeded";
+      generation: number;
+      page: QuickInsertPage;
+    }
+  | { type: "load_more_failed"; generation: number; message: string }
   | { type: "load_failed"; generation: number; message: string }
   | { type: "selection_changed"; selection: number }
   | { type: "status"; status: string; kind?: StatusKind }
@@ -30,6 +37,8 @@ export function initialQuickInsertState(
     items: [],
     selection: -1,
     loading: true,
+    loadingMore: false,
+    nextCursor: null,
     status: "Loading",
     statusKind: "info",
     generation: 0,
@@ -50,6 +59,8 @@ export function quickInsertReducer(
         items: [],
         selection: -1,
         loading: true,
+        loadingMore: false,
+        nextCursor: null,
         status: "Loading",
         statusKind: "info",
       };
@@ -59,6 +70,8 @@ export function quickInsertReducer(
         query: action.query,
         selection: -1,
         loading: true,
+        loadingMore: false,
+        nextCursor: null,
         status: "Loading",
         statusKind: "info",
       };
@@ -66,26 +79,61 @@ export function quickInsertReducer(
       return {
         ...state,
         loading: true,
+        loadingMore: false,
         generation: action.generation,
       };
     case "load_succeeded": {
       if (action.generation !== state.generation) return state;
       const selection =
-        action.items.length === 0
+        action.page.items.length === 0
           ? -1
-          : Math.min(Math.max(state.selection, 0), action.items.length - 1);
+          : Math.min(
+              Math.max(state.selection, 0),
+              action.page.items.length - 1,
+            );
       const preserveSuccess = state.statusKind === "success";
       return {
         ...state,
-        items: action.items,
+        items: action.page.items,
         selection,
         loading: false,
+        loadingMore: false,
+        nextCursor: action.page.next_cursor,
         status: preserveSuccess
           ? state.status
-          : `${action.items.length} item${action.items.length === 1 ? "" : "s"}`,
+          : `${action.page.items.length} item${action.page.items.length === 1 ? "" : "s"}`,
         statusKind: preserveSuccess ? "success" : "info",
       };
     }
+    case "load_more_started":
+      if (action.generation !== state.generation) return state;
+      return { ...state, loadingMore: true };
+    case "load_more_succeeded": {
+      if (action.generation !== state.generation) return state;
+      const existing = new Set(
+        state.items.map((item) => `${item.source}:${item.id}`),
+      );
+      const appended = action.page.items.filter(
+        (item) => !existing.has(`${item.source}:${item.id}`),
+      );
+      const total = state.items.length + appended.length;
+      return {
+        ...state,
+        items: [...state.items, ...appended],
+        loadingMore: false,
+        nextCursor: action.page.next_cursor,
+        status: `${total} item${total === 1 ? "" : "s"}`,
+        statusKind: "info",
+      };
+    }
+    case "load_more_failed":
+      if (action.generation !== state.generation) return state;
+      return {
+        ...state,
+        loadingMore: false,
+        status: action.message,
+        statusKind: "error",
+      };
     case "load_failed":
       if (action.generation !== state.generation) return state;
       return {
@@ -93,6 +141,8 @@ export function quickInsertReducer(
         items: [],
         selection: -1,
         loading: false,
+        loadingMore: false,
+        nextCursor: null,
         status: action.message,
         statusKind: "error",
       };

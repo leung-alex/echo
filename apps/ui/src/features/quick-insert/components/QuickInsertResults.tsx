@@ -1,4 +1,4 @@
-import { useState, type ReactElement, type RefObject } from "react";
+import { useEffect, useState, type ReactElement, type RefObject } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Copy, Pencil, Star, Trash2 } from "lucide-react";
 
@@ -25,6 +25,9 @@ export interface QuickInsertResultsProps {
   edit?: (item: QuickInsertItem) => void;
   selectedIds?: Set<number>;
   toggleSelected?: (id: number) => void;
+  hasMore: boolean;
+  loadingMore: boolean;
+  loadMore: () => void;
   scrollElementRef: RefObject<HTMLElement | null>;
 }
 
@@ -45,6 +48,9 @@ export function QuickInsertResults({
   edit,
   selectedIds,
   toggleSelected,
+  hasMore,
+  loadingMore,
+  loadMore,
   scrollElementRef,
 }: QuickInsertResultsProps): ReactElement {
   if (items.length === 0) return <EmptyState message={emptyMessage} />;
@@ -65,6 +71,9 @@ export function QuickInsertResults({
       edit={edit}
       selectedIds={selectedIds}
       toggleSelected={toggleSelected}
+      hasMore={hasMore}
+      loadingMore={loadingMore}
+      loadMore={loadMore}
       scrollElementRef={scrollElementRef}
     />
   );
@@ -84,6 +93,9 @@ function VirtualizedResults({
   edit,
   selectedIds,
   toggleSelected,
+  hasMore,
+  loadingMore,
+  loadMore,
   scrollElementRef,
 }: QuickInsertResultsProps): ReactElement {
   const rowHeight = viewMode === "compact" ? 52 : 76;
@@ -97,6 +109,19 @@ function VirtualizedResults({
       return item ? `${item.source}:${item.id}` : index;
     },
   });
+  const virtualItems = rowVirtualizer.getVirtualItems();
+
+  useEffect(() => {
+    const last = virtualItems[virtualItems.length - 1];
+    if (
+      hasMore &&
+      !loadingMore &&
+      last &&
+      last.index >= Math.max(0, items.length - VIRTUAL_OVERSCAN - 2)
+    ) {
+      loadMore();
+    }
+  }, [hasMore, items.length, loadMore, loadingMore, virtualItems]);
 
   const className =
     viewMode === "compact" ? "echo-compact-list" : "echo-history-list";
@@ -110,7 +135,7 @@ function VirtualizedResults({
       }
       style={{ height: rowVirtualizer.getTotalSize() }}
     >
-      {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+      {virtualItems.map((virtualRow) => {
         const item = items[virtualRow.index];
         if (!item) return null;
         const index = virtualRow.index;

@@ -47,6 +47,7 @@ pub fn run() {
         ])
         .setup(|app| {
             let state = EchoState::build().map_err(std::io::Error::other)?;
+            state.start_history_event_bridge(app.handle());
             app.manage(state);
             create_tray(app.handle()).map_err(std::io::Error::other)?;
             create_main_window(app.handle()).map_err(std::io::Error::other)?;

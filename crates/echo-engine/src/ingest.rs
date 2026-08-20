@@ -194,6 +194,7 @@ impl CapturedCapture {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CaptureEvent {
     HistoryChanged { id: i64, duplicate: bool },
+    HistoryInvalidated { id: Option<i64> },
 }
 
 #[derive(Clone, Default)]
@@ -405,6 +406,12 @@ impl ClipboardService {
 
     pub fn subscribe_events(&self) -> CaptureEventSubscription {
         self.shared.events.subscribe()
+    }
+
+    pub fn publish_history_invalidation(&self, id: Option<i64>) {
+        self.shared
+            .events
+            .publish(CaptureEvent::HistoryInvalidated { id });
     }
 
     pub fn copy_representations(&self, representations: &[ClipboardRepresentation]) -> Result<u64> {

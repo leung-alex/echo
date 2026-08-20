@@ -13,15 +13,17 @@ pub(crate) fn quick_insert_list(
     view: transport::QuickInsertView,
     query: String,
     limit: u32,
-) -> Result<Vec<transport::QuickInsertItem>, String> {
+    cursor: Option<transport::HistoryCursor>,
+) -> Result<transport::QuickInsertPage, String> {
     state
         .quick_insert
         .list(&QuickInsertRequest {
             view: view.into(),
             query,
             limit,
+            cursor: cursor.map(Into::into),
         })
-        .map(|items| items.into_iter().map(Into::into).collect())
+        .map(Into::into)
         .map_err(|error| error.to_string())
 }
 

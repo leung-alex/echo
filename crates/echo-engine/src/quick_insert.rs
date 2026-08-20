@@ -2,8 +2,9 @@ use std::sync::{Arc, Mutex};
 
 use crate::{
     ClipboardError, ClipboardPlatform, ClipboardService, Library, LibraryError, LibraryItem,
-    LibraryItemKind, LibraryStore, LibraryView, PasteDelivery, PasteDeliveryFailure, PasteTarget,
-    SavedItem, SavedItemUpdate, Thumbnail,
+    LibraryItemKind, LibraryPage, LibraryStore, LibraryView, PageCursor, PasteDelivery,
+    PasteDeliveryFailure, PasteTarget, SavedItem, SavedItemUpdate, Thumbnail, DEFAULT_PAGE_SIZE,
+    MAX_PAGE_SIZE,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -75,6 +76,13 @@ pub struct QuickInsertRequest {
     pub view: QuickInsertView,
     pub query: String,
     pub limit: u32,
+    pub cursor: Option<PageCursor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuickInsertPage {
+    pub items: Vec<QuickInsertItem>,
+    pub next_cursor: Option<PageCursor>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,18 +114,23 @@ impl<S: LibraryStore> QuickInsertService<S> {
         }
     }
 
-    pub fn list(&self, request: &QuickInsertRequest) -> Result<Vec<QuickInsertItem>> {
+    pub fn list(&self, request: &QuickInsertRequest) -> Result<QuickInsertPage> {
         let view = match request.view {
             QuickInsertView::History => LibraryView::History,
             QuickInsertView::Favorites => LibraryView::Favorites,
         };
-        let limit = request.limit.clamp(1, 200);
-        Ok(self
-            .library
-            .list(view, &request.query, limit)?
-            .into_iter()
-            .map(to_item)
-            .collect())
+        let limit = if request.limit == 0 {
+            DEFAULT_PAGE_SIZE
+        } else {
+            request.limit.clamp(1, MAX_PAGE_SIZE)
+        };
+        let LibraryPage { items, next_cursor } =
+            self.library
+                .list(view, &request.query, limit, request.cursor)?;
+        Ok(QuickInsertPage {
+            items: items.into_iter().map(to_item).collect(),
+            next_cursor,
+        })
     }
 
     pub fn begin_session(&self) -> Result<bool> {
@@ -181,6 +194,7 @@ impl<S: LibraryStore> QuickInsertService<S> {
                 let changed = self.library.set_favorite(id, saved)?;
                 if changed {
                     self.request_maintenance();
+                    self.invalidate_history(Some(id));
                 }
                 Ok(changed)
             }
@@ -188,6 +202,7 @@ impl<S: LibraryStore> QuickInsertService<S> {
                 let deleted = self.library.delete(LibraryItemKind::SavedItem, id)?;
                 if deleted {
                     self.request_maintenance();
+                    self.invalidate_history(Some(id));
                 }
                 Ok(deleted)
             }
@@ -199,6 +214,7 @@ impl<S: LibraryStore> QuickInsertService<S> {
         let deleted = self.library.delete(source.kind(), id)?;
         if deleted {
             self.request_maintenance();
+            self.invalidate_history(Some(id));
         }
         Ok(deleted)
     }
@@ -206,6 +222,7 @@ impl<S: LibraryStore> QuickInsertService<S> {
     pub fn update_saved_item(&self, id: i64, update: SavedItemUpdate) -> Result<SavedItem> {
         let item = self.library.update_saved_item(id, update)?;
         self.request_maintenance();
+        self.invalidate_history(Some(id));
         Ok(item)
     }
 
@@ -213,8 +230,13 @@ impl<S: LibraryStore> QuickInsertService<S> {
         let deleted = self.library.delete_saved_items(ids)?;
         if deleted != 0 {
             self.request_maintenance();
+            self.invalidate_history(None);
         }
         Ok(deleted)
+    }
+
+    pub fn invalidate_history(&self, id: Option<i64>) {
+        self.clipboard.publish_history_invalidation(id);
     }
 
     pub fn request_maintenance(&self) {

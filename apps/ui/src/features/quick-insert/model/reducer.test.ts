@@ -26,13 +26,13 @@ describe("quick insert reducer", () => {
     state = quickInsertReducer(state, {
       type: "load_succeeded",
       generation: 1,
-      items: [item],
+      page: { items: [item], next_cursor: null },
     });
     expect(state.items).toEqual([]);
     state = quickInsertReducer(state, {
       type: "load_succeeded",
       generation: 2,
-      items: [item],
+      page: { items: [item], next_cursor: null },
     });
     expect(state.items).toEqual([item]);
     expect(state.selection).toBe(0);
@@ -44,7 +44,7 @@ describe("quick insert reducer", () => {
     state = quickInsertReducer(state, {
       type: "load_succeeded",
       generation: 1,
-      items: [item],
+      page: { items: [item], next_cursor: null },
     });
     state = quickInsertReducer(state, {
       type: "view_changed",
@@ -62,7 +62,7 @@ describe("quick insert reducer", () => {
     state = quickInsertReducer(state, {
       type: "load_succeeded",
       generation: 1,
-      items: [item],
+      page: { items: [item], next_cursor: null },
     });
     state = quickInsertReducer(state, {
       type: "status",
@@ -73,7 +73,7 @@ describe("quick insert reducer", () => {
     state = quickInsertReducer(state, {
       type: "load_succeeded",
       generation: 2,
-      items: [item],
+      page: { items: [item], next_cursor: null },
     });
     expect(state.status).toBe("Inserted");
     expect(state.statusKind).toBe("success");

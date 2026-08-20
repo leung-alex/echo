@@ -3,7 +3,8 @@ import { invoke } from "../../../shared/ipc/invoke";
 import type {
   PasteSession,
   QuickInsertAction,
-  QuickInsertItem,
+  HistoryCursor,
+  QuickInsertPage,
   QuickInsertOutcome,
   QuickInsertSource,
   QuickInsertView,
@@ -15,7 +16,8 @@ export interface QuickInsertClient {
     view: QuickInsertView,
     query: string,
     limit: number,
-  ): Promise<QuickInsertItem[]>;
+    cursor: HistoryCursor | null,
+  ): Promise<QuickInsertPage>;
   beginSession(): Promise<PasteSession>;
   execute(
     source: QuickInsertSource,
@@ -33,8 +35,13 @@ export interface QuickInsertClient {
 }
 
 export const quickInsertClient: QuickInsertClient = {
-  list: (view, query, limit) =>
-    invoke<QuickInsertItem[]>("quick_insert_list", { view, query, limit }),
+  list: (view, query, limit, cursor) =>
+    invoke<QuickInsertPage>("quick_insert_list", {
+      view,
+      query,
+      limit,
+      cursor,
+    }),
   beginSession: () => invoke<PasteSession>("quick_insert_begin_session"),
   execute: (source, id, action) =>
     invoke<QuickInsertOutcome>("quick_insert_execute", { source, id, action }),

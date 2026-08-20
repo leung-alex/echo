@@ -5,6 +5,11 @@ export type QuickInsertAction = "copy" | "insert";
 export type QuickInsertOutcome = "copied" | "inserted" | "clipboard_staged";
 export type ActivationRoute = "history" | "quick_insert" | "settings";
 
+export interface HistoryCursor {
+  updated_at: number;
+  id: number;
+}
+
 export interface QuickInsertItem {
   id: number;
   source: QuickInsertSource;
@@ -18,6 +23,15 @@ export interface QuickInsertItem {
   saved_item_id: number | null;
   is_independent: boolean;
   preview: PreviewAsset | null;
+}
+
+export interface QuickInsertPage {
+  items: QuickInsertItem[];
+  next_cursor: HistoryCursor | null;
+}
+
+export interface HistoryChangedEvent {
+  version: number;
 }
 
 export interface PreviewAsset {

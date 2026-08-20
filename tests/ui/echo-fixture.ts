@@ -59,6 +59,7 @@ export async function installEchoFixture(page: Page): Promise<void> {
       calls: [] as Array<{ command: string; args: Record<string, unknown> }>,
     };
     const callbacks = new Map<number, (event: unknown) => void>();
+    const callbackEvents = new Map<number, string>();
     let nextCallback = 1;
     const listFor = (view: string, query: string): MockItem[] => {
       const source =
@@ -78,12 +79,27 @@ export async function installEchoFixture(page: Page): Promise<void> {
         )
         .map((item) => ({ ...item }));
     };
+    const emitHistoryChanged = () => {
+      callbacks.forEach((callback, id) => {
+        if (callbackEvents.get(id) === "echo-history-changed") {
+          callback({
+            event: "echo-history-changed",
+            id: 1,
+            payload: { version: Date.now() },
+          });
+        }
+      });
+    };
     const internals = {
       invoke: async (command: string, args: Record<string, unknown> = {}) => {
         state.calls.push({ command, args });
         switch (command) {
           case "plugin:event|listen":
+            callbackEvents.set(Number(args.handler), String(args.event));
+            return null;
           case "plugin:event|unlisten":
+            callbackEvents.delete(Number(args.handler));
+            return null;
           case "plugin:window|hide":
           case "plugin:window|set_focus":
           case "plugin:window|set_focusable":
@@ -96,7 +112,10 @@ export async function installEchoFixture(page: Page): Promise<void> {
           case "quick_insert_begin_session":
             return { hasTarget: true };
           case "quick_insert_list":
-            return listFor(String(args.view), String(args.query ?? ""));
+            return {
+              items: listFor(String(args.view), String(args.query ?? "")),
+              next_cursor: null,
+            };
           case "quick_insert_set_favorite": {
             const item = state.history.find(
               (candidate) => candidate.id === args.id,
@@ -104,6 +123,7 @@ export async function installEchoFixture(page: Page): Promise<void> {
             if (item) {
               item.saved_item_id = Boolean(args.saved) ? item.id : null;
               item.is_independent = false;
+              emitHistoryChanged();
             }
             return Boolean(item);
           }
@@ -118,6 +138,7 @@ export async function installEchoFixture(page: Page): Promise<void> {
                 (item) => item.id !== args.id,
               );
             }
+            emitHistoryChanged();
             return true;
           case "quick_insert_execute":
             return args.action === "insert" ? "inserted" : "copied";
@@ -128,6 +149,7 @@ export async function installEchoFixture(page: Page): Promise<void> {
             return null;
           case "history_clear":
             state.history.length = 0;
+            emitHistoryChanged();
             return null;
           default:
             if (command.startsWith("plugin:")) return null;
@@ -141,6 +163,7 @@ export async function installEchoFixture(page: Page): Promise<void> {
       },
       unregisterCallback: (id: number) => {
         callbacks.delete(id);
+        callbackEvents.delete(id);
       },
     };
     Object.assign(window, {
@@ -151,10 +174,13 @@ export async function installEchoFixture(page: Page): Promise<void> {
       __TAURI_EVENT_PLUGIN_INTERNALS__: { unregisterListener: () => undefined },
       __echoMockState: state,
       __emitEchoActivation: (payload: unknown) => {
-        callbacks.forEach((callback) =>
-          callback({ event: "echo-activation", id: 1, payload }),
-        );
+        callbacks.forEach((callback, id) => {
+          if (callbackEvents.get(id) === "echo-activation") {
+            callback({ event: "echo-activation", id: 1, payload });
+          }
+        });
       },
+      __emitEchoHistoryChanged: () => emitHistoryChanged(),
     });
   });
 }

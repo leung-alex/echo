@@ -328,6 +328,9 @@ function resultProps(
       update: Parameters<typeof controller.updateSavedItem>[1],
     ) => void controller.updateSavedItem(item, update),
     deleteSavedItems: (ids: number[]) => controller.deleteSavedItems(ids),
+    hasMore: controller.state.nextCursor !== null,
+    loadingMore: controller.state.loadingMore,
+    loadMore: () => void controller.loadMore(),
     scrollElementRef: workspaceRef,
   };
 }

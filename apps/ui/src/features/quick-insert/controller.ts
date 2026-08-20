@@ -1,5 +1,13 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { listen } from "@tauri-apps/api/event";
 
 import {
   initialQuickInsertState,
@@ -13,6 +21,7 @@ import type {
   QuickInsertItem,
   QuickInsertState,
   QuickInsertView,
+  HistoryChangedEvent,
   SavedItemUpdate,
   StatusKind,
 } from "./model/types";
@@ -46,6 +55,7 @@ export interface QuickInsertController {
     update: SavedItemUpdate,
   ): Promise<void>;
   deleteSavedItems(ids: number[]): Promise<boolean>;
+  loadMore(): Promise<void>;
   handleEscape(composing: boolean): void;
   report(status: string, kind?: StatusKind): void;
 }
@@ -80,6 +90,7 @@ export function useQuickInsertController({
   );
   const generationRef = useRef(0);
   const mountedRef = useRef(true);
+  const [loadQuery, setLoadQuery] = useState(initialQuery);
 
   useEffect(() => {
     return () => {
@@ -91,9 +102,9 @@ export function useQuickInsertController({
     const generation = ++generationRef.current;
     dispatch({ type: "load_started", generation });
     try {
-      const items = await client.list(state.view, state.query, 200);
+      const page = await client.list(state.view, loadQuery, 50, null);
       if (mountedRef.current) {
-        dispatch({ type: "load_succeeded", generation, items });
+        dispatch({ type: "load_succeeded", generation, page });
       }
     } catch (error) {
       if (mountedRef.current) {
@@ -104,21 +115,68 @@ export function useQuickInsertController({
         });
       }
     }
-  }, [client, state.query, state.view]);
+  }, [client, loadQuery, state.view]);
 
   useEffect(() => {
     void load();
-    const timer = window.setInterval(() => void load(), 900);
-    return () => window.clearInterval(timer);
+    let active = true;
+    let unlisten: (() => void) | undefined;
+    void listen<HistoryChangedEvent>("echo-history-changed", () => {
+      if (active) void load();
+    })
+      .then((stop) => {
+        if (active) unlisten = stop;
+        else stop();
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+      unlisten?.();
+    };
   }, [load]);
+
+  useEffect(() => {
+    if (state.query === loadQuery) return;
+    const timer = window.setTimeout(() => setLoadQuery(state.query), 75);
+    return () => window.clearTimeout(timer);
+  }, [loadQuery, state.query]);
 
   const setView = useCallback((view: QuickInsertView) => {
     dispatch({ type: "view_changed", view });
+    setLoadQuery("");
   }, []);
 
   const setQuery = useCallback((query: string) => {
     dispatch({ type: "query_changed", query });
   }, []);
+
+  const loadMore = useCallback(async () => {
+    if (state.loading || state.loadingMore || state.nextCursor === null) return;
+    const generation = generationRef.current;
+    const cursor = state.nextCursor;
+    dispatch({ type: "load_more_started", generation });
+    try {
+      const page = await client.list(state.view, loadQuery, 50, cursor);
+      if (mountedRef.current && generation === generationRef.current) {
+        dispatch({ type: "load_more_succeeded", generation, page });
+      }
+    } catch (error) {
+      if (mountedRef.current && generation === generationRef.current) {
+        dispatch({
+          type: "load_more_failed",
+          generation,
+          message: errorMessage(error),
+        });
+      }
+    }
+  }, [
+    client,
+    loadQuery,
+    state.loading,
+    state.loadingMore,
+    state.nextCursor,
+    state.view,
+  ]);
 
   const select = useCallback((index: number) => {
     dispatch({ type: "selection_changed", selection: index });
@@ -180,7 +238,6 @@ export function useQuickInsertController({
       try {
         const saved = item.source === "favorite" || item.saved_item_id !== null;
         await client.setFavorite(item.source, item.id, !saved);
-        await load();
         report(
           saved ? "Removed from Favorites" : "Added to Favorites",
           "success",
@@ -189,33 +246,31 @@ export function useQuickInsertController({
         report(errorMessage(error), "error");
       }
     },
-    [client, load, report],
+    [client, report],
   );
 
   const remove = useCallback(
     async (item: QuickInsertItem) => {
       try {
         await client.remove(item.source, item.id);
-        await load();
         report("Deleted", "success");
       } catch (error) {
         report(errorMessage(error), "error");
       }
     },
-    [client, load, report],
+    [client, report],
   );
 
   const updateSavedItem = useCallback(
     async (item: QuickInsertItem, update: SavedItemUpdate) => {
       try {
         await client.updateSavedItem(item.id, update);
-        await load();
         report("Saved item updated", "success");
       } catch (error) {
         report(errorMessage(error), "error");
       }
     },
-    [client, load, report],
+    [client, report],
   );
 
   const deleteSavedItems = useCallback(
@@ -223,7 +278,6 @@ export function useQuickInsertController({
       if (ids.length === 0) return false;
       try {
         await client.deleteSavedItems(ids);
-        await load();
         report("Deleted", "success");
         return true;
       } catch (error) {
@@ -231,7 +285,7 @@ export function useQuickInsertController({
         return false;
       }
     },
-    [client, load, report],
+    [client, report],
   );
 
   const handleEscape = useCallback(
@@ -270,6 +324,7 @@ export function useQuickInsertController({
     remove,
     updateSavedItem,
     deleteSavedItems,
+    loadMore,
     handleEscape,
     report,
   };

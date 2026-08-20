@@ -7,11 +7,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use echo_engine::{
     is_text_like, normalize_name, normalize_tags, CapturePolicy, CaptureSettings, CapturedCapture,
-    ClipboardRepresentation, ClipboardSink, ContentIdentity, LibraryStore, NormalizedCapture,
-    PreviewAsset, RecordResult, RepresentationIdentity, SavedItemDraft, SavedItemUpdate, Thumbnail,
+    ClipboardRepresentation, ClipboardSink, ContentIdentity, LibraryPage, LibraryStore,
+    NormalizedCapture, PageCursor, PreviewAsset, RecordResult, RepresentationIdentity,
+    SavedItemDraft, SavedItemUpdate, Thumbnail, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE,
     THUMBNAIL_MIME_TYPE,
 };
-use rusqlite::{params, Connection, OpenFlags, OptionalExtension, Row, Transaction};
+use rusqlite::types::Value;
+use rusqlite::{
+    params, params_from_iter, Connection, OpenFlags, OptionalExtension, Row, Transaction,
+};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 use uuid::Uuid;
@@ -20,6 +24,7 @@ const INLINE_LIMIT: usize = 64 * 1024;
 const DEFAULT_MAX_ENTRIES: u32 = 5_000;
 const DEFAULT_MAX_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
 const DEFAULT_MAX_ITEM_BYTES: u64 = 32 * 1024 * 1024;
+const SEARCH_FTS_SCHEMA_KEY: &str = "search_fts_schema";
 
 #[derive(Debug, Error)]
 pub enum StorageError {
@@ -265,6 +270,66 @@ impl ClipboardStore {
         )?;
         self.ensure_column("clipboard_representations", "content_hash", "TEXT")?;
         self.ensure_column("saved_item_representations", "content_hash", "TEXT")?;
+        self.ensure_search_schema()?;
+        Ok(())
+    }
+
+    fn ensure_search_schema(&mut self) -> Result<()> {
+        let version = self
+            .connection
+            .query_row(
+                "SELECT value FROM migration_state WHERE key = ?",
+                [SEARCH_FTS_SCHEMA_KEY],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let ready = version
+            .as_deref()
+            .is_some_and(|value| value.starts_with("2:"))
+            && is_fts5_table(&self.connection, "clipboard_fts")?
+            && is_fts5_table(&self.connection, "saved_items_fts")?;
+        if ready {
+            return Ok(());
+        }
+
+        self.connection.execute_batch(
+            "DROP TABLE IF EXISTS clipboard_fts;
+             DROP TABLE IF EXISTS saved_items_fts;",
+        )?;
+        let tokenizer = if self.create_search_tables("trigram").is_ok() {
+            "trigram"
+        } else {
+            self.connection.execute_batch(
+                "DROP TABLE IF EXISTS clipboard_fts;
+                 DROP TABLE IF EXISTS saved_items_fts;",
+            )?;
+            self.create_search_tables("unicode61")?;
+            "unicode61"
+        };
+        self.rebuild_fts()?;
+        self.rebuild_saved_search()?;
+        self.connection.execute(
+            "INSERT INTO migration_state (key, value, completed_at) VALUES (?, ?, ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value, completed_at = excluded.completed_at",
+            params![SEARCH_FTS_SCHEMA_KEY, format!("2:{tokenizer}"), now_millis()],
+        )?;
+        Ok(())
+    }
+
+    fn create_search_tables(&self, tokenizer: &str) -> Result<()> {
+        self.connection.execute_batch(&format!(
+            "CREATE VIRTUAL TABLE clipboard_fts USING fts5(
+                entry_id UNINDEXED,
+                searchable_text,
+                source_app,
+                tokenize = '{tokenizer}'
+            );
+            CREATE VIRTUAL TABLE saved_items_fts USING fts5(
+                saved_item_id UNINDEXED,
+                document,
+                tokenize = '{tokenizer}'
+            );"
+        ))?;
         Ok(())
     }
 
@@ -702,34 +767,84 @@ impl ClipboardStore {
     }
 
     pub fn list_entries(&self, query: &str, limit: u32) -> Result<Vec<ClipboardEntry>> {
-        let limit = i64::from(limit.clamp(1, 500));
+        Ok(self.list_entries_page(query, limit, None)?.items)
+    }
+
+    pub fn list_entries_page(
+        &self,
+        query: &str,
+        limit: u32,
+        cursor: Option<PageCursor>,
+    ) -> Result<LibraryPage<ClipboardEntry>> {
+        let page_size = if limit == 0 {
+            DEFAULT_PAGE_SIZE
+        } else {
+            limit.clamp(1, MAX_PAGE_SIZE)
+        };
+        let fetch_limit = i64::from(page_size) + 1;
         let mut entries = Vec::new();
-        if query.trim().is_empty() {
-            let mut statement = self.connection.prepare(
-                "SELECT id, created_at, updated_at, source_app, source_executable,
-                        source_window_title, content_type, preview_text, searchable_text,
-                        sanitized_html, fingerprint,
-                        (SELECT id FROM saved_items WHERE source_history_id = clipboard_entries.id),
-                        byte_size
-                 FROM clipboard_entries ORDER BY updated_at DESC, id DESC LIMIT ?",
-            )?;
-            let rows = statement.query_map([limit], map_entry)?;
+        let trimmed = query.trim();
+        let (cursor_clause, cursor_values) = cursor_filter("e", cursor);
+        if trimmed.is_empty() {
+            let sql = format!(
+                "SELECT e.id, e.created_at, e.updated_at, e.source_app, e.source_executable,
+                        e.source_window_title, e.content_type, e.preview_text, e.searchable_text,
+                        e.sanitized_html, e.fingerprint,
+                        (SELECT id FROM saved_items WHERE source_history_id = e.id),
+                        e.byte_size
+                 FROM clipboard_entries e
+                 WHERE 1 = 1 {cursor_clause}
+                 ORDER BY e.updated_at DESC, e.id DESC LIMIT ?"
+            );
+            let mut values = cursor_values;
+            values.push(Value::Integer(fetch_limit));
+            let mut statement = self.connection.prepare(&sql)?;
+            let rows = statement.query_map(params_from_iter(values), map_entry)?;
+            for row in rows {
+                entries.push(row?);
+            }
+        } else if trimmed.chars().count() < 3 {
+            let pattern = format!("%{}%", escape_like_pattern(&trimmed.to_lowercase()));
+            let sql = format!(
+                "SELECT e.id, e.created_at, e.updated_at, e.source_app, e.source_executable,
+                        e.source_window_title, e.content_type, e.preview_text, e.searchable_text,
+                        e.sanitized_html, e.fingerprint, s.id, e.byte_size
+                 FROM clipboard_entries e
+                 LEFT JOIN saved_items s ON s.source_history_id = e.id
+                 WHERE (lower(COALESCE(e.searchable_text, '')) LIKE ? ESCAPE '\\'
+                    OR lower(COALESCE(e.source_app, '')) LIKE ? ESCAPE '\\'
+                    OR lower(COALESCE(e.preview_text, '')) LIKE ? ESCAPE '\\')
+                   {cursor_clause}
+                 ORDER BY e.updated_at DESC, e.id DESC LIMIT ?"
+            );
+            let mut values = vec![
+                Value::Text(pattern.clone()),
+                Value::Text(pattern.clone()),
+                Value::Text(pattern),
+            ];
+            values.extend(cursor_values);
+            values.push(Value::Integer(fetch_limit));
+            let mut statement = self.connection.prepare(&sql)?;
+            let rows = statement.query_map(params_from_iter(values), map_entry)?;
             for row in rows {
                 entries.push(row?);
             }
         } else {
-            let pattern = format!("%{}%", query.trim());
-            let mut statement = self.connection.prepare(
+            let sql = format!(
                 "SELECT e.id, e.created_at, e.updated_at, e.source_app, e.source_executable,
                         e.source_window_title, e.content_type, e.preview_text, e.searchable_text,
                         e.sanitized_html, e.fingerprint, s.id, e.byte_size
                  FROM clipboard_entries e
                  JOIN clipboard_fts f ON CAST(f.entry_id AS INTEGER) = e.id
                  LEFT JOIN saved_items s ON s.source_history_id = e.id
-                 WHERE f.searchable_text LIKE ? OR f.source_app LIKE ?
-                 ORDER BY e.updated_at DESC, e.id DESC LIMIT ?",
-            )?;
-            let rows = statement.query_map(params![pattern, pattern, limit], map_entry)?;
+                 WHERE clipboard_fts MATCH ? {cursor_clause}
+                 ORDER BY e.updated_at DESC, e.id DESC LIMIT ?"
+            );
+            let mut values = vec![Value::Text(fts_match_query(trimmed))];
+            values.extend(cursor_values);
+            values.push(Value::Integer(fetch_limit));
+            let mut statement = self.connection.prepare(&sql)?;
+            let rows = statement.query_map(params_from_iter(values), map_entry)?;
             for row in rows {
                 entries.push(row?);
             }
@@ -737,7 +852,20 @@ impl ClipboardStore {
         for entry in &mut entries {
             entry.thumbnail = self.thumbnail_for_entry(entry.id)?;
         }
-        Ok(entries)
+        let has_more = entries.len() > usize::try_from(page_size).unwrap_or(usize::MAX);
+        entries.truncate(usize::try_from(page_size).unwrap_or(usize::MAX));
+        let next_cursor = has_more
+            .then(|| {
+                entries.last().map(|entry| PageCursor {
+                    updated_at: entry.updated_at,
+                    id: entry.id,
+                })
+            })
+            .flatten();
+        Ok(LibraryPage {
+            items: entries,
+            next_cursor,
+        })
     }
 
     pub fn entry(&self, id: i64) -> Result<Option<StoredClipboardEntry>> {
@@ -1064,45 +1192,88 @@ impl ClipboardStore {
     }
 
     pub fn list_saved_items(&self, query: &str, limit: u32) -> Result<Vec<SavedItem>> {
-        let limit = i64::from(limit.clamp(1, 500));
-        let normalized_query = query.trim().to_lowercase();
-        let mut statement = self.connection.prepare(
-            "SELECT s.id, s.source_history_id, s.created_at, s.updated_at, s.name,
+        Ok(self.list_saved_items_page(query, limit, None)?.items)
+    }
+
+    pub fn list_saved_items_page(
+        &self,
+        query: &str,
+        limit: u32,
+        cursor: Option<PageCursor>,
+    ) -> Result<LibraryPage<SavedItem>> {
+        let page_size = if limit == 0 {
+            DEFAULT_PAGE_SIZE
+        } else {
+            limit.clamp(1, MAX_PAGE_SIZE)
+        };
+        let fetch_limit = i64::from(page_size) + 1;
+        let trimmed = query.trim();
+        let (cursor_clause, cursor_values) = cursor_filter("s", cursor);
+        let select = "SELECT s.id, s.source_history_id, s.created_at, s.updated_at, s.name,
                     s.content_type, s.editable_text, s.source_app, s.source_executable,
                     s.source_window_title, s.preview_text, s.byte_size, s.is_independent
-             FROM saved_items s
-             JOIN saved_items_fts f ON f.saved_item_id = s.id
-             WHERE ? = '' OR instr(f.document, ?) > 0
-             ORDER BY s.updated_at DESC, s.id DESC LIMIT ?",
-        )?;
-        let rows =
-            statement.query_map(params![normalized_query, normalized_query, limit], |row| {
-                Ok(SavedItem {
-                    id: row.get(0)?,
-                    source_history_id: row.get(1)?,
-                    created_at: row.get(2)?,
-                    updated_at: row.get(3)?,
-                    name: row.get(4)?,
-                    content_type: row.get(5)?,
-                    editable_text: row.get(6)?,
-                    source_app: row.get(7)?,
-                    source_executable: row.get(8)?,
-                    source_window_title: row.get(9)?,
-                    preview_text: row.get(10)?,
-                    byte_size: row.get::<_, i64>(11)?.try_into().unwrap_or(0),
-                    tags: Vec::new(),
-                    is_independent: row.get::<_, i64>(12)? != 0,
-                    thumbnail: None,
-                })
-            })?;
-        let mut items = rows
-            .map(|row| row.map_err(StorageError::from))
-            .collect::<Result<Vec<_>>>()?;
+             FROM saved_items s";
+        let mut items = Vec::new();
+        if trimmed.is_empty() {
+            let sql = format!(
+                "{select}
+                 WHERE 1 = 1 {cursor_clause}
+                 ORDER BY s.updated_at DESC, s.id DESC LIMIT ?"
+            );
+            let mut values = cursor_values;
+            values.push(Value::Integer(fetch_limit));
+            let mut statement = self.connection.prepare(&sql)?;
+            let rows = statement.query_map(params_from_iter(values), map_saved_item)?;
+            for row in rows {
+                items.push(row?);
+            }
+        } else if trimmed.chars().count() < 3 {
+            let pattern = format!("%{}%", escape_like_pattern(&trimmed.to_lowercase()));
+            let sql = format!(
+                "{select}
+                 JOIN saved_items_fts f ON CAST(f.saved_item_id AS INTEGER) = s.id
+                 WHERE lower(f.document) LIKE ? ESCAPE '\\' {cursor_clause}
+                 ORDER BY s.updated_at DESC, s.id DESC LIMIT ?"
+            );
+            let mut values = vec![Value::Text(pattern)];
+            values.extend(cursor_values);
+            values.push(Value::Integer(fetch_limit));
+            let mut statement = self.connection.prepare(&sql)?;
+            let rows = statement.query_map(params_from_iter(values), map_saved_item)?;
+            for row in rows {
+                items.push(row?);
+            }
+        } else {
+            let sql = format!(
+                "{select}
+                 JOIN saved_items_fts f ON CAST(f.saved_item_id AS INTEGER) = s.id
+                 WHERE saved_items_fts MATCH ? {cursor_clause}
+                 ORDER BY s.updated_at DESC, s.id DESC LIMIT ?"
+            );
+            let mut values = vec![Value::Text(fts_match_query(trimmed))];
+            values.extend(cursor_values);
+            values.push(Value::Integer(fetch_limit));
+            let mut statement = self.connection.prepare(&sql)?;
+            let rows = statement.query_map(params_from_iter(values), map_saved_item)?;
+            for row in rows {
+                items.push(row?);
+            }
+        }
         for item in &mut items {
             item.tags = self.tags_for_item(item.id)?;
             item.thumbnail = self.thumbnail_for_saved_item(item.id)?;
         }
-        Ok(items)
+        let has_more = items.len() > usize::try_from(page_size).unwrap_or(usize::MAX);
+        items.truncate(usize::try_from(page_size).unwrap_or(usize::MAX));
+        let next_cursor = has_more
+            .then(|| {
+                items.last().map(|item| PageCursor {
+                    updated_at: item.updated_at,
+                    id: item.id,
+                })
+            })
+            .flatten();
+        Ok(LibraryPage { items, next_cursor })
     }
 
     pub fn saved_item(&self, id: i64) -> Result<Option<StoredSavedItem>> {
@@ -1199,6 +1370,9 @@ impl ClipboardStore {
             .join(", ");
         let sql = format!("DELETE FROM saved_items WHERE id IN ({placeholders})");
         let tx = self.connection.transaction()?;
+        let fts_sql =
+            format!("DELETE FROM saved_items_fts WHERE saved_item_id IN ({placeholders})");
+        tx.execute(&fts_sql, rusqlite::params_from_iter(ids.iter()))?;
         let deleted = tx.execute(&sql, rusqlite::params_from_iter(ids.iter()))?;
         tx.commit()?;
         self.schedule_blob_gc()?;
@@ -1519,8 +1693,11 @@ fn refresh_saved_search_tx(tx: &Transaction<'_>, saved_item_id: i64) -> Result<(
     .collect::<Vec<_>>()
     .join("\n");
     tx.execute(
-        "INSERT INTO saved_items_fts (saved_item_id, document) VALUES (?, ?)
-         ON CONFLICT(saved_item_id) DO UPDATE SET document = excluded.document",
+        "DELETE FROM saved_items_fts WHERE saved_item_id = ?",
+        [saved_item_id],
+    )?;
+    tx.execute(
+        "INSERT INTO saved_items_fts (saved_item_id, document) VALUES (?, ?)",
         params![saved_item_id, document],
     )?;
     Ok(())
@@ -1575,6 +1752,19 @@ impl SharedClipboardStore {
         store.list_entries(query, limit)
     }
 
+    pub fn list_entries_page(
+        &self,
+        query: &str,
+        limit: u32,
+        cursor: Option<PageCursor>,
+    ) -> Result<LibraryPage<ClipboardEntry>> {
+        let store = self
+            .inner
+            .lock()
+            .map_err(|_| StorageError::Invalid("storage lock poisoned".to_owned()))?;
+        store.list_entries_page(query, limit, cursor)
+    }
+
     pub fn entry(&self, id: i64) -> Result<Option<StoredClipboardEntry>> {
         let store = self
             .inner
@@ -1609,6 +1799,19 @@ impl SharedClipboardStore {
             .lock()
             .map_err(|_| StorageError::Invalid("storage lock poisoned".to_owned()))?;
         store.list_saved_items(query, limit)
+    }
+
+    pub fn list_saved_items_page(
+        &self,
+        query: &str,
+        limit: u32,
+        cursor: Option<PageCursor>,
+    ) -> Result<LibraryPage<SavedItem>> {
+        let store = self
+            .inner
+            .lock()
+            .map_err(|_| StorageError::Invalid("storage lock poisoned".to_owned()))?;
+        store.list_saved_items_page(query, limit, cursor)
     }
 
     pub fn saved_item(&self, id: i64) -> Result<Option<StoredSavedItem>> {
@@ -1703,8 +1906,9 @@ impl LibraryStore for SharedClipboardStore {
         &self,
         query: &str,
         limit: u32,
-    ) -> std::result::Result<Vec<ClipboardEntry>, Self::Error> {
-        SharedClipboardStore::list_entries(self, query, limit)
+        cursor: Option<PageCursor>,
+    ) -> std::result::Result<LibraryPage<ClipboardEntry>, Self::Error> {
+        SharedClipboardStore::list_entries_page(self, query, limit, cursor)
     }
 
     fn entry(&self, id: i64) -> std::result::Result<Option<ClipboardEntry>, Self::Error> {
@@ -1761,8 +1965,9 @@ impl LibraryStore for SharedClipboardStore {
         &self,
         query: &str,
         limit: u32,
-    ) -> std::result::Result<Vec<SavedItem>, Self::Error> {
-        SharedClipboardStore::list_saved_items(self, query, limit)
+        cursor: Option<PageCursor>,
+    ) -> std::result::Result<LibraryPage<SavedItem>, Self::Error> {
+        SharedClipboardStore::list_saved_items_page(self, query, limit, cursor)
     }
 
     fn saved_item_payload(
@@ -1775,6 +1980,49 @@ impl LibraryStore for SharedClipboardStore {
     fn delete_saved_items(&self, ids: &[i64]) -> std::result::Result<usize, Self::Error> {
         SharedClipboardStore::delete_saved_items(self, ids)
     }
+}
+
+fn cursor_filter(alias: &str, cursor: Option<PageCursor>) -> (String, Vec<Value>) {
+    match cursor {
+        Some(cursor) => (
+            format!("AND ({alias}.updated_at < ? OR ({alias}.updated_at = ? AND {alias}.id < ?))"),
+            vec![
+                Value::Integer(cursor.updated_at),
+                Value::Integer(cursor.updated_at),
+                Value::Integer(cursor.id),
+            ],
+        ),
+        None => (String::new(), Vec::new()),
+    }
+}
+
+fn fts_match_query(query: &str) -> String {
+    format!("\"{}\"", query.replace('"', "\"\""))
+}
+
+fn escape_like_pattern(value: &str) -> String {
+    value
+        .chars()
+        .flat_map(|character| match character {
+            '\\' => ['\\', '\\'].into_iter().collect::<Vec<_>>(),
+            '%' => ['\\', '%'].into_iter().collect::<Vec<_>>(),
+            '_' => ['\\', '_'].into_iter().collect::<Vec<_>>(),
+            character => [character].into_iter().collect::<Vec<_>>(),
+        })
+        .collect()
+}
+
+fn is_fts5_table(connection: &Connection, name: &str) -> Result<bool> {
+    let sql: Option<String> = connection
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+            [name],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(sql
+        .map(|value| value.to_ascii_lowercase().contains("using fts5"))
+        .unwrap_or(false))
 }
 
 fn map_entry(row: &Row<'_>) -> rusqlite::Result<ClipboardEntry> {
@@ -1792,6 +2040,26 @@ fn map_entry(row: &Row<'_>) -> rusqlite::Result<ClipboardEntry> {
         fingerprint: row.get(10)?,
         saved_item_id: row.get(11)?,
         byte_size: row.get::<_, i64>(12)?.try_into().unwrap_or(0),
+        thumbnail: None,
+    })
+}
+
+fn map_saved_item(row: &Row<'_>) -> rusqlite::Result<SavedItem> {
+    Ok(SavedItem {
+        id: row.get(0)?,
+        source_history_id: row.get(1)?,
+        created_at: row.get(2)?,
+        updated_at: row.get(3)?,
+        name: row.get(4)?,
+        content_type: row.get(5)?,
+        editable_text: row.get(6)?,
+        source_app: row.get(7)?,
+        source_executable: row.get(8)?,
+        source_window_title: row.get(9)?,
+        preview_text: row.get(10)?,
+        byte_size: row.get::<_, i64>(11)?.try_into().unwrap_or(0),
+        tags: Vec::new(),
+        is_independent: row.get::<_, i64>(12)? != 0,
         thumbnail: None,
     })
 }
@@ -2468,6 +2736,37 @@ mod tests {
             .unwrap();
         assert_eq!(stored.metadata, thumbnail);
         assert_eq!(store.entry_payload(id).unwrap()[0].bytes, original);
+    }
+
+    #[test]
+    fn fts_match_and_cursor_pages_are_bounded_and_stable() {
+        let root = TempDir::new().unwrap();
+        let mut store = ClipboardStore::open(root.path()).unwrap();
+        for sequence in 1..=3 {
+            store
+                .record_capture(text_capture(&format!("searchable-{sequence}"), sequence))
+                .unwrap();
+        }
+
+        let first = store.list_entries_page("", 1, None).unwrap();
+        assert_eq!(first.items.len(), 1);
+        let cursor = first.next_cursor;
+        let second = store.list_entries_page("", 1, cursor).unwrap();
+        assert_eq!(second.items.len(), 1);
+        assert_ne!(first.items[0].id, second.items[0].id);
+        assert_eq!(store.list_entries("searchable-2", 20).unwrap().len(), 1);
+        assert_eq!(store.list_entries("sea", 20).unwrap().len(), 3);
+        assert_eq!(store.list_entries("se", 20).unwrap().len(), 3);
+
+        let marker: String = store
+            .connection
+            .query_row(
+                "SELECT value FROM migration_state WHERE key = ?",
+                [SEARCH_FTS_SCHEMA_KEY],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(marker.starts_with("2:"));
     }
 
     fn one_pixel_png() -> Vec<u8> {

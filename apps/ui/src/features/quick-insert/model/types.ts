@@ -1,4 +1,6 @@
 import type {
+  HistoryChangedEvent,
+  HistoryCursor,
   PasteSession,
   QuickInsertItem,
   QuickInsertView,
@@ -6,10 +8,13 @@ import type {
 } from "../../../shared/ipc/generated";
 
 export type {
+  HistoryChangedEvent,
+  HistoryCursor,
   PasteSession,
   QuickInsertAction,
   QuickInsertItem,
   QuickInsertOutcome,
+  QuickInsertPage,
   QuickInsertSource,
   QuickInsertView,
   SavedItemUpdate,
@@ -23,6 +28,8 @@ export interface QuickInsertState {
   items: QuickInsertItem[];
   selection: number;
   loading: boolean;
+  loadingMore: boolean;
+  nextCursor: HistoryCursor | null;
   status: string;
   statusKind: StatusKind;
   generation: number;

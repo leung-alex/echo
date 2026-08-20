@@ -1,6 +1,7 @@
 use echo_engine::{
-    ClipboardSettings as DomainSettings, QuickInsertAction as DomainAction,
-    QuickInsertItem as DomainItem, QuickInsertOutcome as DomainOutcome,
+    ClipboardSettings as DomainSettings, PageCursor as DomainCursor,
+    QuickInsertAction as DomainAction, QuickInsertItem as DomainItem,
+    QuickInsertOutcome as DomainOutcome, QuickInsertPage as DomainPage,
     QuickInsertSource as DomainSource, QuickInsertView as DomainView, Thumbnail,
 };
 use serde::{Deserialize, Serialize};
@@ -67,6 +68,41 @@ pub struct QuickInsertItem {
     pub saved_item_id: Option<i64>,
     pub is_independent: bool,
     pub preview: Option<PreviewAsset>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+pub struct HistoryCursor {
+    pub updated_at: i64,
+    pub id: i64,
+}
+
+impl From<HistoryCursor> for DomainCursor {
+    fn from(cursor: HistoryCursor) -> Self {
+        Self {
+            updated_at: cursor.updated_at,
+            id: cursor.id,
+        }
+    }
+}
+
+impl From<DomainCursor> for HistoryCursor {
+    fn from(cursor: DomainCursor) -> Self {
+        Self {
+            updated_at: cursor.updated_at,
+            id: cursor.id,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct QuickInsertPage {
+    pub items: Vec<QuickInsertItem>,
+    pub next_cursor: Option<HistoryCursor>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct HistoryChangedEvent {
+    pub version: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -171,6 +207,15 @@ impl From<DomainItem> for QuickInsertItem {
             saved_item_id: item.saved_item_id,
             is_independent: item.is_independent,
             preview: item.thumbnail.map(Into::into),
+        }
+    }
+}
+
+impl From<DomainPage> for QuickInsertPage {
+    fn from(page: DomainPage) -> Self {
+        Self {
+            items: page.items.into_iter().map(Into::into).collect(),
+            next_cursor: page.next_cursor.map(Into::into),
         }
     }
 }

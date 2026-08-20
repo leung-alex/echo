@@ -24,18 +24,18 @@ test.describe("Echo Clipboard acceptance", () => {
       await copyClipboard("copy-text", value);
       await expect
         .poll(async () => {
-          const items = await invoke<
-            Array<{ id: number; preview_text?: string }>
-          >(main, "quick_insert_list", {
+          const page = await invoke<{
+            items: Array<{ id: number; preview_text?: string }>;
+          }>(main, "quick_insert_list", {
             view: "history",
             query: value,
             limit: 50,
           });
-          return items.length;
+          return page.items.length;
         })
         .toBe(1);
 
-      const items = await invoke<Array<{ id: number }>>(
+      const page = await invoke<{ items: Array<{ id: number }> }>(
         main,
         "quick_insert_list",
         {
@@ -44,19 +44,23 @@ test.describe("Echo Clipboard acceptance", () => {
           limit: 50,
         },
       );
-      const id = items[0]?.id;
+      const id = page.items[0]?.id;
       expect(id).toBeDefined();
       await copyClipboard("copy-text", value);
       await expect
         .poll(
           async () =>
             (
-              await invoke<Array<{ id: number }>>(main, "quick_insert_list", {
-                view: "history",
-                query: value,
-                limit: 50,
-              })
-            ).length,
+              await invoke<{ items: Array<{ id: number }> }>(
+                main,
+                "quick_insert_list",
+                {
+                  view: "history",
+                  query: value,
+                  limit: 50,
+                },
+              )
+            ).items.length,
         )
         .toBe(1);
 
@@ -67,16 +71,20 @@ test.describe("Echo Clipboard acceptance", () => {
       await copyClipboard("copy-unsupported", `${value}-unsupported`);
       await expect
         .poll(async () => {
-          const items = await invoke<Array<{ content_type: string }>>(
+          const page = await invoke<{ items: Array<{ content_type: string }> }>(
             main,
             "quick_insert_list",
             { view: "history", query: "", limit: 50 },
           );
           return {
-            html: items.filter((item) => item.content_type === "html").length,
-            rtf: items.filter((item) => item.content_type === "rtf").length,
-            image: items.filter((item) => item.content_type === "image").length,
-            files: items.filter((item) => item.content_type === "files").length,
+            html: page.items.filter((item) => item.content_type === "html")
+              .length,
+            rtf: page.items.filter((item) => item.content_type === "rtf")
+              .length,
+            image: page.items.filter((item) => item.content_type === "image")
+              .length,
+            files: page.items.filter((item) => item.content_type === "files")
+              .length,
           };
         })
         .toEqual({ html: 1, rtf: 1, image: 1, files: 1 });

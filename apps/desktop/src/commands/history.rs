@@ -9,6 +9,7 @@ pub(crate) fn history_clear(state: State<'_, EchoState>) -> Result<(), String> {
         .clear_history()
         .map_err(|error| error.to_string())?;
     state.quick_insert.request_maintenance();
+    state.quick_insert.invalidate_history(None);
     Ok(())
 }
 

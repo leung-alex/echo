@@ -1,22 +1,25 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::thread;
 
+use echo_engine::{
+    CaptureEventSubscription, ClipboardPlatform, ClipboardService, ClipboardSink, Library,
+    QuickInsertService,
+};
 #[cfg(not(windows))]
 use echo_engine::{
     CapturePolicy, ClipboardRepresentation, ClipboardSnapshot, PasteDelivery, PasteTarget,
     PlatformChangePublisher, PlatformError,
 };
-use echo_engine::{
-    ClipboardPlatform, ClipboardService, ClipboardSink, Library, QuickInsertService,
-};
 use echo_storage::SharedClipboardStore;
-use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use crate::activation::PendingActivation;
 
 pub(crate) struct EchoState {
     pub library: Library<SharedClipboardStore>,
     pub quick_insert: QuickInsertService<SharedClipboardStore>,
+    pub clipboard: Arc<ClipboardService>,
     pub pending_activation: std::sync::Mutex<Option<PendingActivation>>,
 }
 
@@ -41,8 +44,28 @@ impl EchoState {
         Ok(Self {
             library,
             quick_insert,
+            clipboard,
             pending_activation: std::sync::Mutex::new(None),
         })
+    }
+
+    pub(crate) fn start_history_event_bridge(&self, app: &tauri::AppHandle) {
+        let events = self.clipboard.subscribe_events();
+        let app = app.clone();
+        let _ = thread::Builder::new()
+            .name("echo-history-events".to_owned())
+            .spawn(move || forward_history_events(app, events));
+    }
+}
+
+fn forward_history_events(app: tauri::AppHandle, events: CaptureEventSubscription) {
+    let mut version = 0_u64;
+    while events.recv().is_ok() {
+        version = version.saturating_add(1);
+        let _ = app.emit(
+            "echo-history-changed",
+            crate::transport::HistoryChangedEvent { version },
+        );
     }
 }
 
