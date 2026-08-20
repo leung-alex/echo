@@ -416,14 +416,6 @@ impl ClipboardService {
         Ok(sequence)
     }
 
-    /// Retained as a lifecycle probe for the R5 storage-runtime verifier.
-    ///
-    /// Startup maintenance is owned by `SharedClipboardStore::open`; this
-    /// compatibility probe intentionally performs no work and must not be used
-    /// to schedule a second maintenance pass.
-    #[doc(hidden)]
-    pub fn start_maintenance(&self) {}
-
     pub fn metrics_snapshot(&self) -> Vec<crate::OperationMetric> {
         self.shared.metrics.snapshot()
     }
