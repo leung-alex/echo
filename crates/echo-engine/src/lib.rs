@@ -25,7 +25,9 @@ pub use ingest::{
     RepresentationIdentity, DEFAULT_CAPTURE_LIMIT_BYTES, INGESTION_QUEUE_CAPACITY,
 };
 pub use instrumentation::{OperationMetric, OperationMetrics};
-pub use preview::{PreviewAsset, Thumbnail, DEFAULT_THUMBNAIL_MAX_EDGE, THUMBNAIL_MIME_TYPE};
+pub use preview::{
+    PreviewAsset, PreviewDisposition, Thumbnail, DEFAULT_THUMBNAIL_MAX_EDGE, THUMBNAIL_MIME_TYPE,
+};
 pub use quick_insert::{
     QuickInsertAction, QuickInsertError, QuickInsertItem, QuickInsertOutcome, QuickInsertPage,
     QuickInsertRequest, QuickInsertService, QuickInsertSource, QuickInsertView,

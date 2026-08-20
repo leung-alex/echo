@@ -11,9 +11,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use echo_engine::{
     is_text_like, normalize_name, normalize_tags, CapturePolicy, CaptureSettings, CapturedCapture,
     ClipboardRepresentation, ClipboardSink, ContentIdentity, LibraryPage, LibraryStore,
-    NormalizedCapture, OperationMetric, OperationMetrics, PageCursor, PreviewAsset, RecordResult,
-    RepresentationIdentity, SavedItemDraft, SavedItemUpdate, Thumbnail, DEFAULT_PAGE_SIZE,
-    MAX_PAGE_SIZE, THUMBNAIL_MIME_TYPE,
+    NormalizedCapture, OperationMetric, OperationMetrics, PageCursor, PreviewAsset,
+    PreviewDisposition, RecordResult, RepresentationIdentity, SavedItemDraft, SavedItemUpdate,
+    Thumbnail, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, THUMBNAIL_MIME_TYPE,
 };
 use rusqlite::types::Value;
 use rusqlite::{
@@ -654,14 +654,15 @@ impl ClipboardStore {
         Ok(())
     }
 
+    /// Convenience path for normalized callers. Production ingestion normally
+    /// supplies identity and preview work through `record_captured` instead.
     pub fn record_capture(&mut self, capture: NormalizedCapture) -> Result<RecordResult> {
-        let started = Instant::now();
-        let captured = CapturedCapture::from_capture(capture).prepare_preview();
-        self.metrics.record(
-            "thumbnail_generation",
-            started.elapsed(),
-            u64::from(captured.preview.is_some()),
-        );
+        let captured = CapturedCapture::from_capture(capture);
+        let preview_disposition = captured
+            .preview_source()
+            .map(|source| self.preview_disposition_for_source(&source.hash))
+            .transpose()?;
+        let captured = generate_preview_if_requested(captured, preview_disposition, &self.metrics);
         self.record_captured(captured)
     }
 
@@ -673,6 +674,7 @@ impl ClipboardStore {
         )
     }
 
+    /// Commits a caller-provided identity without generating a preview.
     pub fn record_capture_with_identity(
         &mut self,
         capture: NormalizedCapture,
@@ -728,6 +730,19 @@ impl ClipboardStore {
         } else {
             Vec::new()
         };
+        let previous_thumbnail_hash = preview
+            .as_ref()
+            .map(|asset| {
+                self.connection
+                    .query_row(
+                        "SELECT thumbnail_hash FROM preview_assets WHERE source_hash = ?",
+                        [&asset.thumbnail.source_hash],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()
+            })
+            .transpose()?
+            .flatten();
         let preview = preview.and_then(|asset| {
             (asset.thumbnail.mime_type == THUMBNAIL_MIME_TYPE
                 && capture
@@ -741,6 +756,11 @@ impl ClipboardStore {
                     }))
             .then(|| self.persist_thumbnail(&asset).ok().map(|_| asset.thumbnail))
             .flatten()
+        });
+        let preview_replaced = preview.as_ref().is_some_and(|thumbnail| {
+            previous_thumbnail_hash
+                .as_ref()
+                .is_some_and(|previous| previous != &thumbnail.content_hash)
         });
         let tx = self.connection.transaction()?;
         let (id, duplicate) = if let Some(id) = existing {
@@ -803,21 +823,14 @@ impl ClipboardStore {
             (id, false)
         };
         if let Some(thumbnail) = &preview {
-            let exists: bool = tx.query_row(
-                "SELECT EXISTS (SELECT 1 FROM preview_assets WHERE source_hash = ?)",
-                [&thumbnail.source_hash],
-                |row| row.get::<_, i64>(0),
-            )? != 0;
-            if !exists {
-                Self::insert_thumbnail_tx(&tx, thumbnail)?;
-            }
+            Self::insert_thumbnail_tx(&tx, thumbnail)?;
         }
         let evicted = Self::enforce_capacity_tx(&tx, &settings)?;
         let commit_started = Instant::now();
         tx.commit()?;
         self.metrics
             .record("db_commit", commit_started.elapsed(), 1);
-        if evicted {
+        if evicted || preview_replaced {
             self.schedule_blob_gc()?;
         }
         Ok(RecordResult { id, duplicate })
@@ -944,9 +957,15 @@ impl ClipboardStore {
 
     fn insert_thumbnail_tx(tx: &Transaction<'_>, metadata: &Thumbnail) -> Result<()> {
         tx.execute(
-            "INSERT OR IGNORE INTO preview_assets
+            "INSERT INTO preview_assets
              (source_hash, thumbnail_hash, mime_type, width, height, byte_size)
-             VALUES (?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?)
+             ON CONFLICT(source_hash) DO UPDATE SET
+               thumbnail_hash = excluded.thumbnail_hash,
+               mime_type = excluded.mime_type,
+               width = excluded.width,
+               height = excluded.height,
+               byte_size = excluded.byte_size",
             params![
                 metadata.source_hash,
                 metadata.content_hash,
@@ -1308,22 +1327,45 @@ impl ClipboardStore {
         let Some(metadata) = metadata else {
             return Ok(None);
         };
-        let path = self.thumbnails_dir.join(content_hash);
-        let bytes = match fs::read(path) {
-            Ok(bytes) => bytes,
-            Err(_) => return Ok(None),
+        let Some(bytes) = self.valid_thumbnail_bytes(&metadata) else {
+            return Ok(None);
         };
-        if metadata.mime_type != THUMBNAIL_MIME_TYPE
+        Ok(Some(StoredThumbnail { metadata, bytes }))
+    }
+
+    fn preview_disposition_for_source(&self, source_hash: &str) -> Result<PreviewDisposition> {
+        validate_hash(source_hash)?;
+        let metadata = self
+            .connection
+            .query_row(
+                "SELECT source_hash, thumbnail_hash, mime_type, width, height, byte_size
+                 FROM preview_assets WHERE source_hash = ?",
+                [source_hash],
+                map_thumbnail,
+            )
+            .optional()?;
+        Ok(match metadata {
+            Some(metadata) if self.valid_thumbnail_bytes(&metadata).is_some() => {
+                PreviewDisposition::ReuseExisting
+            }
+            _ => PreviewDisposition::Generate,
+        })
+    }
+
+    fn valid_thumbnail_bytes(&self, metadata: &Thumbnail) -> Option<Vec<u8>> {
+        if validate_hash(&metadata.source_hash).is_err()
+            || validate_hash(&metadata.content_hash).is_err()
+            || metadata.mime_type != THUMBNAIL_MIME_TYPE
             || metadata.width == 0
             || metadata.height == 0
             || metadata.width > 256
             || metadata.height > 256
-            || metadata.byte_size != bytes.len() as u64
-            || hash_bytes(&bytes) != content_hash
         {
-            return Ok(None);
+            return None;
         }
-        Ok(Some(StoredThumbnail { metadata, bytes }))
+        let bytes = fs::read(self.thumbnails_dir.join(&metadata.content_hash)).ok()?;
+        (metadata.byte_size == bytes.len() as u64 && hash_bytes(&bytes) == metadata.content_hash)
+            .then_some(bytes)
     }
 
     pub fn save_history_item(
@@ -2288,20 +2330,27 @@ impl ClipboardSink for SharedClipboardStore {
     }
 
     fn record(&self, capture: NormalizedCapture) -> std::result::Result<RecordResult, String> {
-        let (result, pending) = self
-            .with_store(move |store| {
-                let result = store.record_capture(capture)?;
-                let pending = store.maintenance_pending()?;
-                Ok((result, pending))
-            })
-            .map_err(|error| error.to_string())?;
-        self.request_after_pending_write(pending);
-        Ok(result)
+        let captured = CapturedCapture::from_capture(capture);
+        let preview_disposition = captured
+            .preview_source()
+            .map(|source| self.preview_disposition(source))
+            .transpose()?;
+        let captured = generate_preview_if_requested(captured, preview_disposition, &self.metrics);
+        self.record_captured(captured)
     }
 
     fn capture_policy(&self) -> std::result::Result<CapturePolicy, String> {
         self.settings()
             .map(|settings| CapturePolicy::from_max_item_bytes(settings.max_item_bytes))
+            .map_err(|error| error.to_string())
+    }
+
+    fn preview_disposition(
+        &self,
+        source: &RepresentationIdentity,
+    ) -> std::result::Result<PreviewDisposition, String> {
+        self.reader
+            .read(|store| store.preview_disposition_for_source(&source.hash))
             .map_err(|error| error.to_string())
     }
 
@@ -2517,6 +2566,24 @@ fn map_thumbnail(row: &Row<'_>) -> rusqlite::Result<Thumbnail> {
         height: row.get::<_, i64>(4)?.try_into().unwrap_or(0),
         byte_size: row.get::<_, i64>(5)?.try_into().unwrap_or(0),
     })
+}
+
+fn generate_preview_if_requested(
+    captured: CapturedCapture,
+    disposition: Option<PreviewDisposition>,
+    metrics: &OperationMetrics,
+) -> CapturedCapture {
+    if disposition != Some(PreviewDisposition::Generate) {
+        return captured;
+    }
+    let started = Instant::now();
+    let captured = captured.prepare_preview();
+    metrics.record(
+        "thumbnail_generation",
+        started.elapsed(),
+        u64::from(captured.preview.is_some()),
+    );
+    captured
 }
 
 fn now_millis() -> i64 {
@@ -2819,6 +2886,59 @@ mod tests {
             .unwrap();
         assert_eq!(stored.metadata, thumbnail);
         assert_eq!(store.entry_payload(id).unwrap()[0].bytes, original);
+    }
+
+    #[test]
+    fn low_level_capture_reuses_valid_preview_and_repairs_corrupt_metadata() {
+        fn generation_samples(store: &ClipboardStore) -> u64 {
+            store
+                .metrics_snapshot()
+                .into_iter()
+                .find(|metric| metric.operation == "thumbnail_generation")
+                .map(|metric| metric.samples)
+                .unwrap_or(0)
+        }
+
+        let root = TempDir::new().unwrap();
+        let mut store = ClipboardStore::open(root.path()).unwrap();
+        let mut capture = text_capture("picture", 1);
+        capture.content_type = ContentType::Image;
+        capture.representations = vec![ClipboardRepresentation {
+            format: "image".to_owned(),
+            mime_type: "image/png".to_owned(),
+            bytes: one_pixel_png(),
+        }];
+        capture.fingerprint = fingerprint(&capture.representations);
+        let source_hash = hash_bytes(&capture.representations[0].bytes);
+
+        let first = store.record_capture(capture.clone()).unwrap();
+        capture.sequence = 2;
+        assert!(store.record_capture(capture.clone()).unwrap().duplicate);
+        assert_eq!(generation_samples(&store), 1);
+
+        store
+            .connection
+            .execute(
+                "UPDATE preview_assets SET thumbnail_hash = ? WHERE source_hash = ?",
+                params!["0".repeat(64), source_hash],
+            )
+            .unwrap();
+        capture.sequence = 3;
+        assert!(store.record_capture(capture).unwrap().duplicate);
+        assert_eq!(generation_samples(&store), 2);
+        assert!(store.maintenance_pending().unwrap());
+        let repaired = store
+            .entry(first.id)
+            .unwrap()
+            .unwrap()
+            .entry
+            .thumbnail
+            .unwrap();
+        assert_ne!(repaired.content_hash, "0".repeat(64));
+        assert!(store
+            .read_thumbnail(&repaired.content_hash)
+            .unwrap()
+            .is_some());
     }
 
     #[test]

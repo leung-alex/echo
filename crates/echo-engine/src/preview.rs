@@ -4,10 +4,16 @@ use image::{DynamicImage, GenericImageView, ImageOutputFormat};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::{ClipboardRepresentation, ContentIdentity};
+use crate::{ClipboardRepresentation, ContentIdentity, RepresentationIdentity};
 
 pub const DEFAULT_THUMBNAIL_MAX_EDGE: u32 = 256;
 pub const THUMBNAIL_MIME_TYPE: &str = "image/png";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreviewDisposition {
+    Generate,
+    ReuseExisting,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Thumbnail {
@@ -29,14 +35,20 @@ pub fn thumbnail_for_capture(
     representations: &[ClipboardRepresentation],
     identity: &ContentIdentity,
 ) -> Option<PreviewAsset> {
+    preview_source(representations, identity).and_then(|(representation, source)| {
+        thumbnail_for_representation(representation, &source.hash)
+    })
+}
+
+pub(crate) fn preview_source<'a>(
+    representations: &'a [ClipboardRepresentation],
+    identity: &'a ContentIdentity,
+) -> Option<(&'a ClipboardRepresentation, &'a RepresentationIdentity)> {
     representations
         .iter()
         .zip(identity.representations.iter())
         .find(|(representation, _)| {
             representation.format == "image" || representation.mime_type.starts_with("image/")
-        })
-        .and_then(|(representation, source)| {
-            thumbnail_for_representation(representation, &source.hash)
         })
 }
 

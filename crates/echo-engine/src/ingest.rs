@@ -183,10 +183,17 @@ impl CapturedCapture {
         }
     }
 
+    /// Runs image decode/resize/encode unconditionally for a previewable capture.
+    /// Ingestion must call this only after the sink requests generation.
     pub fn prepare_preview(mut self) -> Self {
         self.preview =
             crate::preview::thumbnail_for_capture(&self.capture.representations, &self.identity);
         self
+    }
+
+    pub fn preview_source(&self) -> Option<&RepresentationIdentity> {
+        crate::preview::preview_source(&self.capture.representations, &self.identity)
+            .map(|(_, identity)| identity)
     }
 }
 
@@ -255,6 +262,12 @@ pub trait ClipboardSink: Send + Sync {
     fn record(&self, capture: NormalizedCapture) -> std::result::Result<RecordResult, String>;
     fn capture_policy(&self) -> std::result::Result<CapturePolicy, String> {
         Ok(CapturePolicy::default())
+    }
+    fn preview_disposition(
+        &self,
+        _source: &RepresentationIdentity,
+    ) -> std::result::Result<crate::PreviewDisposition, String> {
+        Ok(crate::PreviewDisposition::Generate)
     }
     fn record_captured(
         &self,
@@ -352,8 +365,7 @@ pub struct ClipboardService {
 
 struct IngestionJob {
     snapshot: ClipboardSnapshot,
-    settings: CaptureSettings,
-    policy: CapturePolicy,
+    configuration: CaptureConfiguration,
     completion: Option<SyncSender<std::result::Result<CaptureCommit, String>>>,
 }
 
@@ -528,7 +540,7 @@ fn capture_sequence(
     sequence: u64,
     wait_for_commit: bool,
 ) -> Result<Option<CaptureCommit>> {
-    let (snapshot, settings, policy, previous_sequence, read_elapsed, read_count) = {
+    let (snapshot, configuration, previous_sequence, read_elapsed, read_count) = {
         let _gate = lock(&shared.write_capture)?;
         if shared.ignored_sequence.load(Ordering::Acquire) == sequence {
             shared.last_sequence.store(sequence, Ordering::Release);
@@ -549,17 +561,15 @@ fn capture_sequence(
             .lock()
             .map_err(|_| ClipboardError::StateUnavailable)?
             .clone();
-        let settings = configuration.settings;
-        if !settings.history_enabled {
+        if !configuration.settings.history_enabled {
             shared.last_sequence.store(sequence, Ordering::Release);
             return Ok(Some(CaptureCommit {
                 outcome: CaptureOutcome::Disabled,
                 event: None,
             }));
         }
-        let policy = configuration.policy;
         let read_started = Instant::now();
-        let snapshot_result = shared.platform.read_clipboard(&policy);
+        let snapshot_result = shared.platform.read_clipboard(&configuration.policy);
         let read_count = snapshot_result
             .as_ref()
             .ok()
@@ -598,8 +608,7 @@ fn capture_sequence(
         shared.last_sequence.store(sequence, Ordering::Release);
         (
             snapshot,
-            settings,
-            policy,
+            configuration,
             previous_sequence,
             read_elapsed,
             read_count,
@@ -619,8 +628,7 @@ fn capture_sequence(
         shared,
         IngestionJob {
             snapshot,
-            settings,
-            policy,
+            configuration,
             completion: completion_sender,
         },
     ) {
@@ -664,11 +672,14 @@ fn ingest(shared: Arc<Shared>, receiver: Receiver<IngestionJob>) {
     while let Ok(job) = receiver.recv() {
         let IngestionJob {
             snapshot,
-            settings,
-            policy,
+            configuration,
             completion,
         } = job;
-        let captured = match shared.processor.normalize(snapshot, &settings, &policy) {
+        let captured = match shared.processor.normalize(
+            snapshot,
+            &configuration.settings,
+            &configuration.policy,
+        ) {
             Ok(Some(captured)) => captured,
             Ok(None) => {
                 if let Some(completion) = completion {
@@ -690,13 +701,32 @@ fn ingest(shared: Arc<Shared>, receiver: Receiver<IngestionJob>) {
                 continue;
             }
         };
-        let preview_started = Instant::now();
-        let captured = shared.processor.prepare_preview(captured);
-        shared.metrics.record(
-            "thumbnail_generation",
-            preview_started.elapsed(),
-            u64::from(captured.preview.is_some()),
-        );
+        let preview_disposition = captured
+            .preview_source()
+            .map(|source| shared.sink.preview_disposition(source))
+            .transpose();
+        let captured = match preview_disposition {
+            Ok(Some(crate::PreviewDisposition::Generate)) => {
+                let preview_started = Instant::now();
+                let captured = shared.processor.prepare_preview(captured);
+                shared.metrics.record(
+                    "thumbnail_generation",
+                    preview_started.elapsed(),
+                    u64::from(captured.preview.is_some()),
+                );
+                captured
+            }
+            Ok(Some(crate::PreviewDisposition::ReuseExisting)) | Ok(None) => captured,
+            Err(error) => {
+                if let Ok(mut last_error) = shared.last_error.lock() {
+                    *last_error = Some(error.clone());
+                }
+                if let Some(completion) = completion {
+                    let _ = completion.send(Err(error));
+                }
+                continue;
+            }
+        };
         let result = shared.sink.record_captured(captured);
         match result {
             Ok(record) => {
@@ -1275,8 +1305,10 @@ mod tests {
     fn ingestion_job(snapshot: ClipboardSnapshot) -> IngestionJob {
         IngestionJob {
             snapshot,
-            settings: CaptureSettings::default(),
-            policy: CapturePolicy::default(),
+            configuration: CaptureConfiguration {
+                settings: CaptureSettings::default(),
+                policy: CapturePolicy::default(),
+            },
             completion: None,
         }
     }
