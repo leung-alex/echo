@@ -37,6 +37,8 @@ Usage:
       Run the focused Clipboard ownership gates.
   echo.cmd verify quick-insert
       Run the focused Quick Insert ownership gates.
+  echo.cmd bindings [--check]
+      Generate or check the checked-in TypeScript transport bindings.
   echo.cmd self-check
       Validate repository automation and independence invariants.
   echo.cmd build [--release]
@@ -112,6 +114,16 @@ func (a *app) dispatch(args []string) error {
 		return a.format(*check)
 	case "verify":
 		return a.verifyCommand(args[1:])
+	case "bindings":
+		fs := newFlags("bindings", a.errOut)
+		check := fs.Bool("check", false, "check bindings without writing")
+		if err := parseFlags(fs, args[1:]); err != nil {
+			return err
+		}
+		if *check {
+			return a.checkGeneratedBindings()
+		}
+		return a.writeGeneratedBindings()
 	case "self-check":
 		return noArgs(args[1:], a.selfCheck)
 	case "build":
@@ -186,7 +198,7 @@ func findRepositoryRoot(start string) (string, error) {
 	}
 	for {
 		if fileExists(filepath.Join(path, "Cargo.toml")) &&
-			directoryExists(filepath.Join(path, "backend")) &&
+			directoryExists(filepath.Join(path, "crates")) &&
 			directoryExists(filepath.Join(path, "apps")) {
 			return path, nil
 		}
@@ -313,7 +325,7 @@ func (a *app) verifyScope(scope string) error {
 	}
 	switch scope {
 	case "clipboard":
-		if err := a.run("cargo", "test", "-p", "echo-clipboard"); err != nil {
+		if err := a.run("cargo", "test", "-p", "echo-engine"); err != nil {
 			return err
 		}
 		if err := a.run("cargo", "test", "-p", "echo-storage"); err != nil {
@@ -321,19 +333,16 @@ func (a *app) verifyScope(scope string) error {
 		}
 		return a.run("cargo", "check", "-p", "echo-desktop")
 	case "quick-insert":
-		if err := a.run("cargo", "test", "-p", "echo-library"); err != nil {
+		if err := a.run("cargo", "test", "-p", "echo-engine"); err != nil {
 			return err
 		}
-		if err := a.run("cargo", "test", "-p", "echo-quick-insert"); err != nil {
+		if err := a.run("cargo", "test", "-p", "echo-activation"); err != nil {
 			return err
 		}
-		if err := a.run("cargo", "test", "-p", "echo-protocol"); err != nil {
+		if err := a.run("pnpm", "--dir", "apps/ui", "test"); err != nil {
 			return err
 		}
-		if err := a.run("pnpm", "--dir", "frontend/app", "test"); err != nil {
-			return err
-		}
-		return a.run("pnpm", "--dir", "frontend/app", "build")
+		return a.run("pnpm", "--dir", "apps/ui", "build")
 	default:
 		return fmt.Errorf("unknown verification scope %q", scope)
 	}
@@ -352,10 +361,10 @@ func (a *app) verifyProfile(profile ValidationProfile) error {
 	if err := a.run("cargo", "test", "--workspace", "--locked"); err != nil {
 		return err
 	}
-	if err := a.run("pnpm", "--dir", "frontend/app", "test"); err != nil {
+	if err := a.run("pnpm", "--dir", "apps/ui", "test"); err != nil {
 		return err
 	}
-	if err := a.run("pnpm", "--dir", "frontend/app", "build"); err != nil {
+	if err := a.run("pnpm", "--dir", "apps/ui", "build"); err != nil {
 		return err
 	}
 	if profile == ValidationCI {
@@ -384,14 +393,14 @@ func (a *app) runOwnerPlan(plan OwnerPlan, profile ValidationProfile) error {
 	packages := map[string]bool{}
 	for _, owner := range plan.Owners {
 		switch owner {
-		case "clipboard":
-			packages["echo-clipboard"], packages["echo-storage"] = true, true
+		case "clipboard", "engine":
+			packages["echo-engine"], packages["echo-storage"] = true, true
 		case "storage", "migration":
 			packages["echo-storage"] = true
 		case "library":
-			packages["echo-library"] = true
+			packages["echo-engine"] = true
 		case "quick-insert":
-			packages["echo-quick-insert"] = true
+			packages["echo-engine"] = true
 			needFrontend = true
 		case "frontend":
 			needFrontend = true
@@ -400,7 +409,7 @@ func (a *app) runOwnerPlan(plan OwnerPlan, profile ValidationProfile) error {
 		case "tests":
 			needFrontend = true
 			needDesktop = true
-			for _, packageName := range []string{"echo-clipboard", "echo-storage", "echo-library", "echo-quick-insert", "echo-protocol"} {
+			for _, packageName := range []string{"echo-engine", "echo-storage", "echo-windows", "echo-activation"} {
 				packages[packageName] = true
 			}
 		case "tooling":
@@ -418,11 +427,11 @@ func (a *app) runOwnerPlan(plan OwnerPlan, profile ValidationProfile) error {
 		}
 	}
 	if needFrontend {
-		if err := a.run("pnpm", "--dir", "frontend/app", "test"); err != nil {
+		if err := a.run("pnpm", "--dir", "apps/ui", "test"); err != nil {
 			return err
 		}
 		if profile == ValidationCI || contains(plan.Owners, "frontend") {
-			if err := a.run("pnpm", "--dir", "frontend/app", "build"); err != nil {
+			if err := a.run("pnpm", "--dir", "apps/ui", "build"); err != nil {
 				return err
 			}
 		}
@@ -477,7 +486,7 @@ func (a *app) selfCheck() error {
 		"Cargo.toml",
 		"pnpm-workspace.yaml",
 		"package.json",
-		"frontend/app/package.json",
+		"apps/ui/package.json",
 		"apps/desktop/tauri.conf.json",
 		"apps/desktop/icons/icon.ico",
 		"tools/echo/go.mod",
@@ -509,6 +518,9 @@ func (a *app) selfCheck() error {
 	if err := a.checkGeneratedIgnore("apps/desktop/gen/schemas/desktop-schema.json"); err != nil {
 		return err
 	}
+	if err := a.checkGeneratedBindings(); err != nil {
+		return err
+	}
 	if err := a.checkNativeFixtureSources(); err != nil {
 		return err
 	}
@@ -516,7 +528,7 @@ func (a *app) selfCheck() error {
 	if err != nil {
 		return fmt.Errorf("read test ownership map: %w", err)
 	}
-	for _, required := range []string{"clipboard-first-open.spec.ts", "clipboard-system.spec.ts", "quick-insert.spec.ts", "Input Editor", "Native acceptance"} {
+	for _, required := range []string{"clipboard.spec.ts", "quick-insert.spec.ts", "Native acceptance"} {
 		if !bytes.Contains(content, []byte(required)) {
 			return fmt.Errorf("test ownership map is missing %q", required)
 		}
@@ -554,7 +566,7 @@ func (a *app) checkNativeFixtureSources() error {
 }
 
 func (a *app) checkFrontendPresentation() error {
-	root := filepath.Join(a.root, "frontend", "app", "src")
+	root := filepath.Join(a.root, "apps", "ui", "src")
 	defined := map[string]bool{}
 	used := map[string]bool{}
 	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
@@ -654,7 +666,7 @@ func (a *app) checkManifestIndependence() error {
 		"pnpm-workspace.yaml",
 		"pnpm-lock.yaml",
 		"package.json",
-		"frontend/app/package.json",
+		"apps/ui/package.json",
 		"apps/desktop/Cargo.toml",
 		"apps/desktop/tauri.conf.json",
 		"echo.cmd",
@@ -765,7 +777,7 @@ func (a *app) format(check bool) error {
 
 func prettierTargets() []string {
 	return []string{
-		"frontend/**/*.{ts,tsx,css,json,html}",
+		"apps/ui/**/*.{ts,tsx,css,json,html}",
 		"tests/**/*.ts",
 		"package.json",
 		"pnpm-workspace.yaml",
@@ -806,7 +818,7 @@ func (a *app) install() error {
 }
 
 func (a *app) build(release bool) error {
-	if err := a.run("pnpm", "--dir", "frontend/app", "build"); err != nil {
+	if err := a.run("pnpm", "--dir", "apps/ui", "build"); err != nil {
 		return err
 	}
 	args := []string{"build", "-p", "echo-desktop", "--locked"}

@@ -1,8 +1,8 @@
 # Echo Recall
 
 Echo is the standalone reusable-content application extracted from Culsans.
-Clipboard is the ingestion engine, Library contains History/Favorites/Snippets,
-and Quick Insert is the retrieval and insertion surface.
+Clipboard is the ingestion engine, History and Saved Items are its durable
+views, and Quick Insert is the retrieval and insertion surface.
 
 The repository intentionally contains no dependency on Culsans source, runtime,
 storage, platform crates, or data directories.
@@ -35,8 +35,8 @@ The lower-level commands remain useful when working inside one layer:
 
 ```powershell
 cargo test --workspace --locked
-pnpm --dir frontend/app test
-pnpm --dir frontend/app build
+pnpm --dir apps/ui test
+pnpm --dir apps/ui build
 go -C tools/echo test ./...
 go -C tools/echo vet ./...
 ```

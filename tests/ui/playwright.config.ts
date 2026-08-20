@@ -15,8 +15,7 @@ export default defineConfig({
     trace: "retain-on-failure",
   },
   webServer: {
-    command:
-      "pnpm --dir ../../frontend/app exec vite --host 127.0.0.1 --port 5187",
+    command: "pnpm --dir ../../apps/ui exec vite --host 127.0.0.1 --port 5187",
     url,
     reuseExistingServer: false,
     timeout: 120_000,

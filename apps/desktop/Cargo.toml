@@ -22,11 +22,8 @@ tauri-build.workspace = true
 
 [dependencies]
 base64.workspace = true
-echo-clipboard.workspace = true
-echo-library.workspace = true
-echo-platform.workspace = true
-echo-protocol.workspace = true
-echo-quick-insert.workspace = true
+echo-activation.workspace = true
+echo-engine.workspace = true
 echo-storage.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -34,4 +31,4 @@ tauri.workspace = true
 tauri-plugin-single-instance.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-echo-platform-windows.workspace = true
+echo-windows.workspace = true

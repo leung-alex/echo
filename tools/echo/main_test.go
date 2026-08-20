@@ -10,13 +10,13 @@ import (
 )
 
 func TestParseNameStatusZ(t *testing.T) {
-	output := []byte("M\x00backend/crates/echo-clipboard/src/lib.rs\x00R100\x00old.ts\x00tests/ui/new.ts\x00A\x00tests/e2e/clipboard.spec.ts\x00")
+	output := []byte("M\x00crates/echo-engine/src/ingest.rs\x00R100\x00old.ts\x00tests/ui/new.ts\x00A\x00tests/e2e/clipboard.spec.ts\x00")
 	changes, err := parseNameStatusZ(output)
 	if err != nil {
 		t.Fatalf("parseNameStatusZ returned error: %v", err)
 	}
 	want := []ChangedPath{
-		{Path: "backend/crates/echo-clipboard/src/lib.rs", Status: ChangeModified},
+		{Path: "crates/echo-engine/src/ingest.rs", Status: ChangeModified},
 		{Path: "old.ts", Status: ChangeDeleted},
 		{Path: "tests/e2e/clipboard.spec.ts", Status: ChangeAdded},
 		{Path: "tests/ui/new.ts", Status: ChangeAdded},
@@ -28,8 +28,8 @@ func TestParseNameStatusZ(t *testing.T) {
 
 func TestPlanForPathsMapsOwnersDeterministically(t *testing.T) {
 	plan := planForPaths([]string{
-		"frontend/app/src/main.ts",
-		"backend\\crates\\echo-storage\\src\\lib.rs",
+		"apps/ui/src/main.ts",
+		"crates\\echo-storage\\src\\lib.rs",
 		"tests/e2e/quick-insert.spec.ts",
 	})
 	want := []string{"frontend", "library", "migration", "quick-insert", "storage", "tests"}
@@ -60,7 +60,7 @@ func TestRootDependencyManifestsUseFullVerification(t *testing.T) {
 
 func TestFindRepositoryRoot(t *testing.T) {
 	root := t.TempDir()
-	for _, relative := range []string{"backend", "apps", "backend/crates"} {
+	for _, relative := range []string{"crates", "apps", "crates/echo-engine"} {
 		if err := os.MkdirAll(filepath.Join(root, relative), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -68,7 +68,7 @@ func TestFindRepositoryRoot(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "Cargo.toml"), []byte("[workspace]\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	nested := filepath.Join(root, "backend", "crates")
+	nested := filepath.Join(root, "crates", "echo-engine")
 	found, err := findRepositoryRoot(nested)
 	if err != nil {
 		t.Fatalf("findRepositoryRoot returned error: %v", err)
@@ -79,8 +79,8 @@ func TestFindRepositoryRoot(t *testing.T) {
 }
 
 func TestCommandStringQuotesArguments(t *testing.T) {
-	got := commandString("pnpm", "--dir", "frontend/app", "run", "test suite")
-	want := `pnpm --dir frontend/app run "test suite"`
+	got := commandString("pnpm", "--dir", "apps/ui", "run", "test suite")
+	want := `pnpm --dir apps/ui run "test suite"`
 	if got != want {
 		t.Fatalf("commandString = %q, want %q", got, want)
 	}
@@ -111,5 +111,26 @@ func TestAcceptanceFailsClosedWithoutAuthorization(t *testing.T) {
 	a := &app{out: &bytes.Buffer{}, errOut: &bytes.Buffer{}}
 	if err := a.acceptanceCommand([]string{"clipboard"}); err == nil || !strings.Contains(err.Error(), "separately authorized") {
 		t.Fatalf("acceptance did not fail closed: %v", err)
+	}
+}
+
+func TestGeneratedBindingsDriftCheckFailsClosed(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, filepath.FromSlash(generatedTransportPath))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a := &app{root: root, out: &bytes.Buffer{}, errOut: &bytes.Buffer{}}
+	if err := a.checkGeneratedBindings(); err == nil {
+		t.Fatal("stale generated bindings were accepted")
+	}
+	if err := os.WriteFile(path, []byte(generatedTransportBindings()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.checkGeneratedBindings(); err != nil {
+		t.Fatalf("fresh generated bindings were rejected: %v", err)
 	}
 }

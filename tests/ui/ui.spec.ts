@@ -12,7 +12,7 @@ test.beforeEach(async ({ page }) => {
   await expect(page.getByText("Alpha clipboard")).toBeVisible();
 });
 
-test("keeps History, Favorites, Snippets, copy, search, and settings on one Echo surface", async ({
+test("keeps History, Favorites, copy, search, and settings on one Echo surface", async ({
   page,
 }) => {
   await page.getByRole("tab", { name: "Favorites" }).click();
@@ -24,11 +24,6 @@ test("keeps History, Favorites, Snippets, copy, search, and settings on one Echo
   await page.getByRole("tab", { name: "Favorites" }).click();
   await expect(page.getByText("Alpha clipboard")).toBeVisible();
 
-  await page.getByRole("tab", { name: "Snippets" }).click();
-  await expect(page.getByText("Hello from Echo")).toBeVisible();
-  await page.getByRole("combobox", { name: "Search snippets" }).fill("Hello");
-  await expect(page.getByText("Hello from Echo")).toBeVisible();
-
   await page.getByRole("tab", { name: "History" }).click();
   await page.getByRole("button", { name: "Copy" }).first().click();
   await expect(page.getByText("Copied")).toBeVisible();
@@ -39,24 +34,6 @@ test("keeps History, Favorites, Snippets, copy, search, and settings on one Echo
   await page.getByRole("switch", { name: "Record sensitive content" }).click();
   await page.getByRole("button", { name: "Save settings" }).click();
   await expect(page.getByText("Settings updated")).toBeVisible();
-});
-
-test("creates and deletes a snippet through Echo settings", async ({
-  page,
-}) => {
-  await page.getByRole("button", { name: "Open settings" }).click();
-  await page.getByRole("button", { name: "New snippet" }).click();
-  await page
-    .getByRole("textbox", { name: "Snippet name" })
-    .fill("Saved from UI");
-  await page
-    .getByRole("textbox", { name: "Snippet content" })
-    .fill("UI snippet body");
-  await page.getByRole("button", { name: "Save snippet" }).click();
-  await expect(page.getByText("UI snippet body")).toBeVisible();
-  page.once("dialog", (dialog) => void dialog.accept());
-  await page.getByRole("button", { name: "Delete Saved from UI" }).click();
-  await expect(page.getByText("UI snippet body")).toHaveCount(0);
 });
 
 test("keeps activation and successful insert behavior recoverable", async ({

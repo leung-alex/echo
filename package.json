@@ -5,8 +5,8 @@
   "packageManager": "pnpm@11.21.0",
   "scripts": {
     "test:ui": "playwright test --config tests/ui/playwright.config.ts",
-    "format": "prettier --write \"frontend/**/*.{ts,tsx,css,json,html}\" \"tests/**/*.ts\" \"playwright*.ts\" package.json pnpm-workspace.yaml",
-    "format:check": "prettier --check \"frontend/**/*.{ts,tsx,css,json,html}\" \"tests/**/*.ts\" \"playwright*.ts\" package.json pnpm-workspace.yaml"
+    "format": "prettier --write \"apps/ui/**/*.{ts,tsx,css,json,html}\" \"tests/**/*.ts\" \"playwright*.ts\" package.json pnpm-workspace.yaml",
+    "format:check": "prettier --check \"apps/ui/**/*.{ts,tsx,css,json,html}\" \"tests/**/*.ts\" \"playwright*.ts\" package.json pnpm-workspace.yaml"
   },
   "devDependencies": {
     "@playwright/test": "1.60.0",

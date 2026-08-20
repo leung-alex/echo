@@ -28,9 +28,9 @@ test("captures Quick Insert visual parity states", async ({ page }) => {
     path: `${evidenceRoot}/quick-insert-favorites-1280x720.png`,
     fullPage: true,
   });
-  await page.getByRole("tab", { name: "Snippets" }).click();
+  await page.getByRole("tab", { name: "History" }).click();
   await page.screenshot({
-    path: `${evidenceRoot}/quick-insert-snippets-1280x720.png`,
+    path: `${evidenceRoot}/quick-insert-history-repeat-1280x720.png`,
     fullPage: true,
   });
   expect(

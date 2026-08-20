@@ -1,5 +1,5 @@
 packages:
-  - frontend/app
+  - apps/ui
 allowBuilds:
   esbuild: true
 onlyBuiltDependencies:

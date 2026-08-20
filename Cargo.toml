@@ -1,12 +1,9 @@
 [workspace]
 members = [
-    "backend/crates/echo-platform",
-    "backend/crates/echo-platform-windows",
-    "backend/crates/echo-clipboard",
-    "backend/crates/echo-storage",
-    "backend/crates/echo-library",
-    "backend/crates/echo-quick-insert",
-    "backend/crates/echo-protocol",
+    "crates/echo-engine",
+    "crates/echo-storage",
+    "crates/echo-windows",
+    "crates/echo-activation",
     "apps/desktop",
 ]
 resolver = "2"
@@ -19,13 +16,10 @@ rust-version = "1.82"
 [workspace.dependencies]
 ammonia = "4.1.4"
 base64 = "0.22.1"
-echo-clipboard = { path = "backend/crates/echo-clipboard" }
-echo-platform = { path = "backend/crates/echo-platform" }
-echo-platform-windows = { path = "backend/crates/echo-platform-windows" }
-echo-library = { path = "backend/crates/echo-library" }
-echo-quick-insert = { path = "backend/crates/echo-quick-insert" }
-echo-protocol = { path = "backend/crates/echo-protocol" }
-echo-storage = { path = "backend/crates/echo-storage" }
+echo-engine = { path = "crates/echo-engine" }
+echo-storage = { path = "crates/echo-storage" }
+echo-windows = { path = "crates/echo-windows" }
+echo-activation = { path = "crates/echo-activation" }
 rusqlite = { version = "0.40.1", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

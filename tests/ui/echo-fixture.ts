@@ -4,15 +4,13 @@ export async function installEchoFixture(page: Page): Promise<void> {
   await page.addInitScript(() => {
     type MockItem = {
       id: number;
-      source: "history" | "favorite" | "snippet";
+      source: "history" | "favorite";
       title: string | null;
       preview_text: string | null;
       content_type: string;
       source_app: string | null;
       updated_at: number;
       pinned: boolean;
-      group_name: string | null;
-      content?: string;
     };
 
     const state = {
@@ -26,7 +24,6 @@ export async function installEchoFixture(page: Page): Promise<void> {
           source_app: "Echo fixture",
           updated_at: Date.now(),
           pinned: false,
-          group_name: null,
         },
         {
           id: 2,
@@ -37,21 +34,6 @@ export async function installEchoFixture(page: Page): Promise<void> {
           source_app: "Echo fixture",
           updated_at: Date.now(),
           pinned: false,
-          group_name: null,
-        },
-      ] satisfies MockItem[],
-      snippets: [
-        {
-          id: 7,
-          source: "snippet" as const,
-          title: "Greeting",
-          preview_text: "Hello from Echo",
-          content: "Hello from Echo",
-          content_type: "text",
-          source_app: null,
-          updated_at: Date.now(),
-          pinned: false,
-          group_name: "Common",
         },
       ] satisfies MockItem[],
       settings: {
@@ -72,9 +54,7 @@ export async function installEchoFixture(page: Page): Promise<void> {
           ? state.history
               .filter((item) => item.pinned)
               .map((item) => ({ ...item, source: "favorite" as const }))
-          : view === "snippets"
-            ? state.snippets
-            : state.history;
+          : state.history;
       const normalized = query.trim().toLowerCase();
       return source
         .filter(
@@ -102,7 +82,7 @@ export async function installEchoFixture(page: Page): Promise<void> {
           case "activation_ack":
             return null;
           case "quick_insert_begin_session":
-            return true;
+            return { hasTarget: true };
           case "quick_insert_list":
             return listFor(String(args.view), String(args.query ?? ""));
           case "quick_insert_set_favorite": {
@@ -113,19 +93,10 @@ export async function installEchoFixture(page: Page): Promise<void> {
             return Boolean(item);
           }
           case "quick_insert_delete":
-            if (args.source === "snippet")
-              state.snippets = state.snippets.filter(
-                (item) => item.id !== args.id,
-              );
-            else
-              state.history = state.history.filter(
-                (item) => item.id !== args.id,
-              );
+            state.history = state.history.filter((item) => item.id !== args.id);
             return true;
           case "quick_insert_execute":
-            return JSON.stringify(
-              args.action === "insert" ? "inserted" : "copied",
-            );
+            return args.action === "insert" ? "inserted" : "copied";
           case "quick_insert_get_image":
             return args.id === 2
               ? {
@@ -142,43 +113,6 @@ export async function installEchoFixture(page: Page): Promise<void> {
           case "history_clear":
             state.history.length = 0;
             return null;
-          case "snippets_list":
-            return listFor("snippets", String(args.query ?? "")).map(
-              (item) => ({
-                id: item.id,
-                name: item.title ?? "",
-                content: item.content ?? item.preview_text ?? "",
-                group_name: item.group_name,
-                created_at: item.updated_at,
-                updated_at: item.updated_at,
-              }),
-            );
-          case "snippet_save": {
-            const id =
-              args.id === null || args.id === undefined ? 8 : Number(args.id);
-            const item: MockItem = {
-              id,
-              source: "snippet",
-              title: String(args.name),
-              preview_text: String(args.content),
-              content: String(args.content),
-              content_type: "text",
-              source_app: null,
-              updated_at: Date.now(),
-              pinned: false,
-              group_name: args.group_name ? String(args.group_name) : null,
-            };
-            state.snippets = [
-              ...state.snippets.filter((candidate) => candidate.id !== id),
-              item,
-            ];
-            return id;
-          }
-          case "snippet_delete":
-            state.snippets = state.snippets.filter(
-              (item) => item.id !== args.id,
-            );
-            return true;
           default:
             if (command.startsWith("plugin:")) return null;
             throw new Error(`Unexpected Echo mock command: ${command}`);

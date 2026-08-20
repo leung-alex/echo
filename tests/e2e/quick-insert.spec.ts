@@ -16,39 +16,42 @@ test.describe("Echo Quick Insert acceptance", () => {
     "requires the separately authorized Echo Windows acceptance gate",
   );
 
-  test("keeps snippet CRUD, search, copy, and invalid-target insertion recoverable", async () => {
+  test("keeps history copy and invalid-target insertion recoverable", async () => {
     const browser = await connectToEcho();
     const main = await waitForMainPage(browser);
-    const name = `echo-snippet-${Date.now()}`;
-    let id: number | undefined;
+    const content = `Echo acceptance history ${Date.now()}`;
     try {
-      id = await invoke<number>(main, "snippet_save", {
-        id: null,
-        name,
-        content: "Echo acceptance snippet",
-        group_name: "acceptance",
-      });
-      await main.getByRole("tab", { name: "Snippets" }).click();
-      await main.getByPlaceholder("Search snippets...").fill(name);
-      await expect(main.getByText("Echo acceptance snippet")).toBeVisible();
-      await main.getByRole("button", { name: "Copy" }).click();
-      await expect(main.getByText("Copied")).toBeVisible();
+      await runClipboardFixture("copy-text", content);
       await expect
-        .poll(() => readClipboardText())
-        .toBe("Echo acceptance snippet");
-
+        .poll(async () => {
+          const items = await invoke<Array<{ id: number }>>(
+            main,
+            "quick_insert_list",
+            { view: "history", query: content, limit: 20 },
+          );
+          return items.length;
+        })
+        .toBe(1);
+      const item = main.getByRole("row", { name: new RegExp(content) });
+      await expect(item).toBeVisible();
+      await item.getByRole("button", { name: "Copy" }).click();
+      await expect(main.getByText("Copied")).toBeVisible();
+      await expect.poll(() => runClipboardFixture("read-text")).toBe(content);
       await expect(
         invoke(main, "quick_insert_execute", {
-          source: "snippet",
-          id,
+          source: "history",
+          id: (
+            await invoke<Array<{ id: number }>>(main, "quick_insert_list", {
+              view: "history",
+              query: content,
+              limit: 20,
+            })
+          )[0]?.id,
           action: "insert",
         }),
       ).rejects.toThrow();
-      await expect(main.getByText("Echo acceptance snippet")).toBeVisible();
+      await expect(item).toBeVisible();
     } finally {
-      if (id !== undefined) {
-        await invoke(main, "snippet_delete", { id }).catch(() => undefined);
-      }
       await browser.close();
     }
   });
@@ -57,26 +60,17 @@ test.describe("Echo Quick Insert acceptance", () => {
     const browser = await connectToEcho();
     const main = await waitForMainPage(browser);
     const target = await EchoTargetFixture.start();
-    const name = `echo-native-target-${Date.now()}`;
-    const content = "Echo native target payload";
+    const content = `Echo native target payload ${Date.now()}`;
     let deadTarget: EchoTargetFixture | undefined;
     try {
-      await hideEcho(main);
-      await invoke(main, "snippet_save", {
-        id: null,
-        name,
-        content,
-        group_name: "acceptance",
-      });
-
+      await runClipboardFixture("copy-text", content);
       await target.command("focus-primary");
       await expect.poll(() => target.command("primary-focused")).toBe("true");
       await target.allowEchoForeground();
       await target.command("focus-primary");
-      await sendActivation("echo.quick_insert", { query: name });
+      await sendActivation("echo.quick_insert", { query: content });
       let surface = await waitForMainPage(browser);
-      await surface.getByRole("tab", { name: "Snippets" }).click();
-      const row = surface.getByRole("option", { name: new RegExp(name) });
+      const row = surface.getByRole("row", { name: new RegExp(content) });
       await expect(row).toBeVisible();
       await row.click();
       await expect
@@ -85,14 +79,13 @@ test.describe("Echo Quick Insert acceptance", () => {
 
       await target.command("focus-primary");
       await target.allowEchoForeground();
-      await sendActivation("echo.quick_insert", { query: name });
+      await sendActivation("echo.quick_insert", { query: content });
       surface = await waitForMainPage(browser);
-      await surface.getByRole("tab", { name: "Snippets" }).click();
       await expect(
-        surface.getByRole("option", { name: new RegExp(name) }),
+        surface.getByRole("row", { name: new RegExp(content) }),
       ).toBeVisible();
       await target.command("focus-secondary");
-      await surface.getByRole("option", { name: new RegExp(name) }).click();
+      await surface.getByRole("row", { name: new RegExp(content) }).click();
       await expect(surface.getByRole("alert")).toContainText(
         "InputUnavailable",
       );
@@ -104,10 +97,9 @@ test.describe("Echo Quick Insert acceptance", () => {
       await hideEcho(surface);
       await target.command("focus-password");
       await target.allowEchoForeground();
-      await sendActivation("echo.quick_insert", { query: name });
+      await sendActivation("echo.quick_insert", { query: content });
       surface = await waitForMainPage(browser);
-      await surface.getByRole("tab", { name: "Snippets" }).click();
-      await surface.getByRole("option", { name: new RegExp(name) }).click();
+      await surface.getByRole("row", { name: new RegExp(content) }).click();
       await expect(surface.getByRole("alert")).toContainText(
         "no safe paste target",
       );
@@ -117,14 +109,13 @@ test.describe("Echo Quick Insert acceptance", () => {
       await deadTarget.command("focus-primary");
       await deadTarget.allowEchoForeground();
       await deadTarget.command("focus-primary");
-      await sendActivation("echo.quick_insert", { query: name });
+      await sendActivation("echo.quick_insert", { query: content });
       surface = await waitForMainPage(browser);
-      await surface.getByRole("tab", { name: "Snippets" }).click();
       await expect(
-        surface.getByRole("option", { name: new RegExp(name) }),
+        surface.getByRole("row", { name: new RegExp(content) }),
       ).toBeVisible();
       await deadTarget.stop();
-      await surface.getByRole("option", { name: new RegExp(name) }).click();
+      await surface.getByRole("row", { name: new RegExp(content) }).click();
       await expect(surface.getByRole("alert")).toContainText(
         "OriginalWindowUnavailable",
       );
@@ -135,7 +126,3 @@ test.describe("Echo Quick Insert acceptance", () => {
     }
   });
 });
-
-async function readClipboardText(): Promise<string> {
-  return runClipboardFixture("read-text");
-}

@@ -889,13 +889,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
-name = "echo-clipboard"
+name = "echo-activation"
 version = "0.1.0"
 dependencies = [
- "ammonia",
- "echo-platform",
- "sha2",
+ "base64 0.22.1",
+ "serde",
+ "serde_json",
  "thiserror 2.0.20",
+ "uuid",
 ]
 
 [[package]]
@@ -903,13 +904,10 @@ name = "echo-desktop"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
- "echo-clipboard",
- "echo-library",
- "echo-platform",
- "echo-platform-windows",
- "echo-protocol",
- "echo-quick-insert",
+ "echo-activation",
+ "echo-engine",
  "echo-storage",
+ "echo-windows",
  "serde",
  "serde_json",
  "tauri",
@@ -918,49 +916,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "echo-library"
+name = "echo-engine"
 version = "0.1.0"
 dependencies = [
- "echo-clipboard",
- "echo-platform",
- "echo-storage",
+ "ammonia",
  "serde",
- "tempfile",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "echo-platform"
-version = "0.1.0"
-
-[[package]]
-name = "echo-platform-windows"
-version = "0.1.0"
-dependencies = [
- "echo-platform",
- "windows 0.62.2",
-]
-
-[[package]]
-name = "echo-protocol"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
- "uuid",
-]
-
-[[package]]
-name = "echo-quick-insert"
-version = "0.1.0"
-dependencies = [
- "echo-clipboard",
- "echo-library",
- "echo-platform",
- "echo-storage",
- "serde",
+ "sha2",
  "tempfile",
  "thiserror 2.0.20",
 ]
@@ -969,8 +930,7 @@ dependencies = [
 name = "echo-storage"
 version = "0.1.0"
 dependencies = [
- "echo-clipboard",
- "echo-platform",
+ "echo-engine",
  "rusqlite",
  "serde",
  "serde_json",
@@ -978,6 +938,14 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.20",
  "uuid",
+]
+
+[[package]]
+name = "echo-windows"
+version = "0.1.0"
+dependencies = [
+ "echo-engine",
+ "windows 0.62.2",
 ]
 
 [[package]]

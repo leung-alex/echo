@@ -19,8 +19,8 @@
 
 ## Echo-owned presentation
 
-- React entry and route orchestration live under `frontend/app/src/app`.
-- Quick Insert types, reducer, controller, client, surface, result rows, and local primitives live under `frontend/app/src/features/quick-insert` and `frontend/app/src/ui`.
+- React entry and route orchestration live under `apps/ui/src/app`.
+- Quick Insert types, reducer, controller, client, surface, result rows, and local primitives live under `apps/ui/src/features/quick-insert` and `apps/ui/src/ui`.
 - Design tokens are defined with `--echo-*`; feature classes use Echo-local names.
 - `quick_insert_get_image` reads existing Echo payloads without changing storage schema.
 - The temporary string-rendered `main.ts`/`styles.css` system was removed.
@@ -37,7 +37,7 @@ directory `test-results/p08-visual/`:
 - `quick-insert-history-detailed-1280x720.png`
 - `quick-insert-history-compact-1280x720.png`
 - `quick-insert-favorites-1280x720.png`
-- `quick-insert-snippets-1280x720.png`
+- `quick-insert-favorites-1280x720.png`
 - `quick-insert-history-680x480.png`
 - `clipboard-settings-680x480.png`
 

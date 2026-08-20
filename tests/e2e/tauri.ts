@@ -91,7 +91,7 @@ export async function sendActivation(
     payload,
   };
   const encoded = Buffer.from(JSON.stringify(envelope)).toString("base64url");
-  await execFileAsync(executable, ["--culsans-activate", encoded], {
+  await execFileAsync(executable, ["--echo-activate", encoded], {
     windowsHide: true,
     timeout: 15_000,
   });

@@ -1,7 +1,7 @@
 /target/
 /node_modules/
-/frontend/app/node_modules/
-/frontend/app/dist/
+/apps/ui/node_modules/
+/apps/ui/dist/
 /apps/desktop/target/
 /apps/desktop/gen/
 /test-results/

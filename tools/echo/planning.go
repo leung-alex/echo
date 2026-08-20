@@ -82,21 +82,17 @@ func ownersForPath(path string) (bool, []string) {
 		return true, []string{"tooling"}
 	case strings.HasPrefix(path, "tools/echo/"):
 		return true, []string{"tooling"}
-	case strings.HasPrefix(path, "backend/crates/echo-platform/") || strings.HasPrefix(path, "backend/crates/echo-platform-windows/"):
-		return true, []string{"clipboard", "desktop"}
-	case strings.HasPrefix(path, "backend/crates/echo-clipboard/"):
-		return true, []string{"clipboard"}
-	case strings.HasPrefix(path, "backend/crates/echo-storage/"):
+	case strings.HasPrefix(path, "crates/echo-engine/") || strings.HasPrefix(path, "backend/crates/echo-clipboard/") || strings.HasPrefix(path, "backend/crates/echo-library/") || strings.HasPrefix(path, "backend/crates/echo-quick-insert/") || strings.HasPrefix(path, "backend/crates/echo-platform/"):
+		return true, []string{"engine", "desktop"}
+	case strings.HasPrefix(path, "crates/echo-storage/") || strings.HasPrefix(path, "backend/crates/echo-storage/"):
 		return true, []string{"storage", "library", "migration"}
-	case strings.HasPrefix(path, "backend/crates/echo-library/"):
-		return true, []string{"library", "quick-insert"}
-	case strings.HasPrefix(path, "backend/crates/echo-quick-insert/"):
-		return true, []string{"quick-insert"}
-	case strings.HasPrefix(path, "backend/crates/echo-protocol/"):
+	case strings.HasPrefix(path, "crates/echo-windows/") || strings.HasPrefix(path, "backend/crates/echo-platform-windows/"):
+		return true, []string{"windows", "desktop"}
+	case strings.HasPrefix(path, "crates/echo-activation/") || strings.HasPrefix(path, "backend/crates/echo-protocol/"):
 		return true, []string{"desktop", "activation"}
 	case strings.HasPrefix(path, "apps/desktop/"):
 		return true, []string{"desktop", "activation", "quick-insert"}
-	case strings.HasPrefix(path, "frontend/app/"):
+	case strings.HasPrefix(path, "apps/ui/") || strings.HasPrefix(path, "frontend/app/"):
 		return true, []string{"frontend", "quick-insert"}
 	case strings.HasPrefix(path, "tests/e2e/clipboard"):
 		return true, []string{"tests", "clipboard"}
@@ -125,8 +121,8 @@ func ownerGateNames(plan OwnerPlan, profile ValidationProfile) []string {
 			"go test ./...",
 			"go vet ./...",
 			"cargo test --workspace --locked",
-			"pnpm --dir frontend/app test",
-			"pnpm --dir frontend/app build",
+			"pnpm --dir apps/ui test",
+			"pnpm --dir apps/ui build",
 		}
 		if profile == ValidationCI {
 			gates = append(gates, "echo.cmd build --release", "echo.cmd package --dir")
@@ -142,24 +138,26 @@ func ownerGateNames(plan OwnerPlan, profile ValidationProfile) []string {
 	}
 	for _, owner := range plan.Owners {
 		switch owner {
-		case "clipboard":
-			gateSet["cargo test -p echo-clipboard"] = true
+		case "clipboard", "engine":
+			gateSet["cargo test -p echo-engine"] = true
 			gateSet["cargo test -p echo-storage"] = true
 		case "storage", "migration":
 			gateSet["cargo test -p echo-storage"] = true
 		case "library":
-			gateSet["cargo test -p echo-library"] = true
+			gateSet["cargo test -p echo-engine"] = true
 		case "quick-insert":
-			gateSet["cargo test -p echo-quick-insert"] = true
-			gateSet["pnpm --dir frontend/app test"] = true
+			gateSet["cargo test -p echo-engine"] = true
+			gateSet["pnpm --dir apps/ui test"] = true
 		case "frontend":
-			gateSet["pnpm --dir frontend/app test"] = true
-			gateSet["pnpm --dir frontend/app build"] = true
+			gateSet["pnpm --dir apps/ui test"] = true
+			gateSet["pnpm --dir apps/ui build"] = true
 		case "desktop", "activation":
 			gateSet["cargo check -p echo-desktop"] = true
+		case "windows":
+			gateSet["cargo test -p echo-windows"] = true
 		case "tests":
 			gateSet["cargo test --workspace --locked"] = true
-			gateSet["pnpm --dir frontend/app test"] = true
+			gateSet["pnpm --dir apps/ui test"] = true
 		case "tooling":
 			gateSet["echo.cmd self-check"] = true
 		}

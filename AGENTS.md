@@ -1,0 +1,48 @@
+# Echo Architecture Guide
+
+Echo is a standalone Windows clipboard history and Quick Insert application.
+Use the repository map and ownership rules below before changing code.
+
+## Source Of Truth
+
+- Architecture: `docs/architecture/overview.md`
+- Dependency direction: `docs/architecture/dependency-rules.md`
+- Domain language: `docs/domain/glossary.md`
+- Test ownership: `docs/TEST_OWNERSHIP_MAP.md`
+- Workflow and gates: `docs/engineering/agent-workflow.md`
+
+## Repository Map
+
+- `crates/echo-engine`: domain behavior, ingestion, History, Saved Items,
+  Quick Insert, settings, and adapter interfaces.
+- `crates/echo-storage`: SQLite/blob/search/migration adapter.
+- `crates/echo-windows`: Windows clipboard, focus, and paste adapter.
+- `crates/echo-activation`: small Echo activation envelope and flag protocol.
+- `apps/desktop`: Tauri composition root, commands, events, and transport DTOs.
+- `apps/ui`: React presentation and feature-owned IPC clients.
+- `tools/echo`: canonical developer gates and changed-owner planning.
+
+## Where To Change X
+
+- Domain policy or use case: `crates/echo-engine`.
+- SQLite, blob, search, or migration behavior: `crates/echo-storage`.
+- Win32 clipboard/focus/paste behavior: `crates/echo-windows`.
+- Activation parsing or naming: `crates/echo-activation`.
+- Tauri wiring or DTO mapping: `apps/desktop`.
+- UI behavior: the owning feature under `apps/ui/src/features`.
+- Raw Tauri IPC: only `apps/ui/src/shared/ipc`.
+
+## Hard Rules
+
+- Dependencies point from adapters and desktop toward engine; engine never
+  imports Tauri, SQLite, Win32, or frontend types.
+- Keep transport DTOs separate from engine domain types.
+- Do not add a legacy Snippets product, route, command, schema, or compatibility
+  layer. Durable reusable content is represented by Saved Items.
+- The canonical activation flag is `--echo-activate`.
+- Unsafe Win32 code stays in `crates/echo-windows`.
+
+## Validation
+
+Run `.\echo.cmd verify` for the canonical developer gate. Native acceptance is
+opt-in and must use the authorized `ECHO_WINDOWS_ACCEPTANCE=1` gates.

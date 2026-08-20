@@ -29,7 +29,7 @@ test layers are:
 | --- | --- |
 | `tests/ui` | Real browser DOM with controlled Tauri IPC stubs for Library views, search, copy, settings, escaping, and scoped actions. |
 | `tests/e2e/clipboard` | Echo activation, clipboard representations, normalization, deduplication, persistence, copy, insert, and invalid targets. |
-| `tests/e2e/quick-insert` | History/Favorites/Snippets views, snippet CRUD, search, copy/insert, target failure, hide/reopen, and single-instance behavior. |
+| `tests/e2e/quick-insert` | History/Favorites views, search, copy/insert, target failure, hide/reopen, and single-instance behavior. |
 | `tools/echo` | Bootstrap, command dispatch, owner planning, independence checks, and owned cleanup. |
 
 The four legacy Clipboard/Quick Insert E2E files are rewritten or partially
@@ -83,8 +83,8 @@ All results below are local Echo gates; no unrelated Culsans full regression
 was run.
 
 - PASS: `cargo test --workspace --locked`
-- PASS: `pnpm --dir frontend/app test` (TypeScript plus 2 real-DOM Playwright tests)
-- PASS: `pnpm --dir frontend/app build`
+- PASS: `pnpm --dir apps/ui test` (TypeScript plus real-DOM Playwright tests)
+- PASS: `pnpm --dir apps/ui build`
 - PASS: `cargo fmt --all -- --check`
 - PASS: `go -C tools/echo test ./...`
 - PASS: `go -C tools/echo vet ./...`
@@ -111,7 +111,7 @@ asserts Echo-owned Clipboard/Quick Insert behavior, plus fixture operations
 used exclusively by those tests, after a consumer audit. Culsans Input Editor,
 shell, File Search, Browser, Capture, and shared helper consumers remain
 protected. Echo's migration owns only the Clipboard/reusable-content tables,
-referenced blobs, settings, saved items, and snippets listed in
+referenced blobs, settings, and saved items listed in
 `docs/MIGRATION_MAP.md`; it does not read or mutate `input_draft` or other
 Culsans shell data.
 

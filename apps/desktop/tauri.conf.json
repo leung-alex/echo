@@ -4,10 +4,10 @@
   "version": "0.1.0",
   "identifier": "com.echo.recall",
   "build": {
-    "beforeDevCommand": "pnpm --dir frontend/app dev",
-    "beforeBuildCommand": "pnpm --dir frontend/app build",
+    "beforeDevCommand": "pnpm --dir apps/ui dev",
+    "beforeBuildCommand": "pnpm --dir apps/ui build",
     "devUrl": "http://127.0.0.1:5174",
-    "frontendDist": "../../frontend/app/dist"
+    "frontendDist": "../../apps/ui/dist"
   },
   "app": {
     "windows": [],
