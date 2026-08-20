@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use crate::{
     ClipboardError, ClipboardPlatform, ClipboardService, Library, LibraryError, LibraryItem,
     LibraryItemKind, LibraryStore, LibraryView, PasteDelivery, PasteDeliveryFailure, PasteTarget,
-    SavedItem, SavedItemUpdate,
+    SavedItem, SavedItemUpdate, Thumbnail,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -67,6 +67,7 @@ pub struct QuickInsertItem {
     pub updated_at: i64,
     pub saved_item_id: Option<i64>,
     pub is_independent: bool,
+    pub thumbnail: Option<Thumbnail>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -246,5 +247,6 @@ fn to_item(item: LibraryItem) -> QuickInsertItem {
         updated_at: item.updated_at,
         saved_item_id: item.saved_item_id,
         is_independent: item.is_independent,
+        thumbnail: item.thumbnail,
     }
 }

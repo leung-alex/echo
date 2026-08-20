@@ -16,6 +16,7 @@ rust-version = "1.82"
 [workspace.dependencies]
 ammonia = "4.1.4"
 base64 = "0.22.1"
+image = { version = "0.24.9", default-features = false, features = ["bmp", "png"] }
 echo-engine = { path = "crates/echo-engine" }
 echo-storage = { path = "crates/echo-storage" }
 echo-windows = { path = "crates/echo-windows" }

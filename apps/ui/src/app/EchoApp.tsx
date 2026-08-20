@@ -5,6 +5,7 @@ import {
   useState,
   type ReactElement,
 } from "react";
+import { flushSync } from "react-dom";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
@@ -38,11 +39,13 @@ export function EchoApp(): ReactElement {
     try {
       // Native activation captures the target before showing Echo. Capturing
       // again from the WebView would observe Echo itself and lose the target.
-      setSession(null);
-      setRoute(payload.route);
-      setQuery(payload.query ?? "");
-      setSurfaceVersion((value) => value + 1);
-      setFocusRequest((value) => value + 1);
+      flushSync(() => {
+        setSession(null);
+        setRoute(payload.route);
+        setQuery(payload.query ?? "");
+        setSurfaceVersion((value) => value + 1);
+        setFocusRequest((value) => value + 1);
+      });
     } finally {
       if (payload.request_id)
         await invoke("activation_ack", {

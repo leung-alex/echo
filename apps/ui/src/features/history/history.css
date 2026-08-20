@@ -252,8 +252,8 @@ html[data-page-hidden="true"] .echo-search-field__caret[data-visible="true"] {
 .echo-history-list,
 .echo-compact-list,
 .echo-result-list {
-  display: grid;
-  gap: 6px;
+  position: relative;
+  display: block;
 }
 .echo-history-row {
   min-width: 0;
@@ -324,6 +324,19 @@ html[data-page-hidden="true"] .echo-search-field__caret[data-visible="true"] {
   object-fit: cover;
   vertical-align: middle;
   border-radius: 3px;
+}
+.echo-image-placeholder {
+  display: inline-grid;
+  place-items: center;
+  width: 40px;
+  height: 32px;
+  color: var(--echo-accent);
+  background: var(--echo-accent-soft);
+  border: 1px solid #9f731a66;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 750;
+  vertical-align: middle;
 }
 .echo-history-meta {
   min-width: 0;

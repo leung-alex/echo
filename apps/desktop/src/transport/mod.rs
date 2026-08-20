@@ -1,7 +1,7 @@
 use echo_engine::{
     ClipboardSettings as DomainSettings, QuickInsertAction as DomainAction,
     QuickInsertItem as DomainItem, QuickInsertOutcome as DomainOutcome,
-    QuickInsertSource as DomainSource, QuickInsertView as DomainView,
+    QuickInsertSource as DomainSource, QuickInsertView as DomainView, Thumbnail,
 };
 use serde::{Deserialize, Serialize};
 
@@ -66,6 +66,39 @@ pub struct QuickInsertItem {
     pub updated_at: i64,
     pub saved_item_id: Option<i64>,
     pub is_independent: bool,
+    pub preview: Option<PreviewAsset>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PreviewAsset {
+    pub url: String,
+    pub mime_type: String,
+    pub width: u32,
+    pub height: u32,
+    pub byte_size: u64,
+    pub content_hash: String,
+}
+
+impl From<Thumbnail> for PreviewAsset {
+    fn from(thumbnail: Thumbnail) -> Self {
+        let content_hash = thumbnail.content_hash.clone();
+        Self {
+            url: preview_url(&content_hash),
+            mime_type: thumbnail.mime_type,
+            width: thumbnail.width,
+            height: thumbnail.height,
+            byte_size: thumbnail.byte_size,
+            content_hash,
+        }
+    }
+}
+
+fn preview_url(content_hash: &str) -> String {
+    if cfg!(windows) {
+        format!("http://echo-preview.localhost/thumbnail/{content_hash}.png")
+    } else {
+        format!("echo-preview://localhost/thumbnail/{content_hash}.png")
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -137,6 +170,7 @@ impl From<DomainItem> for QuickInsertItem {
             updated_at: item.updated_at,
             saved_item_id: item.saved_item_id,
             is_independent: item.is_independent,
+            preview: item.thumbnail.map(Into::into),
         }
     }
 }
@@ -175,10 +209,4 @@ impl From<ClipboardSettings> for DomainSettings {
             max_item_bytes: settings.max_item_bytes,
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct ImagePreview {
-    pub mime_type: String,
-    pub base64: String,
 }

@@ -8,7 +8,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use echo_engine::{
     is_text_like, normalize_name, normalize_tags, CapturePolicy, CaptureSettings, CapturedCapture,
     ClipboardRepresentation, ClipboardSink, ContentIdentity, LibraryStore, NormalizedCapture,
-    RecordResult, RepresentationIdentity, SavedItemDraft, SavedItemUpdate,
+    PreviewAsset, RecordResult, RepresentationIdentity, SavedItemDraft, SavedItemUpdate, Thumbnail,
+    THUMBNAIL_MIME_TYPE,
 };
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, Row, Transaction};
 use sha2::{Digest, Sha256};
@@ -46,7 +47,14 @@ pub struct StoredRepresentation {
     pub mime_type: String,
     pub inline_data: Option<Vec<u8>>,
     pub blob_hash: Option<String>,
+    pub content_hash: Option<String>,
     pub byte_size: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredThumbnail {
+    pub metadata: Thumbnail,
+    pub bytes: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,6 +85,7 @@ struct PreparedRepresentation {
     mime_type: String,
     inline_data: Option<Vec<u8>>,
     blob_hash: Option<String>,
+    content_hash: String,
     byte_size: u64,
 }
 
@@ -84,6 +93,7 @@ pub struct ClipboardStore {
     connection: Connection,
     data_dir: PathBuf,
     blobs_dir: PathBuf,
+    thumbnails_dir: PathBuf,
 }
 
 impl ClipboardStore {
@@ -92,12 +102,15 @@ impl ClipboardStore {
         fs::create_dir_all(&data_dir)?;
         let blobs_dir = data_dir.join("blobs");
         fs::create_dir_all(&blobs_dir)?;
+        let thumbnails_dir = data_dir.join("thumbnails");
+        fs::create_dir_all(&thumbnails_dir)?;
         let database = data_dir.join("echo.sqlite3");
         let connection = Connection::open(database)?;
         let mut store = Self {
             connection,
             data_dir,
             blobs_dir,
+            thumbnails_dir,
         };
         store.configure()?;
         store.ensure_schema()?;
@@ -107,10 +120,12 @@ impl ClipboardStore {
     pub fn open_in_memory(data_dir: impl AsRef<Path>) -> Result<Self> {
         let data_dir = data_dir.as_ref().to_path_buf();
         fs::create_dir_all(data_dir.join("blobs"))?;
+        fs::create_dir_all(data_dir.join("thumbnails"))?;
         let connection = Connection::open_in_memory()?;
         let mut store = Self {
             connection,
             blobs_dir: data_dir.join("blobs"),
+            thumbnails_dir: data_dir.join("thumbnails"),
             data_dir,
         };
         store.configure()?;
@@ -124,6 +139,15 @@ impl ClipboardStore {
              PRAGMA busy_timeout = 5000;
              PRAGMA journal_mode = WAL;",
         )?;
+        Ok(())
+    }
+
+    fn ensure_column(&self, table: &str, column: &str, definition: &str) -> Result<()> {
+        if !has_column(&self.connection, table, column)? {
+            self.connection.execute_batch(&format!(
+                "ALTER TABLE {table} ADD COLUMN {column} {definition}"
+            ))?;
+        }
         Ok(())
     }
 
@@ -172,6 +196,16 @@ impl ClipboardStore {
                 mime_type TEXT NOT NULL,
                 byte_size INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS preview_assets (
+                source_hash TEXT PRIMARY KEY,
+                thumbnail_hash TEXT NOT NULL,
+                mime_type TEXT NOT NULL,
+                width INTEGER NOT NULL,
+                height INTEGER NOT NULL,
+                byte_size INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS preview_assets_thumbnail_idx
+                ON preview_assets(thumbnail_hash);
             CREATE VIRTUAL TABLE IF NOT EXISTS clipboard_fts USING fts5(
                 entry_id UNINDEXED,
                 searchable_text,
@@ -229,6 +263,8 @@ impl ClipboardStore {
                 completed_at INTEGER NOT NULL
             );",
         )?;
+        self.ensure_column("clipboard_representations", "content_hash", "TEXT")?;
+        self.ensure_column("saved_item_representations", "content_hash", "TEXT")?;
         Ok(())
     }
 
@@ -284,17 +320,30 @@ impl ClipboardStore {
     }
 
     pub fn record_capture(&mut self, capture: NormalizedCapture) -> Result<RecordResult> {
-        self.record_captured(CapturedCapture::from_capture(capture))
+        self.record_captured(CapturedCapture::from_capture(capture).prepare_preview())
     }
 
     pub fn record_captured(&mut self, captured: CapturedCapture) -> Result<RecordResult> {
-        self.record_capture_with_identity(captured.capture, captured.identity)
+        self.record_capture_with_identity_and_preview(
+            captured.capture,
+            captured.identity,
+            captured.preview,
+        )
     }
 
     pub fn record_capture_with_identity(
         &mut self,
+        capture: NormalizedCapture,
+        identity: ContentIdentity,
+    ) -> Result<RecordResult> {
+        self.record_capture_with_identity_and_preview(capture, identity, None)
+    }
+
+    fn record_capture_with_identity_and_preview(
+        &mut self,
         mut capture: NormalizedCapture,
         identity: ContentIdentity,
+        preview: Option<PreviewAsset>,
     ) -> Result<RecordResult> {
         let settings = self.settings()?;
         if identity.representations.len() != capture.representations.len() {
@@ -331,6 +380,20 @@ impl ClipboardStore {
         } else {
             Vec::new()
         };
+        let preview = preview.and_then(|asset| {
+            (asset.thumbnail.mime_type == THUMBNAIL_MIME_TYPE
+                && capture
+                    .representations
+                    .iter()
+                    .zip(identity.representations.iter())
+                    .any(|(representation, identity)| {
+                        (representation.format == "image"
+                            || representation.mime_type.starts_with("image/"))
+                            && identity.hash == asset.thumbnail.source_hash
+                    }))
+            .then(|| self.persist_thumbnail(&asset).ok().map(|_| asset.thumbnail))
+            .flatten()
+        });
         let tx = self.connection.transaction()?;
         let (id, duplicate) = if let Some(id) = existing {
             tx.execute(
@@ -391,6 +454,16 @@ impl ClipboardStore {
             )?;
             (id, false)
         };
+        if let Some(thumbnail) = &preview {
+            let exists: bool = tx.query_row(
+                "SELECT EXISTS (SELECT 1 FROM preview_assets WHERE source_hash = ?)",
+                [&thumbnail.source_hash],
+                |row| row.get::<_, i64>(0),
+            )? != 0;
+            if !exists {
+                Self::insert_thumbnail_tx(&tx, thumbnail)?;
+            }
+        }
         let evicted = Self::enforce_capacity_tx(&tx, &settings)?;
         tx.commit()?;
         if evicted {
@@ -405,24 +478,27 @@ impl ClipboardStore {
         identity: Option<&RepresentationIdentity>,
     ) -> Result<PreparedRepresentation> {
         let byte_size = representation.bytes.len() as u64;
+        let content_hash = identity
+            .map(|identity| identity.hash.clone())
+            .unwrap_or_else(|| hash_bytes(&representation.bytes));
         if representation.bytes.len() <= INLINE_LIMIT {
             return Ok(PreparedRepresentation {
                 format: representation.format.clone(),
                 mime_type: representation.mime_type.clone(),
                 inline_data: Some(representation.bytes.clone()),
                 blob_hash: None,
+                content_hash,
                 byte_size,
             });
         }
-        let hash = identity
-            .map(|identity| identity.hash.clone())
-            .unwrap_or_else(|| hash_bytes(&representation.bytes));
+        let hash = content_hash.clone();
         self.write_blob(&hash, &representation.mime_type, &representation.bytes)?;
         Ok(PreparedRepresentation {
             format: representation.format.clone(),
             mime_type: representation.mime_type.clone(),
             inline_data: None,
             blob_hash: Some(hash),
+            content_hash,
             byte_size,
         })
     }
@@ -452,6 +528,67 @@ impl ClipboardStore {
         Ok(())
     }
 
+    fn persist_thumbnail(&self, asset: &PreviewAsset) -> Result<()> {
+        let metadata = &asset.thumbnail;
+        validate_hash(&metadata.source_hash)?;
+        validate_hash(&metadata.content_hash)?;
+        if metadata.mime_type != THUMBNAIL_MIME_TYPE
+            || metadata.width == 0
+            || metadata.height == 0
+            || metadata.width > 256
+            || metadata.height > 256
+            || metadata.byte_size != asset.bytes.len() as u64
+            || hash_bytes(&asset.bytes) != metadata.content_hash
+        {
+            return Err(StorageError::Invalid(
+                "thumbnail metadata does not match its bytes".to_owned(),
+            ));
+        }
+        let path = self.thumbnails_dir.join(&metadata.content_hash);
+        if path.exists() {
+            if fs::read(&path)
+                .ok()
+                .is_some_and(|bytes| hash_bytes(&bytes) == metadata.content_hash)
+            {
+                return Ok(());
+            }
+            let _ = fs::remove_file(&path);
+        }
+        let temporary =
+            self.thumbnails_dir
+                .join(format!(".{}.{}.tmp", metadata.content_hash, Uuid::new_v4()));
+        {
+            let mut file = File::create(&temporary)?;
+            file.write_all(&asset.bytes)?;
+            file.sync_all()?;
+        }
+        if let Err(error) = fs::rename(&temporary, &path) {
+            if path.exists() {
+                let _ = fs::remove_file(&temporary);
+            } else {
+                return Err(StorageError::Io(error));
+            }
+        }
+        Ok(())
+    }
+
+    fn insert_thumbnail_tx(tx: &Transaction<'_>, metadata: &Thumbnail) -> Result<()> {
+        tx.execute(
+            "INSERT OR IGNORE INTO preview_assets
+             (source_hash, thumbnail_hash, mime_type, width, height, byte_size)
+             VALUES (?, ?, ?, ?, ?, ?)",
+            params![
+                metadata.source_hash,
+                metadata.content_hash,
+                metadata.mime_type,
+                i64::from(metadata.width),
+                i64::from(metadata.height),
+                i64::try_from(metadata.byte_size).unwrap_or(i64::MAX),
+            ],
+        )?;
+        Ok(())
+    }
+
     fn insert_prepared_representation_tx(
         tx: &Transaction<'_>,
         entry_id: i64,
@@ -459,14 +596,15 @@ impl ClipboardStore {
     ) -> Result<()> {
         tx.execute(
             "INSERT INTO clipboard_representations
-             (entry_id, format, mime_type, inline_data, blob_hash, byte_size)
-             VALUES (?, ?, ?, ?, ?, ?)",
+             (entry_id, format, mime_type, inline_data, blob_hash, content_hash, byte_size)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
             params![
                 entry_id,
                 representation.format,
                 representation.mime_type,
                 representation.inline_data,
                 representation.blob_hash,
+                representation.content_hash,
                 i64::try_from(representation.byte_size).unwrap_or(i64::MAX),
             ],
         )?;
@@ -486,14 +624,15 @@ impl ClipboardStore {
     ) -> Result<()> {
         tx.execute(
             "INSERT INTO saved_item_representations
-             (saved_item_id, format, mime_type, inline_data, blob_hash, byte_size)
-             VALUES (?, ?, ?, ?, ?, ?)",
+             (saved_item_id, format, mime_type, inline_data, blob_hash, content_hash, byte_size)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
             params![
                 saved_item_id,
                 representation.format,
                 representation.mime_type,
                 representation.inline_data,
                 representation.blob_hash,
+                representation.content_hash,
                 i64::try_from(representation.byte_size).unwrap_or(i64::MAX),
             ],
         )?;
@@ -595,6 +734,9 @@ impl ClipboardStore {
                 entries.push(row?);
             }
         }
+        for entry in &mut entries {
+            entry.thumbnail = self.thumbnail_for_entry(entry.id)?;
+        }
         Ok(entries)
     }
 
@@ -612,7 +754,10 @@ impl ClipboardStore {
                 map_entry,
             )
             .optional()?;
-        let Some(entry) = entry else { return Ok(None) };
+        let Some(mut entry) = entry else {
+            return Ok(None);
+        };
+        entry.thumbnail = self.thumbnail_for_entry(id)?;
         Ok(Some(StoredClipboardEntry {
             representations: self.entry_representations(id)?,
             entry,
@@ -621,7 +766,7 @@ impl ClipboardStore {
 
     fn entry_representations(&self, id: i64) -> Result<Vec<StoredRepresentation>> {
         let mut statement = self.connection.prepare(
-            "SELECT id, entry_id, format, mime_type, inline_data, blob_hash, byte_size
+            "SELECT id, entry_id, format, mime_type, inline_data, blob_hash, content_hash, byte_size
              FROM clipboard_representations WHERE entry_id = ? ORDER BY id",
         )?;
         let rows = statement.query_map([id], map_representation)?;
@@ -662,6 +807,70 @@ impl ClipboardStore {
             mime_type: representation.mime_type.clone(),
             bytes,
         })
+    }
+
+    fn thumbnail_for_entry(&self, entry_id: i64) -> Result<Option<Thumbnail>> {
+        self.thumbnail_for_representation("clipboard_representations", "entry_id", entry_id)
+    }
+
+    fn thumbnail_for_saved_item(&self, saved_item_id: i64) -> Result<Option<Thumbnail>> {
+        self.thumbnail_for_representation(
+            "saved_item_representations",
+            "saved_item_id",
+            saved_item_id,
+        )
+    }
+
+    fn thumbnail_for_representation(
+        &self,
+        table: &str,
+        owner_column: &str,
+        owner_id: i64,
+    ) -> Result<Option<Thumbnail>> {
+        let sql = format!(
+            "SELECT p.source_hash, p.thumbnail_hash, p.mime_type, p.width, p.height, p.byte_size
+             FROM {table} r
+             JOIN preview_assets p ON p.source_hash = COALESCE(r.content_hash, r.blob_hash)
+             WHERE r.{owner_column} = ?
+               AND (r.format = 'image' OR r.mime_type LIKE 'image/%')
+             LIMIT 1"
+        );
+        self.connection
+            .query_row(&sql, [owner_id], map_thumbnail)
+            .optional()
+            .map_err(StorageError::from)
+    }
+
+    pub fn read_thumbnail(&self, content_hash: &str) -> Result<Option<StoredThumbnail>> {
+        validate_hash(content_hash)?;
+        let metadata = self
+            .connection
+            .query_row(
+                "SELECT source_hash, thumbnail_hash, mime_type, width, height, byte_size
+                 FROM preview_assets WHERE thumbnail_hash = ?",
+                [content_hash],
+                map_thumbnail,
+            )
+            .optional()?;
+        let Some(metadata) = metadata else {
+            return Ok(None);
+        };
+        let path = self.thumbnails_dir.join(content_hash);
+        let bytes = match fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(_) => return Ok(None),
+        };
+        if metadata.mime_type != THUMBNAIL_MIME_TYPE
+            || metadata.width == 0
+            || metadata.height == 0
+            || metadata.width > 256
+            || metadata.height > 256
+            || metadata.byte_size != bytes.len() as u64
+            || hash_bytes(&bytes) != content_hash
+        {
+            return Ok(None);
+        }
+        Ok(Some(StoredThumbnail { metadata, bytes }))
     }
 
     pub fn save_history_item(
@@ -883,6 +1092,7 @@ impl ClipboardStore {
                     byte_size: row.get::<_, i64>(11)?.try_into().unwrap_or(0),
                     tags: Vec::new(),
                     is_independent: row.get::<_, i64>(12)? != 0,
+                    thumbnail: None,
                 })
             })?;
         let mut items = rows
@@ -890,6 +1100,7 @@ impl ClipboardStore {
             .collect::<Result<Vec<_>>>()?;
         for item in &mut items {
             item.tags = self.tags_for_item(item.id)?;
+            item.thumbnail = self.thumbnail_for_saved_item(item.id)?;
         }
         Ok(items)
     }
@@ -919,6 +1130,7 @@ impl ClipboardStore {
                         byte_size: row.get::<_, i64>(11)?.try_into().unwrap_or(0),
                         tags: Vec::new(),
                         is_independent: row.get::<_, i64>(12)? != 0,
+                        thumbnail: None,
                     })
                 },
             )
@@ -927,8 +1139,9 @@ impl ClipboardStore {
             return Ok(None);
         };
         item.tags = self.tags_for_item(id)?;
+        item.thumbnail = self.thumbnail_for_saved_item(id)?;
         let mut statement = self.connection.prepare(
-            "SELECT id, saved_item_id, format, mime_type, inline_data, blob_hash, byte_size
+            "SELECT id, saved_item_id, format, mime_type, inline_data, blob_hash, content_hash, byte_size
              FROM saved_item_representations WHERE saved_item_id = ? ORDER BY id",
         )?;
         let rows = statement.query_map([id], |row| {
@@ -939,7 +1152,8 @@ impl ClipboardStore {
                 mime_type: row.get(3)?,
                 inline_data: row.get(4)?,
                 blob_hash: row.get(5)?,
-                byte_size: row.get::<_, i64>(6)?.try_into().unwrap_or(0),
+                content_hash: row.get(6)?,
+                byte_size: row.get::<_, i64>(7)?.try_into().unwrap_or(0),
             })
         })?;
         let representations = rows
@@ -1381,6 +1595,14 @@ impl SharedClipboardStore {
         store.entry_payload(id)
     }
 
+    pub fn read_thumbnail(&self, content_hash: &str) -> Result<Option<StoredThumbnail>> {
+        let store = self
+            .inner
+            .lock()
+            .map_err(|_| StorageError::Invalid("storage lock poisoned".to_owned()))?;
+        store.read_thumbnail(content_hash)
+    }
+
     pub fn list_saved_items(&self, query: &str, limit: u32) -> Result<Vec<SavedItem>> {
         let store = self
             .inner
@@ -1570,6 +1792,7 @@ fn map_entry(row: &Row<'_>) -> rusqlite::Result<ClipboardEntry> {
         fingerprint: row.get(10)?,
         saved_item_id: row.get(11)?,
         byte_size: row.get::<_, i64>(12)?.try_into().unwrap_or(0),
+        thumbnail: None,
     })
 }
 
@@ -1581,7 +1804,19 @@ fn map_representation(row: &Row<'_>) -> rusqlite::Result<StoredRepresentation> {
         mime_type: row.get(3)?,
         inline_data: row.get(4)?,
         blob_hash: row.get(5)?,
-        byte_size: row.get::<_, i64>(6)?.try_into().unwrap_or(0),
+        content_hash: row.get(6)?,
+        byte_size: row.get::<_, i64>(7)?.try_into().unwrap_or(0),
+    })
+}
+
+fn map_thumbnail(row: &Row<'_>) -> rusqlite::Result<Thumbnail> {
+    Ok(Thumbnail {
+        source_hash: row.get(0)?,
+        content_hash: row.get(1)?,
+        mime_type: row.get(2)?,
+        width: row.get::<_, i64>(3)?.try_into().unwrap_or(0),
+        height: row.get::<_, i64>(4)?.try_into().unwrap_or(0),
+        byte_size: row.get::<_, i64>(5)?.try_into().unwrap_or(0),
     })
 }
 
@@ -2198,6 +2433,51 @@ mod tests {
         assert_eq!(store.saved_item_payload(first.id).unwrap()[0].bytes, bytes);
         assert_eq!(store.delete_saved_items(&[first.id, second.id]).unwrap(), 2);
         assert!(store.list_saved_items("", 20).unwrap().is_empty());
+    }
+
+    #[test]
+    fn image_capture_persists_a_content_addressed_thumbnail_without_changing_original_bytes() {
+        let root = TempDir::new().unwrap();
+        let mut store = ClipboardStore::open(root.path()).unwrap();
+        let original = one_pixel_png();
+        let mut capture = text_capture("image", 1);
+        capture.content_type = ContentType::Image;
+        capture.preview_text = Some("picture".to_owned());
+        capture.searchable_text = Some("picture".to_owned());
+        capture.representations = vec![ClipboardRepresentation {
+            format: "image".to_owned(),
+            mime_type: "image/png".to_owned(),
+            bytes: original.clone(),
+        }];
+        capture.fingerprint = fingerprint(&capture.representations);
+
+        let id = store.record_capture(capture).unwrap().id;
+        let entry = store.entry(id).unwrap().unwrap();
+        let thumbnail = entry.entry.thumbnail.clone().unwrap();
+        assert_eq!(thumbnail.mime_type, THUMBNAIL_MIME_TYPE);
+        assert!(thumbnail.width <= 256);
+        assert!(thumbnail.height <= 256);
+        assert!(root
+            .path()
+            .join("thumbnails")
+            .join(&thumbnail.content_hash)
+            .is_file());
+        let stored = store
+            .read_thumbnail(&thumbnail.content_hash)
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.metadata, thumbnail);
+        assert_eq!(store.entry_payload(id).unwrap()[0].bytes, original);
+    }
+
+    fn one_pixel_png() -> Vec<u8> {
+        vec![
+            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x04, 0x00, 0x00,
+            0x00, 0xb5, 0x1c, 0x0c, 0x02, 0x00, 0x00, 0x00, 0x0b, 0x49, 0x44, 0x41, 0x54, 0x78,
+            0xda, 0x63, 0x64, 0xf8, 0x0f, 0x00, 0x01, 0x05, 0x01, 0x01, 0x27, 0x18, 0xe3, 0x66,
+            0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+        ]
     }
 
     #[test]

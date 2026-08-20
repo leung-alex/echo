@@ -22,6 +22,7 @@ pub use ingest::{
     ClipboardService, ClipboardSink, ContentIdentity, ContentType, MemorySink, NormalizedCapture,
     RecordResult, RepresentationIdentity, DEFAULT_CAPTURE_LIMIT_BYTES, INGESTION_QUEUE_CAPACITY,
 };
+pub use preview::{PreviewAsset, Thumbnail, DEFAULT_THUMBNAIL_MAX_EDGE, THUMBNAIL_MIME_TYPE};
 pub use quick_insert::{
     QuickInsertAction, QuickInsertError, QuickInsertItem, QuickInsertOutcome, QuickInsertRequest,
     QuickInsertService, QuickInsertSource, QuickInsertView,

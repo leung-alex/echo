@@ -1,4 +1,5 @@
-import { useEffect, useState, type ReactElement } from "react";
+import { useState, type ReactElement, type RefObject } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { Copy, Pencil, Star, Trash2 } from "lucide-react";
 
 import {
@@ -7,7 +8,7 @@ import {
 } from "../../../ui/SearchMatchText";
 import type { QuickInsertItem, QuickInsertView } from "../model/types";
 
-const imagePreviewCache = new Map<string, string | null>();
+const VIRTUAL_OVERSCAN = 5;
 
 export interface QuickInsertResultsProps {
   items: QuickInsertItem[];
@@ -24,10 +25,7 @@ export interface QuickInsertResultsProps {
   edit?: (item: QuickInsertItem) => void;
   selectedIds?: Set<number>;
   toggleSelected?: (id: number) => void;
-  getImage: (
-    source: QuickInsertItem["source"],
-    id: number,
-  ) => Promise<string | null>;
+  scrollElementRef: RefObject<HTMLElement | null>;
 }
 
 export type SharedEntryResultsProps = Omit<QuickInsertResultsProps, "view">;
@@ -47,9 +45,58 @@ export function QuickInsertResults({
   edit,
   selectedIds,
   toggleSelected,
-  getImage,
+  scrollElementRef,
 }: QuickInsertResultsProps): ReactElement {
   if (items.length === 0) return <EmptyState message={emptyMessage} />;
+
+  return (
+    <VirtualizedResults
+      items={items}
+      query={query}
+      view={view}
+      viewMode={viewMode}
+      selected={selected}
+      emptyMessage={emptyMessage}
+      getResultId={getResultId}
+      select={select}
+      execute={execute}
+      toggleFavorite={toggleFavorite}
+      remove={remove}
+      edit={edit}
+      selectedIds={selectedIds}
+      toggleSelected={toggleSelected}
+      scrollElementRef={scrollElementRef}
+    />
+  );
+}
+
+function VirtualizedResults({
+  items,
+  query,
+  view,
+  viewMode,
+  selected,
+  getResultId,
+  select,
+  execute,
+  toggleFavorite,
+  remove,
+  edit,
+  selectedIds,
+  toggleSelected,
+  scrollElementRef,
+}: QuickInsertResultsProps): ReactElement {
+  const rowHeight = viewMode === "compact" ? 52 : 76;
+  const rowVirtualizer = useVirtualizer({
+    count: items.length,
+    getScrollElement: () => scrollElementRef.current,
+    estimateSize: () => rowHeight + 6,
+    overscan: VIRTUAL_OVERSCAN,
+    getItemKey: (index) => {
+      const item = items[index];
+      return item ? `${item.source}:${item.id}` : index;
+    },
+  });
 
   const className =
     viewMode === "compact" ? "echo-compact-list" : "echo-history-list";
@@ -61,67 +108,83 @@ export function QuickInsertResults({
       aria-label={
         view === "favorites" ? "Favorite entries" : "Clipboard history"
       }
+      style={{ height: rowVirtualizer.getTotalSize() }}
     >
-      {items.map((item, index) => (
-        <div
-          id={getResultId(`${item.source}:${item.id}`)}
-          className={`echo-history-row${viewMode === "compact" ? " echo-history-row--compact" : ""}${view === "favorites" && selectedIds ? " echo-saved-row" : ""}`}
-          key={`${item.source}:${item.id}`}
-          role="row"
-          aria-selected={index === selected}
-          aria-label={displayText(item)}
-          tabIndex={-1}
-          onPointerDown={(event) => {
-            if (
-              event.target instanceof Element &&
-              event.target.closest("button, input, textarea, select, a")
-            )
-              return;
-            event.preventDefault();
-            select(index);
-          }}
-          onClick={() => execute(item)}
-        >
-          {view === "favorites" && selectedIds && toggleSelected ? (
-            <input
-              type="checkbox"
-              aria-label={`Select ${item.name ?? "saved item"}`}
-              checked={selectedIds.has(item.id)}
-              onPointerDown={(event) => event.stopPropagation()}
-              onChange={() => toggleSelected(item.id)}
-              onClick={(event) => event.stopPropagation()}
-            />
-          ) : null}
-          <span className="echo-type-mark" aria-hidden="true">
-            {item.content_type.startsWith("image")
-              ? "IMG"
-              : item.content_type.slice(0, 3).toUpperCase()}
-          </span>
-          <span className="echo-history-copy" role="gridcell">
-            <EntryContent item={item} query={query} getImage={getImage} />
-            <span className="echo-history-meta">
-              <SearchMatchText
-                text={item.source_app ?? "Unknown source"}
-                indices={getSearchMatchIndices(
-                  item.source_app ?? "Unknown source",
-                  query,
-                )}
+      {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+        const item = items[virtualRow.index];
+        if (!item) return null;
+        const index = virtualRow.index;
+        return (
+          <div
+            id={getResultId(`${item.source}:${item.id}`)}
+            className={`echo-history-row${viewMode === "compact" ? " echo-history-row--compact" : ""}${view === "favorites" && selectedIds ? " echo-saved-row" : ""}`}
+            key={virtualRow.key}
+            role="row"
+            aria-rowindex={index + 1}
+            aria-selected={index === selected}
+            aria-label={displayText(item)}
+            tabIndex={-1}
+            data-virtualized-row="true"
+            style={{
+              height: rowHeight,
+              position: "absolute",
+              top: 0,
+              left: 0,
+              width: "100%",
+              transform: `translateY(${virtualRow.start}px)`,
+            }}
+            onPointerDown={(event) => {
+              if (
+                event.target instanceof Element &&
+                event.target.closest("button, input, textarea, select, a")
+              )
+                return;
+              event.preventDefault();
+              select(index);
+            }}
+            onClick={() => execute(item)}
+          >
+            {view === "favorites" && selectedIds && toggleSelected ? (
+              <input
+                type="checkbox"
+                aria-label={`Select ${item.name ?? "saved item"}`}
+                checked={selectedIds.has(item.id)}
+                onPointerDown={(event) => event.stopPropagation()}
+                onChange={() => toggleSelected(item.id)}
+                onClick={(event) => event.stopPropagation()}
               />
-              <span aria-hidden="true">·</span>
-              <span>{relativeTime(item.updated_at)}</span>
+            ) : null}
+            <span className="echo-type-mark" aria-hidden="true">
+              {item.content_type.startsWith("image")
+                ? "IMG"
+                : item.content_type.slice(0, 3).toUpperCase()}
             </span>
-          </span>
-          <span className="echo-history-actions" role="gridcell">
-            <EntryActions
-              item={item}
-              copy={() => execute(item, "copy")}
-              toggleFavorite={() => toggleFavorite(item)}
-              remove={() => remove(item)}
-              edit={view === "favorites" ? () => edit?.(item) : undefined}
-            />
-          </span>
-        </div>
-      ))}
+            <span className="echo-history-copy" role="gridcell">
+              <EntryContent item={item} query={query} />
+              <span className="echo-history-meta">
+                <SearchMatchText
+                  text={item.source_app ?? "Unknown source"}
+                  indices={getSearchMatchIndices(
+                    item.source_app ?? "Unknown source",
+                    query,
+                  )}
+                />
+                <span aria-hidden="true">·</span>
+                <span>{relativeTime(item.updated_at)}</span>
+              </span>
+            </span>
+            <span className="echo-history-actions" role="gridcell">
+              <EntryActions
+                item={item}
+                copy={() => execute(item, "copy")}
+                toggleFavorite={() => toggleFavorite(item)}
+                remove={() => remove(item)}
+                edit={view === "favorites" ? () => edit?.(item) : undefined}
+              />
+            </span>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -129,43 +192,51 @@ export function QuickInsertResults({
 function EntryContent({
   item,
   query,
-  getImage,
 }: {
   item: QuickInsertItem;
   query: string;
-  getImage: QuickInsertResultsProps["getImage"];
 }) {
-  const cacheKey = `${item.source}:${item.id}`;
-  const [imageUrl, setImageUrl] = useState<string | null>(
-    () => imagePreviewCache.get(cacheKey) ?? null,
-  );
   const isImage = item.content_type.startsWith("image");
-
-  useEffect(() => {
-    if (!isImage || imagePreviewCache.has(cacheKey)) return undefined;
-    let active = true;
-    void getImage(item.source, item.id)
-      .then((url) => {
-        imagePreviewCache.set(cacheKey, url);
-        if (active) setImageUrl(url);
-      })
-      .catch(() => imagePreviewCache.set(cacheKey, null));
-    return () => {
-      active = false;
-    };
-  }, [cacheKey, getImage, isImage, item.id, item.source]);
-
   const preview = displayText(item);
   return (
     <span className="echo-content-preview" title={preview}>
-      {imageUrl ? (
-        <img src={imageUrl} alt="Clipboard image preview" loading="lazy" />
+      {isImage ? (
+        item.preview ? (
+          <PreviewImage url={item.preview.url} />
+        ) : (
+          <ImagePlaceholder />
+        )
       ) : (
         <SearchMatchText
           text={preview}
           indices={getSearchMatchIndices(preview, query)}
         />
       )}
+    </span>
+  );
+}
+
+function PreviewImage({ url }: { url: string }): ReactElement {
+  const [failed, setFailed] = useState(false);
+  if (failed) return <ImagePlaceholder />;
+  return (
+    <img
+      src={url}
+      alt="Clipboard image preview"
+      loading="lazy"
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
+function ImagePlaceholder(): ReactElement {
+  return (
+    <span
+      className="echo-image-placeholder"
+      role="img"
+      aria-label="Image preview unavailable"
+    >
+      IMG
     </span>
   );
 }

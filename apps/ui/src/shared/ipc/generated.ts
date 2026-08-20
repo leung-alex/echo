@@ -17,6 +17,16 @@ export interface QuickInsertItem {
   updated_at: number;
   saved_item_id: number | null;
   is_independent: boolean;
+  preview: PreviewAsset | null;
+}
+
+export interface PreviewAsset {
+  url: string;
+  mime_type: string;
+  width: number;
+  height: number;
+  byte_size: number;
+  content_hash: string;
 }
 
 export interface SavedItemUpdate {
@@ -27,11 +37,6 @@ export interface SavedItemUpdate {
 
 export interface PasteSession {
   hasTarget: boolean;
-}
-
-export interface ImagePreview {
-  mime_type: string;
-  base64: string;
 }
 
 export interface ClipboardSettings {

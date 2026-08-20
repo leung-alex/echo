@@ -5,6 +5,7 @@ import {
   useState,
   type KeyboardEvent,
   type MouseEvent,
+  type RefObject,
   type ReactElement,
 } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -51,6 +52,7 @@ export function QuickInsertSurface({
   client = quickInsertClient,
 }: QuickInsertSurfaceProps): ReactElement {
   const searchRef = useRef<HTMLInputElement>(null);
+  const workspaceRef = useRef<HTMLElement>(null);
   const [viewMode, setViewMode] = useState<ClipboardViewMode>(readViewMode);
   const focusSearch = useCallback(() => {
     searchRef.current?.focus();
@@ -250,6 +252,7 @@ export function QuickInsertSurface({
         </div>
       </nav>
       <section
+        ref={workspaceRef}
         className={`clipboard-entry-workspace clipboard-entry-workspace--${viewMode}`}
         aria-label={
           state.view === "favorites" ? "Favorite entries" : "Clipboard entries"
@@ -258,12 +261,12 @@ export function QuickInsertSurface({
         <div className="clipboard-history-layout">
           {state.view === "favorites" ? (
             <SavedItemsResults
-              {...resultProps(controller, navigation, client)}
+              {...resultProps(controller, navigation, workspaceRef)}
               viewMode={viewMode}
             />
           ) : (
             <HistoryResults
-              {...resultProps(controller, navigation, client)}
+              {...resultProps(controller, navigation, workspaceRef)}
               viewMode={viewMode}
             />
           )}
@@ -300,7 +303,7 @@ export function QuickInsertSurface({
 function resultProps(
   controller: ReturnType<typeof useQuickInsertController>,
   navigation: ReturnType<typeof useActiveResultNavigation>,
-  client: QuickInsertClient,
+  workspaceRef: RefObject<HTMLElement | null>,
 ) {
   return {
     items: controller.state.items,
@@ -325,6 +328,6 @@ function resultProps(
       update: Parameters<typeof controller.updateSavedItem>[1],
     ) => void controller.updateSavedItem(item, update),
     deleteSavedItems: (ids: number[]) => controller.deleteSavedItems(ids),
-    getImage: client.getImage,
+    scrollElementRef: workspaceRef,
   };
 }

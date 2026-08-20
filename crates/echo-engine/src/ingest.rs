@@ -170,13 +170,24 @@ impl ContentIdentity {
 pub struct CapturedCapture {
     pub capture: NormalizedCapture,
     pub identity: ContentIdentity,
+    pub preview: Option<crate::PreviewAsset>,
 }
 
 impl CapturedCapture {
     pub fn from_capture(mut capture: NormalizedCapture) -> Self {
         let identity = ContentIdentity::from_representations(&capture.representations);
         capture.fingerprint = identity.fingerprint.clone();
-        Self { capture, identity }
+        Self {
+            capture,
+            identity,
+            preview: None,
+        }
+    }
+
+    pub fn prepare_preview(mut self) -> Self {
+        self.preview =
+            crate::preview::thumbnail_for_capture(&self.capture.representations, &self.identity);
+        self
     }
 }
 
@@ -638,7 +649,11 @@ fn enqueue(shared: &Arc<Shared>, job: IngestionJob) -> Result<()> {
 
 fn ingest(shared: Arc<Shared>, receiver: Receiver<IngestionJob>) {
     while let Ok(job) = receiver.recv() {
-        let result = shared.sink.record_captured(job.captured);
+        let IngestionJob {
+            captured,
+            completion,
+        } = job;
+        let result = shared.sink.record_captured(captured.prepare_preview());
         match result {
             Ok(record) => {
                 let event = CaptureEvent::HistoryChanged {
@@ -654,7 +669,7 @@ fn ingest(shared: Arc<Shared>, receiver: Receiver<IngestionJob>) {
                     },
                     event: Some(event),
                 };
-                if let Some(completion) = job.completion {
+                if let Some(completion) = completion {
                     let _ = completion.send(Ok(commit));
                 }
             }
@@ -662,7 +677,7 @@ fn ingest(shared: Arc<Shared>, receiver: Receiver<IngestionJob>) {
                 if let Ok(mut last_error) = shared.last_error.lock() {
                     *last_error = Some(error.clone());
                 }
-                if let Some(completion) = job.completion {
+                if let Some(completion) = completion {
                     let _ = completion.send(Err(error));
                 }
             }
@@ -769,7 +784,11 @@ fn normalize_with_policy(
         fingerprint: identity.fingerprint.clone(),
         representations,
     };
-    Ok(Some(CapturedCapture { capture, identity }))
+    Ok(Some(CapturedCapture {
+        capture,
+        identity,
+        preview: None,
+    }))
 }
 
 fn extract_html_fragment(html: &str) -> String {

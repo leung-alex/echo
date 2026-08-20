@@ -74,13 +74,16 @@ export function quickInsertReducer(
         action.items.length === 0
           ? -1
           : Math.min(Math.max(state.selection, 0), action.items.length - 1);
+      const preserveSuccess = state.statusKind === "success";
       return {
         ...state,
         items: action.items,
         selection,
         loading: false,
-        status: `${action.items.length} item${action.items.length === 1 ? "" : "s"}`,
-        statusKind: "info",
+        status: preserveSuccess
+          ? state.status
+          : `${action.items.length} item${action.items.length === 1 ? "" : "s"}`,
+        statusKind: preserveSuccess ? "success" : "info",
       };
     }
     case "load_failed":

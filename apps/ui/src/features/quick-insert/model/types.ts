@@ -6,7 +6,6 @@ import type {
 } from "../../../shared/ipc/generated";
 
 export type {
-  ImagePreview,
   PasteSession,
   QuickInsertAction,
   QuickInsertItem,

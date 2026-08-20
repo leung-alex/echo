@@ -1,4 +1,4 @@
-use crate::{ClipboardRepresentation, HistoryEntry};
+use crate::{ClipboardRepresentation, HistoryEntry, Thumbnail};
 use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,6 +17,7 @@ pub struct SavedItem {
     pub byte_size: u64,
     pub tags: Vec<String>,
     pub is_independent: bool,
+    pub thumbnail: Option<Thumbnail>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

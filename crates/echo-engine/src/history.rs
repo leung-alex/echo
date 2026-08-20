@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use crate::{
     ClipboardRepresentation, ClipboardSettings, SavedItem, SavedItemDraft, SavedItemUpdate,
+    Thumbnail,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -22,6 +23,7 @@ pub struct HistoryEntry {
     pub fingerprint: String,
     pub saved_item_id: Option<i64>,
     pub byte_size: u64,
+    pub thumbnail: Option<Thumbnail>,
 }
 
 pub trait LibraryStore: Send + Sync {
@@ -102,6 +104,7 @@ pub struct LibraryItem {
     pub updated_at: i64,
     pub saved_item_id: Option<i64>,
     pub is_independent: bool,
+    pub thumbnail: Option<Thumbnail>,
 }
 
 #[derive(Clone)]
@@ -226,6 +229,7 @@ fn history_item(entry: HistoryEntry) -> LibraryItem {
         updated_at: entry.updated_at,
         saved_item_id: entry.saved_item_id,
         is_independent: false,
+        thumbnail: entry.thumbnail,
     }
 }
 
@@ -242,5 +246,6 @@ fn saved_item(item: SavedItem) -> LibraryItem {
         updated_at: item.updated_at,
         saved_item_id: Some(item.id),
         is_independent: item.is_independent,
+        thumbnail: item.thumbnail,
     }
 }

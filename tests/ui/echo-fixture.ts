@@ -14,6 +14,7 @@ export async function installEchoFixture(page: Page): Promise<void> {
       updated_at: number;
       saved_item_id: number | null;
       is_independent: boolean;
+      preview: null;
     };
 
     const state = {
@@ -30,6 +31,7 @@ export async function installEchoFixture(page: Page): Promise<void> {
           updated_at: Date.now(),
           saved_item_id: null,
           is_independent: false,
+          preview: null,
         },
         {
           id: 2,
@@ -43,6 +45,7 @@ export async function installEchoFixture(page: Page): Promise<void> {
           updated_at: Date.now(),
           saved_item_id: null,
           is_independent: false,
+          preview: null,
         },
       ] satisfies MockItem[],
       settings: {
@@ -118,14 +121,6 @@ export async function installEchoFixture(page: Page): Promise<void> {
             return true;
           case "quick_insert_execute":
             return args.action === "insert" ? "inserted" : "copied";
-          case "quick_insert_get_image":
-            return args.id === 2
-              ? {
-                  mime_type: "image/png",
-                  base64:
-                    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
-                }
-              : null;
           case "settings_get":
             return { ...state.settings };
           case "settings_update":

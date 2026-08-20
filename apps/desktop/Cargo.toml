@@ -21,7 +21,6 @@ path = "src/main.rs"
 tauri-build.workspace = true
 
 [dependencies]
-base64.workspace = true
 echo-activation.workspace = true
 echo-engine.workspace = true
 echo-storage.workspace = true

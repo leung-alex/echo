@@ -1,7 +1,6 @@
 import { invoke } from "../../../shared/ipc/invoke";
 
 import type {
-  ImagePreview,
   PasteSession,
   QuickInsertAction,
   QuickInsertItem,
@@ -31,7 +30,6 @@ export interface QuickInsertClient {
   remove(source: QuickInsertSource, id: number): Promise<boolean>;
   updateSavedItem(id: number, update: SavedItemUpdate): Promise<void>;
   deleteSavedItems(ids: number[]): Promise<number>;
-  getImage(source: QuickInsertSource, id: number): Promise<string | null>;
 }
 
 export const quickInsertClient: QuickInsertClient = {
@@ -47,16 +45,4 @@ export const quickInsertClient: QuickInsertClient = {
   updateSavedItem: (id, update) =>
     invoke<void>("saved_item_update", { id, update }),
   deleteSavedItems: (ids) => invoke<number>("saved_items_delete_many", { ids }),
-  getImage: async (source, id) => {
-    const preview = await invoke<ImagePreview | null>(
-      "quick_insert_get_image",
-      {
-        source,
-        id,
-      },
-    );
-    return preview
-      ? `data:${preview.mime_type};base64,${preview.base64}`
-      : null;
-  },
 };
