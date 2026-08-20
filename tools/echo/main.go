@@ -55,16 +55,22 @@ Usage:
       Build the NSIS package, or only the unpackaged release executable.
   echo.cmd release-candidate
       Verify clean inputs and produce a local release candidate manifest.
-  echo.cmd sync [--all | --branch <name>]
-      Show repository and worktree status without mutating Git.
+  echo.cmd sync [--all | --branch <fixed-branch>]
+      Show fixed worktree status and select interactively; scripts must use --all or --branch.
   echo.cmd clean
       Remove only Echo-owned generated bootstrap and run state.
+
+Commands without an explicit selection never mutate Git non-interactively.
 `
 
 type app struct {
-	root   string
-	out    io.Writer
-	errOut io.Writer
+	root          string
+	in            io.Reader
+	out           io.Writer
+	errOut        io.Writer
+	env           []string
+	syncMainPath  string
+	syncWorktrees []fixedWorktree
 }
 
 type exitError struct {
@@ -96,7 +102,15 @@ func newApp() (*app, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &app{root: root, out: os.Stdout, errOut: os.Stderr}, nil
+	return &app{
+		root:          root,
+		in:            os.Stdin,
+		out:           os.Stdout,
+		errOut:        os.Stderr,
+		env:           os.Environ(),
+		syncMainPath:  mainWorktreePath,
+		syncWorktrees: fixedWorktrees,
+	}, nil
 }
 
 func (a *app) dispatch(args []string) error {
@@ -1060,39 +1074,6 @@ func (a *app) releaseCandidate() error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(manifestDir, "release-candidate.json"), append(encoded, '\n'), 0o644)
-}
-
-func (a *app) syncCommand(args []string) error {
-	fs := newFlags("sync", a.errOut)
-	all := fs.Bool("all", false, "show all worktrees")
-	branch := fs.String("branch", "", "show the selected worktree branch")
-	if err := parseFlags(fs, args); err != nil {
-		return err
-	}
-	if *all && *branch != "" {
-		return fmt.Errorf("sync accepts either --all or --branch, not both")
-	}
-	if err := a.run("git", "status", "--short", "--branch"); err != nil {
-		return err
-	}
-	worktrees, err := a.gitOutput("worktree", "list", "--porcelain")
-	if err != nil {
-		return err
-	}
-	if *branch == "" && !*all {
-		fmt.Fprintln(a.out, string(worktrees))
-		return nil
-	}
-	if *all {
-		fmt.Fprintln(a.out, string(worktrees))
-		return nil
-	}
-	for _, block := range strings.Split(strings.TrimSpace(string(worktrees)), "\n\n") {
-		if strings.Contains(block, "branch refs/heads/"+*branch) {
-			fmt.Fprintln(a.out, block)
-		}
-	}
-	return nil
 }
 
 func (a *app) clean() error {

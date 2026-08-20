@@ -33,6 +33,18 @@ Use the repository map and ownership rules below before changing code.
 - UI behavior: the owning feature under `apps/ui/src/features`.
 - Raw Tauri IPC: only `apps/ui/src/shared/ipc`.
 
+## Fixed Worktrees
+
+| Branch | Path |
+| --- | --- |
+| `main` | `D:\Project\echo` |
+| `codex/foundation` | `D:\Worktrees\echo\foundation` |
+| `codex/ui` | `D:\Worktrees\echo\ui` |
+
+Run `echo.cmd sync` interactively, or use `--all` / `--branch` in scripts, to
+fast-forward clean fixed branches to the current local `main`. Unsafe branches
+with local changes, ahead commits, or divergence are never modified.
+
 ## Hard Rules
 
 - Dependencies point from adapters and desktop toward engine; engine never
