@@ -294,6 +294,7 @@ pub enum CaptureOutcome {
 struct Shared {
     platform: Arc<dyn ClipboardPlatform>,
     sink: Arc<dyn ClipboardSink>,
+    processor: Arc<dyn CaptureProcessor>,
     configuration: Mutex<CaptureConfiguration>,
     queue: Mutex<Option<SyncSender<IngestionJob>>>,
     events: CaptureEventPublisher,
@@ -310,6 +311,34 @@ struct CaptureConfiguration {
     policy: CapturePolicy,
 }
 
+trait CaptureProcessor: Send + Sync {
+    fn normalize(
+        &self,
+        snapshot: ClipboardSnapshot,
+        settings: &CaptureSettings,
+        policy: &CapturePolicy,
+    ) -> Result<Option<CapturedCapture>>;
+
+    fn prepare_preview(&self, captured: CapturedCapture) -> CapturedCapture;
+}
+
+struct DefaultCaptureProcessor;
+
+impl CaptureProcessor for DefaultCaptureProcessor {
+    fn normalize(
+        &self,
+        snapshot: ClipboardSnapshot,
+        settings: &CaptureSettings,
+        policy: &CapturePolicy,
+    ) -> Result<Option<CapturedCapture>> {
+        normalize_with_policy(snapshot, settings, policy)
+    }
+
+    fn prepare_preview(&self, captured: CapturedCapture) -> CapturedCapture {
+        captured.prepare_preview()
+    }
+}
+
 struct ClipboardListener {
     stop: Arc<std::sync::atomic::AtomicBool>,
     handle: JoinHandle<()>,
@@ -322,12 +351,22 @@ pub struct ClipboardService {
 }
 
 struct IngestionJob {
-    captured: CapturedCapture,
+    snapshot: ClipboardSnapshot,
+    settings: CaptureSettings,
+    policy: CapturePolicy,
     completion: Option<SyncSender<std::result::Result<CaptureCommit, String>>>,
 }
 
 impl ClipboardService {
     pub fn new(platform: Arc<dyn ClipboardPlatform>, sink: Arc<dyn ClipboardSink>) -> Self {
+        Self::new_with_processor(platform, sink, Arc::new(DefaultCaptureProcessor))
+    }
+
+    fn new_with_processor(
+        platform: Arc<dyn ClipboardPlatform>,
+        sink: Arc<dyn ClipboardSink>,
+        processor: Arc<dyn CaptureProcessor>,
+    ) -> Self {
         let configuration = CaptureConfiguration {
             settings: sink.settings().unwrap_or_default(),
             policy: sink.capture_policy().unwrap_or_default(),
@@ -339,6 +378,7 @@ impl ClipboardService {
         let shared = Arc::new(Shared {
             platform,
             sink,
+            processor,
             configuration: Mutex::new(configuration),
             queue: Mutex::new(Some(queue_sender)),
             events: CaptureEventPublisher::default(),
@@ -488,7 +528,7 @@ fn capture_sequence(
     sequence: u64,
     wait_for_commit: bool,
 ) -> Result<Option<CaptureCommit>> {
-    let captured = {
+    let (snapshot, settings, policy, previous_sequence, read_elapsed, read_count) = {
         let _gate = lock(&shared.write_capture)?;
         if shared.ignored_sequence.load(Ordering::Acquire) == sequence {
             shared.last_sequence.store(sequence, Ordering::Release);
@@ -497,7 +537,8 @@ fn capture_sequence(
                 event: None,
             }));
         }
-        if shared.last_sequence.load(Ordering::Acquire) == sequence {
+        let previous_sequence = shared.last_sequence.load(Ordering::Acquire);
+        if previous_sequence == sequence {
             return Ok(Some(CaptureCommit {
                 outcome: CaptureOutcome::Unsupported,
                 event: None,
@@ -525,28 +566,48 @@ fn capture_sequence(
             .and_then(Option::as_ref)
             .map(|snapshot| snapshot.representations.len() as u64)
             .unwrap_or(0);
-        shared
-            .metrics
-            .record("capture_read", read_started.elapsed(), read_count);
-        let Some(snapshot) = snapshot_result? else {
+        let read_elapsed = read_started.elapsed();
+        let snapshot_result = match snapshot_result {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                drop(_gate);
+                shared
+                    .metrics
+                    .record("capture_read", read_elapsed, read_count);
+                return Err(error.into());
+            }
+        };
+        let Some(snapshot) = snapshot_result else {
             shared.last_sequence.store(sequence, Ordering::Release);
+            drop(_gate);
+            shared
+                .metrics
+                .record("capture_read", read_elapsed, read_count);
             return Ok(Some(CaptureCommit {
                 outcome: CaptureOutcome::Unsupported,
                 event: None,
             }));
         };
         if snapshot.sequence != sequence || shared.platform.clipboard_sequence() != sequence {
+            drop(_gate);
+            shared
+                .metrics
+                .record("capture_read", read_elapsed, read_count);
             return Err(ClipboardError::ChangedDuringRead);
         }
-        normalize_with_policy(snapshot, &settings, &policy)?
-    };
-    let Some(captured) = captured else {
         shared.last_sequence.store(sequence, Ordering::Release);
-        return Ok(Some(CaptureCommit {
-            outcome: CaptureOutcome::Unsupported,
-            event: None,
-        }));
+        (
+            snapshot,
+            settings,
+            policy,
+            previous_sequence,
+            read_elapsed,
+            read_count,
+        )
     };
+    shared
+        .metrics
+        .record("capture_read", read_elapsed, read_count);
 
     let (completion_sender, completion_receiver) = if wait_for_commit {
         let (sender, receiver) = mpsc::sync_channel(1);
@@ -554,14 +615,23 @@ fn capture_sequence(
     } else {
         (None, None)
     };
-    enqueue(
+    if let Err(error) = enqueue(
         shared,
         IngestionJob {
-            captured,
+            snapshot,
+            settings,
+            policy,
             completion: completion_sender,
         },
-    )?;
-    shared.last_sequence.store(sequence, Ordering::Release);
+    ) {
+        let _ = shared.last_sequence.compare_exchange(
+            sequence,
+            previous_sequence,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+        return Err(error);
+    }
     let Some(receiver) = completion_receiver else {
         return Ok(None);
     };
@@ -593,11 +663,35 @@ fn enqueue(shared: &Arc<Shared>, job: IngestionJob) -> Result<()> {
 fn ingest(shared: Arc<Shared>, receiver: Receiver<IngestionJob>) {
     while let Ok(job) = receiver.recv() {
         let IngestionJob {
-            captured,
+            snapshot,
+            settings,
+            policy,
             completion,
         } = job;
+        let captured = match shared.processor.normalize(snapshot, &settings, &policy) {
+            Ok(Some(captured)) => captured,
+            Ok(None) => {
+                if let Some(completion) = completion {
+                    let _ = completion.send(Ok(CaptureCommit {
+                        outcome: CaptureOutcome::Unsupported,
+                        event: None,
+                    }));
+                }
+                continue;
+            }
+            Err(error) => {
+                let error = error.to_string();
+                if let Ok(mut last_error) = shared.last_error.lock() {
+                    *last_error = Some(error.clone());
+                }
+                if let Some(completion) = completion {
+                    let _ = completion.send(Err(error));
+                }
+                continue;
+            }
+        };
         let preview_started = Instant::now();
-        let captured = captured.prepare_preview();
+        let captured = shared.processor.prepare_preview(captured);
         shared.metrics.record(
             "thumbnail_generation",
             preview_started.elapsed(),
@@ -930,6 +1024,7 @@ mod tests {
         clipboard_open: AtomicBool,
         writes: Mutex<Vec<Vec<ClipboardRepresentation>>>,
         read_failures: AtomicUsize,
+        read_count: AtomicUsize,
         publish_during_write: AtomicBool,
         startup_snapshot: Mutex<Option<ClipboardSnapshot>>,
     }
@@ -943,6 +1038,7 @@ mod tests {
                 clipboard_open: AtomicBool::new(false),
                 writes: Mutex::new(Vec::new()),
                 read_failures: AtomicUsize::new(0),
+                read_count: AtomicUsize::new(0),
                 publish_during_write: AtomicBool::new(false),
                 startup_snapshot: Mutex::new(None),
             }
@@ -971,6 +1067,10 @@ mod tests {
 
         fn clipboard_is_open(&self) -> bool {
             self.clipboard_open.load(Ordering::Acquire)
+        }
+
+        fn read_count(&self) -> usize {
+            self.read_count.load(Ordering::Acquire)
         }
     }
 
@@ -1003,6 +1103,7 @@ mod tests {
                 .unwrap_or_else(|error| error.into_inner())
                 .pop_front();
             self.clipboard_open.store(false, Ordering::Release);
+            self.read_count.fetch_add(1, Ordering::AcqRel);
             Ok(snapshot)
         }
 
@@ -1106,6 +1207,54 @@ mod tests {
         }
     }
 
+    struct BlockingProcessor {
+        entered: std::sync::mpsc::Sender<String>,
+        release: Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+
+    impl BlockingProcessor {
+        fn new() -> (
+            Arc<Self>,
+            std::sync::mpsc::Receiver<String>,
+            std::sync::mpsc::Sender<()>,
+        ) {
+            let (entered, entered_receiver) = std::sync::mpsc::channel();
+            let (release, release_receiver) = std::sync::mpsc::channel();
+            (
+                Arc::new(Self {
+                    entered,
+                    release: Mutex::new(release_receiver),
+                }),
+                entered_receiver,
+                release,
+            )
+        }
+    }
+
+    impl CaptureProcessor for BlockingProcessor {
+        fn normalize(
+            &self,
+            snapshot: ClipboardSnapshot,
+            settings: &CaptureSettings,
+            policy: &CapturePolicy,
+        ) -> Result<Option<CapturedCapture>> {
+            let thread_name = std::thread::current().name().unwrap_or_default().to_owned();
+            self.entered
+                .send(thread_name)
+                .map_err(|_| ClipboardError::StateUnavailable)?;
+            self.release
+                .lock()
+                .map_err(|_| ClipboardError::StateUnavailable)?
+                .recv()
+                .map_err(|_| ClipboardError::StateUnavailable)?;
+            DefaultCaptureProcessor.normalize(snapshot, settings, policy)
+        }
+
+        fn prepare_preview(&self, captured: CapturedCapture) -> CapturedCapture {
+            DefaultCaptureProcessor.prepare_preview(captured)
+        }
+    }
+
     fn text_snapshot(sequence: u64, text: &str) -> ClipboardSnapshot {
         ClipboardSnapshot {
             sequence,
@@ -1120,6 +1269,15 @@ mod tests {
                 mime_type: "text/plain;charset=utf-8".to_owned(),
                 bytes: text.as_bytes().to_vec(),
             }],
+        }
+    }
+
+    fn ingestion_job(snapshot: ClipboardSnapshot) -> IngestionJob {
+        IngestionJob {
+            snapshot,
+            settings: CaptureSettings::default(),
+            policy: CapturePolicy::default(),
+            completion: None,
         }
     }
 
@@ -1168,10 +1326,61 @@ mod tests {
     }
 
     #[test]
+    fn normalization_runs_on_the_ingestion_worker_after_the_capture_gate_is_released() {
+        let platform = Arc::new(TestPlatform::new(text_snapshot(1, "initial")));
+        let sink = Arc::new(MemorySink::default());
+        let processor = BlockingProcessor::new();
+        let service = Arc::new(ClipboardService::new_with_processor(
+            platform.clone(),
+            sink.clone(),
+            processor.0,
+        ));
+        platform.set_snapshot(text_snapshot(2, "owned before normalization"));
+
+        let capture_service = Arc::clone(&service);
+        let capture = std::thread::spawn(move || capture_service.capture_now());
+        assert_eq!(processor.1.recv().unwrap(), "echo-clipboard-ingestion");
+        assert!(!platform.clipboard_is_open());
+
+        let copy_service = Arc::clone(&service);
+        let (copy_done, copy_receiver) = std::sync::mpsc::channel();
+        let copy = std::thread::spawn(move || {
+            let result = copy_service.copy_representations(&[ClipboardRepresentation {
+                format: "text".to_owned(),
+                mime_type: "text/plain".to_owned(),
+                bytes: b"self write".to_vec(),
+            }]);
+            copy_done.send(result).unwrap();
+        });
+        assert!(copy_receiver
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap()
+            .is_ok());
+
+        processor.2.send(()).unwrap();
+        assert!(matches!(
+            capture.join().unwrap().unwrap(),
+            CaptureOutcome::Recorded(1)
+        ));
+        copy.join().unwrap();
+        let records = sink.records();
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records[0].representations[0].bytes,
+            b"owned before normalization"
+        );
+        assert_eq!(
+            records[0].fingerprint,
+            ContentIdentity::from_representations(&records[0].representations).fingerprint
+        );
+        service.shutdown();
+    }
+
+    #[test]
     fn ingestion_queue_applies_bounded_backpressure() {
         let platform = Arc::new(TestPlatform::new(text_snapshot(1, "initial")));
         let sink = BlockingSink::new();
-        let service = ClipboardService::new(platform, sink.0.clone());
+        let service = Arc::new(ClipboardService::new(platform.clone(), sink.0.clone()));
         let sender = service
             .shared
             .queue
@@ -1180,34 +1389,78 @@ mod tests {
             .as_ref()
             .cloned()
             .unwrap();
-        let capture = CapturedCapture::from_capture(
-            normalize(text_snapshot(1, "queued"), &CaptureSettings::default()).unwrap(),
-        );
         sender
-            .send(IngestionJob {
-                captured: capture.clone(),
-                completion: None,
-            })
+            .send(ingestion_job(text_snapshot(10, "queued")))
             .unwrap();
         sink.1.recv().unwrap();
-        for _ in 0..INGESTION_QUEUE_CAPACITY {
+        for sequence in 0..INGESTION_QUEUE_CAPACITY {
             sender
-                .try_send(IngestionJob {
-                    captured: capture.clone(),
-                    completion: None,
-                })
+                .try_send(ingestion_job(text_snapshot(sequence as u64 + 11, "queued")))
                 .unwrap();
         }
         assert!(matches!(
-            sender.try_send(IngestionJob {
-                captured: capture,
-                completion: None,
-            }),
+            sender.try_send(ingestion_job(text_snapshot(20, "queued"))),
             Err(std::sync::mpsc::TrySendError::Full(_))
         ));
-        for _ in 0..=INGESTION_QUEUE_CAPACITY {
+
+        platform.set_snapshot(text_snapshot(2, "backpressured raw bytes"));
+        let capture_service = Arc::clone(&service);
+        let (capture_done, capture_receiver) = std::sync::mpsc::channel();
+        let capture = std::thread::spawn(move || {
+            capture_done.send(capture_service.capture_now()).unwrap();
+        });
+        let deadline = Instant::now() + std::time::Duration::from_secs(1);
+        while platform.read_count() == 0 {
+            assert!(
+                Instant::now() < deadline,
+                "capture did not finish its OS read"
+            );
+            std::thread::yield_now();
+        }
+
+        let copy_service = Arc::clone(&service);
+        let (copy_done, copy_receiver) = std::sync::mpsc::channel();
+        let copy = std::thread::spawn(move || {
+            copy_done
+                .send(
+                    copy_service.copy_representations(&[ClipboardRepresentation {
+                        format: "text".to_owned(),
+                        mime_type: "text/plain".to_owned(),
+                        bytes: b"write during backpressure".to_vec(),
+                    }]),
+                )
+                .unwrap();
+        });
+        assert!(copy_receiver
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap()
+            .is_ok());
+        assert!(!platform.clipboard_is_open());
+        assert!(matches!(
+            capture_receiver.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        platform.set_snapshot(text_snapshot(30, "replacement"));
+
+        for _ in 0..INGESTION_QUEUE_CAPACITY + 2 {
             sink.2.send(()).unwrap();
         }
+        assert!(matches!(
+            capture_receiver
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .unwrap()
+                .unwrap(),
+            CaptureOutcome::Recorded(_)
+        ));
+        capture.join().unwrap();
+        copy.join().unwrap();
+        assert!(sink
+            .0
+            .records
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|capture| { capture.representations[0].bytes == b"backpressured raw bytes" }));
         drop(sender);
         service.shutdown();
     }
@@ -1346,6 +1599,19 @@ mod tests {
             service.capture_now().unwrap(),
             CaptureOutcome::Recorded(_)
         ));
+        service.shutdown();
+    }
+
+    #[test]
+    fn enqueue_failure_releases_the_claimed_sequence_for_retry() {
+        let platform = Arc::new(TestPlatform::new(text_snapshot(1, "initial")));
+        let sink = Arc::new(MemorySink::default());
+        let service = ClipboardService::new(platform.clone(), sink);
+        service.shared.queue.lock().unwrap().take();
+        platform.set_snapshot(text_snapshot(2, "retry after queue failure"));
+
+        assert!(service.capture_now().is_err());
+        assert_eq!(service.shared.last_sequence.load(Ordering::Acquire), 1);
         service.shutdown();
     }
 
