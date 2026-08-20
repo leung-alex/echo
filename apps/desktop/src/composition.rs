@@ -38,7 +38,6 @@ impl EchoState {
         let platform = make_platform()?;
         let sink: Arc<dyn ClipboardSink> = store.clone();
         let clipboard = Arc::new(ClipboardService::new(platform.clone(), sink));
-        clipboard.start_maintenance();
         let library = Library::new(store.clone());
         let quick_insert = QuickInsertService::new(library.clone(), clipboard.clone(), platform);
         Ok(Self {

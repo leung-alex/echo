@@ -12,6 +12,11 @@ eviction, and explicit repair requests. Normal capture does not scan either
 directory. A thumbnail remains owned while any clipboard or Saved Item
 representation references its original content hash.
 
+`SharedClipboardStore::open` is the startup owner. Desktop composition does
+not schedule a second startup pass; the retained engine lifecycle hook is a
+compatibility no-op. Storage mutations schedule their own required cleanup,
+while higher layers may request maintenance only for explicit repair.
+
 ## Schema Versions
 
 `PRAGMA user_version` is advanced one step at a time:

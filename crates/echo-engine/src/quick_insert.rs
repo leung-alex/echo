@@ -202,7 +202,6 @@ impl<S: LibraryStore> QuickInsertService<S> {
             QuickInsertSource::History => {
                 let changed = self.library.set_favorite(id, saved)?;
                 if changed {
-                    self.request_maintenance();
                     self.invalidate_history(Some(id));
                 }
                 Ok(changed)
@@ -210,7 +209,6 @@ impl<S: LibraryStore> QuickInsertService<S> {
             QuickInsertSource::Favorite if !saved => {
                 let deleted = self.library.delete(LibraryItemKind::SavedItem, id)?;
                 if deleted {
-                    self.request_maintenance();
                     self.invalidate_history(Some(id));
                 }
                 Ok(deleted)
@@ -222,7 +220,6 @@ impl<S: LibraryStore> QuickInsertService<S> {
     pub fn delete(&self, source: QuickInsertSource, id: i64) -> Result<bool> {
         let deleted = self.library.delete(source.kind(), id)?;
         if deleted {
-            self.request_maintenance();
             self.invalidate_history(Some(id));
         }
         Ok(deleted)
@@ -230,7 +227,6 @@ impl<S: LibraryStore> QuickInsertService<S> {
 
     pub fn update_saved_item(&self, id: i64, update: SavedItemUpdate) -> Result<SavedItem> {
         let item = self.library.update_saved_item(id, update)?;
-        self.request_maintenance();
         self.invalidate_history(Some(id));
         Ok(item)
     }
@@ -238,7 +234,6 @@ impl<S: LibraryStore> QuickInsertService<S> {
     pub fn delete_saved_items(&self, ids: &[i64]) -> Result<usize> {
         let deleted = self.library.delete_saved_items(ids)?;
         if deleted != 0 {
-            self.request_maintenance();
             self.invalidate_history(None);
         }
         Ok(deleted)
@@ -249,6 +244,7 @@ impl<S: LibraryStore> QuickInsertService<S> {
     }
 
     pub fn request_maintenance(&self) {
+        // Explicit repair only; storage mutators schedule their own maintenance.
         self.clipboard.request_maintenance();
     }
 

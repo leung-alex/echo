@@ -419,7 +419,8 @@ impl ClipboardService {
     }
 
     pub fn start_maintenance(&self) {
-        self.shared.sink.request_maintenance();
+        // The storage runtime owns startup maintenance when it opens its writer.
+        // Keep this lifecycle hook for callers compiled against the pre-R5 API.
     }
 
     pub fn metrics_snapshot(&self) -> Vec<crate::OperationMetric> {

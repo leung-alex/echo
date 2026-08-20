@@ -2497,9 +2497,6 @@ impl SharedClipboardStore {
     pub fn migrate_legacy(&self, legacy_dir: impl AsRef<Path>) -> Result<MigrationReport> {
         let legacy_dir = legacy_dir.as_ref().to_path_buf();
         let report = self.with_store(move |store| store.migrate_legacy(&legacy_dir))?;
-        if !report.already_migrated {
-            self.request_maintenance_now();
-        }
         Ok(report)
     }
 }
