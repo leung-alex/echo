@@ -66,4 +66,7 @@ drift check.
 
 The removed legacy Snippets concept has no engine module, UI route, command,
 transport type, or SQLite table. Saved Items are the only durable reusable-item
-concept.
+concept. A History save creates a linked snapshot; a user edit marks that
+snapshot independent, so unsaving History removes only an untouched snapshot
+and unlinks an edited item without destroying its content. Saved Item deletion
+is always explicit.

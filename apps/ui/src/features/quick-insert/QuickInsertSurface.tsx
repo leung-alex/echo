@@ -320,6 +320,11 @@ function resultProps(
       void controller.toggleFavorite(item),
     remove: (item: Parameters<typeof controller.remove>[0]) =>
       void controller.remove(item),
+    updateSavedItem: (
+      item: Parameters<typeof controller.updateSavedItem>[0],
+      update: Parameters<typeof controller.updateSavedItem>[1],
+    ) => void controller.updateSavedItem(item, update),
+    deleteSavedItems: (ids: number[]) => void controller.deleteSavedItems(ids),
     getImage: client.getImage,
   };
 }

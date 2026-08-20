@@ -2,6 +2,7 @@ import type {
   PasteSession,
   QuickInsertItem,
   QuickInsertView,
+  SavedItemUpdate,
 } from "../../../shared/ipc/generated";
 
 export type {
@@ -12,6 +13,7 @@ export type {
   QuickInsertOutcome,
   QuickInsertSource,
   QuickInsertView,
+  SavedItemUpdate,
 } from "../../../shared/ipc/generated";
 
 export type StatusKind = "info" | "success" | "error";

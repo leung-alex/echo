@@ -8,12 +8,21 @@ export type ActivationRoute = "history" | "quick_insert" | "settings";
 export interface QuickInsertItem {
   id: number;
   source: QuickInsertSource;
-  title: string | null;
+  name: string | null;
   preview_text: string | null;
   content_type: string;
+  editable_text: string | null;
+  tags: string[];
   source_app: string | null;
   updated_at: number;
-  pinned: boolean;
+  saved_item_id: number | null;
+  is_independent: boolean;
+}
+
+export interface SavedItemUpdate {
+  name: string;
+  tags: string[];
+  editable_text: string | null;
 }
 
 export interface PasteSession {

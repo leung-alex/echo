@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactElement } from "react";
-import { Copy, Star, Trash2 } from "lucide-react";
+import { Copy, Pencil, Star, Trash2 } from "lucide-react";
 
 import {
   getSearchMatchIndices,
@@ -21,6 +21,9 @@ export interface QuickInsertResultsProps {
   execute: (item: QuickInsertItem, intent?: "insert" | "copy") => void;
   toggleFavorite: (item: QuickInsertItem) => void;
   remove: (item: QuickInsertItem) => void;
+  edit?: (item: QuickInsertItem) => void;
+  selectedIds?: Set<number>;
+  toggleSelected?: (id: number) => void;
   getImage: (
     source: QuickInsertItem["source"],
     id: number,
@@ -41,6 +44,9 @@ export function QuickInsertResults({
   execute,
   toggleFavorite,
   remove,
+  edit,
+  selectedIds,
+  toggleSelected,
   getImage,
 }: QuickInsertResultsProps): ReactElement {
   if (items.length === 0) return <EmptyState message={emptyMessage} />;
@@ -59,10 +65,11 @@ export function QuickInsertResults({
       {items.map((item, index) => (
         <div
           id={getResultId(`${item.source}:${item.id}`)}
-          className={`echo-history-row${viewMode === "compact" ? " echo-history-row--compact" : ""}`}
+          className={`echo-history-row${viewMode === "compact" ? " echo-history-row--compact" : ""}${view === "favorites" && selectedIds ? " echo-saved-row" : ""}`}
           key={`${item.source}:${item.id}`}
           role="row"
           aria-selected={index === selected}
+          aria-label={displayText(item)}
           tabIndex={-1}
           onPointerDown={(event) => {
             if (
@@ -75,6 +82,16 @@ export function QuickInsertResults({
           }}
           onClick={() => execute(item)}
         >
+          {view === "favorites" && selectedIds && toggleSelected ? (
+            <input
+              type="checkbox"
+              aria-label={`Select ${item.name ?? "saved item"}`}
+              checked={selectedIds.has(item.id)}
+              onPointerDown={(event) => event.stopPropagation()}
+              onChange={() => toggleSelected(item.id)}
+              onClick={(event) => event.stopPropagation()}
+            />
+          ) : null}
           <span className="echo-type-mark" aria-hidden="true">
             {item.content_type.startsWith("image")
               ? "IMG"
@@ -100,6 +117,7 @@ export function QuickInsertResults({
               copy={() => execute(item, "copy")}
               toggleFavorite={() => toggleFavorite(item)}
               remove={() => remove(item)}
+              edit={view === "favorites" ? () => edit?.(item) : undefined}
             />
           </span>
         </div>
@@ -137,7 +155,7 @@ function EntryContent({
     };
   }, [cacheKey, getImage, isImage, item.id, item.source]);
 
-  const preview = item.preview_text || item.title || "Empty content";
+  const preview = displayText(item);
   return (
     <span className="echo-content-preview" title={preview}>
       {imageUrl ? (
@@ -152,18 +170,28 @@ function EntryContent({
   );
 }
 
+function displayText(item: QuickInsertItem): string {
+  return (
+    (item.source === "favorite"
+      ? item.name || item.preview_text
+      : item.preview_text || item.name) ?? "Empty content"
+  );
+}
+
 function EntryActions({
   item,
   copy,
   toggleFavorite,
   remove,
+  edit,
 }: {
   item: QuickInsertItem;
   copy: () => void;
   toggleFavorite: () => void;
   remove: () => void;
+  edit?: () => void;
 }) {
-  const pinned = item.source === "favorite" || item.pinned;
+  const saved = item.source === "favorite" || item.saved_item_id !== null;
   return (
     <div className="echo-row-actions">
       <button
@@ -180,9 +208,9 @@ function EntryActions({
       </button>
       <button
         type="button"
-        aria-label={pinned ? "Unfavorite" : "Favorite"}
-        aria-pressed={pinned}
-        title={pinned ? "Unfavorite" : "Favorite"}
+        aria-label={saved ? "Unfavorite" : "Favorite"}
+        aria-pressed={saved}
+        title={saved ? "Unfavorite" : "Favorite"}
         onPointerDown={(event) => event.preventDefault()}
         onClick={(event) => {
           event.stopPropagation();
@@ -191,10 +219,24 @@ function EntryActions({
       >
         <Star
           size={17}
-          fill={pinned ? "currentColor" : "none"}
+          fill={saved ? "currentColor" : "none"}
           aria-hidden="true"
         />
       </button>
+      {edit ? (
+        <button
+          type="button"
+          aria-label="Edit saved item"
+          title="Edit saved item"
+          onPointerDown={(event) => event.preventDefault()}
+          onClick={(event) => {
+            event.stopPropagation();
+            edit();
+          }}
+        >
+          <Pencil size={16} aria-hidden="true" />
+        </button>
+      ) : null}
       <button
         className="danger"
         type="button"

@@ -5,12 +5,15 @@ import { initialQuickInsertState, quickInsertReducer } from "./reducer";
 const item = {
   id: 1,
   source: "history" as const,
-  title: null,
+  name: null,
   preview_text: "Hello",
   content_type: "text",
+  editable_text: null,
+  tags: [],
   source_app: "Fixture",
   updated_at: 1,
-  pinned: false,
+  saved_item_id: null,
+  is_independent: false,
   group_name: null,
 };
 

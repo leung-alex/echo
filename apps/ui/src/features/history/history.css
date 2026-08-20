@@ -279,6 +279,15 @@ html[data-page-hidden="true"] .echo-search-field__caret[data-visible="true"] {
   padding-top: 6px;
   padding-bottom: 6px;
 }
+.echo-saved-row {
+  grid-template-columns: 22px 42px minmax(0, 1fr) auto;
+}
+.echo-saved-row.echo-history-row--compact {
+  grid-template-columns: 22px 34px minmax(0, 1fr) auto;
+}
+.echo-saved-row > input {
+  accent-color: var(--echo-accent);
+}
 .echo-type-mark,
 .echo-empty-mark {
   display: inline-grid;
@@ -363,6 +372,56 @@ html[data-page-hidden="true"] .echo-search-field__caret[data-visible="true"] {
 .echo-empty-state small {
   color: var(--echo-text-muted);
 }
+.saved-items-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-bottom: 8px;
+  color: var(--echo-text-muted);
+  font-size: 12px;
+}
+.saved-items-toolbar button,
+.saved-item-editor button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.saved-item-editor {
+  position: fixed;
+  inset: 15% 18%;
+  z-index: 2;
+  padding: 18px;
+  background: var(--echo-panel-raised);
+  border: 1px solid var(--echo-border);
+  border-radius: var(--echo-radius-md);
+  box-shadow: 0 16px 48px #0008;
+}
+.saved-item-editor form {
+  display: grid;
+  gap: 12px;
+}
+.saved-item-editor label {
+  display: grid;
+  gap: 5px;
+  color: var(--echo-text-secondary);
+  font-size: 12px;
+}
+.saved-item-editor input,
+.saved-item-editor textarea {
+  width: 100%;
+  color: var(--echo-text-primary);
+  background: var(--echo-panel);
+  border: 1px solid var(--echo-border);
+  border-radius: var(--echo-radius-sm);
+  padding: 8px;
+  font: inherit;
+}
+.saved-item-editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
 
 .clipboard-footer {
   min-width: 0;
@@ -437,6 +496,12 @@ html[data-page-hidden="true"] .echo-search-field__caret[data-visible="true"] {
   }
   .echo-history-row {
     grid-template-columns: 34px minmax(0, 1fr);
+  }
+  .echo-saved-row {
+    grid-template-columns: 22px 34px minmax(0, 1fr);
+  }
+  .echo-saved-row .echo-history-actions {
+    grid-column: 3;
   }
   .echo-history-actions {
     grid-column: 2;

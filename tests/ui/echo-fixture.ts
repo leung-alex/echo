@@ -5,12 +5,15 @@ export async function installEchoFixture(page: Page): Promise<void> {
     type MockItem = {
       id: number;
       source: "history" | "favorite";
-      title: string | null;
+      name: string | null;
       preview_text: string | null;
       content_type: string;
+      editable_text: string | null;
+      tags: string[];
       source_app: string | null;
       updated_at: number;
-      pinned: boolean;
+      saved_item_id: number | null;
+      is_independent: boolean;
     };
 
     const state = {
@@ -18,22 +21,28 @@ export async function installEchoFixture(page: Page): Promise<void> {
         {
           id: 1,
           source: "history" as const,
-          title: null,
+          name: null,
           preview_text: "Alpha clipboard",
           content_type: "text",
+          editable_text: null,
+          tags: [],
           source_app: "Echo fixture",
           updated_at: Date.now(),
-          pinned: false,
+          saved_item_id: null,
+          is_independent: false,
         },
         {
           id: 2,
           source: "history" as const,
-          title: null,
+          name: null,
           preview_text: "Image clipboard",
           content_type: "image",
+          editable_text: null,
+          tags: [],
           source_app: "Echo fixture",
           updated_at: Date.now(),
-          pinned: false,
+          saved_item_id: null,
+          is_independent: false,
         },
       ] satisfies MockItem[],
       settings: {
@@ -52,7 +61,7 @@ export async function installEchoFixture(page: Page): Promise<void> {
       const source =
         view === "favorites"
           ? state.history
-              .filter((item) => item.pinned)
+              .filter((item) => item.saved_item_id !== null)
               .map((item) => ({ ...item, source: "favorite" as const }))
           : state.history;
       const normalized = query.trim().toLowerCase();
@@ -60,7 +69,7 @@ export async function installEchoFixture(page: Page): Promise<void> {
         .filter(
           (item) =>
             !normalized ||
-            `${item.title ?? ""} ${item.preview_text ?? ""} ${item.source_app ?? ""}`
+            `${item.name ?? ""} ${item.preview_text ?? ""} ${item.source_app ?? ""} ${item.tags.join(" ")}`
               .toLowerCase()
               .includes(normalized),
         )
@@ -89,11 +98,23 @@ export async function installEchoFixture(page: Page): Promise<void> {
             const item = state.history.find(
               (candidate) => candidate.id === args.id,
             );
-            if (item) item.pinned = Boolean(args.pinned);
+            if (item) {
+              item.saved_item_id = Boolean(args.saved) ? item.id : null;
+              item.is_independent = false;
+            }
             return Boolean(item);
           }
           case "quick_insert_delete":
-            state.history = state.history.filter((item) => item.id !== args.id);
+            if (args.source === "favorite") {
+              const item = state.history.find(
+                (candidate) => candidate.id === args.id,
+              );
+              if (item) item.saved_item_id = null;
+            } else {
+              state.history = state.history.filter(
+                (item) => item.id !== args.id,
+              );
+            }
             return true;
           case "quick_insert_execute":
             return args.action === "insert" ? "inserted" : "copied";

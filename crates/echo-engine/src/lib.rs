@@ -24,5 +24,8 @@ pub use quick_insert::{
     QuickInsertAction, QuickInsertError, QuickInsertItem, QuickInsertOutcome, QuickInsertRequest,
     QuickInsertService, QuickInsertSource, QuickInsertView,
 };
-pub use saved_items::SavedItem;
+pub use saved_items::{
+    is_text_like, normalize_name, normalize_tags, SavedItem, SavedItemDraft, SavedItemUpdate,
+    SavedItemValidationError,
+};
 pub use settings::ClipboardSettings;

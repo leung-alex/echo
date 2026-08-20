@@ -57,12 +57,22 @@ impl From<QuickInsertAction> for DomainAction {
 pub struct QuickInsertItem {
     pub id: i64,
     pub source: QuickInsertSource,
-    pub title: Option<String>,
+    pub name: Option<String>,
     pub preview_text: Option<String>,
     pub content_type: String,
+    pub editable_text: Option<String>,
+    pub tags: Vec<String>,
     pub source_app: Option<String>,
     pub updated_at: i64,
-    pub pinned: bool,
+    pub saved_item_id: Option<i64>,
+    pub is_independent: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct SavedItemUpdate {
+    pub name: String,
+    pub tags: Vec<String>,
+    pub editable_text: Option<String>,
 }
 
 impl From<DomainSource> for QuickInsertSource {
@@ -118,12 +128,15 @@ impl From<DomainItem> for QuickInsertItem {
         Self {
             id: item.id,
             source: item.source.into(),
-            title: item.title,
+            name: item.name,
             preview_text: item.preview_text,
             content_type: item.content_type,
+            editable_text: item.editable_text,
+            tags: item.tags,
             source_app: item.source_app,
             updated_at: item.updated_at,
-            pinned: item.pinned,
+            saved_item_id: item.saved_item_id,
+            is_independent: item.is_independent,
         }
     }
 }

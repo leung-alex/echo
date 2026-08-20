@@ -1,7 +1,9 @@
 use std::fmt::Display;
 use std::sync::Arc;
 
-use crate::{ClipboardRepresentation, ClipboardSettings, SavedItem};
+use crate::{
+    ClipboardRepresentation, ClipboardSettings, SavedItem, SavedItemDraft, SavedItemUpdate,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -18,7 +20,7 @@ pub struct HistoryEntry {
     pub searchable_text: Option<String>,
     pub sanitized_html: Option<String>,
     pub fingerprint: String,
-    pub pinned: bool,
+    pub saved_item_id: Option<i64>,
     pub byte_size: u64,
 }
 
@@ -30,11 +32,22 @@ pub trait LibraryStore: Send + Sync {
         query: &str,
         limit: u32,
     ) -> std::result::Result<Vec<HistoryEntry>, Self::Error>;
+    fn entry(&self, id: i64) -> std::result::Result<Option<HistoryEntry>, Self::Error>;
     fn entry_payload(
         &self,
         id: i64,
     ) -> std::result::Result<Vec<ClipboardRepresentation>, Self::Error>;
-    fn set_pinned(&self, entry_id: i64, pinned: bool) -> std::result::Result<bool, Self::Error>;
+    fn save_history_item(
+        &self,
+        draft: SavedItemDraft,
+        payload: Vec<ClipboardRepresentation>,
+    ) -> std::result::Result<SavedItem, Self::Error>;
+    fn unsave_history_item(&self, history_id: i64) -> std::result::Result<bool, Self::Error>;
+    fn update_saved_item(
+        &self,
+        id: i64,
+        update: SavedItemUpdate,
+    ) -> std::result::Result<SavedItem, Self::Error>;
     fn delete_entry(&self, id: i64) -> std::result::Result<bool, Self::Error>;
     fn clear_history(&self) -> std::result::Result<(), Self::Error>;
     fn settings(&self) -> std::result::Result<ClipboardSettings, Self::Error>;
@@ -49,7 +62,7 @@ pub trait LibraryStore: Send + Sync {
         &self,
         id: i64,
     ) -> std::result::Result<Vec<ClipboardRepresentation>, Self::Error>;
-    fn delete_saved_item(&self, id: i64) -> std::result::Result<bool, Self::Error>;
+    fn delete_saved_items(&self, ids: &[i64]) -> std::result::Result<usize, Self::Error>;
 }
 
 #[derive(Debug, Error)]
@@ -70,22 +83,25 @@ pub enum LibraryView {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum LibraryItemKind {
     History,
-    Favorite,
+    SavedItem,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LibraryItem {
     pub id: i64,
     pub kind: LibraryItemKind,
-    pub title: Option<String>,
+    pub name: Option<String>,
     pub preview_text: Option<String>,
     pub content_type: String,
+    pub editable_text: Option<String>,
+    pub tags: Vec<String>,
     pub source_app: Option<String>,
     pub updated_at: i64,
-    pub pinned: bool,
+    pub saved_item_id: Option<i64>,
+    pub is_independent: bool,
 }
 
 #[derive(Clone)]
@@ -116,7 +132,7 @@ impl<S: LibraryStore> Library<S> {
                 .list_saved_items(query, limit)
                 .map_err(storage_error)?
                 .into_iter()
-                .map(favorite_item)
+                .map(saved_item)
                 .collect(),
         };
         Ok(items)
@@ -125,21 +141,59 @@ impl<S: LibraryStore> Library<S> {
     pub fn payload(&self, kind: LibraryItemKind, id: i64) -> Result<Vec<ClipboardRepresentation>> {
         match kind {
             LibraryItemKind::History => self.store.entry_payload(id).map_err(storage_error),
-            LibraryItemKind::Favorite => self.store.saved_item_payload(id).map_err(storage_error),
+            LibraryItemKind::SavedItem => self.store.saved_item_payload(id).map_err(storage_error),
         }
     }
 
-    pub fn set_favorite(&self, history_id: i64, pinned: bool) -> Result<bool> {
+    pub fn save_history_item(&self, history_id: i64) -> Result<SavedItem> {
+        let entry = self.store.entry(history_id).map_err(storage_error)?.ok_or(
+            LibraryError::ItemNotFound {
+                kind: "history",
+                id: history_id,
+            },
+        )?;
+        let payload = self
+            .store
+            .entry_payload(history_id)
+            .map_err(storage_error)?;
         self.store
-            .set_pinned(history_id, pinned)
+            .save_history_item(SavedItemDraft::from_history(&entry), payload)
+            .map_err(storage_error)
+    }
+
+    pub fn unsave_history_item(&self, history_id: i64) -> Result<bool> {
+        self.store
+            .unsave_history_item(history_id)
+            .map_err(storage_error)
+    }
+
+    pub fn set_favorite(&self, history_id: i64, saved: bool) -> Result<bool> {
+        if saved {
+            self.save_history_item(history_id).map(|_| true)
+        } else {
+            self.unsave_history_item(history_id)
+        }
+    }
+
+    pub fn update_saved_item(&self, id: i64, update: SavedItemUpdate) -> Result<SavedItem> {
+        self.store
+            .update_saved_item(id, update)
             .map_err(storage_error)
     }
 
     pub fn delete(&self, kind: LibraryItemKind, id: i64) -> Result<bool> {
         match kind {
             LibraryItemKind::History => self.store.delete_entry(id).map_err(storage_error),
-            LibraryItemKind::Favorite => self.store.delete_saved_item(id).map_err(storage_error),
+            LibraryItemKind::SavedItem => self
+                .store
+                .delete_saved_items(&[id])
+                .map(|count| count == 1)
+                .map_err(storage_error),
         }
+    }
+
+    pub fn delete_saved_items(&self, ids: &[i64]) -> Result<usize> {
+        self.store.delete_saved_items(ids).map_err(storage_error)
     }
 
     pub fn clear_history(&self) -> Result<()> {
@@ -163,24 +217,30 @@ fn history_item(entry: HistoryEntry) -> LibraryItem {
     LibraryItem {
         id: entry.id,
         kind: LibraryItemKind::History,
-        title: None,
+        name: None,
         preview_text: entry.preview_text,
         content_type: entry.content_type,
+        editable_text: None,
+        tags: Vec::new(),
         source_app: entry.source_app,
         updated_at: entry.updated_at,
-        pinned: entry.pinned,
+        saved_item_id: entry.saved_item_id,
+        is_independent: false,
     }
 }
 
-fn favorite_item(item: SavedItem) -> LibraryItem {
+fn saved_item(item: SavedItem) -> LibraryItem {
     LibraryItem {
         id: item.id,
-        kind: LibraryItemKind::Favorite,
-        title: None,
+        kind: LibraryItemKind::SavedItem,
+        name: Some(item.name),
         preview_text: item.preview_text,
         content_type: item.content_type,
+        editable_text: item.editable_text,
+        tags: item.tags,
         source_app: item.source_app,
         updated_at: item.updated_at,
-        pinned: true,
+        saved_item_id: Some(item.id),
+        is_independent: item.is_independent,
     }
 }

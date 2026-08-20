@@ -8,6 +8,7 @@ import type {
   QuickInsertOutcome,
   QuickInsertSource,
   QuickInsertView,
+  SavedItemUpdate,
 } from "../model/types";
 
 export interface QuickInsertClient {
@@ -25,9 +26,11 @@ export interface QuickInsertClient {
   setFavorite(
     source: QuickInsertSource,
     id: number,
-    pinned: boolean,
+    saved: boolean,
   ): Promise<boolean>;
   remove(source: QuickInsertSource, id: number): Promise<boolean>;
+  updateSavedItem(id: number, update: SavedItemUpdate): Promise<void>;
+  deleteSavedItems(ids: number[]): Promise<number>;
   getImage(source: QuickInsertSource, id: number): Promise<string | null>;
 }
 
@@ -37,10 +40,13 @@ export const quickInsertClient: QuickInsertClient = {
   beginSession: () => invoke<PasteSession>("quick_insert_begin_session"),
   execute: (source, id, action) =>
     invoke<QuickInsertOutcome>("quick_insert_execute", { source, id, action }),
-  setFavorite: (source, id, pinned) =>
-    invoke<boolean>("quick_insert_set_favorite", { source, id, pinned }),
+  setFavorite: (source, id, saved) =>
+    invoke<boolean>("quick_insert_set_favorite", { source, id, saved }),
   remove: (source, id) =>
     invoke<boolean>("quick_insert_delete", { source, id }),
+  updateSavedItem: (id, update) =>
+    invoke<void>("saved_item_update", { id, update }),
+  deleteSavedItems: (ids) => invoke<number>("saved_items_delete_many", { ids }),
   getImage: async (source, id) => {
     const preview = await invoke<ImagePreview | null>(
       "quick_insert_get_image",

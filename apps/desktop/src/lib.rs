@@ -5,7 +5,8 @@ use crate::activation::handle_activation;
 use crate::commands::{
     activation_ack, activation_state, history_clear, quick_insert_begin_session,
     quick_insert_delete, quick_insert_execute, quick_insert_get_image, quick_insert_list,
-    quick_insert_set_favorite, settings_get, settings_update,
+    quick_insert_set_favorite, saved_item_delete, saved_item_update, saved_items_delete_many,
+    settings_get, settings_update,
 };
 use crate::composition::{create_main_window, EchoState};
 use crate::events::create_tray;
@@ -31,6 +32,9 @@ pub fn run() {
             quick_insert_set_favorite,
             quick_insert_delete,
             quick_insert_get_image,
+            saved_item_update,
+            saved_item_delete,
+            saved_items_delete_many,
             settings_get,
             settings_update,
             history_clear,

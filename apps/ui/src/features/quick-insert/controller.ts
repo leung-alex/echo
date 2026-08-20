@@ -13,6 +13,7 @@ import type {
   QuickInsertItem,
   QuickInsertState,
   QuickInsertView,
+  SavedItemUpdate,
   StatusKind,
 } from "./model/types";
 import {
@@ -40,6 +41,11 @@ export interface QuickInsertController {
   execute(item: QuickInsertItem, action?: QuickInsertAction): Promise<void>;
   toggleFavorite(item: QuickInsertItem): Promise<void>;
   remove(item: QuickInsertItem): Promise<void>;
+  updateSavedItem(
+    item: QuickInsertItem,
+    update: SavedItemUpdate,
+  ): Promise<void>;
+  deleteSavedItems(ids: number[]): Promise<void>;
   handleEscape(composing: boolean): void;
   report(status: string, kind?: StatusKind): void;
 }
@@ -172,10 +178,11 @@ export function useQuickInsertController({
   const toggleFavorite = useCallback(
     async (item: QuickInsertItem) => {
       try {
-        await client.setFavorite(item.source, item.id, !item.pinned);
+        const saved = item.source === "favorite" || item.saved_item_id !== null;
+        await client.setFavorite(item.source, item.id, !saved);
         await load();
         report(
-          item.pinned ? "Removed from Favorites" : "Added to Favorites",
+          saved ? "Removed from Favorites" : "Added to Favorites",
           "success",
         );
       } catch (error) {
@@ -189,6 +196,33 @@ export function useQuickInsertController({
     async (item: QuickInsertItem) => {
       try {
         await client.remove(item.source, item.id);
+        await load();
+        report("Deleted", "success");
+      } catch (error) {
+        report(errorMessage(error), "error");
+      }
+    },
+    [client, load, report],
+  );
+
+  const updateSavedItem = useCallback(
+    async (item: QuickInsertItem, update: SavedItemUpdate) => {
+      try {
+        await client.updateSavedItem(item.id, update);
+        await load();
+        report("Saved item updated", "success");
+      } catch (error) {
+        report(errorMessage(error), "error");
+      }
+    },
+    [client, load, report],
+  );
+
+  const deleteSavedItems = useCallback(
+    async (ids: number[]) => {
+      if (ids.length === 0) return;
+      try {
+        await client.deleteSavedItems(ids);
         await load();
         report("Deleted", "success");
       } catch (error) {
@@ -232,6 +266,8 @@ export function useQuickInsertController({
     execute,
     toggleFavorite,
     remove,
+    updateSavedItem,
+    deleteSavedItems,
     handleEscape,
     report,
   };

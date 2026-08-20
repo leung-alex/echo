@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use crate::{
     ClipboardError, ClipboardPlatform, ClipboardService, Library, LibraryError, LibraryItem,
     LibraryItemKind, LibraryStore, LibraryView, PasteDelivery, PasteDeliveryFailure, PasteTarget,
+    SavedItem, SavedItemUpdate,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -41,7 +42,7 @@ impl QuickInsertSource {
     fn kind(self) -> LibraryItemKind {
         match self {
             Self::History => LibraryItemKind::History,
-            Self::Favorite => LibraryItemKind::Favorite,
+            Self::Favorite => LibraryItemKind::SavedItem,
         }
     }
 }
@@ -57,12 +58,15 @@ pub enum QuickInsertAction {
 pub struct QuickInsertItem {
     pub id: i64,
     pub source: QuickInsertSource,
-    pub title: Option<String>,
+    pub name: Option<String>,
     pub preview_text: Option<String>,
     pub content_type: String,
+    pub editable_text: Option<String>,
+    pub tags: Vec<String>,
     pub source_app: Option<String>,
     pub updated_at: i64,
-    pub pinned: bool,
+    pub saved_item_id: Option<i64>,
+    pub is_independent: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -170,11 +174,11 @@ impl<S: LibraryStore> QuickInsertService<S> {
         }
     }
 
-    pub fn set_favorite(&self, source: QuickInsertSource, id: i64, pinned: bool) -> Result<bool> {
+    pub fn set_favorite(&self, source: QuickInsertSource, id: i64, saved: bool) -> Result<bool> {
         match source {
-            QuickInsertSource::History => Ok(self.library.set_favorite(id, pinned)?),
-            QuickInsertSource::Favorite if !pinned => {
-                Ok(self.library.delete(LibraryItemKind::Favorite, id)?)
+            QuickInsertSource::History => Ok(self.library.set_favorite(id, saved)?),
+            QuickInsertSource::Favorite if !saved => {
+                Ok(self.library.delete(LibraryItemKind::SavedItem, id)?)
             }
             QuickInsertSource::Favorite => Ok(true),
         }
@@ -182,6 +186,14 @@ impl<S: LibraryStore> QuickInsertService<S> {
 
     pub fn delete(&self, source: QuickInsertSource, id: i64) -> Result<bool> {
         Ok(self.library.delete(source.kind(), id)?)
+    }
+
+    pub fn update_saved_item(&self, id: i64, update: SavedItemUpdate) -> Result<SavedItem> {
+        Ok(self.library.update_saved_item(id, update)?)
+    }
+
+    pub fn delete_saved_items(&self, ids: &[i64]) -> Result<usize> {
+        Ok(self.library.delete_saved_items(ids)?)
     }
 
     pub fn library(&self) -> &Library<S> {
@@ -194,13 +206,16 @@ fn to_item(item: LibraryItem) -> QuickInsertItem {
         id: item.id,
         source: match item.kind {
             LibraryItemKind::History => QuickInsertSource::History,
-            LibraryItemKind::Favorite => QuickInsertSource::Favorite,
+            LibraryItemKind::SavedItem => QuickInsertSource::Favorite,
         },
-        title: item.title,
+        name: item.name,
         preview_text: item.preview_text,
         content_type: item.content_type,
+        editable_text: item.editable_text,
+        tags: item.tags,
         source_app: item.source_app,
         updated_at: item.updated_at,
-        pinned: item.pinned,
+        saved_item_id: item.saved_item_id,
+        is_independent: item.is_independent,
     }
 }
