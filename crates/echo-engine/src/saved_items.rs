@@ -128,7 +128,14 @@ pub fn is_text_like(content_type: &str) -> bool {
 fn generated_name(entry: &HistoryEntry, body: Option<&str>) -> String {
     body.or(entry.preview_text.as_deref())
         .and_then(first_non_empty_line)
-        .map(|line| truncate_name(line, 120))
+        .map(|line| {
+            let line = if entry.content_type == "files" {
+                final_file_name(line).unwrap_or(line)
+            } else {
+                line
+            };
+            truncate_name(line, 120)
+        })
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| match entry.content_type.as_str() {
             "image" => entry
@@ -147,10 +154,34 @@ fn first_non_empty_line(value: &str) -> Option<&str> {
     value.lines().map(str::trim).find(|line| !line.is_empty())
 }
 
+fn final_file_name(value: &str) -> Option<&str> {
+    let trimmed = value.trim_end_matches(|character| character == '\\' || character == '/');
+    let name = trimmed
+        .rsplit(|character| character == '\\' || character == '/')
+        .next()
+        .unwrap_or(trimmed);
+    (!name.is_empty()).then_some(name)
+}
+
 fn truncate_name(value: &str, max_chars: usize) -> String {
     value.chars().take(max_chars).collect()
 }
 
 fn casefold_key(value: &str) -> String {
     value.to_lowercase()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::final_file_name;
+
+    #[test]
+    fn final_file_name_handles_windows_paths_and_plain_names() {
+        assert_eq!(
+            final_file_name(r"C:\Users\Verifier\report.txt"),
+            Some("report.txt")
+        );
+        assert_eq!(final_file_name("report.txt"), Some("report.txt"));
+        assert_eq!(final_file_name("/tmp/report.txt"), Some("report.txt"));
+    }
 }

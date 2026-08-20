@@ -677,6 +677,10 @@ func (a *app) checkManifestIndependence() error {
 			return walkErr
 		}
 		if entry.IsDir() {
+			if strings.EqualFold(relativeToRoot(a.root, path), "tests/verification") {
+				// Verification harnesses are standalone workspaces and intentionally depend on repo crates by path.
+				return filepath.SkipDir
+			}
 			name := entry.Name()
 			if name == ".git" || name == "target" || name == "node_modules" || name == ".local" || name == "dist" {
 				return filepath.SkipDir
