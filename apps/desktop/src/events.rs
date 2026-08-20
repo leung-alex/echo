@@ -3,7 +3,7 @@ use tauri::{
     tray::TrayIconBuilder,
 };
 
-use crate::activation::show_main;
+use crate::{activation::show_main, transport::ActivationRoute};
 
 pub(crate) fn create_tray(app: &tauri::AppHandle) -> Result<(), String> {
     let open = MenuItemBuilder::with_id("open", "Open Echo")
@@ -21,7 +21,7 @@ pub(crate) fn create_tray(app: &tauri::AppHandle) -> Result<(), String> {
         .tooltip("Echo Recall")
         .on_menu_event(|app, event| match event.id().as_ref() {
             "open" => {
-                let _ = show_main(app, "history", None, "tray-open");
+                let _ = show_main(app, ActivationRoute::History, None, "tray-open");
             }
             "quit" => app.exit(0),
             _ => {}

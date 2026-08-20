@@ -3,6 +3,7 @@ export type QuickInsertView = "history" | "favorites";
 export type QuickInsertSource = "history" | "favorite";
 export type QuickInsertAction = "copy" | "insert";
 export type QuickInsertOutcome = "copied" | "inserted" | "clipboard_staged";
+export type ActivationRoute = "history" | "quick_insert" | "settings";
 
 export interface QuickInsertItem {
   id: number;
@@ -34,7 +35,7 @@ export interface ClipboardSettings {
 }
 
 export interface ActivationPayload {
-  route: "history" | "quick_insert" | "settings";
+  route: ActivationRoute;
   query?: string | null;
-  request_id?: string;
+  request_id: string;
 }

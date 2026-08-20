@@ -1,19 +1,16 @@
 use echo_activation::{quick_insert_payload, ActivationEnvelope};
-use serde_json::json;
 use tauri::{Emitter, Manager};
 
-use crate::composition::{create_main_window, EchoState};
+use crate::{
+    composition::{create_main_window, EchoState},
+    transport::{ActivationPayload, ActivationRoute},
+};
 
-#[derive(Debug, Clone, serde::Serialize)]
-pub(crate) struct PendingActivation {
-    pub request_id: String,
-    pub route: String,
-    pub query: Option<String>,
-}
+pub(crate) type PendingActivation = ActivationPayload;
 
 pub(crate) fn show_main(
     app: &tauri::AppHandle,
-    route: &str,
+    route: ActivationRoute,
     query: Option<&str>,
     request_id: &str,
 ) -> Result<(), String> {
@@ -26,7 +23,11 @@ pub(crate) fn show_main(
     window
         .emit(
             "echo-activation",
-            json!({"route": route, "query": query, "request_id": request_id}),
+            ActivationPayload {
+                route,
+                query: query.map(str::to_owned),
+                request_id: request_id.to_owned(),
+            },
         )
         .map_err(|error| error.to_string())
 }
@@ -45,10 +46,10 @@ pub(crate) fn handle_activation(
                 .lock()
                 .unwrap_or_else(|error| error.into_inner()) = Some(PendingActivation {
                 request_id: envelope.request_id.clone(),
-                route: "history".to_owned(),
+                route: ActivationRoute::History,
                 query: None,
             });
-            show_main(app, "history", None, &envelope.request_id)
+            show_main(app, ActivationRoute::History, None, &envelope.request_id)
         }
         "echo.quick_insert" => {
             let payload = quick_insert_payload(&envelope).map_err(|error| error.to_string())?;
@@ -58,12 +59,12 @@ pub(crate) fn handle_activation(
                 .lock()
                 .unwrap_or_else(|error| error.into_inner()) = Some(PendingActivation {
                 request_id: envelope.request_id.clone(),
-                route: "quick_insert".to_owned(),
+                route: ActivationRoute::QuickInsert,
                 query: payload.query.clone(),
             });
             show_main(
                 app,
-                "quick_insert",
+                ActivationRoute::QuickInsert,
                 payload.query.as_deref(),
                 &envelope.request_id,
             )
@@ -74,10 +75,10 @@ pub(crate) fn handle_activation(
                 .lock()
                 .unwrap_or_else(|error| error.into_inner()) = Some(PendingActivation {
                 request_id: envelope.request_id.clone(),
-                route: "settings".to_owned(),
+                route: ActivationRoute::Settings,
                 query: None,
             });
-            show_main(app, "settings", None, &envelope.request_id)
+            show_main(app, ActivationRoute::Settings, None, &envelope.request_id)
         }
         action => Err(format!("unsupported activation action {action}")),
     }

@@ -92,6 +92,21 @@ impl From<DomainOutcome> for QuickInsertOutcome {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActivationRoute {
+    History,
+    QuickInsert,
+    Settings,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ActivationPayload {
+    pub route: ActivationRoute,
+    pub query: Option<String>,
+    pub request_id: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PasteSession {
