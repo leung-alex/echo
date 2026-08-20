@@ -45,7 +45,7 @@ export interface QuickInsertController {
     item: QuickInsertItem,
     update: SavedItemUpdate,
   ): Promise<void>;
-  deleteSavedItems(ids: number[]): Promise<void>;
+  deleteSavedItems(ids: number[]): Promise<boolean>;
   handleEscape(composing: boolean): void;
   report(status: string, kind?: StatusKind): void;
 }
@@ -219,14 +219,16 @@ export function useQuickInsertController({
   );
 
   const deleteSavedItems = useCallback(
-    async (ids: number[]) => {
-      if (ids.length === 0) return;
+    async (ids: number[]): Promise<boolean> => {
+      if (ids.length === 0) return false;
       try {
         await client.deleteSavedItems(ids);
         await load();
         report("Deleted", "success");
+        return true;
       } catch (error) {
         report(errorMessage(error), "error");
+        return false;
       }
     },
     [client, load, report],

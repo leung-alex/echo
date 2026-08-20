@@ -324,7 +324,7 @@ function resultProps(
       item: Parameters<typeof controller.updateSavedItem>[0],
       update: Parameters<typeof controller.updateSavedItem>[1],
     ) => void controller.updateSavedItem(item, update),
-    deleteSavedItems: (ids: number[]) => void controller.deleteSavedItems(ids),
+    deleteSavedItems: (ids: number[]) => controller.deleteSavedItems(ids),
     getImage: client.getImage,
   };
 }

@@ -18,7 +18,7 @@ import {
 
 export interface SavedItemsResultsProps extends SharedEntryResultsProps {
   updateSavedItem: (item: QuickInsertItem, update: SavedItemUpdate) => void;
-  deleteSavedItems: (ids: number[]) => void;
+  deleteSavedItems: (ids: number[]) => Promise<boolean>;
 }
 
 export function SavedItemsResults({
@@ -57,8 +57,9 @@ export function SavedItemsResults({
             className="danger"
             type="button"
             onClick={() => {
-              deleteSavedItems(selected);
-              setSelectedIds(new Set());
+              void deleteSavedItems(selected).then((deleted) => {
+                if (deleted) setSelectedIds(new Set());
+              });
             }}
           >
             <Trash2 size={15} aria-hidden="true" />
