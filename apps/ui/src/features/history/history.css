@@ -545,14 +545,32 @@ html[data-page-hidden="true"] .echo-search-field__caret[data-visible="true"] {
   top: 8px;
   right: 8px;
   z-index: 1;
+  pointer-events: none;
 }
 
 .echo-image-actions .echo-row-actions {
+  visibility: hidden;
   padding: 4px;
   color: #fff;
-  background: rgb(5 7 9 / 54%);
+  background: rgb(5 7 9);
   border: 1px solid rgb(255 255 255 / 16%);
   border-radius: 9px;
+  transition: none;
+}
+
+.echo-entry-row:hover .echo-image-actions,
+.echo-entry-row:focus-within .echo-image-actions,
+.echo-entry-row[aria-selected="true"] .echo-image-actions {
+  pointer-events: auto;
+}
+
+.echo-entry-row:hover .echo-image-actions .echo-row-actions,
+.echo-entry-row:focus-within .echo-image-actions .echo-row-actions,
+.echo-entry-row[aria-selected="true"] .echo-image-actions .echo-row-actions {
+  visibility: visible;
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(0);
 }
 
 .echo-image-actions .echo-direct-action {

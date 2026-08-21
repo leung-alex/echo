@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 import { installEchoFixture } from "./echo-fixture";
+import { readInlineImageActionState } from "./inline-image-actions";
 
 test.beforeEach(async ({ page }) => {
   await installEchoFixture(page);
@@ -95,6 +96,55 @@ test("applies typed theme capability events without inventing initial Mica state
   );
   await expect(root).toHaveAttribute("data-theme", "light");
   await expect(root).toHaveAttribute("data-mica", "native");
+});
+
+test("keeps inline image actions non-interactive until fully visible", async ({
+  page,
+}) => {
+  const row = page.getByRole("row").nth(1);
+  const rail = row.locator(".echo-image-actions .echo-row-actions");
+  const favoriteAction = rail.locator(
+    'button[data-testid="history-favorite-action"]',
+  );
+
+  await page.mouse.move(0, 0);
+  await expect(rail).toHaveCSS("visibility", "hidden");
+  await expect(rail).toHaveCSS("opacity", "0");
+  await expect(rail).toHaveCSS("pointer-events", "none");
+  await expect(favoriteAction).toHaveAttribute("tabindex", "-1");
+
+  await row.hover();
+  await expect(rail).toHaveCSS("visibility", "visible");
+  await expect(rail).toHaveCSS("opacity", "1");
+  await expect(rail).toHaveCSS("pointer-events", "auto");
+  let state = await readInlineImageActionState(rail);
+  expect(state.actionCount).toBeGreaterThan(0);
+  expect(state.transitionProperty).toBe("none");
+  expect(state.minContrast).toBeGreaterThanOrEqual(4.5);
+
+  await row.focus();
+  await expect(row).toBeFocused();
+  await expect(favoriteAction).toHaveAttribute("tabindex", "0");
+  await page.keyboard.press("Tab");
+  await expect(favoriteAction).toBeFocused();
+  state = await readInlineImageActionState(rail);
+  expect(state.visibility).toBe("visible");
+  expect(state.opacity).toBe("1");
+  expect(state.pointerEvents).toBe("auto");
+  expect(state.minContrast).toBeGreaterThanOrEqual(4.5);
+
+  await favoriteAction.hover();
+  state = await readInlineImageActionState(rail);
+  expect(state.minContrast).toBeGreaterThanOrEqual(4.5);
+
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await row.hover();
+  await expect(rail).toHaveCSS("transition-property", "none");
+  state = await readInlineImageActionState(rail);
+  expect(state.visibility).toBe("visible");
+  expect(state.opacity).toBe("1");
+  expect(state.pointerEvents).toBe("auto");
+  expect(state.minContrast).toBeGreaterThanOrEqual(4.5);
 });
 
 test("renders History batch selection affordances without row insertion", async ({

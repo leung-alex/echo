@@ -1,7 +1,8 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import { mkdirSync, writeFileSync } from "node:fs";
 
 import { installEchoFixture } from "./echo-fixture";
+import { readInlineImageActionState } from "./inline-image-actions";
 
 const evidenceRoot =
   process.env.ECHO_UI_EVIDENCE_ROOT ?? "test-results/p08-visual";
@@ -23,6 +24,17 @@ async function expectHealthySurface(page: Page, keyText = "Alpha clipboard") {
   const renderedText = await page.locator("body").innerText();
   expect(renderedText.trim()).not.toBe("");
   await expect(page.getByText(keyText)).toBeVisible();
+}
+
+async function expectInlineImageActionsReady(row: Locator): Promise<void> {
+  const rail = row.locator(".echo-image-actions .echo-row-actions");
+  await expect(rail).toHaveCSS("visibility", "visible");
+  await expect(rail).toHaveCSS("opacity", "1");
+  await expect(rail).toHaveCSS("pointer-events", "auto");
+  const state = await readInlineImageActionState(rail);
+  expect(state.actionCount).toBeGreaterThan(0);
+  expect(state.transitionProperty).toBe("none");
+  expect(state.minContrast).toBeGreaterThanOrEqual(4.5);
 }
 
 test.beforeEach(async ({ page }) => {
@@ -93,7 +105,9 @@ test("captures History default, hover, selected, batch, image, and search states
     fullPage: true,
   });
 
-  await page.getByRole("row").nth(1).hover();
+  const imageRow = page.getByRole("row").nth(1);
+  await imageRow.hover();
+  await expectInlineImageActionsReady(imageRow);
   await page.screenshot({
     path: `${evidenceRoot}/history-hover-image-light-1280x720.png`,
     fullPage: true,
@@ -117,6 +131,8 @@ test("captures History default, hover, selected, batch, image, and search states
   await page
     .getByRole("combobox", { name: "Search clipboard history" })
     .fill("Alpha");
+  await imageRow.hover();
+  await expectInlineImageActionsReady(imageRow);
   await page.screenshot({
     path: `${evidenceRoot}/history-search-highlight-light-1280x720.png`,
     fullPage: true,
