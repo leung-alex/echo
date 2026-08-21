@@ -12,7 +12,7 @@ use echo_engine::{
     is_text_like, CapturePolicy, CaptureSettings, CapturedCapture, ClipboardRepresentation,
     ClipboardSink, ContentIdentity, FavoriteDraft, FavoriteUpdate, LibraryPage, LibraryStore,
     NormalizedCapture, OperationMetric, OperationMetrics, PageCursor, PreviewAsset,
-    PreviewDisposition, RecordResult, RepresentationIdentity, SavedItemDraft, Thumbnail,
+    PreviewDisposition, RecordResult, RepresentationIdentity, SavedItemDraft, ThemeMode, Thumbnail,
     DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, THUMBNAIL_MIME_TYPE,
 };
 use rusqlite::types::Value;
@@ -29,6 +29,8 @@ const DEFAULT_MAX_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
 const DEFAULT_MAX_ITEM_BYTES: u64 = 32 * 1024 * 1024;
 const SEARCH_FTS_SCHEMA_KEY: &str = "search_fts_schema";
 const CURRENT_SCHEMA_VERSION: i32 = 5;
+const THEME_COLUMN_DEFINITION: &str =
+    "TEXT NOT NULL DEFAULT 'system' CHECK (theme IN ('system', 'light', 'dark'))";
 
 #[derive(Debug, Error)]
 pub enum StorageError {
@@ -191,6 +193,10 @@ impl ClipboardStore {
             self.connection
                 .execute_batch(&format!("PRAGMA user_version = {next};"))?;
         }
+        // Schema v5 was introduced before the theme field was integrated into
+        // the shared settings contract. Keep already-v5 databases on the same
+        // settings table instead of creating a second persistence path.
+        self.ensure_column("clipboard_settings", "theme", THEME_COLUMN_DEFINITION)?;
         Ok(())
     }
 
@@ -554,6 +560,7 @@ impl ClipboardStore {
         let blobs_dir = self.blobs_dir.clone();
         let tx = self.connection.transaction()?;
         Self::ensure_column_tx(&tx, "clipboard_entries", "history_pinned_at", "INTEGER")?;
+        Self::ensure_column_tx(&tx, "clipboard_settings", "theme", THEME_COLUMN_DEFINITION)?;
         Self::ensure_column_tx(&tx, "saved_items", "icon_key", "TEXT")?;
         Self::ensure_column_tx(
             &tx,
@@ -624,7 +631,9 @@ impl ClipboardStore {
                 store_window_titles INTEGER NOT NULL DEFAULT 0,
                 max_entries INTEGER NOT NULL DEFAULT 5000,
                 max_total_bytes INTEGER NOT NULL DEFAULT 536870912,
-                max_item_bytes INTEGER NOT NULL DEFAULT 33554432
+                max_item_bytes INTEGER NOT NULL DEFAULT 33554432,
+                theme TEXT NOT NULL DEFAULT 'system'
+                    CHECK (theme IN ('system', 'light', 'dark'))
             );
             INSERT OR IGNORE INTO clipboard_settings (id) VALUES (1);
             CREATE TABLE IF NOT EXISTS clipboard_entries (
@@ -784,39 +793,57 @@ impl ClipboardStore {
     }
 
     pub fn settings(&self) -> Result<ClipboardSettings> {
-        self.connection
+        let (
+            history_enabled,
+            record_sensitive,
+            store_window_titles,
+            max_entries,
+            max_total_bytes,
+            max_item_bytes,
+            theme_value,
+        ): (bool, bool, bool, i64, i64, i64, String) = self
+            .connection
             .query_row(
                 "SELECT history_enabled, record_sensitive, store_window_titles,
-                        max_entries, max_total_bytes, max_item_bytes
+                        max_entries, max_total_bytes, max_item_bytes, theme
                  FROM clipboard_settings WHERE id = 1",
                 [],
                 |row| {
-                    Ok(ClipboardSettings {
-                        history_enabled: row.get::<_, i64>(0)? != 0,
-                        record_sensitive: row.get::<_, i64>(1)? != 0,
-                        store_window_titles: row.get::<_, i64>(2)? != 0,
-                        max_entries: row
-                            .get::<_, i64>(3)?
-                            .try_into()
-                            .unwrap_or(DEFAULT_MAX_ENTRIES),
-                        max_total_bytes: row
-                            .get::<_, i64>(4)?
-                            .try_into()
-                            .unwrap_or(DEFAULT_MAX_TOTAL_BYTES),
-                        max_item_bytes: row
-                            .get::<_, i64>(5)?
-                            .try_into()
-                            .unwrap_or(DEFAULT_MAX_ITEM_BYTES),
-                    })
+                    Ok((
+                        row.get::<_, i64>(0)? != 0,
+                        row.get::<_, i64>(1)? != 0,
+                        row.get::<_, i64>(2)? != 0,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                    ))
                 },
             )
-            .map_err(StorageError::from)
+            .map_err(StorageError::from)?;
+        let theme = ThemeMode::parse(&theme_value).ok_or_else(|| {
+            StorageError::Invalid(format!(
+                "clipboard settings contain invalid theme mode {theme_value:?}"
+            ))
+        })?;
+        Ok(ClipboardSettings {
+            history_enabled,
+            record_sensitive,
+            store_window_titles,
+            max_entries: max_entries.try_into().unwrap_or(DEFAULT_MAX_ENTRIES),
+            max_total_bytes: max_total_bytes
+                .try_into()
+                .unwrap_or(DEFAULT_MAX_TOTAL_BYTES),
+            max_item_bytes: max_item_bytes.try_into().unwrap_or(DEFAULT_MAX_ITEM_BYTES),
+            theme,
+        })
     }
 
     pub fn update_settings(&mut self, settings: &ClipboardSettings) -> Result<()> {
         self.connection.execute(
             "UPDATE clipboard_settings SET history_enabled = ?, record_sensitive = ?,
-             store_window_titles = ?, max_entries = ?, max_total_bytes = ?, max_item_bytes = ?
+             store_window_titles = ?, max_entries = ?, max_total_bytes = ?, max_item_bytes = ?,
+             theme = ?
              WHERE id = 1",
             params![
                 settings.history_enabled as i64,
@@ -825,6 +852,7 @@ impl ClipboardStore {
                 i64::from(settings.max_entries),
                 i64::try_from(settings.max_total_bytes).unwrap_or(i64::MAX),
                 i64::try_from(settings.max_item_bytes).unwrap_or(i64::MAX),
+                settings.theme.as_str(),
             ],
         )?;
         Ok(())
@@ -3872,6 +3900,88 @@ mod tests {
     }
 
     #[test]
+    fn theme_setting_defaults_round_trips_and_reopens_from_clipboard_settings() {
+        let root = TempDir::new().unwrap();
+        let mut store = ClipboardStore::open(root.path()).unwrap();
+        assert_eq!(store.settings().unwrap().theme, ThemeMode::System);
+        assert_eq!(
+            store
+                .connection
+                .query_row(
+                    "SELECT theme FROM clipboard_settings WHERE id = 1",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "system"
+        );
+
+        for mode in [ThemeMode::Light, ThemeMode::Dark, ThemeMode::System] {
+            let mut settings = store.settings().unwrap();
+            settings.theme = mode;
+            store.update_settings(&settings).unwrap();
+            assert_eq!(store.settings().unwrap().theme, mode);
+        }
+
+        drop(store);
+        let reopened = ClipboardStore::open(root.path()).unwrap();
+        assert_eq!(reopened.settings().unwrap().theme, ThemeMode::System);
+    }
+
+    #[test]
+    fn schema_v5_settings_backfill_adds_theme_without_bumping_version() {
+        let root = TempDir::new().unwrap();
+        let database = root.path().join("echo.sqlite3");
+        {
+            let store = ClipboardStore::open(root.path()).unwrap();
+            assert_eq!(
+                store
+                    .connection
+                    .query_row("PRAGMA user_version", [], |row| row.get::<_, i32>(0))
+                    .unwrap(),
+                CURRENT_SCHEMA_VERSION
+            );
+        }
+
+        let connection = Connection::open(&database).unwrap();
+        connection
+            .execute_batch(
+                "PRAGMA foreign_keys = OFF;
+                 ALTER TABLE clipboard_settings RENAME TO clipboard_settings_with_theme;
+                 CREATE TABLE clipboard_settings (
+                     id INTEGER PRIMARY KEY CHECK (id = 1),
+                     history_enabled INTEGER NOT NULL DEFAULT 1,
+                     record_sensitive INTEGER NOT NULL DEFAULT 0,
+                     store_window_titles INTEGER NOT NULL DEFAULT 0,
+                     max_entries INTEGER NOT NULL DEFAULT 5000,
+                     max_total_bytes INTEGER NOT NULL DEFAULT 536870912,
+                     max_item_bytes INTEGER NOT NULL DEFAULT 33554432
+                 );
+                 INSERT INTO clipboard_settings
+                     (id, history_enabled, record_sensitive, store_window_titles,
+                      max_entries, max_total_bytes, max_item_bytes)
+                 SELECT id, history_enabled, record_sensitive, store_window_titles,
+                        max_entries, max_total_bytes, max_item_bytes
+                 FROM clipboard_settings_with_theme;
+                 DROP TABLE clipboard_settings_with_theme;
+                 PRAGMA user_version = 5;
+                 PRAGMA foreign_keys = ON;",
+            )
+            .unwrap();
+        drop(connection);
+
+        let reopened = ClipboardStore::open(root.path()).unwrap();
+        assert_eq!(reopened.settings().unwrap().theme, ThemeMode::System);
+        assert_eq!(
+            reopened
+                .connection
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i32>(0))
+                .unwrap(),
+            CURRENT_SCHEMA_VERSION
+        );
+    }
+
+    #[test]
     fn migration_failure_keeps_linked_history_and_schema_version() {
         let root = TempDir::new().unwrap();
         let database = root.path().join("echo.sqlite3");
@@ -4188,6 +4298,18 @@ mod tests {
                 .query_row("PRAGMA user_version", [], |row| row.get(0))
                 .unwrap();
             assert_eq!(version, CURRENT_SCHEMA_VERSION);
+            assert_eq!(store.settings().unwrap().theme, ThemeMode::System);
+            assert_eq!(
+                store
+                    .connection
+                    .query_row(
+                        "SELECT theme FROM clipboard_settings WHERE id = 1",
+                        [],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .unwrap(),
+                "system"
+            );
             assert_eq!(store.list_entries("", 20).unwrap().len(), entries);
             let saved = store.list_saved_items("", 20).unwrap();
             assert_eq!(saved.len(), favorites);
@@ -4200,6 +4322,7 @@ mod tests {
                 .query_row("PRAGMA user_version", [], |row| row.get(0))
                 .unwrap();
             assert_eq!(reopened_version, CURRENT_SCHEMA_VERSION);
+            assert_eq!(reopened.settings().unwrap().theme, ThemeMode::System);
             assert_eq!(reopened.list_entries("", 20).unwrap().len(), entries);
             let reopened_saved = reopened.list_saved_items("", 20).unwrap();
             assert_eq!(reopened_saved.len(), favorites);

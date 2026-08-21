@@ -322,3 +322,153 @@ fn saved_item(item: SavedItem) -> LibraryItem {
         thumbnail: item.thumbnail,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ThemeMode;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct SettingsStore(Mutex<ClipboardSettings>);
+
+    fn unsupported<T>() -> std::result::Result<T, String> {
+        Err("unsupported test operation".to_owned())
+    }
+
+    impl LibraryStore for SettingsStore {
+        type Error = String;
+
+        fn list_entries(
+            &self,
+            _query: &str,
+            _limit: u32,
+            _cursor: Option<PageCursor>,
+        ) -> std::result::Result<LibraryPage<HistoryEntry>, Self::Error> {
+            unsupported()
+        }
+
+        fn entry(&self, _id: i64) -> std::result::Result<Option<HistoryEntry>, Self::Error> {
+            unsupported()
+        }
+
+        fn entry_payload(
+            &self,
+            _id: i64,
+        ) -> std::result::Result<Vec<ClipboardRepresentation>, Self::Error> {
+            unsupported()
+        }
+
+        fn move_history_to_favorite(
+            &self,
+            _history_id: i64,
+        ) -> std::result::Result<SavedItem, Self::Error> {
+            unsupported()
+        }
+
+        fn move_history_many_to_favorites(
+            &self,
+            _history_ids: &[i64],
+        ) -> std::result::Result<Vec<SavedItem>, Self::Error> {
+            unsupported()
+        }
+
+        fn create_favorite(
+            &self,
+            _draft: FavoriteDraft,
+        ) -> std::result::Result<SavedItem, Self::Error> {
+            unsupported()
+        }
+
+        fn update_favorite(
+            &self,
+            _id: i64,
+            _update: FavoriteUpdate,
+        ) -> std::result::Result<SavedItem, Self::Error> {
+            unsupported()
+        }
+
+        fn pin_history(&self, _history_id: i64) -> std::result::Result<bool, Self::Error> {
+            unsupported()
+        }
+
+        fn unpin_history(&self, _history_id: i64) -> std::result::Result<bool, Self::Error> {
+            unsupported()
+        }
+
+        fn pin_history_many(
+            &self,
+            _history_ids: &[i64],
+        ) -> std::result::Result<usize, Self::Error> {
+            unsupported()
+        }
+
+        fn delete_history_many(
+            &self,
+            _history_ids: &[i64],
+        ) -> std::result::Result<usize, Self::Error> {
+            unsupported()
+        }
+
+        fn delete_entry(&self, _id: i64) -> std::result::Result<bool, Self::Error> {
+            unsupported()
+        }
+
+        fn clear_unpinned_history(&self) -> std::result::Result<usize, Self::Error> {
+            unsupported()
+        }
+
+        fn reorder_favorites(&self, _ordered_ids: &[i64]) -> std::result::Result<(), Self::Error> {
+            unsupported()
+        }
+
+        fn delete_favorite(&self, _id: i64) -> std::result::Result<bool, Self::Error> {
+            unsupported()
+        }
+
+        fn settings(&self) -> std::result::Result<ClipboardSettings, Self::Error> {
+            Ok(self.0.lock().unwrap().clone())
+        }
+
+        fn update_settings(
+            &self,
+            settings: &ClipboardSettings,
+        ) -> std::result::Result<(), Self::Error> {
+            *self.0.lock().unwrap() = settings.clone();
+            Ok(())
+        }
+
+        fn list_saved_items(
+            &self,
+            _query: &str,
+            _limit: u32,
+            _cursor: Option<PageCursor>,
+        ) -> std::result::Result<LibraryPage<SavedItem>, Self::Error> {
+            unsupported()
+        }
+
+        fn saved_item_payload(
+            &self,
+            _id: i64,
+        ) -> std::result::Result<Vec<ClipboardRepresentation>, Self::Error> {
+            unsupported()
+        }
+
+        fn delete_saved_items(&self, _ids: &[i64]) -> std::result::Result<usize, Self::Error> {
+            unsupported()
+        }
+    }
+
+    #[test]
+    fn library_settings_interface_round_trips_theme() {
+        let store = Arc::new(SettingsStore::default());
+        let library = Library::new(store);
+        assert_eq!(library.settings().unwrap().theme, ThemeMode::System);
+
+        let mut settings = ClipboardSettings::default();
+        settings.theme = ThemeMode::Dark;
+        library.update_settings(&settings).unwrap();
+
+        assert_eq!(library.settings().unwrap().theme, ThemeMode::Dark);
+    }
+}
