@@ -68,6 +68,7 @@ test.describe("Echo Quick Insert acceptance", () => {
     let deadTarget: EchoTargetFixture | undefined;
     try {
       await runClipboardFixture("copy-text", content);
+      const itemId = await waitForHistoryId(main, content);
       await target.command("focus-primary");
       await expect.poll(() => target.command("primary-focused")).toBe("true");
       await target.allowEchoForeground();
@@ -80,6 +81,39 @@ test.describe("Echo Quick Insert acceptance", () => {
       await expect
         .poll(() => target.command("read-primary"))
         .toBe(`a${content}c`);
+
+      await target.focusReadOnly();
+      await target.allowEchoForeground();
+      await expect(
+        invoke(main, "quick_insert_execute", {
+          source: "history",
+          id: itemId,
+          action: "insert",
+        }),
+      ).rejects.toThrow("no safe paste target");
+      await expect.poll(() => target.readReadOnly()).toBe("readonly");
+
+      await target.allowEchoForeground();
+      await sendActivation("echo.quick_insert", { query: content });
+      surface = await waitForMainPage(browser);
+      await surface.getByRole("row", { name: new RegExp(content) }).click();
+      await expect(surface.getByRole("alert")).toContainText(
+        "no safe paste target",
+      );
+      await expect.poll(() => target.readReadOnly()).toBe("readonly");
+
+      await hideEcho(surface);
+      await target.focusUnknown();
+      await target.allowEchoForeground();
+      await sendActivation("echo.quick_insert", { query: content });
+      surface = await waitForMainPage(browser);
+      await surface.getByRole("row", { name: new RegExp(content) }).click();
+      await expect(surface.getByRole("alert")).toContainText(
+        "no safe paste target",
+      );
+      await expect
+        .poll(() => target.readUnknown())
+        .toBe("unknown unsafe target");
 
       await target.command("focus-primary");
       await target.allowEchoForeground();
@@ -130,3 +164,24 @@ test.describe("Echo Quick Insert acceptance", () => {
     }
   });
 });
+
+async function waitForHistoryId(
+  page: Parameters<typeof invoke>[0],
+  query: string,
+): Promise<number> {
+  let id: number | undefined;
+  await expect
+    .poll(async () => {
+      const result = await invoke<{ items: Array<{ id: number }> }>(
+        page,
+        "quick_insert_list",
+        { view: "history", query, limit: 20 },
+      );
+      id = result.items[0]?.id;
+      return result.items.length;
+    })
+    .toBe(1);
+  if (id === undefined)
+    throw new Error(`history item did not appear: ${query}`);
+  return id;
+}

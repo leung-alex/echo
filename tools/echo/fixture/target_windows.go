@@ -26,6 +26,7 @@ const (
 	wsExClientEdge     = 0x00000200
 	esAutoHScroll      = 0x00000080
 	esPassword         = 0x00000020
+	esReadOnly         = 0x00000800
 	swShow             = 5
 	wmDestroy          = 0x0002
 	wmClose            = 0x0010
@@ -97,6 +98,8 @@ type targetFlags struct {
 	primaryOutput   string
 	secondaryOutput string
 	passwordOutput  string
+	readonlyOutput  string
+	unknownOutput   string
 }
 
 type targetRequest struct {
@@ -162,6 +165,8 @@ type targetState struct {
 	primary     uintptr
 	secondary   uintptr
 	password    uintptr
+	readonly    uintptr
+	unknown     uintptr
 	lastFocused uintptr
 	callback    uintptr
 	className   *uint16
@@ -191,6 +196,8 @@ func parseTargetFlags(args []string) (targetFlags, error) {
 	fs.StringVar(&flags.primaryOutput, "primary", "", "primary output file")
 	fs.StringVar(&flags.secondaryOutput, "secondary", "", "secondary output file")
 	fs.StringVar(&flags.passwordOutput, "password", "", "password output file")
+	fs.StringVar(&flags.readonlyOutput, "readonly", "", "read-only output file")
+	fs.StringVar(&flags.unknownOutput, "unknown", "", "unknown target output file")
 	if err := fs.Parse(args); err != nil {
 		return targetFlags{}, err
 	}
@@ -207,6 +214,8 @@ func parseTargetFlags(args []string) (targetFlags, error) {
 		"primary":   flags.primaryOutput,
 		"secondary": flags.secondaryOutput,
 		"password":  flags.passwordOutput,
+		"readonly":  flags.readonlyOutput,
+		"unknown":   flags.unknownOutput,
 	} {
 		if path == "" || !filepath.IsAbs(path) {
 			return targetFlags{}, fmt.Errorf("target fixture %s path must be absolute", name)
@@ -282,7 +291,7 @@ func (state *targetState) createWindow() error {
 		cwUseDefault,
 		cwUseDefault,
 		520,
-		280,
+		360,
 		0,
 		0,
 		instance,
@@ -297,8 +306,10 @@ func (state *targetState) createWindow() error {
 	state.primary = state.createEdit(editClass, "ac", 101, 16, 18)
 	state.secondary = state.createEdit(editClass, "", 102, 16, 78)
 	state.password = state.createEdit(editClass, "", 103, 16, 138)
-	if state.primary == 0 || state.secondary == 0 || state.password == 0 {
-		return fmt.Errorf("CreateWindowEx edit control failed")
+	state.readonly = state.createEdit(editClass, "readonly", 104, 16, 198)
+	state.unknown = state.createUnknown(105, 16, 258)
+	if state.primary == 0 || state.secondary == 0 || state.password == 0 || state.readonly == 0 || state.unknown == 0 {
+		return fmt.Errorf("CreateWindowEx target control failed")
 	}
 	if result, _, callErr := procSetTimer.Call(state.window, targetTimerID, 25, 0); result == 0 {
 		return fmt.Errorf("SetTimer failed: %w", callErr)
@@ -313,6 +324,9 @@ func (state *targetState) createEdit(className *uint16, value string, id, x, y i
 	style := uintptr(wsChild | wsVisible | wsBorder | wsTabStop | esAutoHScroll)
 	if id == 103 {
 		style |= esPassword
+	}
+	if id == 104 {
+		style |= esReadOnly
 	}
 	window, _, _ := procCreateWindowEx.Call(
 		wsExClientEdge,
@@ -329,6 +343,26 @@ func (state *targetState) createEdit(className *uint16, value string, id, x, y i
 		0,
 	)
 	return window
+}
+
+func (state *targetState) createUnknown(id, x, y int) uintptr {
+	className := mustUTF16("BUTTON")
+	style := uintptr(wsChild | wsVisible | wsBorder | wsTabStop)
+	returnWindow, _, _ := procCreateWindowEx.Call(
+		0,
+		uintptr(unsafe.Pointer(className)),
+		uintptr(unsafe.Pointer(mustUTF16("unknown unsafe target"))),
+		style,
+		uintptr(x),
+		uintptr(y),
+		450,
+		38,
+		state.window,
+		uintptr(id),
+		0,
+		0,
+	)
+	return returnWindow
 }
 
 func (state *targetState) windowProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uintptr {
@@ -417,6 +451,10 @@ func (state *targetState) executeCommand(command, payload string) (string, strin
 		return "", state.commandError(state.focusControl(state.secondary, 0))
 	case "focus-password":
 		return "", state.commandError(state.focusControl(state.password, -1))
+	case "focus-readonly":
+		return "", state.commandError(state.focusControl(state.readonly, 0))
+	case "focus-unknown":
+		return "", state.commandError(state.focusControl(state.unknown, 0))
 	case "primary-focused":
 		foreground, _, _ := procGetForegroundWindow.Call()
 		focus, _, _ := procGetFocus.Call()
@@ -427,6 +465,10 @@ func (state *targetState) executeCommand(command, payload string) (string, strin
 		return state.windowText(state.secondary), ""
 	case "read-password":
 		return state.windowText(state.password), ""
+	case "read-readonly":
+		return state.windowText(state.readonly), ""
+	case "read-unknown":
+		return state.windowText(state.unknown), ""
 	case "copy-password":
 		if err := state.focusControl(state.password, -1); err != nil {
 			return "", err.Error()
@@ -561,6 +603,8 @@ func (state *targetState) writeOutputs() error {
 		state.flags.primaryOutput:   state.windowText(state.primary),
 		state.flags.secondaryOutput: state.windowText(state.secondary),
 		state.flags.passwordOutput:  state.windowText(state.password),
+		state.flags.readonlyOutput:  state.windowText(state.readonly),
+		state.flags.unknownOutput:   state.windowText(state.unknown),
 	}
 	for path, value := range outputs {
 		if err := writeAtomic(path, []byte(value)); err != nil {

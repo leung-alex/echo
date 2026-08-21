@@ -41,6 +41,8 @@ export class EchoTargetFixture {
       primary: resolve(root, "primary.txt"),
       secondary: resolve(root, "secondary.txt"),
       password: resolve(root, "password.txt"),
+      readonly: resolve(root, "readonly.txt"),
+      unknown: resolve(root, "unknown.txt"),
     };
     await Promise.all(
       Object.values(paths).map((path) => rm(path, { force: true })),
@@ -70,6 +72,10 @@ export class EchoTargetFixture {
         paths.secondary,
         "--password",
         paths.password,
+        "--readonly",
+        paths.readonly,
+        "--unknown",
+        paths.unknown,
       ],
       {
         cwd: process.cwd(),
@@ -148,6 +154,22 @@ export class EchoTargetFixture {
     if (!echoPid)
       throw new Error("ECHO_ACCEPTANCE_PID is required for target acceptance");
     await this.command("allow-foreground", echoPid);
+  }
+
+  async focusReadOnly(): Promise<void> {
+    await this.command("focus-readonly");
+  }
+
+  async readReadOnly(): Promise<string> {
+    return this.command("read-readonly");
+  }
+
+  async focusUnknown(): Promise<void> {
+    await this.command("focus-unknown");
+  }
+
+  async readUnknown(): Promise<string> {
+    return this.command("read-unknown");
   }
 
   async stop(): Promise<void> {

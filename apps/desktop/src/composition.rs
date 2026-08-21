@@ -355,7 +355,8 @@ pub(crate) fn reposition_favorites(app: &tauri::AppHandle) {
 }
 
 pub(crate) fn apply_theme_to_windows(app: &tauri::AppHandle, mode: ThemeMode) -> bool {
-    let mut native_mica = true;
+    let force_mica_fallback = force_mica_fallback();
+    let mut native_mica = !force_mica_fallback;
     let effect = match mode {
         ThemeMode::System => Effect::Mica,
         ThemeMode::Light => Effect::MicaLight,
@@ -374,11 +375,15 @@ pub(crate) fn apply_theme_to_windows(app: &tauri::AppHandle, mode: ThemeMode) ->
             ThemeMode::Light => Some(tauri::Theme::Light),
             ThemeMode::Dark => Some(tauri::Theme::Dark),
         };
-        if window.set_theme(theme).is_err()
-            || window
+        let theme_failed = window.set_theme(theme).is_err();
+        let effects_failed = if force_mica_fallback {
+            window.set_effects(None).is_err()
+        } else {
+            window
                 .set_effects(EffectsBuilder::new().effect(effect).build())
                 .is_err()
-        {
+        };
+        if theme_failed || effects_failed {
             native_mica = false;
         }
     }
@@ -387,6 +392,16 @@ pub(crate) fn apply_theme_to_windows(app: &tauri::AppHandle, mode: ThemeMode) ->
         native_mica = false;
     }
     native_mica
+}
+
+fn force_mica_fallback() -> bool {
+    let acceptance = std::env::var("ECHO_WINDOWS_ACCEPTANCE").ok();
+    let fallback = std::env::var("ECHO_ACCEPTANCE_FORCE_MICA_FALLBACK").ok();
+    mica_fallback_is_enabled(acceptance.as_deref(), fallback.as_deref())
+}
+
+fn mica_fallback_is_enabled(acceptance: Option<&str>, fallback: Option<&str>) -> bool {
+    acceptance == Some("1") && fallback == Some("1")
 }
 
 pub(crate) fn active_panel_event(
@@ -411,7 +426,7 @@ pub(crate) fn route_panel(route: ActivationRoute) -> Option<QuickInsertView> {
 
 #[cfg(test)]
 mod tests {
-    use super::{close_request_action, CloseRequestAction};
+    use super::{close_request_action, mica_fallback_is_enabled, CloseRequestAction};
 
     #[test]
     fn favorites_close_is_child_only_and_main_close_coordinates_composition() {
@@ -424,5 +439,23 @@ mod tests {
             CloseRequestAction::HideComposition
         );
         assert_eq!(close_request_action("other"), CloseRequestAction::Ignore);
+    }
+
+    #[test]
+    fn mica_fallback_requires_both_acceptance_flags() {
+        let cases = [
+            ("both flags", Some("1"), Some("1"), true),
+            ("acceptance only", Some("1"), None, false),
+            ("fallback only", None, Some("1"), false),
+            ("neither flag", None, None, false),
+        ];
+
+        for (name, acceptance, fallback, expected) in cases {
+            assert_eq!(
+                mica_fallback_is_enabled(acceptance, fallback),
+                expected,
+                "{name}"
+            );
+        }
     }
 }
