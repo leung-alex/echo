@@ -60,7 +60,7 @@ test.describe("Echo Quick Insert acceptance", () => {
     }
   });
 
-  test("pastes into a native target and refuses changed or password targets", async () => {
+  test("pastes successfully, then rejects stale, read-only, unknown, changed, and password targets", async () => {
     const browser = await connectToEcho();
     const main = await waitForMainPage(browser);
     const target = await EchoTargetFixture.start();
@@ -82,8 +82,8 @@ test.describe("Echo Quick Insert acceptance", () => {
         .poll(() => target.command("read-primary"))
         .toBe(`a${content}c`);
 
-      await target.focusReadOnly();
-      await target.allowEchoForeground();
+      // A successful insertion clears the session. Reusing the same command
+      // without a new activation must not target the previous control.
       await expect(
         invoke(main, "quick_insert_execute", {
           source: "history",
@@ -91,8 +91,9 @@ test.describe("Echo Quick Insert acceptance", () => {
           action: "insert",
         }),
       ).rejects.toThrow("no safe paste target");
-      await expect.poll(() => target.readReadOnly()).toBe("readonly");
 
+      // This is a new activation captured from the read-only EDIT target.
+      await target.focusReadOnly();
       await target.allowEchoForeground();
       await sendActivation("echo.quick_insert", { query: content });
       surface = await waitForMainPage(browser);

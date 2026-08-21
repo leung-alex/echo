@@ -1,10 +1,11 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
 import {
   connectToEcho,
   hideEcho,
   invoke,
   sendActivation,
+  waitForFavoritesPage,
   waitForMainPage,
 } from "./tauri";
 import { runClipboardFixture } from "./native-fixture";
@@ -14,6 +15,41 @@ test.describe("Echo Clipboard acceptance", () => {
     process.platform !== "win32" || process.env.ECHO_WINDOWS_ACCEPTANCE !== "1",
     "requires the separately authorized Echo Windows acceptance gate",
   );
+
+  test("reports honest Mica capability on both native windows", async () => {
+    const browser = await connectToEcho();
+    const main = await waitForMainPage(browser);
+    const favorites = await waitForFavoritesPage(browser);
+    const forceFallback =
+      process.env.ECHO_ACCEPTANCE_FORCE_MICA_FALLBACK === "1";
+    const settings = await invoke<ClipboardSettings>(main, "settings_get");
+    try {
+      await invoke(main, "settings_update", { settings });
+      const expectedMica = forceFallback ? "fallback" : "native";
+      await expect
+        .poll(async () => {
+          const surfaces = await Promise.all(
+            [main, favorites].map((page) => readMicaSurface(page)),
+          );
+          return surfaces.map((surface) => surface.mica);
+        })
+        .toEqual([expectedMica, expectedMica]);
+
+      const surfaces = await Promise.all(
+        [main, favorites].map((page) => readMicaSurface(page)),
+      );
+      for (const surface of surfaces) {
+        expect(surface.hasFakeBlur).toBe(false);
+        expect(surface.backdropFilter).toBe("none");
+        if (forceFallback) {
+          expect(surface.backgroundOpaque).toBe(true);
+          expect(surface.readable).toBe(true);
+        }
+      }
+    } finally {
+      await browser.close();
+    }
+  });
 
   test("captures text, deduplicates it, keeps favorites after clearing history, and reopens hidden UI", async () => {
     const browser = await connectToEcho();
@@ -124,7 +160,7 @@ test.describe("Echo Clipboard acceptance", () => {
     }
   });
 
-  test("keeps pinned history under retention pressure and clear all", async () => {
+  test("retains pinned history through pressure and restores eviction after unpin", async () => {
     const browser = await connectToEcho();
     const main = await waitForMainPage(browser);
     const prefix = `echo-retention-${Date.now()}`;
@@ -136,7 +172,7 @@ test.describe("Echo Clipboard acceptance", () => {
     try {
       await invoke(main, "history_clear");
       await invoke(main, "settings_update", {
-        settings: { ...settings, max_entries: 1 },
+        settings: { ...settings, max_entries: 2 },
       });
 
       await copyClipboard("copy-text", pinnedValue);
@@ -146,6 +182,17 @@ test.describe("Echo Clipboard acceptance", () => {
       ).resolves.toBe(true);
 
       await copyClipboard("copy-text", transientValue);
+      await expect
+        .poll(async () => {
+          const items = await listHistory(main, prefix);
+          return items.map((item) => item.preview_text);
+        })
+        .toEqual([pinnedValue, transientValue]);
+
+      await invoke(main, "settings_update", {
+        settings: { ...settings, max_entries: 1 },
+      });
+      await copyClipboard("copy-text", `${prefix}-pressure`);
       await expect
         .poll(async () => {
           const items = await listHistory(main, prefix);
@@ -165,12 +212,20 @@ test.describe("Echo Clipboard acceptance", () => {
         invoke(main, "quick_insert_unpin_history", { id: pinnedId }),
       ).resolves.toBe(true);
       await copyClipboard("copy-text", replacementValue);
+      const replacementId = await waitForHistoryId(main, replacementValue);
       await expect
         .poll(async () => {
           const items = await listHistory(main, prefix);
           return items.map((item) => item.preview_text);
         })
         .toEqual([replacementValue]);
+
+      await expect(
+        invoke(main, "quick_insert_delete_history_many", {
+          request: { ids: [replacementId] },
+        }),
+      ).resolves.toBe(1);
+      await expect.poll(() => listHistory(main, prefix)).toEqual([]);
     } finally {
       if (pinnedId !== undefined) {
         await invoke(main, "quick_insert_unpin_history", {
@@ -201,6 +256,41 @@ type HistoryItem = {
   preview_text?: string;
   pinned_at?: number;
 };
+
+type MicaSurface = {
+  mica: string | null;
+  backgroundOpaque: boolean;
+  readable: boolean;
+  backdropFilter: string;
+  hasFakeBlur: boolean;
+};
+
+async function readMicaSurface(page: Page): Promise<MicaSurface> {
+  return page.evaluate(() => {
+    const panel = document.querySelector<HTMLElement>(".clipboard-window");
+    if (!panel) throw new Error("Echo surface is missing");
+    const style = getComputedStyle(panel);
+    const background = style.backgroundColor;
+    const channels = background.match(/^rgba?\((.*)\)$/)?.[1]?.split(",");
+    const alpha = channels?.length === 4 ? Number(channels[3]) : 1;
+    const cssText = Array.from(document.styleSheets)
+      .flatMap((sheet) => {
+        try {
+          return Array.from(sheet.cssRules, (rule) => rule.cssText);
+        } catch {
+          return [];
+        }
+      })
+      .join("\n");
+    return {
+      mica: document.documentElement.dataset.mica ?? null,
+      backgroundOpaque: background !== "transparent" && alpha > 0,
+      readable: style.color !== "transparent" && style.color !== background,
+      backdropFilter: style.getPropertyValue("backdrop-filter") || "none",
+      hasFakeBlur: /(?:-webkit-)?backdrop-filter\s*:/i.test(cssText),
+    };
+  });
+}
 
 async function listHistory(page: Parameters<typeof invoke>[0], query: string) {
   const result = await invoke<{ items: HistoryItem[] }>(

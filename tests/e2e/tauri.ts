@@ -33,6 +33,17 @@ export async function waitForMainPage(browser: EchoBrowser): Promise<Page> {
   throw new Error("Echo main page did not become available");
 }
 
+export async function waitForFavoritesPage(
+  browser: EchoBrowser,
+): Promise<Page> {
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    const page = await findFavoritesPage(browser);
+    if (page) return page;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error("Echo Favorites page did not become available");
+}
+
 export async function invoke<T = unknown>(
   page: Page,
   command: string,
@@ -107,6 +118,24 @@ async function findMainPage(browser: EchoBrowser): Promise<Page | undefined> {
           .catch(() => 0)) > 0 &&
         (await page
           .getByRole("tab", { name: "History" })
+          .count()
+          .catch(() => 0)) > 0
+      ) {
+        return page;
+      }
+    }
+  }
+  return undefined;
+}
+
+async function findFavoritesPage(
+  browser: EchoBrowser,
+): Promise<Page | undefined> {
+  for (const context of browser.contexts()) {
+    for (const page of context.pages()) {
+      if (
+        (await page
+          .locator('[data-window-role="favorites"]')
           .count()
           .catch(() => 0)) > 0
       ) {
