@@ -1,6 +1,7 @@
 import {
   useEffect,
   useMemo,
+  useRef,
   useState,
   type FormEvent,
   type ReactElement,
@@ -214,11 +215,19 @@ function FavoriteEditor({
   const [content, setContent] = useState(
     item?.editable_text ?? item?.preview_text ?? "",
   );
+  const [contentError, setContentError] = useState<string | null>(null);
   const [iconPickerOpen, setIconPickerOpen] = useState(false);
+  const contentRef = useRef<HTMLTextAreaElement>(null);
   const editableContent = item?.editable_text !== null;
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (editableContent && !content.trim()) {
+      setContentError("Content is required.");
+      contentRef.current?.focus();
+      return;
+    }
+    setContentError(null);
     onSave({
       content,
       name: name.trim() || content.trim().slice(0, 48) || "Favorite",
@@ -262,15 +271,42 @@ function FavoriteEditor({
           <label>
             Content
             <textarea
+              id="favorite-content"
+              ref={contentRef}
               value={content}
-              onChange={(event) => setContent(event.target.value)}
+              onChange={(event) => {
+                const nextContent = event.target.value;
+                setContent(nextContent);
+                if (contentError && nextContent.trim()) {
+                  setContentError(null);
+                }
+              }}
               readOnly={!editableContent}
+              aria-required={editableContent}
+              aria-invalid={contentError ? "true" : undefined}
               aria-describedby={
-                !editableContent ? "favorite-content-note" : undefined
+                [
+                  !editableContent ? "favorite-content-note" : null,
+                  contentError ? "favorite-content-error" : null,
+                ]
+                  .filter(Boolean)
+                  .join(" ") || undefined
+              }
+              aria-errormessage={
+                contentError ? "favorite-content-error" : undefined
               }
               rows={5}
               autoFocus
             />
+            {contentError ? (
+              <p
+                id="favorite-content-error"
+                className="favorite-field-error"
+                role="alert"
+              >
+                {contentError}
+              </p>
+            ) : null}
             {!editableContent ? (
               <small id="favorite-content-note">
                 Binary content is preserved; edit its metadata below.

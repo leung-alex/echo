@@ -17,6 +17,16 @@ test("captures History default, hover, selected, batch, image, and search states
   page,
 }) => {
   await page.setViewportSize({ width: 1280, height: 720 });
+  const panel = page.locator(".clipboard-window");
+  const shortcutRail = page.locator(".clipboard-footer");
+  await expect(shortcutRail).toHaveCSS("position", "absolute");
+  const [panelBox, shortcutRailBox] = await Promise.all([
+    panel.boundingBox(),
+    shortcutRail.boundingBox(),
+  ]);
+  expect(panelBox).not.toBeNull();
+  expect(shortcutRailBox).not.toBeNull();
+  expect(shortcutRailBox!.width).toBeLessThan(panelBox!.width * 0.9);
   await page.screenshot({
     path: `${evidenceRoot}/history-default-light-1280x720.png`,
     fullPage: true,
@@ -90,7 +100,13 @@ test("captures Favorites, editor, icon picker, dark, and minimum-size states", a
 
   await page.getByRole("button", { name: "Close icon picker" }).click();
   await page.getByRole("button", { name: "Close favorite editor" }).click();
-  await page.getByRole("tab", { name: "History" }).click();
+  await page.reload();
+  await expect(page.getByRole("tab", { name: "History" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await expect(page.getByText("Alpha clipboard")).toBeVisible();
+  await expect(page.getByRole("row")).toHaveCount(2);
   await page.emulateMedia({ colorScheme: "dark" });
   await page.screenshot({
     path: `${evidenceRoot}/history-default-dark-1280x720.png`,

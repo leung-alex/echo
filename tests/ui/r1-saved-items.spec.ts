@@ -76,3 +76,30 @@ test("opens the create path and Apps SDK icon picker with keyboard affordances",
   await picker.getByPlaceholder("Search the full icon catalog").press("Enter");
   await expect(editor.getByText("Terminal")).toBeVisible();
 });
+
+test("requires non-empty Favorite Content with an accessible focused error", async ({
+  page,
+}) => {
+  await installEchoFixture(page);
+  await page.goto("/");
+  await page.getByRole("tab", { name: "Favorites" }).click();
+  await page.getByRole("button", { name: "Create favorite" }).click();
+
+  const editor = page.getByRole("dialog", { name: "Create favorite" });
+  const content = editor.getByRole("textbox", { name: "Content" });
+  await expect(content).toHaveAttribute("aria-required", "true");
+  await content.fill("   ");
+  await editor.getByRole("button", { name: "Save Favorite" }).click();
+
+  await expect(content).toHaveAttribute("aria-invalid", "true");
+  await expect(content).toHaveAttribute(
+    "aria-describedby",
+    "favorite-content-error",
+  );
+  await expect(editor.getByRole("alert")).toHaveText("Content is required.");
+  await expect(content).toBeFocused();
+  await content.fill("Reusable content");
+  await expect(content).not.toHaveAttribute("aria-invalid", "true");
+  await editor.getByRole("button", { name: "Save Favorite" }).click();
+  await expect(editor).toBeHidden();
+});
