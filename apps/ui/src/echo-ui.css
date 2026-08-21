@@ -1,28 +1,167 @@
 :root {
+  color-scheme: light;
   color: var(--echo-text-primary);
   background: transparent;
   font-family: var(--echo-font-ui);
   font-size: 14px;
   font-synthesis: none;
   --echo-font-ui: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
-  --echo-canvas: #101114;
-  --echo-panel: #1f201f;
-  --echo-panel-raised: #252624;
-  --echo-panel-hover: #2b2d2a;
-  --echo-border: #3a3c38;
-  --echo-border-strong: #55564f;
-  --echo-text-primary: #eee5d5;
-  --echo-text-secondary: #b8b4a8;
-  --echo-text-muted: #85857d;
-  --echo-accent: #e9a514;
-  --echo-accent-strong: #f2b52a;
-  --echo-accent-soft: #463714;
-  --echo-success: #8dc895;
-  --echo-danger: #e68372;
-  --echo-focus: #f2b52a;
+  --echo-mica-capability: fallback;
+  --echo-mica-backdrop: transparent;
+  --echo-mica-surface-main: var(--echo-surface-main);
+  --echo-mica-surface-alt: var(--echo-surface-alt);
+  --echo-mica-surface-subtle: var(--echo-surface-subtle);
+  --echo-mica-surface-hover: var(--echo-surface-hover);
+  --echo-mica-surface-selected: var(--echo-surface-selected);
+  --echo-mica-surface-elevated: var(--echo-surface-elevated);
+  --echo-radius-main: 22.66px;
+  --echo-radius-favorites: 17.82px;
+  --echo-radius-rail: 12px;
+  --echo-radius-control: 7px;
   --echo-radius-sm: 4px;
-  --echo-radius-md: 7px;
+  --echo-radius-md: var(--echo-radius-control);
+  /* Keep the existing outer hit-test shell stable for native drag input. */
   --echo-panel-radius: 16px;
+
+  /* Light fallback values and the current Mica material roles. */
+  --echo-surface-canvas: #e9edeb;
+  --echo-surface-main: #e9edeb;
+  --echo-surface-alt: #f7f6f2;
+  --echo-surface-subtle: #f7f6f2;
+  --echo-surface-hover: #f7f6f2;
+  --echo-surface-selected: #ffc400;
+  --echo-surface-elevated: #ffffff;
+  --echo-border-subtle: rgb(221 218 210 / 72%);
+  --echo-border-strong-semantic: rgb(221 218 210 / 78%);
+  --echo-text-primary-semantic: #171b1e;
+  --echo-text-secondary-semantic: #667078;
+  --echo-text-muted-semantic: #667078;
+  --echo-accent-semantic: #ffc400;
+  --echo-accent-soft-semantic: rgb(255 196 0 / 46%);
+  --echo-mica-main-native: rgb(255 255 255 / 84%);
+  --echo-mica-alt-native: rgb(247 246 242 / 77%);
+  --echo-mica-subtle-native: rgb(247 246 242 / 56%);
+  --echo-mica-hover-native: rgb(247 246 242 / 44%);
+  --echo-mica-selected-native: rgb(255 196 0 / 46%);
+  --echo-mica-elevated-native: rgb(255 255 255 / 72%);
+  --echo-success: #22c55e;
+  --echo-warning: #f59e0b;
+  --echo-danger: #ef4444;
+
+  /* Legacy aliases keep existing feature CSS on the shared semantic roles. */
+  --echo-canvas: var(--echo-surface-canvas);
+  --echo-panel: var(--echo-mica-surface-main);
+  --echo-panel-raised: var(--echo-mica-surface-elevated);
+  --echo-panel-hover: var(--echo-mica-surface-hover);
+  --echo-border: var(--echo-border-subtle);
+  --echo-border-strong: var(--echo-border-strong-semantic);
+  --echo-text-primary: var(--echo-text-primary-semantic);
+  --echo-text-secondary: var(--echo-text-secondary-semantic);
+  --echo-text-muted: var(--echo-text-muted-semantic);
+  --echo-accent: var(--echo-accent-semantic);
+  --echo-accent-strong: var(--echo-accent-semantic);
+  --echo-accent-soft: var(--echo-accent-soft-semantic);
+  --echo-focus: var(--echo-accent-semantic);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --echo-surface-canvas: #050709;
+  --echo-surface-main: #0b1014;
+  --echo-surface-alt: #101519;
+  --echo-surface-subtle: #101519;
+  --echo-surface-hover: #11171b;
+  --echo-surface-selected: #352d0a;
+  --echo-surface-elevated: #0b1014;
+  --echo-border-subtle: #1e272d;
+  --echo-border-strong-semantic: #1e272d;
+  --echo-text-primary-semantic: #f4f6f7;
+  --echo-text-secondary-semantic: #aeb6bc;
+  --echo-text-muted-semantic: #aeb6bc;
+  --echo-accent-semantic: #ffc400;
+  --echo-accent-soft-semantic: #352d0a;
+  --echo-mica-main-native: rgb(11 16 20 / 84%);
+  --echo-mica-alt-native: rgb(16 21 25 / 77%);
+  --echo-mica-subtle-native: rgb(16 21 25 / 56%);
+  --echo-mica-hover-native: rgb(17 23 27 / 44%);
+  --echo-mica-selected-native: rgb(53 45 10 / 46%);
+  --echo-mica-elevated-native: rgb(11 16 20 / 72%);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]):not([data-theme="dark"]) {
+    color-scheme: dark;
+    --echo-surface-canvas: #050709;
+    --echo-surface-main: #0b1014;
+    --echo-surface-alt: #101519;
+    --echo-surface-subtle: #101519;
+    --echo-surface-hover: #11171b;
+    --echo-surface-selected: #352d0a;
+    --echo-surface-elevated: #0b1014;
+    --echo-border-subtle: #1e272d;
+    --echo-border-strong-semantic: #1e272d;
+    --echo-text-primary-semantic: #f4f6f7;
+    --echo-text-secondary-semantic: #aeb6bc;
+    --echo-text-muted-semantic: #aeb6bc;
+    --echo-accent-semantic: #ffc400;
+    --echo-accent-soft-semantic: #352d0a;
+    --echo-mica-main-native: rgb(11 16 20 / 84%);
+    --echo-mica-alt-native: rgb(16 21 25 / 77%);
+    --echo-mica-subtle-native: rgb(16 21 25 / 56%);
+    --echo-mica-hover-native: rgb(17 23 27 / 44%);
+    --echo-mica-selected-native: rgb(53 45 10 / 46%);
+    --echo-mica-elevated-native: rgb(11 16 20 / 72%);
+  }
+}
+
+/* Native Mica is a host capability; CSS does not simulate it with blur. */
+:root[data-mica="native"] {
+  --echo-mica-capability: native;
+  --echo-mica-surface-main: var(--echo-mica-main-native);
+  --echo-mica-surface-alt: var(--echo-mica-alt-native);
+  --echo-mica-surface-subtle: var(--echo-mica-subtle-native);
+  --echo-mica-surface-hover: var(--echo-mica-hover-native);
+  --echo-mica-surface-selected: var(--echo-mica-selected-native);
+  --echo-mica-surface-elevated: var(--echo-mica-elevated-native);
+}
+
+.echo-icon {
+  display: block;
+  flex: 0 0 auto;
+  vertical-align: middle;
+}
+
+.echo-icon-button,
+.echo-direct-action {
+  display: inline-grid;
+  place-items: center;
+  color: var(--echo-text-secondary);
+  background: transparent;
+  border-radius: var(--echo-radius-control);
+  transition:
+    color 120ms ease,
+    background-color 120ms ease;
+}
+.echo-icon-button {
+  width: 32px;
+  height: 32px;
+}
+.echo-direct-action {
+  width: 30px;
+  height: 30px;
+}
+.echo-icon-button:hover,
+.echo-icon-button:focus-visible,
+.echo-direct-action:hover,
+.echo-direct-action:focus-visible {
+  color: var(--echo-text-primary);
+  background: var(--echo-panel-hover);
+}
+.echo-direct-action[aria-pressed="true"] {
+  color: var(--echo-accent);
+}
+.echo-direct-action.danger {
+  color: var(--echo-danger);
 }
 
 * {

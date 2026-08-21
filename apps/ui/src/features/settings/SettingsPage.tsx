@@ -1,7 +1,7 @@
 import { useEffect, useState, type MouseEvent, type ReactElement } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { ArrowLeft } from "lucide-react";
 
+import { EchoIcon } from "../../ui/icons/EchoIcon";
 import { Switch } from "../../ui/Switch";
 import {
   clearHistory,
@@ -68,8 +68,14 @@ export function SettingsPage({ onBack }: { onBack: () => void }): ReactElement {
   return (
     <main className="clipboard-settings-window">
       <header className="settings-header" onMouseDown={startHeaderDrag}>
-        <button type="button" aria-label="Back" title="Back" onClick={onBack}>
-          <ArrowLeft size={17} aria-hidden="true" />
+        <button
+          className="echo-icon-button"
+          type="button"
+          aria-label="Back"
+          title="Back"
+          onClick={onBack}
+        >
+          <EchoIcon name="back" size={17} aria-hidden="true" />
         </button>
         <div>
           <h1>Clipboard Settings</h1>

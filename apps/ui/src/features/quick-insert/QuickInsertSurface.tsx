@@ -9,8 +9,8 @@ import {
   type ReactElement,
 } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { LayoutList, Search, Settings, Table2 } from "lucide-react";
 
+import { EchoIcon } from "../../ui/icons/EchoIcon";
 import { SearchField } from "../../ui/SearchField";
 import { useActiveResultNavigation } from "../../ui/useActiveResultNavigation";
 import { HistoryResults } from "../history/HistoryResults";
@@ -189,7 +189,8 @@ export function QuickInsertSurface({
           autoFocus
           autoComplete="off"
           startSlot={
-            <Search
+            <EchoIcon
+              name="search"
               className="clipboard-search-icon"
               size={18}
               aria-hidden="true"
@@ -200,13 +201,13 @@ export function QuickInsertSurface({
         />
         {onOpenSettings ? (
           <button
-            className="clipboard-topbar-action"
+            className="clipboard-topbar-action echo-icon-button"
             type="button"
             aria-label="Open settings"
             title="Settings"
             onClick={onOpenSettings}
           >
-            <Settings size={17} aria-hidden="true" />
+            <EchoIcon name="settings" size={17} aria-hidden="true" />
           </button>
         ) : null}
       </div>
@@ -238,7 +239,7 @@ export function QuickInsertSurface({
             title="Detailed view"
             onClick={() => selectViewMode("detailed")}
           >
-            <Table2 size={15} aria-hidden="true" />
+            <EchoIcon name="viewDetailed" size={15} aria-hidden="true" />
           </button>
           <button
             type="button"
@@ -247,7 +248,7 @@ export function QuickInsertSurface({
             title="Compact view"
             onClick={() => selectViewMode("compact")}
           >
-            <LayoutList size={16} aria-hidden="true" />
+            <EchoIcon name="viewCompact" size={16} aria-hidden="true" />
           </button>
         </div>
       </nav>

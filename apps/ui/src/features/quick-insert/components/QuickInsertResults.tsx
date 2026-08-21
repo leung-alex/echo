@@ -1,11 +1,11 @@
 import { useEffect, useState, type ReactElement, type RefObject } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Copy, Pencil, Star, Trash2 } from "lucide-react";
 
 import {
   getSearchMatchIndices,
   SearchMatchText,
 } from "../../../ui/SearchMatchText";
+import { EchoIcon } from "../../../ui/icons/EchoIcon";
 import type { QuickInsertItem, QuickInsertView } from "../model/types";
 
 const VIRTUAL_OVERSCAN = 5;
@@ -291,6 +291,7 @@ function EntryActions({
   return (
     <div className="echo-row-actions">
       <button
+        className="echo-direct-action"
         type="button"
         aria-label="Copy"
         title="Copy"
@@ -300,9 +301,10 @@ function EntryActions({
           copy();
         }}
       >
-        <Copy size={16} aria-hidden="true" />
+        <EchoIcon name="copy" size={16} aria-hidden="true" />
       </button>
       <button
+        className="echo-direct-action"
         type="button"
         aria-label={saved ? "Unfavorite" : "Favorite"}
         aria-pressed={saved}
@@ -313,14 +315,15 @@ function EntryActions({
           toggleFavorite();
         }}
       >
-        <Star
+        <EchoIcon
+          name={saved ? "favoriteFilled" : "favorite"}
           size={17}
-          fill={saved ? "currentColor" : "none"}
           aria-hidden="true"
         />
       </button>
       {edit ? (
         <button
+          className="echo-direct-action"
           type="button"
           aria-label="Edit saved item"
           title="Edit saved item"
@@ -330,11 +333,11 @@ function EntryActions({
             edit();
           }}
         >
-          <Pencil size={16} aria-hidden="true" />
+          <EchoIcon name="edit" size={16} aria-hidden="true" />
         </button>
       ) : null}
       <button
-        className="danger"
+        className="echo-direct-action danger"
         type="button"
         aria-label="Delete"
         title="Delete"
@@ -344,7 +347,7 @@ function EntryActions({
           remove();
         }}
       >
-        <Trash2 size={16} aria-hidden="true" />
+        <EchoIcon name="delete" size={16} aria-hidden="true" />
       </button>
     </div>
   );

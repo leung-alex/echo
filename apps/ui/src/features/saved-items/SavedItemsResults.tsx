@@ -5,8 +5,8 @@ import {
   type FormEvent,
   type ReactElement,
 } from "react";
-import { Check, Trash2, X } from "lucide-react";
 
+import { EchoIcon } from "../../ui/icons/EchoIcon";
 import type {
   QuickInsertItem,
   SavedItemUpdate,
@@ -62,7 +62,7 @@ export function SavedItemsResults({
               });
             }}
           >
-            <Trash2 size={15} aria-hidden="true" />
+            <EchoIcon name="delete" size={15} aria-hidden="true" />
             Delete selected
           </button>
         </div>
@@ -148,11 +148,11 @@ function SavedItemEditor({
         ) : null}
         <div className="saved-item-editor-actions">
           <button type="button" onClick={onCancel}>
-            <X size={15} aria-hidden="true" />
+            <EchoIcon name="close" size={15} aria-hidden="true" />
             Cancel
           </button>
           <button className="primary-action" type="submit">
-            <Check size={15} aria-hidden="true" />
+            <EchoIcon name="check" size={15} aria-hidden="true" />
             Save
           </button>
         </div>
