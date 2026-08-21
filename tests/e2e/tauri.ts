@@ -104,6 +104,10 @@ async function findMainPage(browser: EchoBrowser): Promise<Page | undefined> {
         (await page
           .locator("#app")
           .count()
+          .catch(() => 0)) > 0 &&
+        (await page
+          .getByRole("tab", { name: "History" })
+          .count()
           .catch(() => 0)) > 0
       ) {
         return page;
