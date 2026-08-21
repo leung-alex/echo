@@ -9,11 +9,11 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use echo_engine::{
-    is_text_like, normalize_name, normalize_tags, CapturePolicy, CaptureSettings, CapturedCapture,
-    ClipboardRepresentation, ClipboardSink, ContentIdentity, LibraryPage, LibraryStore,
+    is_text_like, CapturePolicy, CaptureSettings, CapturedCapture, ClipboardRepresentation,
+    ClipboardSink, ContentIdentity, FavoriteDraft, FavoriteUpdate, LibraryPage, LibraryStore,
     NormalizedCapture, OperationMetric, OperationMetrics, PageCursor, PreviewAsset,
-    PreviewDisposition, RecordResult, RepresentationIdentity, SavedItemDraft, SavedItemUpdate,
-    Thumbnail, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, THUMBNAIL_MIME_TYPE,
+    PreviewDisposition, RecordResult, RepresentationIdentity, SavedItemDraft, ThemeMode, Thumbnail,
+    DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, THUMBNAIL_MIME_TYPE,
 };
 use rusqlite::types::Value;
 use rusqlite::{
@@ -28,7 +28,9 @@ const DEFAULT_MAX_ENTRIES: u32 = 5_000;
 const DEFAULT_MAX_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
 const DEFAULT_MAX_ITEM_BYTES: u64 = 32 * 1024 * 1024;
 const SEARCH_FTS_SCHEMA_KEY: &str = "search_fts_schema";
-const CURRENT_SCHEMA_VERSION: i32 = 4;
+const CURRENT_SCHEMA_VERSION: i32 = 5;
+const THEME_COLUMN_DEFINITION: &str =
+    "TEXT NOT NULL DEFAULT 'system' CHECK (theme IN ('system', 'light', 'dark'))";
 
 #[derive(Debug, Error)]
 pub enum StorageError {
@@ -185,11 +187,16 @@ impl ClipboardStore {
                 2 => self.migrate_schema_v2()?,
                 3 => self.migrate_schema_v3()?,
                 4 => self.ensure_search_schema()?,
+                5 => self.migrate_schema_v5()?,
                 _ => unreachable!("schema version is bounded above"),
             }
             self.connection
                 .execute_batch(&format!("PRAGMA user_version = {next};"))?;
         }
+        // Schema v5 was introduced before the theme field was integrated into
+        // the shared settings contract. Keep already-v5 databases on the same
+        // settings table instead of creating a second persistence path.
+        self.ensure_column("clipboard_settings", "theme", THEME_COLUMN_DEFINITION)?;
         Ok(())
     }
 
@@ -439,6 +446,182 @@ impl ClipboardStore {
         Ok(())
     }
 
+    fn ensure_column_tx(
+        tx: &Transaction<'_>,
+        table: &str,
+        column: &str,
+        definition: &str,
+    ) -> Result<()> {
+        if !Self::has_column_tx(tx, table, column)? {
+            tx.execute_batch(&format!(
+                "ALTER TABLE {table} ADD COLUMN {column} {definition}"
+            ))?;
+        }
+        Ok(())
+    }
+
+    fn has_column_tx(tx: &Transaction<'_>, table: &str, column: &str) -> Result<bool> {
+        let mut statement = tx.prepare(&format!("PRAGMA table_info({table})"))?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(1))?;
+        Ok(rows
+            .collect::<std::result::Result<Vec<_>, _>>()?
+            .iter()
+            .any(|name| name == column))
+    }
+
+    fn verify_saved_representations_tx(
+        tx: &Transaction<'_>,
+        blobs_dir: &Path,
+        saved_item_id: i64,
+    ) -> Result<()> {
+        let representations = {
+            let mut statement = tx.prepare(
+                "SELECT id, inline_data, blob_hash, content_hash, byte_size
+             FROM saved_item_representations WHERE saved_item_id = ? ORDER BY id",
+            )?;
+            let rows = statement.query_map([saved_item_id], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Option<Vec<u8>>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            })?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        if representations.is_empty() {
+            return Err(StorageError::Migration(format!(
+                "saved item {saved_item_id} has no representations"
+            )));
+        }
+        let mut total_size = 0_i64;
+        for (id, inline_data, blob_hash, content_hash, byte_size) in representations {
+            if byte_size < 0 || inline_data.is_some() == blob_hash.is_some() {
+                return Err(StorageError::Migration(format!(
+                    "saved item {saved_item_id} representation {id} is incomplete"
+                )));
+            }
+            let bytes = if let Some(bytes) = inline_data {
+                bytes
+            } else {
+                let hash = blob_hash.as_deref().expect("checked above");
+                validate_hash(hash).map_err(|error| {
+                    StorageError::Migration(format!(
+                        "saved item {saved_item_id} representation {id}: {error}"
+                    ))
+                })?;
+                let bytes = fs::read(blobs_dir.join(hash)).map_err(|_| {
+                    StorageError::Migration(format!(
+                        "saved item {saved_item_id} representation {id} blob is missing"
+                    ))
+                })?;
+                if hash_bytes(&bytes) != hash {
+                    return Err(StorageError::Migration(format!(
+                        "saved item {saved_item_id} representation {id} blob hash mismatch"
+                    )));
+                }
+                bytes
+            };
+            let actual_size = i64::try_from(bytes.len()).unwrap_or(i64::MAX);
+            total_size = total_size.saturating_add(actual_size);
+            if actual_size != byte_size {
+                // A few pre-v1 fixtures recorded the preview length instead of
+                // the representation length. The bytes are authoritative, so
+                // repair only this derived metadata while retaining the payload.
+                tx.execute(
+                    "UPDATE saved_item_representations SET byte_size = ? WHERE id = ?",
+                    params![actual_size, id],
+                )?;
+            }
+            let actual_hash = hash_bytes(&bytes);
+            if content_hash.as_deref() != Some(actual_hash.as_str()) {
+                // Some pre-r2 fixtures carried a non-content source marker here;
+                // bytes are authoritative, so repair this derived column while
+                // the same migration transaction is still open.
+                tx.execute(
+                    "UPDATE saved_item_representations SET content_hash = ? WHERE id = ?",
+                    params![actual_hash, id],
+                )?;
+            }
+        }
+        tx.execute(
+            "UPDATE saved_items SET byte_size = ? WHERE id = ?",
+            params![total_size, saved_item_id],
+        )?;
+        Ok(())
+    }
+
+    /// Add the Wave 1 state in one transactional migration. In particular,
+    /// linked Saved Items from schema v4 are made authoritative before their
+    /// duplicate History rows are removed. Any representation/blob failure
+    /// aborts the transaction and leaves both records readable.
+    fn migrate_schema_v5(&mut self) -> Result<()> {
+        let blobs_dir = self.blobs_dir.clone();
+        let tx = self.connection.transaction()?;
+        Self::ensure_column_tx(&tx, "clipboard_entries", "history_pinned_at", "INTEGER")?;
+        Self::ensure_column_tx(&tx, "clipboard_settings", "theme", THEME_COLUMN_DEFINITION)?;
+        Self::ensure_column_tx(&tx, "saved_items", "icon_key", "TEXT")?;
+        Self::ensure_column_tx(
+            &tx,
+            "saved_items",
+            "favorite_order",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+
+        let favorite_ids = {
+            let mut statement =
+                tx.prepare("SELECT id FROM saved_items ORDER BY updated_at DESC, id DESC")?;
+            let rows = statement.query_map([], |row| row.get::<_, i64>(0))?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        for (order, id) in favorite_ids.into_iter().enumerate() {
+            tx.execute(
+                "UPDATE saved_items SET favorite_order = ? WHERE id = ?",
+                params![i64::try_from(order).unwrap_or(i64::MAX), id],
+            )?;
+        }
+
+        let linked = {
+            let mut statement = tx.prepare(
+                "SELECT id, source_history_id FROM saved_items
+                 WHERE source_history_id IS NOT NULL ORDER BY id",
+            )?;
+            let rows = statement
+                .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        let mut removed_history = false;
+        for (saved_id, history_id) in linked {
+            Self::verify_saved_representations_tx(&tx, &blobs_dir, saved_id)?;
+            let history_exists: bool = tx.query_row(
+                "SELECT EXISTS (SELECT 1 FROM clipboard_entries WHERE id = ?)",
+                [history_id],
+                |row| row.get::<_, i64>(0),
+            )? != 0;
+            if history_exists {
+                tx.execute(
+                    "DELETE FROM clipboard_fts WHERE entry_id = ?",
+                    [history_id.to_string()],
+                )?;
+                tx.execute("DELETE FROM clipboard_entries WHERE id = ?", [history_id])?;
+                removed_history = true;
+            } else {
+                // A dangling source can occur after an interrupted legacy
+                // cleanup. Clearing only the link preserves the Favorite.
+            }
+            tx.execute(
+                "UPDATE saved_items SET source_history_id = NULL WHERE id = ?",
+                [saved_id],
+            )?;
+        }
+        tx.commit()?;
+        if removed_history {
+            self.schedule_blob_gc()?;
+        }
+        Ok(())
+    }
+
     fn ensure_base_objects(&mut self) -> Result<()> {
         self.connection.execute_batch(
             "CREATE TABLE IF NOT EXISTS clipboard_settings (
@@ -448,7 +631,9 @@ impl ClipboardStore {
                 store_window_titles INTEGER NOT NULL DEFAULT 0,
                 max_entries INTEGER NOT NULL DEFAULT 5000,
                 max_total_bytes INTEGER NOT NULL DEFAULT 536870912,
-                max_item_bytes INTEGER NOT NULL DEFAULT 33554432
+                max_item_bytes INTEGER NOT NULL DEFAULT 33554432,
+                theme TEXT NOT NULL DEFAULT 'system'
+                    CHECK (theme IN ('system', 'light', 'dark'))
             );
             INSERT OR IGNORE INTO clipboard_settings (id) VALUES (1);
             CREATE TABLE IF NOT EXISTS clipboard_entries (
@@ -608,39 +793,57 @@ impl ClipboardStore {
     }
 
     pub fn settings(&self) -> Result<ClipboardSettings> {
-        self.connection
+        let (
+            history_enabled,
+            record_sensitive,
+            store_window_titles,
+            max_entries,
+            max_total_bytes,
+            max_item_bytes,
+            theme_value,
+        ): (bool, bool, bool, i64, i64, i64, String) = self
+            .connection
             .query_row(
                 "SELECT history_enabled, record_sensitive, store_window_titles,
-                        max_entries, max_total_bytes, max_item_bytes
+                        max_entries, max_total_bytes, max_item_bytes, theme
                  FROM clipboard_settings WHERE id = 1",
                 [],
                 |row| {
-                    Ok(ClipboardSettings {
-                        history_enabled: row.get::<_, i64>(0)? != 0,
-                        record_sensitive: row.get::<_, i64>(1)? != 0,
-                        store_window_titles: row.get::<_, i64>(2)? != 0,
-                        max_entries: row
-                            .get::<_, i64>(3)?
-                            .try_into()
-                            .unwrap_or(DEFAULT_MAX_ENTRIES),
-                        max_total_bytes: row
-                            .get::<_, i64>(4)?
-                            .try_into()
-                            .unwrap_or(DEFAULT_MAX_TOTAL_BYTES),
-                        max_item_bytes: row
-                            .get::<_, i64>(5)?
-                            .try_into()
-                            .unwrap_or(DEFAULT_MAX_ITEM_BYTES),
-                    })
+                    Ok((
+                        row.get::<_, i64>(0)? != 0,
+                        row.get::<_, i64>(1)? != 0,
+                        row.get::<_, i64>(2)? != 0,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                    ))
                 },
             )
-            .map_err(StorageError::from)
+            .map_err(StorageError::from)?;
+        let theme = ThemeMode::parse(&theme_value).ok_or_else(|| {
+            StorageError::Invalid(format!(
+                "clipboard settings contain invalid theme mode {theme_value:?}"
+            ))
+        })?;
+        Ok(ClipboardSettings {
+            history_enabled,
+            record_sensitive,
+            store_window_titles,
+            max_entries: max_entries.try_into().unwrap_or(DEFAULT_MAX_ENTRIES),
+            max_total_bytes: max_total_bytes
+                .try_into()
+                .unwrap_or(DEFAULT_MAX_TOTAL_BYTES),
+            max_item_bytes: max_item_bytes.try_into().unwrap_or(DEFAULT_MAX_ITEM_BYTES),
+            theme,
+        })
     }
 
     pub fn update_settings(&mut self, settings: &ClipboardSettings) -> Result<()> {
         self.connection.execute(
             "UPDATE clipboard_settings SET history_enabled = ?, record_sensitive = ?,
-             store_window_titles = ?, max_entries = ?, max_total_bytes = ?, max_item_bytes = ?
+             store_window_titles = ?, max_entries = ?, max_total_bytes = ?, max_item_bytes = ?,
+             theme = ?
              WHERE id = 1",
             params![
                 settings.history_enabled as i64,
@@ -649,6 +852,7 @@ impl ClipboardStore {
                 i64::from(settings.max_entries),
                 i64::try_from(settings.max_total_bytes).unwrap_or(i64::MAX),
                 i64::try_from(settings.max_item_bytes).unwrap_or(i64::MAX),
+                settings.theme.as_str(),
             ],
         )?;
         Ok(())
@@ -825,11 +1029,15 @@ impl ClipboardStore {
         if let Some(thumbnail) = &preview {
             Self::insert_thumbnail_tx(&tx, thumbnail)?;
         }
-        let evicted = Self::enforce_capacity_tx(&tx, &settings)?;
+        let (evicted, over_target) = Self::enforce_capacity_tx(&tx, &settings)?;
         let commit_started = Instant::now();
         tx.commit()?;
         self.metrics
             .record("db_commit", commit_started.elapsed(), 1);
+        if over_target {
+            self.metrics
+                .record("capacity_over_target", Duration::ZERO, 1);
+        }
         if evicted || preview_replaced {
             self.schedule_blob_gc()?;
         }
@@ -1059,8 +1267,12 @@ impl ClipboardStore {
         Ok(())
     }
 
-    fn enforce_capacity_tx(tx: &Transaction<'_>, settings: &ClipboardSettings) -> Result<bool> {
+    fn enforce_capacity_tx(
+        tx: &Transaction<'_>,
+        settings: &ClipboardSettings,
+    ) -> Result<(bool, bool)> {
         let mut evicted = false;
+        let mut over_target = false;
         loop {
             let (count, total): (i64, i64) = tx.query_row(
                 "SELECT COUNT(*), COALESCE(SUM(byte_size), 0) FROM clipboard_entries",
@@ -1074,12 +1286,17 @@ impl ClipboardStore {
             }
             let oldest: Option<i64> = tx
                 .query_row(
-                    "SELECT id FROM clipboard_entries ORDER BY updated_at ASC, id ASC LIMIT 1",
+                    "SELECT id FROM clipboard_entries
+                     WHERE history_pinned_at IS NULL
+                     ORDER BY updated_at ASC, id ASC LIMIT 1",
                     [],
                     |row| row.get(0),
                 )
                 .optional()?;
-            let Some(oldest) = oldest else { break };
+            let Some(oldest) = oldest else {
+                over_target = true;
+                break;
+            };
             tx.execute(
                 "DELETE FROM clipboard_fts WHERE entry_id = ?",
                 [oldest.to_string()],
@@ -1087,7 +1304,7 @@ impl ClipboardStore {
             tx.execute("DELETE FROM clipboard_entries WHERE id = ?", [oldest])?;
             evicted = true;
         }
-        Ok(evicted)
+        Ok((evicted, over_target))
     }
 
     pub fn list_entries(&self, query: &str, limit: u32) -> Result<Vec<ClipboardEntry>> {
@@ -1108,18 +1325,21 @@ impl ClipboardStore {
         };
         let fetch_limit = i64::from(page_size) + 1;
         let mut entries = Vec::new();
+        let mut relevances = Vec::new();
         let trimmed = query.trim();
-        let (cursor_clause, cursor_values) = cursor_filter("e", cursor);
         if trimmed.is_empty() {
+            let (cursor_clause, cursor_values) = history_cursor_filter(cursor)?;
             let sql = format!(
                 "SELECT e.id, e.created_at, e.updated_at, e.source_app, e.source_executable,
                         e.source_window_title, e.content_type, e.preview_text, e.searchable_text,
-                        e.sanitized_html, e.fingerprint,
-                        (SELECT id FROM saved_items WHERE source_history_id = e.id),
+                        e.sanitized_html, e.fingerprint, e.history_pinned_at,
                         e.byte_size
                  FROM clipboard_entries e
                  WHERE 1 = 1 {cursor_clause}
-                 ORDER BY e.updated_at DESC, e.id DESC LIMIT ?"
+                 ORDER BY CASE WHEN e.history_pinned_at IS NULL THEN 1 ELSE 0 END ASC,
+                          e.history_pinned_at DESC,
+                          CASE WHEN e.history_pinned_at IS NULL THEN e.updated_at END DESC,
+                          e.id DESC LIMIT ?"
             );
             let mut values = cursor_values;
             values.push(Value::Integer(fetch_limit));
@@ -1129,20 +1349,38 @@ impl ClipboardStore {
                 entries.push(row?);
             }
         } else if trimmed.chars().count() < 3 {
-            let pattern = format!("%{}%", escape_like_pattern(&trimmed.to_lowercase()));
+            let query_lower = trimmed.to_lowercase();
+            let short_rank = "CASE WHEN lower(COALESCE(e.searchable_text, '')) = ? THEN 0
+                                    WHEN lower(COALESCE(e.searchable_text, '')) LIKE ? || '%' THEN 1
+                                    ELSE 2 END";
+            let (cursor_clause, cursor_values) = history_search_cursor_filter_with_rank(
+                cursor,
+                short_rank,
+                &[
+                    Value::Text(query_lower.clone()),
+                    Value::Text(query_lower.clone()),
+                ],
+                RankOrder::Ascending,
+            )?;
+            let pattern = format!("%{}%", escape_like_pattern(&query_lower));
             let sql = format!(
                 "SELECT e.id, e.created_at, e.updated_at, e.source_app, e.source_executable,
                         e.source_window_title, e.content_type, e.preview_text, e.searchable_text,
-                        e.sanitized_html, e.fingerprint, s.id, e.byte_size
+                        e.sanitized_html, e.fingerprint, e.history_pinned_at, e.byte_size,
+                        {short_rank} AS relevance
                  FROM clipboard_entries e
-                 LEFT JOIN saved_items s ON s.source_history_id = e.id
                  WHERE (lower(COALESCE(e.searchable_text, '')) LIKE ? ESCAPE '\\'
                     OR lower(COALESCE(e.source_app, '')) LIKE ? ESCAPE '\\'
                     OR lower(COALESCE(e.preview_text, '')) LIKE ? ESCAPE '\\')
                    {cursor_clause}
-                 ORDER BY e.updated_at DESC, e.id DESC LIMIT ?"
+                 ORDER BY CASE WHEN e.history_pinned_at IS NULL THEN 1 ELSE 0 END ASC,
+                          relevance ASC,
+                          CASE WHEN e.history_pinned_at IS NULL THEN e.updated_at END DESC,
+                          e.id DESC LIMIT ?"
             );
             let mut values = vec![
+                Value::Text(query_lower.clone()),
+                Value::Text(query_lower),
                 Value::Text(pattern.clone()),
                 Value::Text(pattern.clone()),
                 Value::Text(pattern),
@@ -1150,28 +1388,45 @@ impl ClipboardStore {
             values.extend(cursor_values);
             values.push(Value::Integer(fetch_limit));
             let mut statement = self.connection.prepare(&sql)?;
-            let rows = statement.query_map(params_from_iter(values), map_entry)?;
+            let rows = statement.query_map(params_from_iter(values), |row| {
+                Ok((map_entry(row)?, row.get::<_, i64>(13)?))
+            })?;
             for row in rows {
-                entries.push(row?);
+                let (entry, relevance) = row?;
+                entries.push(entry);
+                relevances.push(Some(relevance));
             }
         } else {
+            let (cursor_clause, cursor_values) = history_search_cursor_filter_with_rank(
+                cursor,
+                "CAST((-bm25(clipboard_fts)) * 1000000 AS INTEGER)",
+                &[],
+                RankOrder::Descending,
+            )?;
             let sql = format!(
                 "SELECT e.id, e.created_at, e.updated_at, e.source_app, e.source_executable,
                         e.source_window_title, e.content_type, e.preview_text, e.searchable_text,
-                        e.sanitized_html, e.fingerprint, s.id, e.byte_size
+                        e.sanitized_html, e.fingerprint, e.history_pinned_at, e.byte_size,
+                        CAST((-bm25(clipboard_fts)) * 1000000 AS INTEGER) AS relevance
                  FROM clipboard_entries e
                  JOIN clipboard_fts f ON CAST(f.entry_id AS INTEGER) = e.id
-                 LEFT JOIN saved_items s ON s.source_history_id = e.id
                  WHERE clipboard_fts MATCH ? {cursor_clause}
-                 ORDER BY e.updated_at DESC, e.id DESC LIMIT ?"
+                 ORDER BY CASE WHEN e.history_pinned_at IS NULL THEN 1 ELSE 0 END ASC,
+                          relevance DESC,
+                          CASE WHEN e.history_pinned_at IS NULL THEN e.updated_at END DESC,
+                          e.id DESC LIMIT ?"
             );
             let mut values = vec![Value::Text(fts_match_query(trimmed))];
             values.extend(cursor_values);
             values.push(Value::Integer(fetch_limit));
             let mut statement = self.connection.prepare(&sql)?;
-            let rows = statement.query_map(params_from_iter(values), map_entry)?;
+            let rows = statement.query_map(params_from_iter(values), |row| {
+                Ok((map_entry(row)?, row.get::<_, i64>(13)?))
+            })?;
             for row in rows {
-                entries.push(row?);
+                let (entry, relevance) = row?;
+                entries.push(entry);
+                relevances.push(Some(relevance));
             }
         }
         for entry in &mut entries {
@@ -1181,9 +1436,24 @@ impl ClipboardStore {
         entries.truncate(usize::try_from(page_size).unwrap_or(usize::MAX));
         let next_cursor = has_more
             .then(|| {
-                entries.last().map(|entry| PageCursor {
-                    updated_at: entry.updated_at,
-                    id: entry.id,
+                entries.last().map(|entry| {
+                    if trimmed.is_empty() {
+                        PageCursor::History {
+                            pinned_at: entry.pinned_at,
+                            updated_at: entry.updated_at,
+                            id: entry.id,
+                        }
+                    } else {
+                        PageCursor::HistorySearch {
+                            pinned_at: entry.pinned_at,
+                            relevance: relevances
+                                .get(usize::try_from(page_size).unwrap_or(usize::MAX) - 1)
+                                .and_then(|value| *value)
+                                .unwrap_or_default(),
+                            updated_at: entry.updated_at,
+                            id: entry.id,
+                        }
+                    }
                 })
             })
             .flatten();
@@ -1204,9 +1474,7 @@ impl ClipboardStore {
             .query_row(
                 "SELECT id, created_at, updated_at, source_app, source_executable,
                         source_window_title, content_type, preview_text, searchable_text,
-                        sanitized_html, fingerprint,
-                        (SELECT id FROM saved_items WHERE source_history_id = clipboard_entries.id),
-                        byte_size
+                        sanitized_html, fingerprint, history_pinned_at, byte_size
                  FROM clipboard_entries WHERE id = ?",
                 [id],
                 map_entry,
@@ -1368,151 +1636,212 @@ impl ClipboardStore {
             .then_some(bytes)
     }
 
-    pub fn save_history_item(
-        &mut self,
-        mut draft: SavedItemDraft,
-        source_payload: Vec<ClipboardRepresentation>,
-    ) -> Result<SavedItem> {
-        draft.name = normalize_name(&draft.name)
-            .map_err(|error| StorageError::Invalid(error.to_string()))?;
-        draft.tags = normalize_tags(&draft.tags)
-            .map_err(|error| StorageError::Invalid(error.to_string()))?;
-        let payload = draft.canonical_payload(&source_payload);
-        let prepared = payload
-            .iter()
-            .map(|representation| self.prepare_representation(representation, None))
-            .collect::<Result<Vec<_>>>()?;
-        let byte_size = payload
-            .iter()
-            .try_fold(0_u64, |total, representation| {
-                total.checked_add(representation.bytes.len() as u64)
+    pub fn move_history_to_favorite(&mut self, history_id: i64) -> Result<SavedItem> {
+        self.move_history_many_to_favorites(&[history_id])?
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                StorageError::Invalid(format!("history entry {history_id} does not exist"))
             })
-            .ok_or_else(|| StorageError::Invalid("saved item byte size overflow".to_owned()))?;
-        let tx = self.connection.transaction()?;
-        let existing: Option<(i64, bool)> = tx
-            .query_row(
-                "SELECT id, is_independent FROM saved_items WHERE source_history_id = ?",
-                [draft.source_history_id],
-                |row| Ok((row.get(0)?, row.get::<_, i64>(1)? != 0)),
-            )
-            .optional()?;
-        let saved_id = if let Some((id, true)) = existing {
-            tx.commit()?;
-            self.schedule_blob_gc()?;
-            return self
-                .saved_item(id)?
-                .map(|stored| stored.item)
-                .ok_or_else(|| StorageError::Invalid(format!("saved item {id} disappeared")));
-        } else if let Some((id, false)) = existing {
-            tx.execute(
-                "UPDATE saved_items SET updated_at = ?, name = ?, content_type = ?, editable_text = ?,
-                 source_app = ?, source_executable = ?, source_window_title = ?, preview_text = ?,
-                 byte_size = ?, is_independent = 0 WHERE id = ?",
-                params![
-                    draft.updated_at,
-                    draft.name,
-                    draft.content_type,
-                    draft.editable_text,
-                    draft.source_app,
-                    draft.source_executable,
-                    draft.source_window_title,
-                    draft.preview_text,
-                    i64::try_from(byte_size).unwrap_or(i64::MAX),
-                    id,
-                ],
-            )?;
-            tx.execute(
-                "DELETE FROM saved_item_representations WHERE saved_item_id = ?",
-                [id],
-            )?;
-            for representation in &prepared {
-                Self::insert_saved_representation_tx(&tx, id, representation)?;
-            }
-            replace_tags_tx(&tx, id, &draft.tags)?;
-            refresh_saved_search_tx(&tx, id)?;
-            id
-        } else {
-            tx.execute(
-                "INSERT INTO saved_items
-                 (source_history_id, created_at, updated_at, name, content_type, editable_text,
-                  source_app, source_executable, source_window_title, preview_text, byte_size, is_independent)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
-                params![
-                    draft.source_history_id,
-                    draft.created_at,
-                    draft.updated_at,
-                    draft.name,
-                    draft.content_type,
-                    draft.editable_text,
-                    draft.source_app,
-                    draft.source_executable,
-                    draft.source_window_title,
-                    draft.preview_text,
-                    i64::try_from(byte_size).unwrap_or(i64::MAX),
-                ],
-            )?;
-            let id = tx.last_insert_rowid();
-            for representation in &prepared {
-                Self::insert_saved_representation_tx(&tx, id, representation)?;
-            }
-            replace_tags_tx(&tx, id, &draft.tags)?;
-            refresh_saved_search_tx(&tx, id)?;
-            id
-        };
-        tx.commit()?;
-        self.schedule_blob_gc()?;
-        self.saved_item(saved_id)?
-            .map(|stored| stored.item)
-            .ok_or_else(|| StorageError::Invalid(format!("saved item {saved_id} disappeared")))
     }
 
-    pub fn unsave_history_item(&mut self, history_id: i64) -> Result<bool> {
+    pub fn move_history_many_to_favorites(
+        &mut self,
+        history_ids: &[i64],
+    ) -> Result<Vec<SavedItem>> {
+        let mut ids = Vec::with_capacity(history_ids.len());
+        for id in history_ids.iter().copied().filter(|id| *id > 0) {
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Resolve and validate the source before opening the transaction. The
+        // representation bytes are never rebuilt from the preview; the SQL
+        // move below copies every original representation row verbatim.
+        let mut sources = Vec::with_capacity(ids.len());
+        for id in &ids {
+            let stored = self.entry(*id)?.ok_or_else(|| {
+                StorageError::Invalid(format!("history entry {id} does not exist"))
+            })?;
+            if stored.representations.is_empty() {
+                return Err(StorageError::Invalid(format!(
+                    "history entry {id} has no representations"
+                )));
+            }
+            let payload = self.entry_payload(*id)?;
+            let mut entry = stored.entry;
+            entry.byte_size = payload
+                .iter()
+                .try_fold(0_u64, |total, representation| {
+                    total.checked_add(representation.bytes.len() as u64)
+                })
+                .ok_or_else(|| {
+                    StorageError::Invalid("history payload byte size overflow".to_owned())
+                })?;
+            sources.push(entry);
+        }
+
         let tx = self.connection.transaction()?;
-        let saved: Option<(i64, bool)> = tx
-            .query_row(
-                "SELECT id, is_independent FROM saved_items WHERE source_history_id = ?",
-                [history_id],
-                |row| Ok((row.get(0)?, row.get::<_, i64>(1)? != 0)),
-            )
-            .optional()?;
-        let Some((id, independent)) = saved else {
-            tx.commit()?;
-            return Ok(false);
-        };
-        if independent {
+        let mut saved_ids = Vec::with_capacity(sources.len());
+        for entry in &sources {
+            let existing: Option<i64> = tx
+                .query_row(
+                    "SELECT id FROM saved_items WHERE source_history_id = ?",
+                    [entry.id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let saved_id = if let Some(saved_id) = existing {
+                Self::verify_saved_representations_tx(&tx, &self.blobs_dir, saved_id)?;
+                saved_id
+            } else {
+                let draft = SavedItemDraft::from_history(entry);
+                tx.execute(
+                    "UPDATE saved_items SET favorite_order = favorite_order + 1",
+                    [],
+                )?;
+                tx.execute(
+                    "INSERT INTO saved_items
+                     (source_history_id, created_at, updated_at, name, content_type, editable_text,
+                      source_app, source_executable, source_window_title, preview_text, byte_size,
+                      icon_key, favorite_order, is_independent)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)",
+                    params![
+                        entry.id,
+                        draft.created_at,
+                        draft.updated_at,
+                        draft.name,
+                        draft.content_type,
+                        draft.editable_text,
+                        draft.source_app,
+                        draft.source_executable,
+                        draft.source_window_title,
+                        draft.preview_text,
+                        i64::try_from(entry.byte_size).unwrap_or(i64::MAX),
+                        draft.icon_key,
+                    ],
+                )?;
+                let saved_id = tx.last_insert_rowid();
+                let copied = tx.execute(
+                    "INSERT INTO saved_item_representations
+                     (saved_item_id, format, mime_type, inline_data, blob_hash, content_hash, byte_size)
+                     SELECT ?, format, mime_type, inline_data, blob_hash, content_hash, byte_size
+                     FROM clipboard_representations WHERE entry_id = ?",
+                    params![saved_id, entry.id],
+                )?;
+                if copied == 0 {
+                    return Err(StorageError::Invalid(format!(
+                        "history entry {} representations disappeared",
+                        entry.id
+                    )));
+                }
+                replace_tags_tx(&tx, saved_id, &[])?;
+                refresh_saved_search_tx(&tx, saved_id)?;
+                saved_id
+            };
             tx.execute(
-                "UPDATE saved_items SET source_history_id = NULL, updated_at = ? WHERE id = ?",
-                params![now_millis(), id],
+                "DELETE FROM clipboard_fts WHERE entry_id = ?",
+                [entry.id.to_string()],
             )?;
-        } else {
-            tx.execute("DELETE FROM saved_items_fts WHERE saved_item_id = ?", [id])?;
-            tx.execute("DELETE FROM saved_items WHERE id = ?", [id])?;
+            tx.execute("DELETE FROM clipboard_entries WHERE id = ?", [entry.id])?;
+            tx.execute(
+                "UPDATE saved_items SET source_history_id = NULL WHERE id = ?",
+                [saved_id],
+            )?;
+            saved_ids.push(saved_id);
         }
         tx.commit()?;
         self.schedule_blob_gc()?;
-        Ok(true)
+        saved_ids
+            .into_iter()
+            .map(|id| {
+                self.saved_item(id)?
+                    .map(|stored| stored.item)
+                    .ok_or_else(|| StorageError::Invalid(format!("saved item {id} disappeared")))
+            })
+            .collect()
     }
 
-    pub fn update_saved_item(&mut self, id: i64, mut update: SavedItemUpdate) -> Result<SavedItem> {
-        update.name = normalize_name(&update.name)
+    pub fn create_favorite(&mut self, draft: FavoriteDraft) -> Result<SavedItem> {
+        let draft = draft
+            .normalize()
             .map_err(|error| StorageError::Invalid(error.to_string()))?;
-        update.tags = normalize_tags(&update.tags)
+        let now = now_millis();
+        let name = draft
+            .name
+            .clone()
+            .unwrap_or_else(|| default_favorite_name_from_content(&draft.content));
+        let icon_key = draft.icon_key.clone();
+        let tags = draft.tags.clone();
+        let representation = ClipboardRepresentation {
+            format: "text".to_owned(),
+            mime_type: "text/plain;charset=utf-8".to_owned(),
+            bytes: draft.content.as_bytes().to_vec(),
+        };
+        let prepared = self.prepare_representation(&representation, None)?;
+        let tx = self.connection.transaction()?;
+        tx.execute(
+            "UPDATE saved_items SET favorite_order = favorite_order + 1",
+            [],
+        )?;
+        tx.execute(
+            "INSERT INTO saved_items
+             (source_history_id, created_at, updated_at, name, content_type, editable_text,
+              source_app, source_executable, source_window_title, preview_text, byte_size,
+              icon_key, favorite_order, is_independent)
+             VALUES (NULL, ?, ?, ?, 'text', ?, NULL, NULL, NULL, ?, ?, ?, 0, 1)",
+            params![
+                now,
+                now,
+                name,
+                draft.content,
+                preview_text(&draft.content),
+                i64::try_from(representation.bytes.len()).unwrap_or(i64::MAX),
+                icon_key,
+            ],
+        )?;
+        let id = tx.last_insert_rowid();
+        Self::insert_saved_representation_tx(&tx, id, &prepared)?;
+        replace_tags_tx(&tx, id, &tags)?;
+        refresh_saved_search_tx(&tx, id)?;
+        tx.commit()?;
+        self.schedule_blob_gc()?;
+        self.saved_item(id)?
+            .map(|stored| stored.item)
+            .ok_or_else(|| StorageError::Invalid(format!("saved item {id} disappeared")))
+    }
+
+    pub fn update_favorite(&mut self, id: i64, update: FavoriteUpdate) -> Result<SavedItem> {
+        let update = update
+            .normalize()
             .map_err(|error| StorageError::Invalid(error.to_string()))?;
         let current = self
             .saved_item(id)?
             .ok_or_else(|| StorageError::Invalid(format!("saved item {id} does not exist")))?;
-        let text_payload = if is_text_like(&current.item.content_type) {
-            update
-                .editable_text
-                .as_ref()
-                .map(|text| ClipboardRepresentation {
-                    format: "text".to_owned(),
-                    mime_type: "text/plain;charset=utf-8".to_owned(),
-                    bytes: text.as_bytes().to_vec(),
-                })
+        let name = update
+            .name
+            .clone()
+            .unwrap_or_else(|| current.item.name.clone());
+        let icon_key = update.icon_key.clone();
+        let tags = update.tags.clone();
+        let editable_text = if is_text_like(&current.item.content_type) {
+            update.editable_text.clone()
+        } else if update.editable_text.is_some() {
+            return Err(StorageError::Invalid(
+                "binary favorites do not support content edits".to_owned(),
+            ));
         } else {
             None
         };
+        let text_payload = editable_text.as_ref().map(|text| ClipboardRepresentation {
+            format: "text".to_owned(),
+            mime_type: "text/plain;charset=utf-8".to_owned(),
+            bytes: text.as_bytes().to_vec(),
+        });
         let prepared = text_payload
             .as_ref()
             .map(|representation| self.prepare_representation(representation, None))
@@ -1521,17 +1850,19 @@ impl ClipboardStore {
             .as_ref()
             .map(|representation| representation.bytes.len() as u64)
             .unwrap_or(current.item.byte_size);
-        let preview = update.editable_text.as_deref().map(preview_text);
+        let preview = editable_text.as_deref().map(preview_text);
         let tx = self.connection.transaction()?;
         let changed = tx.execute(
-            "UPDATE saved_items SET updated_at = ?, name = ?, editable_text = CASE WHEN ? IS NULL THEN editable_text ELSE ? END,
-             preview_text = CASE WHEN ? IS NULL THEN preview_text ELSE ? END, byte_size = ?, is_independent = 1
-             WHERE id = ?",
+            "UPDATE saved_items SET updated_at = ?, name = ?, icon_key = ?,
+             editable_text = CASE WHEN ? IS NULL THEN editable_text ELSE ? END,
+             preview_text = CASE WHEN ? IS NULL THEN preview_text ELSE ? END,
+             byte_size = ?, is_independent = 1 WHERE id = ?",
             params![
                 now_millis(),
-                update.name,
-                update.editable_text,
-                update.editable_text,
+                name,
+                icon_key,
+                editable_text,
+                editable_text,
                 preview,
                 preview,
                 i64::try_from(byte_size).unwrap_or(i64::MAX),
@@ -1550,13 +1881,153 @@ impl ClipboardStore {
             )?;
             Self::insert_saved_representation_tx(&tx, id, &representation)?;
         }
-        replace_tags_tx(&tx, id, &update.tags)?;
+        replace_tags_tx(&tx, id, &tags)?;
         refresh_saved_search_tx(&tx, id)?;
         tx.commit()?;
         self.schedule_blob_gc()?;
         self.saved_item(id)?
             .map(|stored| stored.item)
             .ok_or_else(|| StorageError::Invalid(format!("saved item {id} disappeared")))
+    }
+
+    pub fn pin_history(&mut self, id: i64) -> Result<bool> {
+        let tx = self.connection.transaction()?;
+        let changed = tx.execute(
+            "UPDATE clipboard_entries
+             SET history_pinned_at = ?
+             WHERE id = ? AND history_pinned_at IS NULL",
+            params![next_pin_order_tx(&tx)?, id],
+        )? > 0;
+        tx.commit()?;
+        Ok(changed)
+    }
+
+    pub fn unpin_history(&mut self, id: i64) -> Result<bool> {
+        let tx = self.connection.transaction()?;
+        let changed = tx.execute(
+            "UPDATE clipboard_entries SET history_pinned_at = NULL
+             WHERE id = ? AND history_pinned_at IS NOT NULL",
+            [id],
+        )? > 0;
+        tx.commit()?;
+        Ok(changed)
+    }
+
+    pub fn pin_history_many(&mut self, ids: &[i64]) -> Result<usize> {
+        let mut ids = ids.iter().copied().filter(|id| *id > 0).collect::<Vec<_>>();
+        ids.sort_unstable();
+        ids.dedup();
+        let tx = self.connection.transaction()?;
+        let mut changed = 0;
+        for id in ids {
+            let pin_order = next_pin_order_tx(&tx)?;
+            changed += tx.execute(
+                "UPDATE clipboard_entries SET history_pinned_at = ?
+                 WHERE id = ? AND history_pinned_at IS NULL",
+                params![pin_order, id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(changed)
+    }
+
+    pub fn delete_history_many(&mut self, ids: &[i64]) -> Result<usize> {
+        let ids = ids.iter().copied().filter(|id| *id > 0).collect::<Vec<_>>();
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let placeholders = std::iter::repeat("?")
+            .take(ids.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let tx = self.connection.transaction()?;
+        let fts_sql = format!("DELETE FROM clipboard_fts WHERE entry_id IN ({placeholders})");
+        let values = ids.iter().map(|id| Value::Integer(*id)).collect::<Vec<_>>();
+        // FTS stores the integer id as text, so bind the string form here.
+        let fts_values = ids
+            .iter()
+            .map(|id| Value::Text(id.to_string()))
+            .collect::<Vec<_>>();
+        tx.execute(&fts_sql, params_from_iter(fts_values))?;
+        let sql = format!("DELETE FROM clipboard_entries WHERE id IN ({placeholders})");
+        let deleted = tx.execute(&sql, params_from_iter(values))?;
+        tx.commit()?;
+        if deleted != 0 {
+            self.schedule_blob_gc()?;
+        }
+        Ok(deleted)
+    }
+
+    pub fn clear_unpinned_history(&mut self) -> Result<usize> {
+        let tx = self.connection.transaction()?;
+        tx.execute(
+            "DELETE FROM clipboard_fts WHERE entry_id IN
+                    (SELECT id FROM clipboard_entries WHERE history_pinned_at IS NULL)",
+            [],
+        )?;
+        let deleted = tx.execute(
+            "DELETE FROM clipboard_entries WHERE history_pinned_at IS NULL",
+            [],
+        )?;
+        tx.commit()?;
+        self.schedule_blob_gc()?;
+        Ok(deleted)
+    }
+
+    pub fn reorder_favorites(&mut self, ordered_ids: &[i64]) -> Result<()> {
+        if ordered_ids.iter().any(|id| *id <= 0) {
+            return Err(StorageError::Invalid(
+                "favorite order contains an invalid id".to_owned(),
+            ));
+        }
+        let mut ids = ordered_ids.to_vec();
+        let mut unique = ids.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        if unique.len() != ids.len() {
+            return Err(StorageError::Invalid(
+                "favorite order contains duplicate ids".to_owned(),
+            ));
+        }
+        let tx = self.connection.transaction()?;
+        let expected = tx.query_row("SELECT COUNT(*) FROM saved_items", [], |row| {
+            row.get::<_, i64>(0)
+        })?;
+        if expected != ids.len() as i64 {
+            return Err(StorageError::Invalid(
+                "favorite order must include every favorite exactly once".to_owned(),
+            ));
+        }
+        for id in &ids {
+            let exists: bool = tx.query_row(
+                "SELECT EXISTS (SELECT 1 FROM saved_items WHERE id = ?)",
+                [id],
+                |row| row.get::<_, i64>(0),
+            )? != 0;
+            if !exists {
+                return Err(StorageError::Invalid(format!(
+                    "saved item {id} does not exist"
+                )));
+            }
+        }
+        // Use a temporary offset to avoid unique/order collisions if a future
+        // schema adds a uniqueness constraint to favorite_order.
+        tx.execute(
+            "UPDATE saved_items SET favorite_order = favorite_order + ?",
+            [expected + 1],
+        )?;
+        for (order, id) in ids.drain(..).enumerate() {
+            tx.execute(
+                "UPDATE saved_items SET favorite_order = ? WHERE id = ?",
+                params![i64::try_from(order).unwrap_or(i64::MAX), id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn delete_favorite(&mut self, id: i64) -> Result<bool> {
+        Ok(self.delete_saved_items(&[id])? == 1)
     }
 
     pub fn list_saved_items(&self, query: &str, limit: u32) -> Result<Vec<SavedItem>> {
@@ -1577,17 +2048,19 @@ impl ClipboardStore {
         };
         let fetch_limit = i64::from(page_size) + 1;
         let trimmed = query.trim();
-        let (cursor_clause, cursor_values) = cursor_filter("s", cursor);
         let select = "SELECT s.id, s.source_history_id, s.created_at, s.updated_at, s.name,
                     s.content_type, s.editable_text, s.source_app, s.source_executable,
-                    s.source_window_title, s.preview_text, s.byte_size, s.is_independent
+                    s.source_window_title, s.preview_text, s.byte_size, s.icon_key,
+                    s.favorite_order
              FROM saved_items s";
         let mut items = Vec::new();
+        let mut relevances = Vec::new();
         if trimmed.is_empty() {
+            let (cursor_clause, cursor_values) = favorites_cursor_filter(cursor)?;
             let sql = format!(
                 "{select}
                  WHERE 1 = 1 {cursor_clause}
-                 ORDER BY s.updated_at DESC, s.id DESC LIMIT ?"
+                 ORDER BY s.favorite_order ASC, s.id ASC LIMIT ?"
             );
             let mut values = cursor_values;
             values.push(Value::Integer(fetch_limit));
@@ -1597,35 +2070,75 @@ impl ClipboardStore {
                 items.push(row?);
             }
         } else if trimmed.chars().count() < 3 {
-            let pattern = format!("%{}%", escape_like_pattern(&trimmed.to_lowercase()));
+            let query_lower = trimmed.to_lowercase();
+            let short_rank = "CASE WHEN lower(f.document) = ? THEN 0
+                                    WHEN lower(f.document) LIKE ? || '%' THEN 1
+                                    ELSE 2 END";
+            let (cursor_clause, cursor_values) = favorites_search_cursor_filter_with_rank(
+                cursor,
+                short_rank,
+                &[
+                    Value::Text(query_lower.clone()),
+                    Value::Text(query_lower.clone()),
+                ],
+                RankOrder::Ascending,
+            )?;
+            let pattern = format!("%{}%", escape_like_pattern(&query_lower));
             let sql = format!(
-                "{select}
+                "SELECT s.id, s.source_history_id, s.created_at, s.updated_at, s.name,
+                        s.content_type, s.editable_text, s.source_app, s.source_executable,
+                        s.source_window_title, s.preview_text, s.byte_size, s.icon_key,
+                        s.favorite_order, {short_rank} AS relevance
+                 FROM saved_items s
                  JOIN saved_items_fts f ON CAST(f.saved_item_id AS INTEGER) = s.id
                  WHERE lower(f.document) LIKE ? ESCAPE '\\' {cursor_clause}
-                 ORDER BY s.updated_at DESC, s.id DESC LIMIT ?"
+                 ORDER BY relevance ASC, s.favorite_order ASC, s.id ASC LIMIT ?"
             );
-            let mut values = vec![Value::Text(pattern)];
+            let mut values = vec![
+                Value::Text(query_lower.clone()),
+                Value::Text(query_lower),
+                Value::Text(pattern),
+            ];
             values.extend(cursor_values);
             values.push(Value::Integer(fetch_limit));
             let mut statement = self.connection.prepare(&sql)?;
-            let rows = statement.query_map(params_from_iter(values), map_saved_item)?;
+            let rows = statement.query_map(params_from_iter(values), |row| {
+                Ok((map_saved_item(row)?, row.get::<_, i64>(14)?))
+            })?;
             for row in rows {
-                items.push(row?);
+                let (item, relevance) = row?;
+                items.push(item);
+                relevances.push(relevance);
             }
         } else {
+            let (cursor_clause, cursor_values) = favorites_search_cursor_filter_with_rank(
+                cursor,
+                "CAST((-bm25(saved_items_fts)) * 1000000 AS INTEGER)",
+                &[],
+                RankOrder::Descending,
+            )?;
             let sql = format!(
-                "{select}
+                "SELECT s.id, s.source_history_id, s.created_at, s.updated_at, s.name,
+                        s.content_type, s.editable_text, s.source_app, s.source_executable,
+                        s.source_window_title, s.preview_text, s.byte_size, s.icon_key,
+                        s.favorite_order,
+                        CAST((-bm25(saved_items_fts)) * 1000000 AS INTEGER) AS relevance
+                 FROM saved_items s
                  JOIN saved_items_fts f ON CAST(f.saved_item_id AS INTEGER) = s.id
                  WHERE saved_items_fts MATCH ? {cursor_clause}
-                 ORDER BY s.updated_at DESC, s.id DESC LIMIT ?"
+                 ORDER BY relevance DESC, s.favorite_order ASC, s.id ASC LIMIT ?"
             );
             let mut values = vec![Value::Text(fts_match_query(trimmed))];
             values.extend(cursor_values);
             values.push(Value::Integer(fetch_limit));
             let mut statement = self.connection.prepare(&sql)?;
-            let rows = statement.query_map(params_from_iter(values), map_saved_item)?;
+            let rows = statement.query_map(params_from_iter(values), |row| {
+                Ok((map_saved_item(row)?, row.get::<_, i64>(14)?))
+            })?;
             for row in rows {
-                items.push(row?);
+                let (item, relevance) = row?;
+                items.push(item);
+                relevances.push(relevance);
             }
         }
         for item in &mut items {
@@ -1636,9 +2149,22 @@ impl ClipboardStore {
         items.truncate(usize::try_from(page_size).unwrap_or(usize::MAX));
         let next_cursor = has_more
             .then(|| {
-                items.last().map(|item| PageCursor {
-                    updated_at: item.updated_at,
-                    id: item.id,
+                items.last().map(|item| {
+                    if trimmed.is_empty() {
+                        PageCursor::Favorites {
+                            favorite_order: item.favorite_order,
+                            id: item.id,
+                        }
+                    } else {
+                        PageCursor::FavoritesSearch {
+                            relevance: relevances
+                                .get(usize::try_from(page_size).unwrap_or(usize::MAX) - 1)
+                                .copied()
+                                .unwrap_or_default(),
+                            favorite_order: item.favorite_order,
+                            id: item.id,
+                        }
+                    }
                 })
             })
             .flatten();
@@ -1656,7 +2182,7 @@ impl ClipboardStore {
             .query_row(
                 "SELECT id, source_history_id, created_at, updated_at, name, content_type,
                         editable_text, source_app, source_executable, source_window_title,
-                        preview_text, byte_size, is_independent
+                        preview_text, byte_size, icon_key, favorite_order
                  FROM saved_items WHERE id = ?",
                 [id],
                 |row| {
@@ -1674,7 +2200,8 @@ impl ClipboardStore {
                         preview_text: row.get(10)?,
                         byte_size: row.get::<_, i64>(11)?.try_into().unwrap_or(0),
                         tags: Vec::new(),
-                        is_independent: row.get::<_, i64>(12)? != 0,
+                        icon_key: row.get(12)?,
+                        favorite_order: row.get(13)?,
                         thumbnail: None,
                     })
                 },
@@ -1751,15 +2278,6 @@ impl ClipboardStore {
         tx.commit()?;
         self.schedule_blob_gc()?;
         Ok(deleted)
-    }
-
-    pub fn clear_history(&mut self) -> Result<()> {
-        let tx = self.connection.transaction()?;
-        tx.execute("DELETE FROM clipboard_fts", [])?;
-        tx.execute("DELETE FROM clipboard_entries", [])?;
-        tx.commit()?;
-        self.schedule_blob_gc()?;
-        Ok(())
     }
 
     fn tags_for_item(&self, id: i64) -> Result<Vec<String>> {
@@ -2270,28 +2788,53 @@ impl SharedClipboardStore {
         self.reader.read(|store| store.saved_item_payload(id))
     }
 
-    pub fn save_history_item(
-        &self,
-        draft: SavedItemDraft,
-        payload: Vec<ClipboardRepresentation>,
-    ) -> Result<SavedItem> {
-        let saved = self.with_store(move |store| store.save_history_item(draft, payload))?;
+    pub fn move_history_to_favorite(&self, id: i64) -> Result<SavedItem> {
+        let saved = self.with_store(move |store| store.move_history_to_favorite(id))?;
         self.request_maintenance();
         Ok(saved)
     }
 
-    pub fn unsave_history_item(&self, id: i64) -> Result<bool> {
-        let deleted = self.with_store(move |store| store.unsave_history_item(id))?;
-        if deleted {
+    pub fn move_history_many_to_favorites(&self, ids: &[i64]) -> Result<Vec<SavedItem>> {
+        let ids = ids.to_vec();
+        let saved = self.with_store(move |store| store.move_history_many_to_favorites(&ids))?;
+        if !saved.is_empty() {
+            self.request_maintenance();
+        }
+        Ok(saved)
+    }
+
+    pub fn create_favorite(&self, draft: FavoriteDraft) -> Result<SavedItem> {
+        let saved = self.with_store(move |store| store.create_favorite(draft))?;
+        self.request_maintenance();
+        Ok(saved)
+    }
+
+    pub fn update_favorite(&self, id: i64, update: FavoriteUpdate) -> Result<SavedItem> {
+        let saved = self.with_store(move |store| store.update_favorite(id, update))?;
+        self.request_maintenance();
+        Ok(saved)
+    }
+
+    pub fn pin_history(&self, id: i64) -> Result<bool> {
+        self.with_store(move |store| store.pin_history(id))
+    }
+
+    pub fn unpin_history(&self, id: i64) -> Result<bool> {
+        self.with_store(move |store| store.unpin_history(id))
+    }
+
+    pub fn pin_history_many(&self, ids: &[i64]) -> Result<usize> {
+        let ids = ids.to_vec();
+        self.with_store(move |store| store.pin_history_many(&ids))
+    }
+
+    pub fn delete_history_many(&self, ids: &[i64]) -> Result<usize> {
+        let ids = ids.to_vec();
+        let deleted = self.with_store(move |store| store.delete_history_many(&ids))?;
+        if deleted != 0 {
             self.request_maintenance();
         }
         Ok(deleted)
-    }
-
-    pub fn update_saved_item(&self, id: i64, update: SavedItemUpdate) -> Result<SavedItem> {
-        let saved = self.with_store(move |store| store.update_saved_item(id, update))?;
-        self.request_maintenance();
-        Ok(saved)
     }
 
     pub fn delete_entry(&self, id: i64) -> Result<bool> {
@@ -2311,10 +2854,23 @@ impl SharedClipboardStore {
         Ok(deleted)
     }
 
-    pub fn clear_history(&self) -> Result<()> {
-        self.with_store(|store| store.clear_history())?;
+    pub fn clear_unpinned_history(&self) -> Result<usize> {
+        let deleted = self.with_store(|store| store.clear_unpinned_history())?;
         self.request_maintenance();
-        Ok(())
+        Ok(deleted)
+    }
+
+    pub fn reorder_favorites(&self, ordered_ids: &[i64]) -> Result<()> {
+        let ids = ordered_ids.to_vec();
+        self.with_store(move |store| store.reorder_favorites(&ids))
+    }
+
+    pub fn delete_favorite(&self, id: i64) -> Result<bool> {
+        let deleted = self.with_store(move |store| store.delete_favorite(id))?;
+        if deleted {
+            self.request_maintenance();
+        }
+        Ok(deleted)
     }
 
     pub fn reconcile_blob_store(&self) -> Result<()> {
@@ -2402,32 +2958,62 @@ impl LibraryStore for SharedClipboardStore {
         SharedClipboardStore::entry_payload(self, id)
     }
 
-    fn save_history_item(
+    fn move_history_to_favorite(
         &self,
-        draft: SavedItemDraft,
-        payload: Vec<ClipboardRepresentation>,
+        history_id: i64,
     ) -> std::result::Result<SavedItem, Self::Error> {
-        SharedClipboardStore::save_history_item(self, draft, payload)
+        SharedClipboardStore::move_history_to_favorite(self, history_id)
     }
 
-    fn unsave_history_item(&self, history_id: i64) -> std::result::Result<bool, Self::Error> {
-        SharedClipboardStore::unsave_history_item(self, history_id)
+    fn move_history_many_to_favorites(
+        &self,
+        history_ids: &[i64],
+    ) -> std::result::Result<Vec<SavedItem>, Self::Error> {
+        SharedClipboardStore::move_history_many_to_favorites(self, history_ids)
     }
 
-    fn update_saved_item(
+    fn create_favorite(&self, draft: FavoriteDraft) -> std::result::Result<SavedItem, Self::Error> {
+        SharedClipboardStore::create_favorite(self, draft)
+    }
+
+    fn update_favorite(
         &self,
         id: i64,
-        update: SavedItemUpdate,
+        update: FavoriteUpdate,
     ) -> std::result::Result<SavedItem, Self::Error> {
-        SharedClipboardStore::update_saved_item(self, id, update)
+        SharedClipboardStore::update_favorite(self, id, update)
+    }
+
+    fn pin_history(&self, history_id: i64) -> std::result::Result<bool, Self::Error> {
+        SharedClipboardStore::pin_history(self, history_id)
+    }
+
+    fn unpin_history(&self, history_id: i64) -> std::result::Result<bool, Self::Error> {
+        SharedClipboardStore::unpin_history(self, history_id)
+    }
+
+    fn pin_history_many(&self, history_ids: &[i64]) -> std::result::Result<usize, Self::Error> {
+        SharedClipboardStore::pin_history_many(self, history_ids)
+    }
+
+    fn delete_history_many(&self, history_ids: &[i64]) -> std::result::Result<usize, Self::Error> {
+        SharedClipboardStore::delete_history_many(self, history_ids)
     }
 
     fn delete_entry(&self, id: i64) -> std::result::Result<bool, Self::Error> {
         SharedClipboardStore::delete_entry(self, id)
     }
 
-    fn clear_history(&self) -> std::result::Result<(), Self::Error> {
-        SharedClipboardStore::clear_history(self)
+    fn clear_unpinned_history(&self) -> std::result::Result<usize, Self::Error> {
+        SharedClipboardStore::clear_unpinned_history(self)
+    }
+
+    fn reorder_favorites(&self, ordered_ids: &[i64]) -> std::result::Result<(), Self::Error> {
+        SharedClipboardStore::reorder_favorites(self, ordered_ids)
+    }
+
+    fn delete_favorite(&self, id: i64) -> std::result::Result<bool, Self::Error> {
+        SharedClipboardStore::delete_favorite(self, id)
     }
 
     fn settings(&self) -> std::result::Result<ClipboardSettings, Self::Error> {
@@ -2462,17 +3048,183 @@ impl LibraryStore for SharedClipboardStore {
     }
 }
 
-fn cursor_filter(alias: &str, cursor: Option<PageCursor>) -> (String, Vec<Value>) {
+fn history_cursor_filter(cursor: Option<PageCursor>) -> Result<(String, Vec<Value>)> {
     match cursor {
-        Some(cursor) => (
-            format!("AND ({alias}.updated_at < ? OR ({alias}.updated_at = ? AND {alias}.id < ?))"),
+        None => Ok((String::new(), Vec::new())),
+        Some(PageCursor::History {
+            pinned_at: Some(pinned_at),
+            id,
+            ..
+        }) => Ok((
+            "AND (e.history_pinned_at IS NULL OR
+                  (e.history_pinned_at < ? OR (e.history_pinned_at = ? AND e.id < ?)))"
+                .to_owned(),
             vec![
-                Value::Integer(cursor.updated_at),
-                Value::Integer(cursor.updated_at),
-                Value::Integer(cursor.id),
+                Value::Integer(pinned_at),
+                Value::Integer(pinned_at),
+                Value::Integer(id),
             ],
-        ),
-        None => (String::new(), Vec::new()),
+        )),
+        Some(PageCursor::History {
+            pinned_at: None,
+            updated_at,
+            id,
+        }) => Ok((
+            "AND e.history_pinned_at IS NULL
+             AND (e.updated_at < ? OR (e.updated_at = ? AND e.id < ?))"
+                .to_owned(),
+            vec![
+                Value::Integer(updated_at),
+                Value::Integer(updated_at),
+                Value::Integer(id),
+            ],
+        )),
+        Some(_) => Err(StorageError::Invalid(
+            "cursor does not belong to the History order".to_owned(),
+        )),
+    }
+}
+
+#[derive(Clone, Copy)]
+enum RankOrder {
+    Ascending,
+    Descending,
+}
+
+impl RankOrder {
+    fn after_operator(self) -> &'static str {
+        match self {
+            Self::Ascending => ">",
+            Self::Descending => "<",
+        }
+    }
+}
+
+fn history_search_cursor_filter_with_rank(
+    cursor: Option<PageCursor>,
+    rank_expression: &str,
+    rank_values: &[Value],
+    rank_order: RankOrder,
+) -> Result<(String, Vec<Value>)> {
+    let after_operator = rank_order.after_operator();
+    match cursor {
+        None => Ok((String::new(), Vec::new())),
+        Some(PageCursor::HistorySearch {
+            pinned_at: Some(_),
+            relevance,
+            updated_at,
+            id,
+        }) => Ok((
+            format!(
+                "AND (e.history_pinned_at IS NULL OR
+                      (e.history_pinned_at IS NOT NULL AND
+                       ({rank_expression} {after_operator} ? OR
+                        ({rank_expression} = ? AND
+                         (e.updated_at < ? OR (e.updated_at = ? AND e.id < ?))))))"
+            ),
+            [
+                rank_values.to_vec(),
+                vec![Value::Integer(relevance)],
+                rank_values.to_vec(),
+                vec![
+                    Value::Integer(relevance),
+                    Value::Integer(updated_at),
+                    Value::Integer(updated_at),
+                    Value::Integer(id),
+                ],
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
+        )),
+        Some(PageCursor::HistorySearch {
+            pinned_at: None,
+            relevance,
+            updated_at,
+            id,
+        }) => Ok((
+            format!(
+                "AND e.history_pinned_at IS NULL AND
+                      ({rank_expression} {after_operator} ? OR
+                       ({rank_expression} = ? AND
+                        (e.updated_at < ? OR (e.updated_at = ? AND e.id < ?))))"
+            ),
+            [
+                rank_values.to_vec(),
+                vec![Value::Integer(relevance)],
+                rank_values.to_vec(),
+                vec![
+                    Value::Integer(relevance),
+                    Value::Integer(updated_at),
+                    Value::Integer(updated_at),
+                    Value::Integer(id),
+                ],
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
+        )),
+        Some(_) => Err(StorageError::Invalid(
+            "cursor does not belong to the History search order".to_owned(),
+        )),
+    }
+}
+
+fn favorites_cursor_filter(cursor: Option<PageCursor>) -> Result<(String, Vec<Value>)> {
+    match cursor {
+        None => Ok((String::new(), Vec::new())),
+        Some(PageCursor::Favorites { favorite_order, id }) => Ok((
+            "AND (s.favorite_order > ? OR (s.favorite_order = ? AND s.id > ?))".to_owned(),
+            vec![
+                Value::Integer(favorite_order),
+                Value::Integer(favorite_order),
+                Value::Integer(id),
+            ],
+        )),
+        Some(_) => Err(StorageError::Invalid(
+            "cursor does not belong to the Favorites order".to_owned(),
+        )),
+    }
+}
+
+fn favorites_search_cursor_filter_with_rank(
+    cursor: Option<PageCursor>,
+    rank_expression: &str,
+    rank_values: &[Value],
+    rank_order: RankOrder,
+) -> Result<(String, Vec<Value>)> {
+    let after_operator = rank_order.after_operator();
+    match cursor {
+        None => Ok((String::new(), Vec::new())),
+        Some(PageCursor::FavoritesSearch {
+            relevance,
+            favorite_order,
+            id,
+        }) => Ok((
+            format!(
+                "AND ({rank_expression} {after_operator} ? OR
+                      ({rank_expression} = ? AND
+                       (s.favorite_order > ? OR
+                        (s.favorite_order = ? AND s.id > ?))))"
+            ),
+            [
+                rank_values.to_vec(),
+                vec![Value::Integer(relevance)],
+                rank_values.to_vec(),
+                vec![
+                    Value::Integer(relevance),
+                    Value::Integer(favorite_order),
+                    Value::Integer(favorite_order),
+                    Value::Integer(id),
+                ],
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
+        )),
+        Some(_) => Err(StorageError::Invalid(
+            "cursor does not belong to the Favorites search order".to_owned(),
+        )),
     }
 }
 
@@ -2518,7 +3270,7 @@ fn map_entry(row: &Row<'_>) -> rusqlite::Result<ClipboardEntry> {
         searchable_text: row.get(8)?,
         sanitized_html: row.get(9)?,
         fingerprint: row.get(10)?,
-        saved_item_id: row.get(11)?,
+        pinned_at: row.get(11)?,
         byte_size: row.get::<_, i64>(12)?.try_into().unwrap_or(0),
         thumbnail: None,
     })
@@ -2539,7 +3291,8 @@ fn map_saved_item(row: &Row<'_>) -> rusqlite::Result<SavedItem> {
         preview_text: row.get(10)?,
         byte_size: row.get::<_, i64>(11)?.try_into().unwrap_or(0),
         tags: Vec::new(),
-        is_independent: row.get::<_, i64>(12)? != 0,
+        icon_key: row.get(12)?,
+        favorite_order: row.get(13)?,
         thumbnail: None,
     })
 }
@@ -2632,6 +3385,25 @@ fn default_saved_item_name(content_type: &str, preview: Option<&str>) -> String 
             "files" => "Files".to_owned(),
             _ => "Saved item".to_owned(),
         })
+}
+
+fn default_favorite_name_from_content(content: &str) -> String {
+    content
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(|line| line.chars().take(120).collect())
+        .unwrap_or_else(|| "Favorite".to_owned())
+}
+
+fn next_pin_order_tx(tx: &Transaction<'_>) -> Result<i64> {
+    let now = now_millis();
+    let maximum: i64 = tx.query_row(
+        "SELECT COALESCE(MAX(history_pinned_at), 0) FROM clipboard_entries",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(now.max(maximum.saturating_add(1)))
 }
 
 #[cfg(test)]
@@ -2737,18 +3509,14 @@ mod tests {
             .record_capture(text_capture("favorite", 1))
             .unwrap()
             .id;
-        let entry = store.list_entries("", 20).unwrap().remove(0);
-        let payload = store.entry_payload(id).unwrap();
-        store
-            .save_history_item(SavedItemDraft::from_history(&entry), payload)
-            .unwrap();
-        store.clear_history().unwrap();
+        let saved_item = store.move_history_to_favorite(id).unwrap();
+        assert_eq!(store.clear_unpinned_history().unwrap(), 0);
         assert!(store.entry(id).unwrap().is_none());
         assert_eq!(store.list_saved_items("", 20).unwrap().len(), 1);
-        store.delete_entry(id).unwrap();
         let saved = store.list_saved_items("", 20).unwrap();
         assert_eq!(saved.len(), 1);
         assert!(saved[0].source_history_id.is_none());
+        assert_eq!(saved[0].id, saved_item.id);
     }
 
     #[test]
@@ -2759,13 +3527,7 @@ mod tests {
             .record_capture(text_capture("original", 1))
             .unwrap()
             .id;
-        let entry = store.list_entries("", 20).unwrap().remove(0);
-        let saved = store
-            .save_history_item(
-                SavedItemDraft::from_history(&entry),
-                store.entry_payload(history_id).unwrap(),
-            )
-            .unwrap();
+        let saved = store.move_history_to_favorite(history_id).unwrap();
         assert_eq!(saved.name, "original");
         assert_eq!(
             store.saved_item_payload(saved.id).unwrap()[0].bytes,
@@ -2773,10 +3535,11 @@ mod tests {
         );
 
         let updated = store
-            .update_saved_item(
+            .update_favorite(
                 saved.id,
-                SavedItemUpdate {
-                    name: "  Canonical name  ".to_owned(),
+                FavoriteUpdate {
+                    name: Some("  Canonical name  ".to_owned()),
+                    icon_key: None,
                     tags: vec![" Work ".to_owned(), "work".to_owned(), "工作".to_owned()],
                     editable_text: Some("edited body".to_owned()),
                 },
@@ -2812,42 +3575,32 @@ mod tests {
         capture.representations[0].bytes = vec![5, 6, 7, 8];
         capture.fingerprint = fingerprint(&capture.representations);
         let second_history = store.record_capture(capture).unwrap().id;
-        let entries = store.list_entries("", 20).unwrap();
-        let first = store
-            .save_history_item(
-                SavedItemDraft::from_history(
-                    &entries
-                        .iter()
-                        .find(|entry| entry.id == first_history)
-                        .unwrap()
-                        .clone(),
-                ),
-                store.entry_payload(first_history).unwrap(),
-            )
-            .unwrap();
-        let second = store
-            .save_history_item(
-                SavedItemDraft::from_history(
-                    &entries
-                        .iter()
-                        .find(|entry| entry.id == second_history)
-                        .unwrap()
-                        .clone(),
-                ),
-                store.entry_payload(second_history).unwrap(),
-            )
-            .unwrap();
+        let first = store.move_history_to_favorite(first_history).unwrap();
+        let second = store.move_history_to_favorite(second_history).unwrap();
         let bytes = store.saved_item_payload(first.id).unwrap()[0].bytes.clone();
         store
-            .update_saved_item(
+            .update_favorite(
                 first.id,
-                SavedItemUpdate {
-                    name: "renamed image".to_owned(),
+                FavoriteUpdate {
+                    name: Some("renamed image".to_owned()),
+                    icon_key: None,
                     tags: vec!["assets".to_owned()],
                     editable_text: None,
                 },
             )
             .unwrap();
+        assert_eq!(store.saved_item_payload(first.id).unwrap()[0].bytes, bytes);
+        assert!(store
+            .update_favorite(
+                first.id,
+                FavoriteUpdate {
+                    name: None,
+                    icon_key: None,
+                    tags: Vec::new(),
+                    editable_text: Some("must stay binary".to_owned()),
+                },
+            )
+            .is_err());
         assert_eq!(store.saved_item_payload(first.id).unwrap()[0].bytes, bytes);
         assert_eq!(store.delete_saved_items(&[first.id, second.id]).unwrap(), 2);
         assert!(store.list_saved_items("", 20).unwrap().is_empty());
@@ -2973,11 +3726,565 @@ mod tests {
     }
 
     #[test]
+    fn move_history_to_favorite_is_atomic_and_preserves_original_representations() {
+        let root = TempDir::new().unwrap();
+        let mut store = ClipboardStore::open(root.path()).unwrap();
+        let mut capture = text_capture("move payload", 1);
+        capture.representations.push(ClipboardRepresentation {
+            format: "application/octet-stream".to_owned(),
+            mime_type: "application/octet-stream".to_owned(),
+            bytes: vec![7; INLINE_LIMIT + 11],
+        });
+        capture.fingerprint = fingerprint(&capture.representations);
+        let history_id = store.record_capture(capture).unwrap().id;
+        let payload = store.entry_payload(history_id).unwrap();
+        let favorite = store.move_history_to_favorite(history_id).unwrap();
+
+        assert!(store.entry(history_id).unwrap().is_none());
+        assert!(store.list_entries("", 20).unwrap().is_empty());
+        assert_eq!(store.saved_item_payload(favorite.id).unwrap(), payload);
+        assert_eq!(
+            favorite.byte_size,
+            payload
+                .iter()
+                .map(|item| item.bytes.len() as u64)
+                .sum::<u64>()
+        );
+        assert_eq!(
+            store
+                .connection
+                .query_row(
+                    "SELECT COUNT(*) FROM clipboard_fts WHERE entry_id = ?",
+                    [history_id.to_string()],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            store
+                .connection
+                .query_row(
+                    "SELECT COUNT(*) FROM saved_items_fts WHERE saved_item_id = ?",
+                    [favorite.id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+        store.reconcile_blob_store().unwrap();
+        assert_eq!(store.saved_item_payload(favorite.id).unwrap(), payload);
+    }
+
+    #[test]
+    fn move_history_to_favorite_rolls_back_when_history_delete_fails() {
+        let root = TempDir::new().unwrap();
+        let mut store = ClipboardStore::open(root.path()).unwrap();
+        let history_id = store
+            .record_capture(text_capture("rollback", 1))
+            .unwrap()
+            .id;
+        store
+            .connection
+            .execute_batch(
+                "CREATE TRIGGER fail_history_delete BEFORE DELETE ON clipboard_entries
+                 BEGIN SELECT RAISE(ABORT, 'injected move failure'); END;",
+            )
+            .unwrap();
+        assert!(store.move_history_to_favorite(history_id).is_err());
+        store
+            .connection
+            .execute_batch("DROP TRIGGER fail_history_delete")
+            .unwrap();
+        assert!(store.entry(history_id).unwrap().is_some());
+        assert!(store.list_saved_items("", 20).unwrap().is_empty());
+        assert_eq!(store.list_entries("rollback", 20).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn pinned_history_is_stable_and_protected_from_capacity_and_clear_all() {
+        let root = TempDir::new().unwrap();
+        let mut store = ClipboardStore::open(root.path()).unwrap();
+        let first = store.record_capture(text_capture("first", 1)).unwrap().id;
+        let second = store.record_capture(text_capture("second", 2)).unwrap().id;
+        let third = store.record_capture(text_capture("third", 3)).unwrap().id;
+        assert_eq!(store.pin_history(first).unwrap(), true);
+        assert_eq!(store.pin_history(second).unwrap(), true);
+        assert_eq!(store.pin_history(second).unwrap(), false);
+        let ordered = store.list_entries("", 20).unwrap();
+        assert_eq!(
+            ordered.iter().map(|entry| entry.id).collect::<Vec<_>>(),
+            vec![second, first, third]
+        );
+        assert_eq!(store.unpin_history(second).unwrap(), true);
+        assert_eq!(store.list_entries("", 20).unwrap()[0].id, first);
+
+        let mut settings = store.settings().unwrap();
+        settings.max_entries = 1;
+        store.update_settings(&settings).unwrap();
+        store.record_capture(text_capture("fourth", 4)).unwrap();
+        assert_eq!(store.list_entries("", 20).unwrap().len(), 1);
+        assert_eq!(store.list_entries("", 20).unwrap()[0].id, first);
+        assert_eq!(store.clear_unpinned_history().unwrap(), 0);
+        assert!(store.entry(first).unwrap().is_some());
+        settings.max_entries = 0;
+        store.update_settings(&settings).unwrap();
+        store
+            .record_capture(text_capture("over target", 5))
+            .unwrap();
+        assert!(store
+            .metrics_snapshot()
+            .iter()
+            .any(|metric| metric.operation == "capacity_over_target"));
+        assert_eq!(store.delete_entry(first).unwrap(), true);
+        assert!(store.list_entries("", 20).unwrap().is_empty());
+    }
+
+    #[test]
+    fn favorite_create_order_reorder_and_relevance_persist() {
+        let root = TempDir::new().unwrap();
+        let mut store = ClipboardStore::open(root.path()).unwrap();
+        let first = store
+            .create_favorite(FavoriteDraft {
+                content: "alpha reusable command".to_owned(),
+                name: None,
+                icon_key: Some("Terminal".to_owned()),
+                tags: vec!["commands".to_owned()],
+            })
+            .unwrap();
+        let second = store
+            .create_favorite(FavoriteDraft {
+                content: "zulu reusable command".to_owned(),
+                name: Some("Zulu".to_owned()),
+                icon_key: None,
+                tags: Vec::new(),
+            })
+            .unwrap();
+        assert_eq!(store.list_saved_items("", 20).unwrap()[0].id, second.id);
+        store.reorder_favorites(&[first.id, second.id]).unwrap();
+        assert_eq!(
+            store
+                .list_saved_items("", 20)
+                .unwrap()
+                .iter()
+                .map(|item| item.id)
+                .collect::<Vec<_>>(),
+            vec![first.id, second.id]
+        );
+        let updated = store
+            .update_favorite(
+                second.id,
+                FavoriteUpdate {
+                    name: None,
+                    icon_key: Some("Mail".to_owned()),
+                    tags: vec!["shortcuts".to_owned()],
+                    editable_text: Some("alpha second command".to_owned()),
+                },
+            )
+            .unwrap();
+        assert_eq!(updated.icon_key.as_deref(), Some("Mail"));
+        assert_eq!(store.list_saved_items("alpha", 20).unwrap().len(), 2);
+        drop(store);
+        let reopened = ClipboardStore::open(root.path()).unwrap();
+        assert_eq!(reopened.list_saved_items("", 20).unwrap()[0].id, first.id);
+        assert_eq!(
+            reopened
+                .saved_item(second.id)
+                .unwrap()
+                .unwrap()
+                .item
+                .icon_key
+                .as_deref(),
+            Some("Mail")
+        );
+    }
+
+    #[test]
+    fn theme_setting_defaults_round_trips_and_reopens_from_clipboard_settings() {
+        let root = TempDir::new().unwrap();
+        let mut store = ClipboardStore::open(root.path()).unwrap();
+        assert_eq!(store.settings().unwrap().theme, ThemeMode::System);
+        assert_eq!(
+            store
+                .connection
+                .query_row(
+                    "SELECT theme FROM clipboard_settings WHERE id = 1",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "system"
+        );
+
+        for mode in [ThemeMode::Light, ThemeMode::Dark, ThemeMode::System] {
+            let mut settings = store.settings().unwrap();
+            settings.theme = mode;
+            store.update_settings(&settings).unwrap();
+            assert_eq!(store.settings().unwrap().theme, mode);
+        }
+
+        drop(store);
+        let reopened = ClipboardStore::open(root.path()).unwrap();
+        assert_eq!(reopened.settings().unwrap().theme, ThemeMode::System);
+    }
+
+    #[test]
+    fn schema_v5_settings_backfill_adds_theme_without_bumping_version() {
+        let root = TempDir::new().unwrap();
+        let database = root.path().join("echo.sqlite3");
+        {
+            let store = ClipboardStore::open(root.path()).unwrap();
+            assert_eq!(
+                store
+                    .connection
+                    .query_row("PRAGMA user_version", [], |row| row.get::<_, i32>(0))
+                    .unwrap(),
+                CURRENT_SCHEMA_VERSION
+            );
+        }
+
+        let connection = Connection::open(&database).unwrap();
+        connection
+            .execute_batch(
+                "PRAGMA foreign_keys = OFF;
+                 ALTER TABLE clipboard_settings RENAME TO clipboard_settings_with_theme;
+                 CREATE TABLE clipboard_settings (
+                     id INTEGER PRIMARY KEY CHECK (id = 1),
+                     history_enabled INTEGER NOT NULL DEFAULT 1,
+                     record_sensitive INTEGER NOT NULL DEFAULT 0,
+                     store_window_titles INTEGER NOT NULL DEFAULT 0,
+                     max_entries INTEGER NOT NULL DEFAULT 5000,
+                     max_total_bytes INTEGER NOT NULL DEFAULT 536870912,
+                     max_item_bytes INTEGER NOT NULL DEFAULT 33554432
+                 );
+                 INSERT INTO clipboard_settings
+                     (id, history_enabled, record_sensitive, store_window_titles,
+                      max_entries, max_total_bytes, max_item_bytes)
+                 SELECT id, history_enabled, record_sensitive, store_window_titles,
+                        max_entries, max_total_bytes, max_item_bytes
+                 FROM clipboard_settings_with_theme;
+                 DROP TABLE clipboard_settings_with_theme;
+                 PRAGMA user_version = 5;
+                 PRAGMA foreign_keys = ON;",
+            )
+            .unwrap();
+        drop(connection);
+
+        let reopened = ClipboardStore::open(root.path()).unwrap();
+        assert_eq!(reopened.settings().unwrap().theme, ThemeMode::System);
+        assert_eq!(
+            reopened
+                .connection
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i32>(0))
+                .unwrap(),
+            CURRENT_SCHEMA_VERSION
+        );
+    }
+
+    #[test]
+    fn migration_failure_keeps_linked_history_and_schema_version() {
+        let root = TempDir::new().unwrap();
+        let database = root.path().join("echo.sqlite3");
+        let connection = Connection::open(&database).unwrap();
+        connection
+            .execute_batch(include_str!("../fixtures/migrations/pre-r1.sql"))
+            .unwrap();
+        connection
+            .execute(
+                "DELETE FROM saved_item_representations WHERE saved_item_id = 31",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+        assert!(ClipboardStore::open(root.path()).is_err());
+        let connection = Connection::open(database).unwrap();
+        assert_eq!(
+            connection
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i32>(0))
+                .unwrap(),
+            4
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM clipboard_entries WHERE id = 12",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn migration_failure_rejects_a_corrupt_linked_blob_without_deleting_history() {
+        let root = TempDir::new().unwrap();
+        let database = root.path().join("echo.sqlite3");
+        let connection = Connection::open(&database).unwrap();
+        connection
+            .execute_batch(include_str!("../fixtures/migrations/pre-r1.sql"))
+            .unwrap();
+        let expected_hash = hash_bytes(b"expected");
+        connection
+            .execute(
+                "UPDATE saved_item_representations
+                 SET inline_data = NULL, blob_hash = ?, byte_size = 8
+                 WHERE saved_item_id = 31",
+                params![expected_hash],
+            )
+            .unwrap();
+        drop(connection);
+        fs::create_dir_all(root.path().join("blobs")).unwrap();
+        fs::write(root.path().join("blobs").join(&expected_hash), b"corrupt!").unwrap();
+
+        assert!(ClipboardStore::open(root.path()).is_err());
+        let connection = Connection::open(database).unwrap();
+        assert_eq!(
+            connection
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i32>(0))
+                .unwrap(),
+            4
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM clipboard_entries WHERE id = 12",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM saved_items WHERE id = 31",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn batch_move_and_pin_are_transactional_and_idempotent() {
+        let root = TempDir::new().unwrap();
+        let mut store = ClipboardStore::open(root.path()).unwrap();
+        let first = store
+            .record_capture(text_capture("batch one", 1))
+            .unwrap()
+            .id;
+        let second = store
+            .record_capture(text_capture("batch two", 2))
+            .unwrap()
+            .id;
+        let third = store
+            .record_capture(text_capture("batch three", 3))
+            .unwrap()
+            .id;
+        assert_eq!(store.pin_history_many(&[first, second, second]).unwrap(), 2);
+        assert_eq!(store.pin_history_many(&[first, second]).unwrap(), 0);
+        let moved = store
+            .move_history_many_to_favorites(&[first, second, third, third])
+            .unwrap();
+        assert_eq!(moved.len(), 3);
+        assert!(store.list_entries("", 20).unwrap().is_empty());
+        assert_eq!(store.list_saved_items("", 20).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn authoritative_search_cursors_cross_pinned_and_relevance_partitions() {
+        let root = TempDir::new().unwrap();
+        let mut store = ClipboardStore::open(root.path()).unwrap();
+        let mut history_ids = Vec::new();
+        for sequence in 1..=4 {
+            history_ids.push(
+                store
+                    .record_capture(text_capture(&format!("cursor search {sequence}"), sequence))
+                    .unwrap()
+                    .id,
+            );
+        }
+        store.pin_history(history_ids[0]).unwrap();
+        let mut cursor = None;
+        let mut seen = Vec::new();
+        loop {
+            let page = store.list_entries_page("search", 1, cursor).unwrap();
+            seen.extend(page.items.iter().map(|entry| entry.id));
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert_eq!(seen.len(), 4);
+        seen.sort_unstable();
+        assert_eq!(seen, history_ids.iter().copied().collect::<Vec<_>>());
+
+        let mut favorite_ids = Vec::new();
+        for value in ["cursor alpha", "cursor beta", "cursor gamma"] {
+            favorite_ids.push(
+                store
+                    .create_favorite(FavoriteDraft {
+                        content: value.to_owned(),
+                        name: None,
+                        icon_key: None,
+                        tags: Vec::new(),
+                    })
+                    .unwrap()
+                    .id,
+            );
+        }
+        let mut cursor = None;
+        let mut seen_favorites = Vec::new();
+        loop {
+            let page = store.list_saved_items_page("cursor", 1, cursor).unwrap();
+            seen_favorites.extend(page.items.iter().map(|item| item.id));
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert_eq!(seen_favorites.len(), 3);
+        seen_favorites.sort_unstable();
+        favorite_ids.sort_unstable();
+        assert_eq!(seen_favorites, favorite_ids);
+    }
+
+    #[test]
+    fn short_history_search_cursor_crosses_relevance_ranks_without_duplicates() {
+        let root = TempDir::new().unwrap();
+        let mut store = ClipboardStore::open(root.path()).unwrap();
+        let exact = store.record_capture(text_capture("ab", 1)).unwrap().id;
+        let prefix_one = store
+            .record_capture(text_capture("ab prefix one", 2))
+            .unwrap()
+            .id;
+        let prefix_two = store
+            .record_capture(text_capture("ab prefix two", 3))
+            .unwrap()
+            .id;
+        let contains = store
+            .record_capture(text_capture("contains ab", 4))
+            .unwrap()
+            .id;
+
+        let expected = store.list_entries("ab", 20).unwrap();
+        assert_eq!(expected.len(), 4);
+        assert_eq!(expected[0].id, exact);
+        assert!(expected[1..3]
+            .iter()
+            .all(|entry| [prefix_one, prefix_two].contains(&entry.id)));
+        assert_eq!(expected[3].id, contains);
+        let expected_ids = expected.iter().map(|entry| entry.id).collect::<Vec<_>>();
+
+        let mut cursor = None;
+        let mut seen = Vec::new();
+        for _ in 0..8 {
+            let page = store.list_entries_page("ab", 1, cursor).unwrap();
+            seen.extend(page.items.iter().map(|entry| entry.id));
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+
+        assert!(
+            cursor.is_none(),
+            "short history pagination did not terminate"
+        );
+        assert_eq!(seen, expected_ids);
+        assert_eq!(
+            seen.iter()
+                .copied()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            seen.len()
+        );
+    }
+
+    #[test]
+    fn short_favorites_search_cursor_crosses_relevance_ranks_without_duplicates() {
+        let root = TempDir::new().unwrap();
+        let mut store = ClipboardStore::open(root.path()).unwrap();
+        let prefix_one = store
+            .create_favorite(FavoriteDraft {
+                content: "ab favorite one".to_owned(),
+                name: None,
+                icon_key: None,
+                tags: Vec::new(),
+            })
+            .unwrap()
+            .id;
+        let prefix_two = store
+            .create_favorite(FavoriteDraft {
+                content: "ab favorite two".to_owned(),
+                name: None,
+                icon_key: None,
+                tags: Vec::new(),
+            })
+            .unwrap()
+            .id;
+        let contains_one = store
+            .create_favorite(FavoriteDraft {
+                content: "contains ab favorite one".to_owned(),
+                name: Some("Other one".to_owned()),
+                icon_key: None,
+                tags: Vec::new(),
+            })
+            .unwrap()
+            .id;
+        let contains_two = store
+            .create_favorite(FavoriteDraft {
+                content: "contains ab favorite two".to_owned(),
+                name: Some("Other two".to_owned()),
+                icon_key: None,
+                tags: Vec::new(),
+            })
+            .unwrap()
+            .id;
+
+        let expected = store.list_saved_items("ab", 20).unwrap();
+        assert_eq!(expected.len(), 4);
+        assert!(expected[..2]
+            .iter()
+            .all(|item| [prefix_one, prefix_two].contains(&item.id)));
+        assert!(expected[2..]
+            .iter()
+            .all(|item| [contains_one, contains_two].contains(&item.id)));
+        let expected_ids = expected.iter().map(|item| item.id).collect::<Vec<_>>();
+
+        let mut cursor = None;
+        let mut seen = Vec::new();
+        for _ in 0..8 {
+            let page = store.list_saved_items_page("ab", 1, cursor).unwrap();
+            seen.extend(page.items.iter().map(|item| item.id));
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+
+        assert!(
+            cursor.is_none(),
+            "short favorites pagination did not terminate"
+        );
+        assert_eq!(seen, expected_ids);
+        assert_eq!(
+            seen.iter()
+                .copied()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            seen.len()
+        );
+    }
+
+    #[test]
     fn versioned_fixture_upgrades_preserve_records_and_are_idempotent() {
         for (fixture, entries, favorites) in [
             (include_str!("../fixtures/migrations/pre-r0.sql"), 1, 0),
-            (include_str!("../fixtures/migrations/pre-r1.sql"), 1, 1),
-            (include_str!("../fixtures/migrations/pre-r2.sql"), 1, 1),
+            (include_str!("../fixtures/migrations/pre-r1.sql"), 0, 1),
+            (include_str!("../fixtures/migrations/pre-r2.sql"), 0, 1),
         ] {
             let root = TempDir::new().unwrap();
             let database = root.path().join("echo.sqlite3");
@@ -2991,8 +4298,22 @@ mod tests {
                 .query_row("PRAGMA user_version", [], |row| row.get(0))
                 .unwrap();
             assert_eq!(version, CURRENT_SCHEMA_VERSION);
+            assert_eq!(store.settings().unwrap().theme, ThemeMode::System);
+            assert_eq!(
+                store
+                    .connection
+                    .query_row(
+                        "SELECT theme FROM clipboard_settings WHERE id = 1",
+                        [],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .unwrap(),
+                "system"
+            );
             assert_eq!(store.list_entries("", 20).unwrap().len(), entries);
-            assert_eq!(store.list_saved_items("", 20).unwrap().len(), favorites);
+            let saved = store.list_saved_items("", 20).unwrap();
+            assert_eq!(saved.len(), favorites);
+            assert!(saved.iter().all(|item| item.source_history_id.is_none()));
             drop(store);
 
             let reopened = ClipboardStore::open(root.path()).unwrap();
@@ -3001,8 +4322,13 @@ mod tests {
                 .query_row("PRAGMA user_version", [], |row| row.get(0))
                 .unwrap();
             assert_eq!(reopened_version, CURRENT_SCHEMA_VERSION);
+            assert_eq!(reopened.settings().unwrap().theme, ThemeMode::System);
             assert_eq!(reopened.list_entries("", 20).unwrap().len(), entries);
-            assert_eq!(reopened.list_saved_items("", 20).unwrap().len(), favorites);
+            let reopened_saved = reopened.list_saved_items("", 20).unwrap();
+            assert_eq!(reopened_saved.len(), favorites);
+            assert!(reopened_saved
+                .iter()
+                .all(|item| item.source_history_id.is_none()));
         }
     }
 
@@ -3021,7 +4347,8 @@ mod tests {
         let store = ClipboardStore::open(root.path()).unwrap();
         let items = store.list_saved_items("saved text", 20).unwrap();
         assert_eq!(items.len(), 1);
-        assert_eq!(items[0].source_history_id, Some(41));
+        assert_eq!(items[0].source_history_id, None);
+        assert!(store.list_entries("", 20).unwrap().is_empty());
         assert_eq!(
             store.saved_item_payload(items[0].id).unwrap()[0].bytes,
             b"pre-r0 saved text"
@@ -3196,34 +4523,24 @@ mod tests {
     }
 
     #[test]
-    fn unsaving_an_edited_item_unlinks_without_destroying_user_content() {
+    fn deleting_a_favorite_does_not_resurrect_its_history_source() {
         let root = TempDir::new().unwrap();
         let mut store = ClipboardStore::open(root.path()).unwrap();
         let history_id = store.record_capture(text_capture("source", 1)).unwrap().id;
-        let entry = store.list_entries("", 20).unwrap().remove(0);
-        let saved = store
-            .save_history_item(
-                SavedItemDraft::from_history(&entry),
-                store.entry_payload(history_id).unwrap(),
-            )
-            .unwrap();
+        let saved = store.move_history_to_favorite(history_id).unwrap();
         store
-            .update_saved_item(
+            .update_favorite(
                 saved.id,
-                SavedItemUpdate {
-                    name: "authored".to_owned(),
+                FavoriteUpdate {
+                    name: Some("authored".to_owned()),
+                    icon_key: None,
                     tags: vec!["kept".to_owned()],
                     editable_text: Some("edited".to_owned()),
                 },
             )
             .unwrap();
-        assert!(store.unsave_history_item(history_id).unwrap());
-        let remaining = store.list_saved_items("", 20).unwrap();
-        assert_eq!(remaining.len(), 1);
-        assert!(remaining[0].source_history_id.is_none());
-        assert_eq!(
-            store.saved_item_payload(saved.id).unwrap()[0].bytes,
-            b"edited"
-        );
+        assert_eq!(store.delete_favorite(saved.id).unwrap(), true);
+        assert!(store.entry(history_id).unwrap().is_none());
+        assert!(store.list_saved_items("", 20).unwrap().is_empty());
     }
 }

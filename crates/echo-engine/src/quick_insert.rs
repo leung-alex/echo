@@ -2,10 +2,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use crate::{
-    ClipboardError, ClipboardPlatform, ClipboardService, Library, LibraryError, LibraryItem,
-    LibraryItemKind, LibraryPage, LibraryStore, LibraryView, OperationMetrics, PageCursor,
-    PasteDelivery, PasteDeliveryFailure, PasteTarget, SavedItem, SavedItemUpdate, Thumbnail,
-    DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE,
+    ClipboardError, ClipboardPlatform, ClipboardService, FavoriteDraft, FavoriteUpdate, Library,
+    LibraryError, LibraryItem, LibraryItemKind, LibraryPage, LibraryStore, LibraryView,
+    OperationMetrics, PageCursor, PasteDelivery, PasteDeliveryFailure, PasteTarget, SavedItem,
+    Thumbnail, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -67,8 +67,9 @@ pub struct QuickInsertItem {
     pub tags: Vec<String>,
     pub source_app: Option<String>,
     pub updated_at: i64,
-    pub saved_item_id: Option<i64>,
-    pub is_independent: bool,
+    pub pinned_at: Option<i64>,
+    pub icon_key: Option<String>,
+    pub favorite_order: Option<i64>,
     pub thumbnail: Option<Thumbnail>,
 }
 
@@ -197,24 +198,84 @@ impl<S: LibraryStore> QuickInsertService<S> {
         }
     }
 
-    pub fn set_favorite(&self, source: QuickInsertSource, id: i64, saved: bool) -> Result<bool> {
-        match source {
-            QuickInsertSource::History => {
-                let changed = self.library.set_favorite(id, saved)?;
-                if changed {
-                    self.invalidate_history(Some(id));
-                }
-                Ok(changed)
-            }
-            QuickInsertSource::Favorite if !saved => {
-                let deleted = self.library.delete(LibraryItemKind::SavedItem, id)?;
-                if deleted {
-                    self.invalidate_history(Some(id));
-                }
-                Ok(deleted)
-            }
-            QuickInsertSource::Favorite => Ok(true),
+    pub fn move_history_to_favorite(&self, id: i64) -> Result<SavedItem> {
+        let item = self.library.move_history_to_favorite(id)?;
+        self.invalidate_history(Some(id));
+        Ok(item)
+    }
+
+    pub fn move_history_many_to_favorites(&self, ids: &[i64]) -> Result<Vec<SavedItem>> {
+        let items = self.library.move_history_many_to_favorites(ids)?;
+        if !items.is_empty() {
+            self.invalidate_history(None);
         }
+        Ok(items)
+    }
+
+    pub fn create_favorite(&self, draft: FavoriteDraft) -> Result<SavedItem> {
+        let item = self.library.create_favorite(draft)?;
+        self.invalidate_history(None);
+        Ok(item)
+    }
+
+    pub fn update_favorite(&self, id: i64, update: FavoriteUpdate) -> Result<SavedItem> {
+        let item = self.library.update_favorite(id, update)?;
+        self.invalidate_history(Some(id));
+        Ok(item)
+    }
+
+    pub fn pin_history(&self, id: i64) -> Result<bool> {
+        let changed = self.library.pin_history(id)?;
+        if changed {
+            self.invalidate_history(Some(id));
+        }
+        Ok(changed)
+    }
+
+    pub fn unpin_history(&self, id: i64) -> Result<bool> {
+        let changed = self.library.unpin_history(id)?;
+        if changed {
+            self.invalidate_history(Some(id));
+        }
+        Ok(changed)
+    }
+
+    pub fn pin_history_many(&self, ids: &[i64]) -> Result<usize> {
+        let changed = self.library.pin_history_many(ids)?;
+        if changed != 0 {
+            self.invalidate_history(None);
+        }
+        Ok(changed)
+    }
+
+    pub fn delete_history_many(&self, ids: &[i64]) -> Result<usize> {
+        let deleted = self.library.delete_history_many(ids)?;
+        if deleted != 0 {
+            self.invalidate_history(None);
+        }
+        Ok(deleted)
+    }
+
+    pub fn clear_unpinned_history(&self) -> Result<usize> {
+        let deleted = self.library.clear_unpinned_history()?;
+        if deleted != 0 {
+            self.invalidate_history(None);
+        }
+        Ok(deleted)
+    }
+
+    pub fn reorder_favorites(&self, ordered_ids: &[i64]) -> Result<()> {
+        self.library.reorder_favorites(ordered_ids)?;
+        self.invalidate_history(None);
+        Ok(())
+    }
+
+    pub fn delete_favorite(&self, id: i64) -> Result<bool> {
+        let deleted = self.library.delete_favorite(id)?;
+        if deleted {
+            self.invalidate_history(Some(id));
+        }
+        Ok(deleted)
     }
 
     pub fn delete(&self, source: QuickInsertSource, id: i64) -> Result<bool> {
@@ -223,12 +284,6 @@ impl<S: LibraryStore> QuickInsertService<S> {
             self.invalidate_history(Some(id));
         }
         Ok(deleted)
-    }
-
-    pub fn update_saved_item(&self, id: i64, update: SavedItemUpdate) -> Result<SavedItem> {
-        let item = self.library.update_saved_item(id, update)?;
-        self.invalidate_history(Some(id));
-        Ok(item)
     }
 
     pub fn delete_saved_items(&self, ids: &[i64]) -> Result<usize> {
@@ -276,8 +331,9 @@ fn to_item(item: LibraryItem) -> QuickInsertItem {
         tags: item.tags,
         source_app: item.source_app,
         updated_at: item.updated_at,
-        saved_item_id: item.saved_item_id,
-        is_independent: item.is_independent,
+        pinned_at: item.pinned_at,
+        icon_key: item.icon_key,
+        favorite_order: item.favorite_order,
         thumbnail: item.thumbnail,
     }
 }

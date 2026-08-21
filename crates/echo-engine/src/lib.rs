@@ -33,7 +33,7 @@ pub use quick_insert::{
     QuickInsertRequest, QuickInsertService, QuickInsertSource, QuickInsertView,
 };
 pub use saved_items::{
-    is_text_like, normalize_name, normalize_tags, SavedItem, SavedItemDraft, SavedItemUpdate,
-    SavedItemValidationError,
+    is_text_like, normalize_icon_key, normalize_name, normalize_optional_name, normalize_tags,
+    FavoriteDraft, FavoriteUpdate, SavedItem, SavedItemDraft, SavedItemValidationError,
 };
-pub use settings::ClipboardSettings;
+pub use settings::{ClipboardSettings, ThemeMode};

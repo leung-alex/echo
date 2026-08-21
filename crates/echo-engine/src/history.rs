@@ -2,8 +2,7 @@ use std::fmt::Display;
 use std::sync::Arc;
 
 use crate::{
-    ClipboardRepresentation, ClipboardSettings, SavedItem, SavedItemDraft, SavedItemUpdate,
-    Thumbnail,
+    ClipboardRepresentation, ClipboardSettings, FavoriteDraft, FavoriteUpdate, SavedItem, Thumbnail,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -13,6 +12,9 @@ pub struct HistoryEntry {
     pub id: i64,
     pub created_at: i64,
     pub updated_at: i64,
+    /// Monotonic pin rank.  `Some` means the entry is pinned; larger values
+    /// are newer pins and therefore appear first.
+    pub pinned_at: Option<i64>,
     pub source_app: Option<String>,
     pub source_executable: Option<String>,
     pub source_window_title: Option<String>,
@@ -21,7 +23,6 @@ pub struct HistoryEntry {
     pub searchable_text: Option<String>,
     pub sanitized_html: Option<String>,
     pub fingerprint: String,
-    pub saved_item_id: Option<i64>,
     pub byte_size: u64,
     pub thumbnail: Option<Thumbnail>,
 }
@@ -40,19 +41,28 @@ pub trait LibraryStore: Send + Sync {
         &self,
         id: i64,
     ) -> std::result::Result<Vec<ClipboardRepresentation>, Self::Error>;
-    fn save_history_item(
+    fn move_history_to_favorite(
         &self,
-        draft: SavedItemDraft,
-        payload: Vec<ClipboardRepresentation>,
+        history_id: i64,
     ) -> std::result::Result<SavedItem, Self::Error>;
-    fn unsave_history_item(&self, history_id: i64) -> std::result::Result<bool, Self::Error>;
-    fn update_saved_item(
+    fn move_history_many_to_favorites(
+        &self,
+        history_ids: &[i64],
+    ) -> std::result::Result<Vec<SavedItem>, Self::Error>;
+    fn create_favorite(&self, draft: FavoriteDraft) -> std::result::Result<SavedItem, Self::Error>;
+    fn update_favorite(
         &self,
         id: i64,
-        update: SavedItemUpdate,
+        update: FavoriteUpdate,
     ) -> std::result::Result<SavedItem, Self::Error>;
+    fn pin_history(&self, history_id: i64) -> std::result::Result<bool, Self::Error>;
+    fn unpin_history(&self, history_id: i64) -> std::result::Result<bool, Self::Error>;
+    fn pin_history_many(&self, history_ids: &[i64]) -> std::result::Result<usize, Self::Error>;
+    fn delete_history_many(&self, history_ids: &[i64]) -> std::result::Result<usize, Self::Error>;
     fn delete_entry(&self, id: i64) -> std::result::Result<bool, Self::Error>;
-    fn clear_history(&self) -> std::result::Result<(), Self::Error>;
+    fn clear_unpinned_history(&self) -> std::result::Result<usize, Self::Error>;
+    fn reorder_favorites(&self, ordered_ids: &[i64]) -> std::result::Result<(), Self::Error>;
+    fn delete_favorite(&self, id: i64) -> std::result::Result<bool, Self::Error>;
     fn settings(&self) -> std::result::Result<ClipboardSettings, Self::Error>;
     fn update_settings(&self, settings: &ClipboardSettings)
         -> std::result::Result<(), Self::Error>;
@@ -73,9 +83,27 @@ pub const DEFAULT_PAGE_SIZE: u32 = 50;
 pub const MAX_PAGE_SIZE: u32 = 100;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PageCursor {
-    pub updated_at: i64,
-    pub id: i64,
+pub enum PageCursor {
+    History {
+        pinned_at: Option<i64>,
+        updated_at: i64,
+        id: i64,
+    },
+    HistorySearch {
+        pinned_at: Option<i64>,
+        relevance: i64,
+        updated_at: i64,
+        id: i64,
+    },
+    Favorites {
+        favorite_order: i64,
+        id: i64,
+    },
+    FavoritesSearch {
+        relevance: i64,
+        favorite_order: i64,
+        id: i64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,8 +116,6 @@ pub struct LibraryPage<T> {
 pub enum LibraryError {
     #[error("storage error: {0}")]
     Storage(String),
-    #[error("library item {kind}:{id} does not exist")]
-    ItemNotFound { kind: &'static str, id: i64 },
 }
 
 pub type Result<T> = std::result::Result<T, LibraryError>;
@@ -119,8 +145,9 @@ pub struct LibraryItem {
     pub tags: Vec<String>,
     pub source_app: Option<String>,
     pub updated_at: i64,
-    pub saved_item_id: Option<i64>,
-    pub is_independent: bool,
+    pub pinned_at: Option<i64>,
+    pub icon_key: Option<String>,
+    pub favorite_order: Option<i64>,
     pub thumbnail: Option<Thumbnail>,
 }
 
@@ -176,39 +203,45 @@ impl<S: LibraryStore> Library<S> {
         }
     }
 
-    pub fn save_history_item(&self, history_id: i64) -> Result<SavedItem> {
-        let entry = self.store.entry(history_id).map_err(storage_error)?.ok_or(
-            LibraryError::ItemNotFound {
-                kind: "history",
-                id: history_id,
-            },
-        )?;
-        let payload = self
-            .store
-            .entry_payload(history_id)
-            .map_err(storage_error)?;
+    pub fn move_history_to_favorite(&self, history_id: i64) -> Result<SavedItem> {
         self.store
-            .save_history_item(SavedItemDraft::from_history(&entry), payload)
+            .move_history_to_favorite(history_id)
             .map_err(storage_error)
     }
 
-    pub fn unsave_history_item(&self, history_id: i64) -> Result<bool> {
+    pub fn move_history_many_to_favorites(&self, history_ids: &[i64]) -> Result<Vec<SavedItem>> {
         self.store
-            .unsave_history_item(history_id)
+            .move_history_many_to_favorites(history_ids)
             .map_err(storage_error)
     }
 
-    pub fn set_favorite(&self, history_id: i64, saved: bool) -> Result<bool> {
-        if saved {
-            self.save_history_item(history_id).map(|_| true)
-        } else {
-            self.unsave_history_item(history_id)
-        }
+    pub fn create_favorite(&self, draft: FavoriteDraft) -> Result<SavedItem> {
+        self.store.create_favorite(draft).map_err(storage_error)
     }
 
-    pub fn update_saved_item(&self, id: i64, update: SavedItemUpdate) -> Result<SavedItem> {
+    pub fn update_favorite(&self, id: i64, update: FavoriteUpdate) -> Result<SavedItem> {
         self.store
-            .update_saved_item(id, update)
+            .update_favorite(id, update)
+            .map_err(storage_error)
+    }
+
+    pub fn pin_history(&self, history_id: i64) -> Result<bool> {
+        self.store.pin_history(history_id).map_err(storage_error)
+    }
+
+    pub fn unpin_history(&self, history_id: i64) -> Result<bool> {
+        self.store.unpin_history(history_id).map_err(storage_error)
+    }
+
+    pub fn pin_history_many(&self, history_ids: &[i64]) -> Result<usize> {
+        self.store
+            .pin_history_many(history_ids)
+            .map_err(storage_error)
+    }
+
+    pub fn delete_history_many(&self, history_ids: &[i64]) -> Result<usize> {
+        self.store
+            .delete_history_many(history_ids)
             .map_err(storage_error)
     }
 
@@ -227,8 +260,18 @@ impl<S: LibraryStore> Library<S> {
         self.store.delete_saved_items(ids).map_err(storage_error)
     }
 
-    pub fn clear_history(&self) -> Result<()> {
-        self.store.clear_history().map_err(storage_error)
+    pub fn clear_unpinned_history(&self) -> Result<usize> {
+        self.store.clear_unpinned_history().map_err(storage_error)
+    }
+
+    pub fn reorder_favorites(&self, ordered_ids: &[i64]) -> Result<()> {
+        self.store
+            .reorder_favorites(ordered_ids)
+            .map_err(storage_error)
+    }
+
+    pub fn delete_favorite(&self, id: i64) -> Result<bool> {
+        self.store.delete_favorite(id).map_err(storage_error)
     }
 
     pub fn settings(&self) -> Result<ClipboardSettings> {
@@ -255,8 +298,9 @@ fn history_item(entry: HistoryEntry) -> LibraryItem {
         tags: Vec::new(),
         source_app: entry.source_app,
         updated_at: entry.updated_at,
-        saved_item_id: entry.saved_item_id,
-        is_independent: false,
+        pinned_at: entry.pinned_at,
+        icon_key: None,
+        favorite_order: None,
         thumbnail: entry.thumbnail,
     }
 }
@@ -272,8 +316,159 @@ fn saved_item(item: SavedItem) -> LibraryItem {
         tags: item.tags,
         source_app: item.source_app,
         updated_at: item.updated_at,
-        saved_item_id: Some(item.id),
-        is_independent: item.is_independent,
+        pinned_at: None,
+        icon_key: item.icon_key,
+        favorite_order: Some(item.favorite_order),
         thumbnail: item.thumbnail,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ThemeMode;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct SettingsStore(Mutex<ClipboardSettings>);
+
+    fn unsupported<T>() -> std::result::Result<T, String> {
+        Err("unsupported test operation".to_owned())
+    }
+
+    impl LibraryStore for SettingsStore {
+        type Error = String;
+
+        fn list_entries(
+            &self,
+            _query: &str,
+            _limit: u32,
+            _cursor: Option<PageCursor>,
+        ) -> std::result::Result<LibraryPage<HistoryEntry>, Self::Error> {
+            unsupported()
+        }
+
+        fn entry(&self, _id: i64) -> std::result::Result<Option<HistoryEntry>, Self::Error> {
+            unsupported()
+        }
+
+        fn entry_payload(
+            &self,
+            _id: i64,
+        ) -> std::result::Result<Vec<ClipboardRepresentation>, Self::Error> {
+            unsupported()
+        }
+
+        fn move_history_to_favorite(
+            &self,
+            _history_id: i64,
+        ) -> std::result::Result<SavedItem, Self::Error> {
+            unsupported()
+        }
+
+        fn move_history_many_to_favorites(
+            &self,
+            _history_ids: &[i64],
+        ) -> std::result::Result<Vec<SavedItem>, Self::Error> {
+            unsupported()
+        }
+
+        fn create_favorite(
+            &self,
+            _draft: FavoriteDraft,
+        ) -> std::result::Result<SavedItem, Self::Error> {
+            unsupported()
+        }
+
+        fn update_favorite(
+            &self,
+            _id: i64,
+            _update: FavoriteUpdate,
+        ) -> std::result::Result<SavedItem, Self::Error> {
+            unsupported()
+        }
+
+        fn pin_history(&self, _history_id: i64) -> std::result::Result<bool, Self::Error> {
+            unsupported()
+        }
+
+        fn unpin_history(&self, _history_id: i64) -> std::result::Result<bool, Self::Error> {
+            unsupported()
+        }
+
+        fn pin_history_many(
+            &self,
+            _history_ids: &[i64],
+        ) -> std::result::Result<usize, Self::Error> {
+            unsupported()
+        }
+
+        fn delete_history_many(
+            &self,
+            _history_ids: &[i64],
+        ) -> std::result::Result<usize, Self::Error> {
+            unsupported()
+        }
+
+        fn delete_entry(&self, _id: i64) -> std::result::Result<bool, Self::Error> {
+            unsupported()
+        }
+
+        fn clear_unpinned_history(&self) -> std::result::Result<usize, Self::Error> {
+            unsupported()
+        }
+
+        fn reorder_favorites(&self, _ordered_ids: &[i64]) -> std::result::Result<(), Self::Error> {
+            unsupported()
+        }
+
+        fn delete_favorite(&self, _id: i64) -> std::result::Result<bool, Self::Error> {
+            unsupported()
+        }
+
+        fn settings(&self) -> std::result::Result<ClipboardSettings, Self::Error> {
+            Ok(self.0.lock().unwrap().clone())
+        }
+
+        fn update_settings(
+            &self,
+            settings: &ClipboardSettings,
+        ) -> std::result::Result<(), Self::Error> {
+            *self.0.lock().unwrap() = settings.clone();
+            Ok(())
+        }
+
+        fn list_saved_items(
+            &self,
+            _query: &str,
+            _limit: u32,
+            _cursor: Option<PageCursor>,
+        ) -> std::result::Result<LibraryPage<SavedItem>, Self::Error> {
+            unsupported()
+        }
+
+        fn saved_item_payload(
+            &self,
+            _id: i64,
+        ) -> std::result::Result<Vec<ClipboardRepresentation>, Self::Error> {
+            unsupported()
+        }
+
+        fn delete_saved_items(&self, _ids: &[i64]) -> std::result::Result<usize, Self::Error> {
+            unsupported()
+        }
+    }
+
+    #[test]
+    fn library_settings_interface_round_trips_theme() {
+        let store = Arc::new(SettingsStore::default());
+        let library = Library::new(store);
+        assert_eq!(library.settings().unwrap().theme, ThemeMode::System);
+
+        let mut settings = ClipboardSettings::default();
+        settings.theme = ThemeMode::Dark;
+        library.update_settings(&settings).unwrap();
+
+        assert_eq!(library.settings().unwrap().theme, ThemeMode::Dark);
     }
 }

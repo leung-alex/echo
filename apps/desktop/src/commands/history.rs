@@ -5,10 +5,9 @@ use crate::{activation::PendingActivation, composition::EchoState};
 #[tauri::command]
 pub(crate) fn history_clear(state: State<'_, EchoState>) -> Result<(), String> {
     state
-        .library
-        .clear_history()
+        .quick_insert
+        .clear_unpinned_history()
         .map_err(|error| error.to_string())?;
-    state.quick_insert.invalidate_history(None);
     Ok(())
 }
 

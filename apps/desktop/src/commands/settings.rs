@@ -1,4 +1,4 @@
-use tauri::State;
+use tauri::{Emitter, State};
 
 use crate::{composition::EchoState, transport};
 
@@ -15,6 +15,7 @@ pub(crate) fn settings_get(
 
 #[tauri::command]
 pub(crate) fn settings_update(
+    app: tauri::AppHandle,
     state: State<'_, EchoState>,
     settings: transport::ClipboardSettings,
 ) -> Result<(), String> {
@@ -25,5 +26,8 @@ pub(crate) fn settings_update(
     state
         .quick_insert
         .refresh_capture_configuration()
+        .map_err(|error| error.to_string())?;
+    let theme_event = state.apply_persisted_theme(&app)?;
+    app.emit("echo-theme-changed", theme_event)
         .map_err(|error| error.to_string())
 }
