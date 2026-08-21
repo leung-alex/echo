@@ -12,7 +12,10 @@ use crate::commands::{
     quick_insert_reorder_favorites, quick_insert_unpin_history, quick_insert_update_favorite,
     settings_get, settings_update,
 };
-use crate::composition::{create_main_window, hide_composition, reposition_favorites, EchoState};
+use crate::composition::{
+    close_request_action, create_main_window, hide_composition, reposition_favorites,
+    CloseRequestAction, EchoState, FAVORITES_LABEL, MAIN_LABEL,
+};
 use crate::events::create_tray;
 
 mod activation;
@@ -77,10 +80,18 @@ pub fn run() {
         .on_window_event(|window, event| match event {
             WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
-                hide_composition(window.app_handle());
+                match close_request_action(window.label()) {
+                    CloseRequestAction::HideComposition => {
+                        hide_composition(window.app_handle());
+                    }
+                    CloseRequestAction::HideFavorites => {
+                        let _ = window.hide();
+                    }
+                    CloseRequestAction::Ignore => {}
+                }
             }
             WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
-                if window.label() == "main" {
+                if window.label() == MAIN_LABEL {
                     reposition_favorites(window.app_handle());
                 }
             }
@@ -88,8 +99,9 @@ pub fn run() {
                 reposition_favorites(window.app_handle());
             }
             WindowEvent::Destroyed => {
-                if window.label() == "main" {
-                    if let Some(favorites) = window.app_handle().get_webview_window("favorites") {
+                if window.label() == MAIN_LABEL {
+                    if let Some(favorites) = window.app_handle().get_webview_window(FAVORITES_LABEL)
+                    {
                         let _ = favorites.close();
                     }
                 }

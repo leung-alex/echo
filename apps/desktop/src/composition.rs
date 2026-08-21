@@ -1,5 +1,4 @@
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -13,7 +12,6 @@ use echo_engine::{
     PlatformChangePublisher, PlatformError,
 };
 use echo_storage::SharedClipboardStore;
-use serde::de::DeserializeOwned;
 use tauri::window::{Effect, EffectsBuilder};
 use tauri::{Emitter, Manager, PhysicalPosition, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
@@ -23,9 +21,30 @@ use crate::transport::{
     LibraryChangedEvent, QuickInsertView, ThemeChangedEvent, ThemeMode,
 };
 
-const MAIN_LABEL: &str = "main";
-const FAVORITES_LABEL: &str = "favorites";
-const THEME_FILE_NAME: &str = "theme.json";
+pub(crate) const MAIN_LABEL: &str = "main";
+/// Stable native role signal for the U4 Favorites webview entrypoint.
+///
+/// This label is deliberately independent from the active panel: Favorites
+/// owns a separate long-lived webview and is never treated as History by the
+/// desktop composition root.
+pub(crate) const FAVORITES_LABEL: &str = "favorites";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CloseRequestAction {
+    HideComposition,
+    HideFavorites,
+    Ignore,
+}
+
+pub(crate) fn close_request_action(label: &str) -> CloseRequestAction {
+    if label == MAIN_LABEL {
+        CloseRequestAction::HideComposition
+    } else if label == FAVORITES_LABEL {
+        CloseRequestAction::HideFavorites
+    } else {
+        CloseRequestAction::Ignore
+    }
+}
 
 pub(crate) struct EchoState {
     pub library: Library<SharedClipboardStore>,
@@ -34,8 +53,6 @@ pub(crate) struct EchoState {
     pub pending_activation: Mutex<Option<PendingActivation>>,
     active_panel: Mutex<QuickInsertView>,
     quick_insert_session: Mutex<Option<bool>>,
-    theme: Mutex<ThemeMode>,
-    theme_path: PathBuf,
 }
 
 impl EchoState {
@@ -48,8 +65,6 @@ impl EchoState {
         let clipboard = Arc::new(ClipboardService::new(platform.clone(), sink));
         let library = Library::new(store.clone());
         let quick_insert = QuickInsertService::new(library.clone(), clipboard.clone(), platform);
-        let theme_path = data_dir.join(THEME_FILE_NAME);
-        let theme = load_theme(&theme_path);
         Ok(Self {
             library,
             quick_insert,
@@ -57,8 +72,6 @@ impl EchoState {
             pending_activation: Mutex::new(None),
             active_panel: Mutex::new(QuickInsertView::History),
             quick_insert_session: Mutex::new(None),
-            theme: Mutex::new(theme),
-            theme_path,
         })
     }
 
@@ -116,23 +129,20 @@ impl EchoState {
             .unwrap_or_else(|error| error.into_inner())
     }
 
-    pub(crate) fn theme(&self) -> ThemeMode {
-        *self.theme.lock().unwrap_or_else(|error| error.into_inner())
+    pub(crate) fn persisted_theme(&self) -> Result<ThemeMode, String> {
+        self.library
+            .settings()
+            .map(|settings| settings.theme.into())
+            .map_err(|error| error.to_string())
     }
 
-    pub(crate) fn update_theme(
+    pub(crate) fn apply_persisted_theme(
         &self,
         app: &tauri::AppHandle,
-        mode: ThemeMode,
-    ) -> Result<(), String> {
-        persist_theme(&self.theme_path, mode)?;
-        *self.theme.lock().unwrap_or_else(|error| error.into_inner()) = mode;
+    ) -> Result<ThemeChangedEvent, String> {
+        let mode = self.persisted_theme()?;
         let native_mica = apply_theme_to_windows(app, mode);
-        app.emit(
-            "echo-theme-changed",
-            ThemeChangedEvent { mode, native_mica },
-        )
-        .map_err(|error| error.to_string())
+        Ok(ThemeChangedEvent { mode, native_mica })
     }
 }
 
@@ -166,24 +176,6 @@ pub(crate) fn echo_data_dir() -> PathBuf {
         .map(PathBuf::from)
         .map(|path| path.join("Echo"))
         .unwrap_or_else(|| PathBuf::from(".echo"))
-}
-
-fn load_theme(path: &Path) -> ThemeMode {
-    read_json(path).unwrap_or(ThemeMode::System)
-}
-
-fn read_json<T: DeserializeOwned>(path: &Path) -> Option<T> {
-    fs::read_to_string(path)
-        .ok()
-        .and_then(|contents| serde_json::from_str(&contents).ok())
-}
-
-fn persist_theme(path: &Path, mode: ThemeMode) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
-    let contents = serde_json::to_vec(&mode).map_err(|error| error.to_string())?;
-    fs::write(path, contents).map_err(|error| error.to_string())
 }
 
 #[cfg(windows)]
@@ -262,7 +254,7 @@ pub(crate) fn create_main_window(app: &tauri::AppHandle) -> Result<(), String> {
     }
     create_favorites_window(app)?;
     if let Some(state) = app.try_state::<EchoState>() {
-        let _ = apply_theme_to_windows(app, state.theme());
+        let _ = state.apply_persisted_theme(app)?;
     }
     Ok(())
 }
@@ -304,7 +296,7 @@ pub(crate) fn show_composition(app: &tauri::AppHandle) -> Result<(), String> {
         .get_webview_window(FAVORITES_LABEL)
         .ok_or_else(|| "Echo Favorites window is unavailable".to_owned())?;
     if let Some(state) = app.try_state::<EchoState>() {
-        let _ = apply_theme_to_windows(app, state.theme());
+        let _ = state.apply_persisted_theme(app)?;
     }
     main.show().map_err(|error| error.to_string())?;
     reposition_favorites(app);
@@ -414,5 +406,23 @@ pub(crate) fn route_panel(route: ActivationRoute) -> Option<QuickInsertView> {
     match route {
         ActivationRoute::History | ActivationRoute::QuickInsert => Some(QuickInsertView::History),
         ActivationRoute::Settings => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{close_request_action, CloseRequestAction};
+
+    #[test]
+    fn favorites_close_is_child_only_and_main_close_coordinates_composition() {
+        assert_eq!(
+            close_request_action("favorites"),
+            CloseRequestAction::HideFavorites
+        );
+        assert_eq!(
+            close_request_action("main"),
+            CloseRequestAction::HideComposition
+        );
+        assert_eq!(close_request_action("other"), CloseRequestAction::Ignore);
     }
 }

@@ -4,7 +4,7 @@ use echo_engine::{
     QuickInsertAction as DomainAction, QuickInsertItem as DomainItem,
     QuickInsertOutcome as DomainOutcome, QuickInsertPage as DomainPage,
     QuickInsertSource as DomainSource, QuickInsertView as DomainView, SavedItem as DomainSavedItem,
-    Thumbnail,
+    ThemeMode as DomainThemeMode, Thumbnail,
 };
 use serde::{Deserialize, Serialize};
 
@@ -317,6 +317,26 @@ pub enum ThemeMode {
     Dark,
 }
 
+impl From<DomainThemeMode> for ThemeMode {
+    fn from(mode: DomainThemeMode) -> Self {
+        match mode {
+            DomainThemeMode::System => Self::System,
+            DomainThemeMode::Light => Self::Light,
+            DomainThemeMode::Dark => Self::Dark,
+        }
+    }
+}
+
+impl From<ThemeMode> for DomainThemeMode {
+    fn from(mode: ThemeMode) -> Self {
+        match mode {
+            ThemeMode::System => Self::System,
+            ThemeMode::Light => Self::Light,
+            ThemeMode::Dark => Self::Dark,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThemeChangedEvent {
@@ -424,16 +444,8 @@ impl From<DomainSettings> for ClipboardSettings {
             max_entries: settings.max_entries,
             max_total_bytes: settings.max_total_bytes,
             max_item_bytes: settings.max_item_bytes,
-            theme: ThemeMode::System,
+            theme: settings.theme.into(),
         }
-    }
-}
-
-impl ClipboardSettings {
-    pub fn with_theme(settings: DomainSettings, theme: ThemeMode) -> Self {
-        let mut transport = Self::from(settings);
-        transport.theme = theme;
-        transport
     }
 }
 
@@ -446,14 +458,15 @@ impl From<ClipboardSettings> for DomainSettings {
             max_entries: settings.max_entries,
             max_total_bytes: settings.max_total_bytes,
             max_item_bytes: settings.max_item_bytes,
+            theme: settings.theme.into(),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{QuickInsertCursor, ThemeMode};
-    use echo_engine::PageCursor;
+    use super::{ClipboardSettings, QuickInsertCursor, ThemeMode};
+    use echo_engine::{PageCursor, ThemeMode as DomainThemeMode};
 
     #[test]
     fn cursor_transport_round_trips_each_authoritative_order() {
@@ -515,5 +528,20 @@ mod tests {
             "\"light\""
         );
         assert_eq!(serde_json::to_string(&ThemeMode::Dark).unwrap(), "\"dark\"");
+    }
+
+    #[test]
+    fn settings_transport_preserves_persisted_domain_theme() {
+        for mode in [
+            DomainThemeMode::System,
+            DomainThemeMode::Light,
+            DomainThemeMode::Dark,
+        ] {
+            let mut domain = echo_engine::ClipboardSettings::default();
+            domain.theme = mode;
+            let transport = ClipboardSettings::from(domain.clone());
+            assert_eq!(transport.theme, ThemeMode::from(mode));
+            assert_eq!(echo_engine::ClipboardSettings::from(transport).theme, mode);
+        }
     }
 }
