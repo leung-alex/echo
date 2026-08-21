@@ -1,15 +1,18 @@
 import type {
-  HistoryChangedEvent,
-  HistoryCursor,
   PasteSession,
+  QuickInsertCursor,
   QuickInsertItem,
   QuickInsertView,
-  SavedItemUpdate,
 } from "../../../shared/ipc/generated";
 
 export type {
+  ActivePanelChangedEvent,
+  FavoriteDraft,
+  FavoriteReorderRequest,
+  FavoriteUpdate,
   HistoryChangedEvent,
-  HistoryCursor,
+  HistoryIds,
+  LibraryChangedEvent,
   PasteSession,
   QuickInsertAction,
   QuickInsertItem,
@@ -17,8 +20,11 @@ export type {
   QuickInsertPage,
   QuickInsertSource,
   QuickInsertView,
-  SavedItemUpdate,
 } from "../../../shared/ipc/generated";
+export type { HistoryMode, SearchMode } from "./interaction";
+
+export type RuntimeContext = "manager" | "quick-insert";
+export type WindowRole = "main" | "favorites";
 
 export type StatusKind = "info" | "success" | "error";
 
@@ -29,9 +35,12 @@ export interface QuickInsertState {
   selection: number;
   loading: boolean;
   loadingMore: boolean;
-  nextCursor: HistoryCursor | null;
+  nextCursor: QuickInsertCursor | null;
   status: string;
   statusKind: StatusKind;
   generation: number;
   session: PasteSession | null;
+  searchMode: import("./interaction").SearchMode;
+  historyMode: import("./interaction").HistoryMode;
+  batchSelectedIds: number[];
 }

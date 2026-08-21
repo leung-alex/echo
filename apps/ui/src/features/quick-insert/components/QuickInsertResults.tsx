@@ -35,6 +35,7 @@ export interface QuickInsertResultsProps {
   emptyMessage: string;
   getResultId: (key: string) => string;
   select: (index: number) => void;
+  primaryAction: (item: QuickInsertItem, index: number) => void;
   execute: (item: QuickInsertItem, intent?: "insert" | "copy") => void;
   toggleFavorite: (item: QuickInsertItem) => void;
   remove: (item: QuickInsertItem) => void;
@@ -62,6 +63,7 @@ export function QuickInsertResults({
   emptyMessage,
   getResultId,
   select,
+  primaryAction,
   execute,
   toggleFavorite,
   remove,
@@ -96,6 +98,7 @@ export function QuickInsertResults({
       selected={selected}
       getResultId={getResultId}
       select={select}
+      primaryAction={primaryAction}
       execute={execute}
       toggleFavorite={toggleFavorite}
       remove={remove}
@@ -122,6 +125,7 @@ function VirtualizedResults({
   selected,
   getResultId,
   select,
+  primaryAction,
   execute,
   toggleFavorite,
   remove,
@@ -278,7 +282,7 @@ function VirtualizedResults({
               if (selectionMode === "browse" && event.key === "Enter") {
                 event.preventDefault();
                 event.stopPropagation();
-                execute(item);
+                primaryAction(item, index);
               }
             }}
             onClick={() => {
@@ -291,7 +295,7 @@ function VirtualizedResults({
                 select(index);
                 return;
               }
-              execute(item);
+              primaryAction(item, index);
             }}
             onDragStart={(event) => {
               if (!reorderEnabled) return;
@@ -455,11 +459,7 @@ function displayText(item: QuickInsertItem): string {
 function getFavoriteIconKey(
   item: QuickInsertItem,
 ): FavoriteIconKey | string | null {
-  // `icon_key` is an optional presentation adapter field until the frozen
-  // Favorites transport exposes it. It is never written to generated DTOs.
-  if (!("icon_key" in item)) return null;
-  const iconKey = (item as QuickInsertItem & { icon_key?: unknown }).icon_key;
-  return typeof iconKey === "string" ? iconKey : null;
+  return item.icon_key;
 }
 
 function EntryActions({
@@ -498,7 +498,7 @@ function EntryActions({
           testId="favorite-copy-action"
         />
         <ActionButton
-          label="Edit saved item"
+          label="Edit"
           icon="edit"
           tabIndex={keyboardReachable ? 0 : -1}
           onClick={() => edit?.()}
@@ -583,6 +583,12 @@ function ActionButton({
         event.stopPropagation();
       }}
       onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onClick?.();
+      }}
+      onKeyDown={(event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
         event.preventDefault();
         event.stopPropagation();
         onClick?.();

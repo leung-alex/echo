@@ -12,5 +12,7 @@ export function updateSettings(settings: ClipboardSettings): Promise<void> {
 }
 
 export function clearHistory(): Promise<void> {
-  return invoke<void>("history_clear");
+  return invoke<number>("quick_insert_clear_unpinned_history").then(
+    () => undefined,
+  );
 }

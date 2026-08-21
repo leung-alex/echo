@@ -37,7 +37,7 @@ test("keeps History, Favorites, direct actions, and settings on one Echo surface
   ).toBe(true);
   await page.getByRole("tab", { name: "Favorites" }).click();
   await expect(page.getByText("Alpha clipboard")).toBeVisible();
-  await page.getByRole("button", { name: "Edit saved item" }).click();
+  await page.getByRole("button", { name: "Edit" }).click();
   await expect(
     page.getByRole("dialog", { name: "Edit favorite" }),
   ).toContainText("Content");
@@ -77,6 +77,54 @@ test("renders History batch selection affordances without row insertion", async 
   await expect(page.getByText("2 selected")).toBeVisible();
   await page.locator('[data-testid="history-results"]').press("Enter");
   await expect(page.getByText("1 selected")).toBeVisible();
+});
+
+test("keeps manager row clicks separate from Quick Insert row insertion", async ({
+  page,
+}) => {
+  const row = page.getByRole("row").first();
+  await row.click();
+  await expect(row).toHaveAttribute("aria-selected", "true");
+  expect(
+    await page.evaluate(
+      () =>
+        !(
+          window as Window & {
+            __echoMockState?: { calls: Array<{ command: string }> };
+          }
+        ).__echoMockState?.calls.some(
+          (call) => call.command === "quick_insert_execute",
+        ),
+    ),
+  ).toBe(true);
+
+  await page.evaluate(() =>
+    (
+      window as Window & { __emitEchoActivation?: (payload: unknown) => void }
+    ).__emitEchoActivation?.({
+      route: "quick_insert",
+      query: "Alpha",
+      request_id: "click-insert-1",
+    }),
+  );
+  await expect(page.getByText("Alpha clipboard")).toBeVisible();
+  await page.getByRole("row").first().click();
+  await expect(page.getByText("Inserted")).toBeVisible();
+  expect(
+    await page.evaluate(() =>
+      (
+        window as Window & {
+          __echoMockState?: {
+            calls: Array<{ command: string; args: Record<string, unknown> }>;
+          };
+        }
+      ).__echoMockState?.calls.some(
+        (call) =>
+          call.command === "quick_insert_execute" &&
+          call.args.action === "insert",
+      ),
+    ),
+  ).toBe(true);
 });
 
 test("makes selected row actions keyboard reachable without executing the row", async ({
@@ -188,7 +236,7 @@ test("traps editor and icon-picker focus and restores the launcher focus", async
 }) => {
   await page.getByRole("button", { name: "Favorite" }).first().click();
   await page.getByRole("tab", { name: "Favorites" }).click();
-  await page.getByRole("button", { name: "Edit saved item" }).click();
+  await page.getByRole("button", { name: "Edit" }).click();
 
   const editor = page.getByRole("dialog", { name: "Edit favorite" });
   await expect(editor).toBeVisible();

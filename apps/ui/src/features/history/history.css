@@ -17,6 +17,10 @@
   line-height: 20px;
 }
 
+.clipboard-window[data-window-role="favorites"] {
+  grid-template-rows: 72px minmax(0, 1fr);
+}
+
 .clipboard-window * {
   scrollbar-color: var(--echo-border) transparent;
   scrollbar-width: thin;

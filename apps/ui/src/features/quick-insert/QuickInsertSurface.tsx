@@ -2,10 +2,10 @@ import {
   useCallback,
   useEffect,
   useRef,
+  type FocusEvent,
   type KeyboardEvent,
-  type MouseEvent,
-  type RefObject,
   type ReactElement,
+  type RefObject,
 } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
@@ -14,18 +14,30 @@ import { SearchField } from "../../ui/SearchField";
 import { useActiveResultNavigation } from "../../ui/useActiveResultNavigation";
 import { HistoryResults } from "../history/HistoryResults";
 import { SavedItemsResults } from "../saved-items/SavedItemsResults";
-import { clearHistory } from "../settings/api";
 import { useQuickInsertController } from "./controller";
 import {
   quickInsertClient,
   type QuickInsertClient,
 } from "./api/quick-insert-client";
-import type { PasteSession, QuickInsertView } from "./model/types";
+import {
+  interpretGlobalKey,
+  type InteractionTarget,
+} from "./model/interaction";
+import type {
+  PasteSession,
+  QuickInsertView,
+  RuntimeContext,
+  WindowRole,
+} from "./model/types";
 
 export interface QuickInsertSurfaceProps {
   initialSession?: PasteSession | null;
+  initialView?: QuickInsertView;
   initialQuery?: string;
   focusRequest?: number;
+  runtimeContext?: RuntimeContext;
+  windowRole?: WindowRole;
+  showPanelTabs?: boolean;
   onClose: () => void | Promise<void>;
   onOpenSettings?: () => void;
   client?: QuickInsertClient;
@@ -33,22 +45,31 @@ export interface QuickInsertSurfaceProps {
 
 export function QuickInsertSurface({
   initialSession = null,
+  initialView = "history",
   initialQuery = "",
   focusRequest = 0,
+  runtimeContext = "manager",
+  windowRole = "main",
+  showPanelTabs = windowRole === "main",
   onClose,
   onOpenSettings,
   client = quickInsertClient,
 }: QuickInsertSurfaceProps): ReactElement {
   const searchRef = useRef<HTMLInputElement>(null);
   const workspaceRef = useRef<HTMLElement>(null);
-  const focusSearch = useCallback(() => {
-    searchRef.current?.focus();
+  const focusSearch = useCallback((select = false) => {
+    const input = searchRef.current;
+    input?.focus();
+    if (select) input?.select();
     try {
       const currentWindow = getCurrentWindow();
       void currentWindow
         .setFocusable(true)
         .then(() => currentWindow.setFocus())
-        .then(() => searchRef.current?.focus())
+        .then(() => {
+          input?.focus();
+          if (select) input?.select();
+        })
         .catch(() => undefined);
     } catch {
       // Browser-owned tests and non-Tauri previews can still focus the input.
@@ -56,7 +77,10 @@ export function QuickInsertSurface({
   }, []);
   const controller = useQuickInsertController({
     initialSession,
+    initialView,
     initialQuery,
+    runtimeContext,
+    windowRole,
     onClose,
     focusSearch,
     client,
@@ -76,56 +100,86 @@ export function QuickInsertSurface({
   }, [focusRequest, focusSearch]);
 
   const onKeyDown = (event: KeyboardEvent<HTMLElement>) => {
-    const inputFocused =
-      event.target instanceof HTMLInputElement ||
-      event.target instanceof HTMLTextAreaElement;
-    if (
-      event.nativeEvent.isComposing &&
-      ["ArrowUp", "ArrowDown", "Enter", "Escape"].includes(event.key)
-    )
-      return;
-    if (event.ctrlKey && event.key.toLocaleLowerCase() === "f") {
-      event.preventDefault();
-      searchRef.current?.focus();
-      searchRef.current?.select();
-      return;
-    }
-    if (!inputFocused && event.key === "/") {
-      event.preventDefault();
-      searchRef.current?.focus();
-      return;
-    }
-    if (event.key === "Escape") {
-      event.preventDefault();
-      controller.handleEscape(event.nativeEvent.isComposing);
-      return;
-    }
-    if (
-      event.target === searchRef.current &&
-      ["ArrowUp", "ArrowDown", "Enter"].includes(event.key)
-    ) {
-      event.preventDefault();
-      if (event.key === "Enter" && controller.selectedItem)
-        void controller.execute(controller.selectedItem);
-      else if (event.key === "ArrowUp" || event.key === "ArrowDown") {
-        controller.moveSelection(event.key);
-        navigation.move(event.key === "ArrowUp" ? -1 : 1);
+    const target = event.target;
+    const interactionTarget: InteractionTarget =
+      target === searchRef.current
+        ? "search"
+        : target instanceof Element && target.closest('[role="row"]')
+          ? "row"
+          : target instanceof Element &&
+              (target.closest("button, input, textarea, select") ||
+                target.closest('[role="dialog"]'))
+            ? "control"
+            : "surface";
+    const intent = interpretGlobalKey({
+      key: event.key,
+      ctrlKey: event.ctrlKey,
+      shiftKey: event.shiftKey,
+      searchMode: state.searchMode,
+      historyMode: state.historyMode,
+      view: state.view,
+      target: interactionTarget,
+      composing: event.nativeEvent.isComposing,
+    });
+
+    if (intent.type === "none") return;
+    event.preventDefault();
+
+    switch (intent.type) {
+      case "close":
+        controller.handleEscape(event.nativeEvent.isComposing);
+        return;
+      case "focus-search":
+        if (intent.select) controller.enterTextEditMode();
+        focusSearch(intent.select);
+        return;
+      case "switch-panel": {
+        if (windowRole === "favorites") return;
+        const nextView =
+          intent.direction === 1
+            ? state.view === "history"
+              ? "favorites"
+              : "history"
+            : state.view === "favorites"
+              ? "history"
+              : "favorites";
+        controller.setView(nextView);
+        focusSearch();
+        return;
       }
-      return;
+      case "move-selection":
+        controller.moveSelection(intent.key);
+        if (/^[1-9]$/.test(intent.key)) {
+          navigation.activateIndex(Number(intent.key) - 1);
+        } else {
+          navigation.move(intent.direction);
+        }
+        return;
+      case "toggle-batch-selection": {
+        const item = state.items[state.selection];
+        if (item) controller.toggleBatchSelection(item.id);
+        return;
+      }
+      case "select-all-batch":
+        controller.selectAllBatch();
+        return;
+      case "primary-action":
+        if (controller.selectedItem) {
+          if (runtimeContext === "quick-insert") {
+            void controller.execute(controller.selectedItem, "insert");
+          } else {
+            controller.confirmSelection();
+          }
+        }
+        return;
+      case "prevent-default":
+        return;
     }
-    if (inputFocused || event.target instanceof HTMLButtonElement) return;
-    if (event.key === "Enter") {
-      event.preventDefault();
-      if (controller.selectedItem)
-        void controller.execute(controller.selectedItem);
-      return;
-    }
-    if (
-      ["i", "j", "k", "ArrowUp", "ArrowDown"].includes(event.key) ||
-      /^[1-9]$/.test(event.key)
-    ) {
-      event.preventDefault();
-      controller.moveSelection(event.key);
+  };
+
+  const onFocusCapture = (event: FocusEvent<HTMLElement>) => {
+    if (event.target !== searchRef.current) {
+      controller.setSearchMode("navigation");
     }
   };
 
@@ -133,7 +187,7 @@ export function QuickInsertSurface({
     controller.setView(view);
     focusSearch();
   };
-  const startTopbarDrag = (event: MouseEvent<HTMLDivElement>) => {
+  const startTopbarDrag = (event: React.MouseEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
     const target = event.target;
     if (
@@ -145,16 +199,32 @@ export function QuickInsertSurface({
       return;
     }
     event.preventDefault();
-    void getCurrentWindow()
-      .startDragging()
-      .catch(() => undefined);
+    try {
+      void getCurrentWindow()
+        .startDragging()
+        .catch(() => undefined);
+    } catch {
+      // Browser-owned tests do not have a native drag surface.
+    }
   };
+
+  const sharedProps = resultProps(
+    controller,
+    navigation,
+    workspaceRef,
+    runtimeContext,
+  );
+
   return (
     <main
       className="clipboard-window"
       tabIndex={0}
       onKeyDown={onKeyDown}
+      onFocusCapture={onFocusCapture}
       data-testid="clipboard-panel"
+      data-window-role={windowRole}
+      data-runtime-context={runtimeContext}
+      data-search-mode={state.searchMode}
     >
       <div className="clipboard-topbar" onMouseDown={startTopbarDrag}>
         <SearchField
@@ -162,6 +232,7 @@ export function QuickInsertSurface({
           className="clipboard-search-row"
           value={state.query}
           onChange={(event) => controller.setQuery(event.target.value)}
+          onClick={controller.enterTextEditMode}
           placeholder="Search clipboard history..."
           aria-label="Search clipboard history"
           autoFocus
@@ -189,23 +260,25 @@ export function QuickInsertSurface({
           </button>
         ) : null}
       </div>
-      <nav className="clipboard-tabs" aria-label="Clipboard views">
-        <div className="clipboard-tab-list" role="tablist">
-          {(["history", "favorites"] as const).map((view) => (
-            <button
-              key={view}
-              type="button"
-              role="tab"
-              className="clipboard-tab"
-              aria-selected={state.view === view}
-              aria-current={state.view === view ? "page" : undefined}
-              onClick={() => selectView(view)}
-            >
-              {view[0].toUpperCase() + view.slice(1)}
-            </button>
-          ))}
-        </div>
-      </nav>
+      {showPanelTabs ? (
+        <nav className="clipboard-tabs" aria-label="Clipboard views">
+          <div className="clipboard-tab-list" role="tablist">
+            {(["history", "favorites"] as const).map((view) => (
+              <button
+                key={view}
+                type="button"
+                role="tab"
+                className="clipboard-tab"
+                aria-selected={state.view === view}
+                aria-current={state.view === view ? "page" : undefined}
+                onClick={() => selectView(view)}
+              >
+                {view[0].toUpperCase() + view.slice(1)}
+              </button>
+            ))}
+          </div>
+        </nav>
+      ) : null}
       <section
         ref={workspaceRef}
         className="clipboard-entry-workspace"
@@ -216,11 +289,23 @@ export function QuickInsertSurface({
         <div className="clipboard-history-layout">
           {state.view === "favorites" ? (
             <SavedItemsResults
-              {...resultProps(controller, navigation, workspaceRef)}
+              {...sharedProps}
+              updateFavorite={controller.updateFavorite}
+              createFavorite={controller.createFavorite}
+              reorderFavorites={controller.reorderFavorites}
             />
           ) : (
             <HistoryResults
-              {...resultProps(controller, navigation, workspaceRef)}
+              {...sharedProps}
+              batchMode={state.historyMode === "batch"}
+              selectedIds={new Set(state.batchSelectedIds)}
+              enterBatchMode={controller.enterBatchMode}
+              cancelBatchMode={controller.cancelBatchMode}
+              toggleSelected={controller.toggleBatchSelection}
+              bulkFavorite={controller.bulkFavorite}
+              bulkPin={controller.bulkPin}
+              bulkDelete={controller.bulkDelete}
+              clearAll={controller.clearUnpinnedHistory}
             />
           )}
         </div>
@@ -228,13 +313,14 @@ export function QuickInsertSurface({
       <footer className="clipboard-footer">
         <div className="key-hints" aria-label="Keyboard controls">
           <span>
-            <kbd>↑↓</kbd> Navigate
+            <kbd>Tab</kbd> Panel
           </span>
           <span>
-            <kbd>Enter</kbd> Paste
+            <kbd>Ctrl + J/K</kbd> Navigate
           </span>
           <span>
-            <kbd>/</kbd> Search
+            <kbd>Enter</kbd>{" "}
+            {runtimeContext === "quick-insert" ? "Paste" : "Select"}
           </span>
           <span>
             <kbd>Esc</kbd> Close
@@ -257,6 +343,7 @@ function resultProps(
   controller: ReturnType<typeof useQuickInsertController>,
   navigation: ReturnType<typeof useActiveResultNavigation>,
   workspaceRef: RefObject<HTMLElement | null>,
+  runtimeContext: RuntimeContext,
 ) {
   return {
     items: controller.state.items,
@@ -268,6 +355,17 @@ function resultProps(
       controller.select(index);
       navigation.activateIndex(index);
     },
+    primaryAction: (
+      item: Parameters<typeof controller.execute>[0],
+      index: number,
+    ) => {
+      if (runtimeContext === "quick-insert") {
+        void controller.execute(item, "insert");
+      } else {
+        controller.select(index);
+        navigation.activateIndex(index);
+      }
+    },
     execute: (
       item: Parameters<typeof controller.execute>[0],
       intent?: "insert" | "copy",
@@ -276,15 +374,10 @@ function resultProps(
       void controller.toggleFavorite(item),
     remove: (item: Parameters<typeof controller.remove>[0]) =>
       void controller.remove(item),
-    updateSavedItem: (
-      item: Parameters<typeof controller.updateSavedItem>[0],
-      update: Parameters<typeof controller.updateSavedItem>[1],
-    ) => void controller.updateSavedItem(item, update),
-    deleteSavedItems: (ids: number[]) => controller.deleteSavedItems(ids),
-    clearAll: async () => {
-      await clearHistory();
-      controller.setQuery("");
-    },
+    isPinned: (item: Parameters<typeof controller.togglePin>[0]) =>
+      item.pinned_at !== null,
+    togglePin: (item: Parameters<typeof controller.togglePin>[0]) =>
+      void controller.togglePin(item),
     hasMore: controller.state.nextCursor !== null,
     loadingMore: controller.state.loadingMore,
     loadMore: () => void controller.loadMore(),

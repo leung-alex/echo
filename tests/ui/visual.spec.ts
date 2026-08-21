@@ -1,16 +1,77 @@
-import { expect, test } from "@playwright/test";
-import { mkdirSync } from "node:fs";
+import { expect, test, type Page } from "@playwright/test";
+import { mkdirSync, writeFileSync } from "node:fs";
 
 import { installEchoFixture } from "./echo-fixture";
 
 const evidenceRoot =
   process.env.ECHO_UI_EVIDENCE_ROOT ?? "test-results/p08-visual";
 
+type BrowserDiagnostics = {
+  consoleErrors: string[];
+  pageErrors: string[];
+  requestFailures: string[];
+};
+
+const diagnosticsByPage = new WeakMap<Page, BrowserDiagnostics>();
+
+async function expectHealthySurface(page: Page, keyText = "Alpha clipboard") {
+  await expect(page.locator("vite-error-overlay")).toHaveCount(0);
+  await expect(
+    page.locator("#vite-error-overlay, .vite-error-overlay"),
+  ).toHaveCount(0);
+  await expect(page.locator('[data-testid="clipboard-panel"]')).toBeVisible();
+  const renderedText = await page.locator("body").innerText();
+  expect(renderedText.trim()).not.toBe("");
+  await expect(page.getByText(keyText)).toBeVisible();
+}
+
 test.beforeEach(async ({ page }) => {
+  const diagnostics: BrowserDiagnostics = {
+    consoleErrors: [],
+    pageErrors: [],
+    requestFailures: [],
+  };
+  diagnosticsByPage.set(page, diagnostics);
+  page.on("console", (message) => {
+    if (message.type() === "error")
+      diagnostics.consoleErrors.push(message.text());
+  });
+  page.on("pageerror", (error) => {
+    diagnostics.pageErrors.push(error.message);
+  });
+  page.on("requestfailed", (request) => {
+    diagnostics.requestFailures.push(
+      `${request.method()} ${request.url()}: ${request.failure()?.errorText ?? "unknown"}`,
+    );
+  });
   await installEchoFixture(page);
   await page.goto("/");
-  await expect(page.getByText("Alpha clipboard")).toBeVisible();
+  await expectHealthySurface(page);
   mkdirSync(evidenceRoot, { recursive: true });
+  mkdirSync(`${evidenceRoot}/reports`, { recursive: true });
+});
+
+test.afterEach(async ({ page }, testInfo) => {
+  const diagnostics = diagnosticsByPage.get(page) ?? {
+    consoleErrors: [],
+    pageErrors: [],
+    requestFailures: [],
+  };
+  const report = {
+    test: testInfo.title,
+    status: testInfo.status,
+    url: page.url(),
+    ...diagnostics,
+  };
+  const reportName = testInfo.title.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
+  writeFileSync(
+    `${evidenceRoot}/reports/${reportName}.json`,
+    `${JSON.stringify(report, null, 2)}\n`,
+    "utf8",
+  );
+  expect(diagnostics.consoleErrors).toEqual([]);
+  expect(diagnostics.pageErrors).toEqual([]);
+  expect(diagnostics.requestFailures).toEqual([]);
 });
 
 test("captures History default, hover, selected, batch, image, and search states", async ({
@@ -123,6 +184,40 @@ test("captures Favorites, editor, icon picker, dark, and minimum-size states", a
       () => document.documentElement.scrollWidth <= window.innerWidth,
     ),
   ).toBe(true);
+});
+
+test("captures Quick Insert activation and the Favorites window role", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.evaluate(() =>
+    (
+      window as Window & { __emitEchoActivation?: (payload: unknown) => void }
+    ).__emitEchoActivation?.({
+      route: "quick_insert",
+      query: "Alpha",
+      request_id: "visual-quick-insert-1",
+    }),
+  );
+  await expect(
+    page.locator('[data-runtime-context="quick-insert"]'),
+  ).toBeVisible();
+  await expectHealthySurface(page);
+  await page.screenshot({
+    path: `${evidenceRoot}/quick-insert-history-light-1280x720.png`,
+    fullPage: true,
+  });
+  await page.getByRole("row").first().click();
+  await expect(page.getByText("Inserted")).toBeVisible();
+
+  await page.goto("/?windowRole=favorites");
+  await expectHealthySurface(page, "No favorites yet");
+  await expect(page.locator('[data-window-role="favorites"]')).toBeVisible();
+  await expect(page.getByRole("tab")).toHaveCount(0);
+  await page.screenshot({
+    path: `${evidenceRoot}/favorites-window-role-light-1280x720.png`,
+    fullPage: true,
+  });
 });
 
 test("captures variable rows, reduced motion, and keyboard action focus", async ({

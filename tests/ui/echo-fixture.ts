@@ -12,9 +12,9 @@ export async function installEchoFixture(page: Page): Promise<void> {
       tags: string[];
       source_app: string | null;
       updated_at: number;
-      saved_item_id: number | null;
-      is_independent: boolean;
-      icon_key?: string | null;
+      pinned_at: number | null;
+      icon_key: string | null;
+      favorite_order: number | null;
       preview: {
         url: string;
         mime_type: string;
@@ -37,8 +37,9 @@ export async function installEchoFixture(page: Page): Promise<void> {
           tags: [],
           source_app: "Echo fixture",
           updated_at: Date.now(),
-          saved_item_id: null,
-          is_independent: false,
+          pinned_at: null,
+          icon_key: null,
+          favorite_order: null,
           preview: null,
         },
         {
@@ -51,8 +52,9 @@ export async function installEchoFixture(page: Page): Promise<void> {
           tags: [],
           source_app: "Echo fixture",
           updated_at: Date.now(),
-          saved_item_id: null,
-          is_independent: false,
+          pinned_at: null,
+          icon_key: null,
+          favorite_order: null,
           preview: {
             url: "/echo-fixture.svg",
             mime_type: "image/svg+xml",
@@ -64,6 +66,8 @@ export async function installEchoFixture(page: Page): Promise<void> {
         },
       ] satisfies MockItem[],
       favorites: [] as MockItem[],
+      activePanel: "history" as const,
+      nextFavoriteId: 100,
       settings: {
         history_enabled: true,
         record_sensitive: false,
@@ -71,12 +75,53 @@ export async function installEchoFixture(page: Page): Promise<void> {
         max_entries: 500,
         max_total_bytes: 50_000_000,
         max_item_bytes: 5_000_000,
+        theme: "system" as const,
       },
       calls: [] as Array<{ command: string; args: Record<string, unknown> }>,
     };
     const callbacks = new Map<number, (event: unknown) => void>();
     const callbackEvents = new Map<number, string>();
     let nextCallback = 1;
+
+    const emit = (event: string, payload: unknown) => {
+      callbacks.forEach((callback, id) => {
+        if (callbackEvents.get(id) === event) {
+          callback({ event, id: 1, payload });
+        }
+      });
+    };
+    const emitLibraryChanged = (
+      kind: "history" | "favorites" | "history_and_favorites",
+    ) => emit("echo-library-changed", { version: Date.now(), kind });
+    const emitHistoryChanged = () =>
+      emitLibraryChanged("history_and_favorites");
+    const normalizeFavoriteOrder = () => {
+      state.favorites = state.favorites.map((item, index) => ({
+        ...item,
+        favorite_order: index,
+      }));
+    };
+    const findFavorite = (id: unknown) =>
+      state.favorites.find((candidate) => candidate.id === id);
+
+    const moveHistoryToFavorite = (id: number): MockItem => {
+      const item = state.history.find((candidate) => candidate.id === id);
+      if (!item) throw new Error(`History item ${id} was not found`);
+      const favorite: MockItem = {
+        ...item,
+        source: "favorite",
+        name: item.name ?? item.preview_text,
+        pinned_at: null,
+        icon_key: item.id === 1 ? "StarFilled" : null,
+        favorite_order: 0,
+      };
+      state.history = state.history.filter((candidate) => candidate.id !== id);
+      state.favorites.unshift(favorite);
+      normalizeFavoriteOrder();
+      emitLibraryChanged("history_and_favorites");
+      return { ...favorite };
+    };
+
     const listFor = (view: string, query: string): MockItem[] => {
       const source = view === "favorites" ? state.favorites : state.history;
       const normalized = query.trim().toLowerCase();
@@ -88,19 +133,9 @@ export async function installEchoFixture(page: Page): Promise<void> {
               .toLowerCase()
               .includes(normalized),
         )
-        .map((item) => ({ ...item }));
+        .map((item) => ({ ...item, tags: [...item.tags] }));
     };
-    const emitHistoryChanged = () => {
-      callbacks.forEach((callback, id) => {
-        if (callbackEvents.get(id) === "echo-history-changed") {
-          callback({
-            event: "echo-history-changed",
-            id: 1,
-            payload: { version: Date.now() },
-          });
-        }
-      });
-    };
+
     const internals = {
       invoke: async (command: string, args: Record<string, unknown> = {}) => {
         state.calls.push({ command, args });
@@ -117,92 +152,160 @@ export async function installEchoFixture(page: Page): Promise<void> {
           case "plugin:window|start_dragging":
             return null;
           case "activation_state":
-            return null;
           case "activation_ack":
+          case "quick_insert_clear_session":
             return null;
           case "quick_insert_begin_session":
             return { hasTarget: true };
+          case "quick_insert_active_panel":
+            return state.activePanel;
+          case "quick_insert_activate_panel":
+            state.activePanel = args.panel as "history" | "favorites";
+            emit("echo-active-panel-changed", { panel: state.activePanel });
+            return null;
           case "quick_insert_list":
             return {
               items: listFor(String(args.view), String(args.query ?? "")),
               next_cursor: null,
             };
-          case "quick_insert_set_favorite": {
-            const item = state.history.find(
-              (candidate) => candidate.id === args.id,
+          case "quick_insert_move_history_to_favorite":
+            return moveHistoryToFavorite(Number(args.id));
+          case "quick_insert_move_history_many_to_favorites": {
+            const request = args.request as { ids?: number[] } | undefined;
+            return (request?.ids ?? []).map((id) =>
+              moveHistoryToFavorite(Number(id)),
             );
-            if (item && Boolean(args.saved)) {
-              const favorite = {
-                ...item,
-                source: "favorite" as const,
-                name: item.preview_text,
-                saved_item_id: item.id,
-                is_independent: true,
-                icon_key: item.id === 1 ? "StarFilled" : null,
-              } satisfies MockItem;
-              state.history = state.history.filter(
-                (candidate) => candidate.id !== item.id,
-              );
-              state.favorites.unshift(favorite);
-              emitHistoryChanged();
-            }
-            return Boolean(item);
           }
-          case "quick_insert_delete":
-            if (args.source === "favorite") {
-              state.favorites = state.favorites.filter(
-                (candidate) => candidate.id !== args.id,
-              );
-            } else {
-              state.history = state.history.filter(
-                (item) => item.id !== args.id,
-              );
-            }
-            emitHistoryChanged();
-            return true;
-          case "saved_item_update": {
-            const update = args.update as {
-              name?: string;
-              tags?: string[];
-              editable_text?: string | null;
+          case "quick_insert_create_favorite": {
+            const draft = args.draft as {
+              content: string;
+              name: string | null;
+              icon_key: string | null;
+              tags: string[];
             };
-            const item = state.favorites.find(
-              (candidate) => candidate.id === args.id,
-            );
-            if (item) {
-              item.name = update.name ?? item.name;
-              item.tags = update.tags ?? item.tags;
-              if (
-                item.editable_text !== null &&
-                update.editable_text !== undefined
-              ) {
-                item.editable_text = update.editable_text;
-                item.preview_text = update.editable_text;
-              }
+            const favorite: MockItem = {
+              id: state.nextFavoriteId++,
+              source: "favorite",
+              name: (draft.name ?? draft.content.slice(0, 48)) || "Favorite",
+              preview_text: draft.content,
+              content_type: "text",
+              editable_text: draft.content,
+              tags: [...draft.tags],
+              source_app: "Echo fixture",
+              updated_at: Date.now(),
+              pinned_at: null,
+              icon_key: draft.icon_key,
+              favorite_order: 0,
+              preview: null,
+            };
+            state.favorites.unshift(favorite);
+            normalizeFavoriteOrder();
+            emitLibraryChanged("favorites");
+            return { ...favorite };
+          }
+          case "quick_insert_update_favorite": {
+            const update = args.update as {
+              name: string | null;
+              icon_key: string | null;
+              tags: string[];
+              editable_text: string | null;
+            };
+            const item = findFavorite(Number(args.id));
+            if (!item)
+              throw new Error(`Favorite ${String(args.id)} was not found`);
+            item.name = update.name ?? item.name;
+            item.icon_key = update.icon_key;
+            item.tags = [...update.tags];
+            if (item.editable_text !== null && update.editable_text !== null) {
+              item.editable_text = update.editable_text;
+              item.preview_text = update.editable_text;
             }
-            emitHistoryChanged();
+            emitLibraryChanged("favorites");
+            return { ...item };
+          }
+          case "quick_insert_pin_history": {
+            const item = state.history.find(
+              (candidate) => candidate.id === Number(args.id),
+            );
+            if (!item) return false;
+            item.pinned_at = Date.now();
+            emitLibraryChanged("history");
+            return true;
+          }
+          case "quick_insert_unpin_history": {
+            const item = state.history.find(
+              (candidate) => candidate.id === Number(args.id),
+            );
+            if (!item) return false;
+            item.pinned_at = null;
+            emitLibraryChanged("history");
+            return true;
+          }
+          case "quick_insert_pin_history_many": {
+            const request = args.request as { ids?: number[] } | undefined;
+            const ids = new Set(request?.ids ?? []);
+            state.history.forEach((item) => {
+              if (ids.has(item.id)) item.pinned_at = Date.now();
+            });
+            emitLibraryChanged("history");
+            return ids.size;
+          }
+          case "quick_insert_delete_history_many": {
+            const request = args.request as { ids?: number[] } | undefined;
+            const ids = new Set(request?.ids ?? []);
+            const before = state.history.length;
+            state.history = state.history.filter((item) => !ids.has(item.id));
+            emitLibraryChanged("history");
+            return before - state.history.length;
+          }
+          case "quick_insert_clear_unpinned_history": {
+            const before = state.history.length;
+            state.history = state.history.filter(
+              (item) => item.pinned_at !== null,
+            );
+            emitLibraryChanged("history");
+            return before - state.history.length;
+          }
+          case "quick_insert_reorder_favorites": {
+            const request = args.request as
+              | { ordered_ids?: number[] }
+              | undefined;
+            const order = request?.ordered_ids ?? [];
+            const byId = new Map(
+              state.favorites.map((item) => [item.id, item]),
+            );
+            state.favorites = [
+              ...order.flatMap((id) => {
+                const item = byId.get(id);
+                return item ? [item] : [];
+              }),
+              ...state.favorites.filter((item) => !order.includes(item.id)),
+            ];
+            normalizeFavoriteOrder();
+            emitLibraryChanged("favorites");
             return null;
           }
-          case "saved_items_delete_many": {
-            const ids = new Set((args.ids as number[]) ?? []);
+          case "quick_insert_delete_favorite": {
             const before = state.favorites.length;
             state.favorites = state.favorites.filter(
-              (item) => !ids.has(item.id),
+              (item) => item.id !== Number(args.id),
             );
-            emitHistoryChanged();
-            return before - state.favorites.length;
+            normalizeFavoriteOrder();
+            emitLibraryChanged("favorites");
+            return before !== state.favorites.length;
           }
           case "quick_insert_execute":
             return args.action === "insert" ? "inserted" : "copied";
           case "settings_get":
             return { ...state.settings };
-          case "settings_update":
+          case "settings_update": {
             Object.assign(state.settings, args.settings);
+            emit("echo-theme-changed", {
+              mode: state.settings.theme,
+              nativeMica: false,
+            });
             return null;
-          case "history_clear":
-            state.history.length = 0;
-            emitHistoryChanged();
-            return null;
+          }
           default:
             if (command.startsWith("plugin:")) return null;
             throw new Error(`Unexpected Echo mock command: ${command}`);
@@ -218,20 +321,20 @@ export async function installEchoFixture(page: Page): Promise<void> {
         callbackEvents.delete(id);
       },
     };
+    const windowRole =
+      new URL(window.location.href).searchParams.get("windowRole") ===
+      "favorites"
+        ? "favorites"
+        : "main";
     Object.assign(window, {
       __TAURI_INTERNALS__: {
         ...internals,
-        metadata: { currentWindow: { label: "main" } },
+        metadata: { currentWindow: { label: windowRole } },
       },
       __TAURI_EVENT_PLUGIN_INTERNALS__: { unregisterListener: () => undefined },
       __echoMockState: state,
-      __emitEchoActivation: (payload: unknown) => {
-        callbacks.forEach((callback, id) => {
-          if (callbackEvents.get(id) === "echo-activation") {
-            callback({ event: "echo-activation", id: 1, payload });
-          }
-        });
-      },
+      __emitEchoActivation: (payload: unknown) =>
+        emit("echo-activation", payload),
       __emitEchoHistoryChanged: () => emitHistoryChanged(),
     });
   });

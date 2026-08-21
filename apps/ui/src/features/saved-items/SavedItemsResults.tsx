@@ -1,6 +1,5 @@
 import {
   useEffect,
-  useMemo,
   useRef,
   useState,
   type FormEvent,
@@ -11,8 +10,9 @@ import {
 import { FavoriteIcon } from "../../ui/icons/EchoIcon";
 import { FavoriteIconPicker } from "../../ui/icons/FavoriteIconPicker";
 import type {
+  FavoriteDraft,
+  FavoriteUpdate,
   QuickInsertItem,
-  SavedItemUpdate,
 } from "../quick-insert/model/types";
 import {
   QuickInsertResults,
@@ -26,14 +26,13 @@ export interface FavoriteEditorDraft {
   tags: string[];
 }
 
-export type CreateFavoriteAdapter = (
-  draft: FavoriteEditorDraft,
-) => Promise<QuickInsertItem | void> | QuickInsertItem | void;
-
 export interface SavedItemsResultsProps extends SharedEntryResultsProps {
-  updateSavedItem: (item: QuickInsertItem, update: SavedItemUpdate) => void;
-  createFavorite?: CreateFavoriteAdapter;
-  reorderFavorites?: (sourceId: number, targetId: number) => void;
+  updateFavorite: (
+    item: QuickInsertItem,
+    update: FavoriteUpdate,
+  ) => Promise<void>;
+  createFavorite: (draft: FavoriteDraft) => Promise<QuickInsertItem>;
+  reorderFavorites: (orderedIds: number[]) => Promise<void>;
 }
 
 type EditorState =
@@ -45,62 +44,15 @@ export function SavedItemsResults({
   query,
   selected,
   select,
-  updateSavedItem,
+  updateFavorite,
   createFavorite,
   reorderFavorites,
   ...props
 }: SavedItemsResultsProps): ReactElement {
   const [editor, setEditor] = useState<EditorState | null>(null);
-  const [manualOrder, setManualOrder] = useState<string[]>([]);
-  const [localFavorites, setLocalFavorites] = useState<QuickInsertItem[]>([]);
   const addButtonRef = useRef<HTMLButtonElement>(null);
   const previousEditorRef = useRef<EditorState | null>(null);
-
-  const allItems = useMemo(() => {
-    const known = new Set(items.map(itemKey));
-    return [
-      ...localFavorites.filter((item) => !known.has(itemKey(item))),
-      ...items,
-    ];
-  }, [items, localFavorites]);
-
-  useEffect(() => {
-    const incoming = allItems.map(itemKey);
-    setManualOrder((current) => {
-      const incomingSet = new Set(incoming);
-      const retained = current.filter((key) => incomingSet.has(key));
-      const retainedSet = new Set(retained);
-      const added = incoming.filter((key) => !retainedSet.has(key));
-      const next = [...retained, ...added];
-      return next.length === current.length &&
-        next.every((key, i) => key === current[i])
-        ? current
-        : next;
-    });
-  }, [allItems]);
-
-  const orderedItems = useMemo(() => {
-    const normalizedQuery = query.trim().toLocaleLowerCase();
-    const matching = normalizedQuery
-      ? allItems.filter((item) => matchesQuery(item, normalizedQuery))
-      : allItems;
-    if (normalizedQuery) return matching;
-
-    const byKey = new Map(matching.map((item) => [itemKey(item), item]));
-    return [
-      ...manualOrder.flatMap((key) => {
-        const item = byKey.get(key);
-        return item ? [item] : [];
-      }),
-      ...matching.filter((item) => !manualOrder.includes(itemKey(item))),
-    ];
-  }, [allItems, manualOrder, query]);
-
-  const selectedKey =
-    selected >= 0 && items[selected] ? itemKey(items[selected]) : null;
-  const orderedSelected = selectedKey
-    ? orderedItems.findIndex((item) => itemKey(item) === selectedKey)
-    : -1;
+  const orderedItems = items;
 
   useEffect(() => {
     const previousEditor = previousEditorRef.current;
@@ -110,7 +62,7 @@ export function SavedItemsResults({
           addButtonRef.current?.focus();
           return;
         }
-        const rowIndex = orderedSelected >= 0 ? orderedSelected : 0;
+        const rowIndex = selected >= 0 ? selected : 0;
         document
           .querySelector<HTMLElement>(
             `[data-virtualized-row="true"][data-index="${rowIndex}"]`,
@@ -119,49 +71,49 @@ export function SavedItemsResults({
       });
     }
     previousEditorRef.current = editor;
-  }, [editor, orderedSelected]);
-
-  const selectOrdered = (index: number) => {
-    const item = orderedItems[index];
-    if (!item) return;
-    const sourceIndex = items.findIndex(
-      (candidate) => itemKey(candidate) === itemKey(item),
-    );
-    if (sourceIndex >= 0) select(sourceIndex);
-  };
+  }, [editor, selected]);
 
   const handleReorder = (sourceId: number, targetId: number) => {
-    setManualOrder((current) =>
-      moveOrder(current, `favorite:${sourceId}`, `favorite:${targetId}`),
-    );
-    reorderFavorites?.(sourceId, targetId);
+    const sourceIndex = orderedItems.findIndex((item) => item.id === sourceId);
+    const targetIndex = orderedItems.findIndex((item) => item.id === targetId);
+    if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex)
+      return;
+    const next = orderedItems.map((item) => item.id);
+    const [moved] = next.splice(sourceIndex, 1);
+    next.splice(targetIndex, 0, moved);
+    void reorderFavorites(next).catch(() => undefined);
   };
 
-  const saveEditor = (draft: FavoriteEditorDraft) => {
+  const saveEditor = async (draft: FavoriteEditorDraft) => {
     if (editor?.mode === "edit") {
-      const update: SavedItemUpdate = {
-        name: draft.name,
+      const update: FavoriteUpdate = {
+        name: draft.name || null,
+        icon_key: draft.iconKey,
         tags: draft.tags,
         editable_text:
           editor.item.editable_text === null ? null : draft.content,
       };
-      // The current generated update contract has no icon field yet. The
-      // icon remains presentation-owned until the frozen transport carries it.
-      updateSavedItem(editor.item, update);
-      setEditor(null);
+      try {
+        await updateFavorite(editor.item, update);
+        setEditor(null);
+      } catch {
+        // The controller reports the transport error and keeps the editor open.
+      }
       return;
     }
 
     if (editor?.mode === "create") {
-      const created = createFavorite?.(draft);
-      if (isPromiseLike(created)) {
-        void created.then((item) => {
-          if (item) setLocalFavorites((current) => [item, ...current]);
+      try {
+        await createFavorite({
+          content: draft.content,
+          name: draft.name || null,
+          icon_key: draft.iconKey,
+          tags: draft.tags,
         });
-      } else if (created) {
-        setLocalFavorites((current) => [created, ...current]);
+        setEditor(null);
+      } catch {
+        // The controller reports the transport error and keeps the editor open.
       }
-      setEditor(null);
     }
   };
 
@@ -190,7 +142,7 @@ export function SavedItemsResults({
           onClick={() => setEditor({ mode: "create", item: null })}
         >
           <FavoriteIcon iconKey="Plus" size={18} aria-hidden="true" />
-          <span>New</span>
+          <span>+</span>
         </button>
       </header>
       <div
@@ -206,8 +158,8 @@ export function SavedItemsResults({
         items={orderedItems}
         query={query}
         view="favorites"
-        selected={orderedSelected}
-        select={selectOrdered}
+        selected={selected}
+        select={select}
         edit={(item) => setEditor({ mode: "edit", item })}
         reorderEnabled={!query.trim() && !editor}
         onReorder={handleReorder}
@@ -230,7 +182,7 @@ function FavoriteEditor({
 }: {
   item: QuickInsertItem | null;
   onCancel: () => void;
-  onSave: (draft: FavoriteEditorDraft) => void;
+  onSave: (draft: FavoriteEditorDraft) => Promise<void>;
 }): ReactElement {
   const iconButtonRef = useRef<HTMLButtonElement>(null);
   const [name, setName] = useState(item?.name ?? "");
@@ -241,6 +193,7 @@ function FavoriteEditor({
   );
   const [contentError, setContentError] = useState<string | null>(null);
   const [iconPickerOpen, setIconPickerOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
   const contentRef = useRef<HTMLTextAreaElement>(null);
   const editableContent = item?.editable_text !== null;
 
@@ -276,23 +229,29 @@ function FavoriteEditor({
     focusable[nextIndex]?.focus();
   };
 
-  const submit = (event: FormEvent<HTMLFormElement>) => {
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (saving) return;
     if (editableContent && !content.trim()) {
       setContentError("Content is required.");
       contentRef.current?.focus();
       return;
     }
     setContentError(null);
-    onSave({
-      content,
-      name: name.trim() || content.trim().slice(0, 48) || "Favorite",
-      iconKey,
-      tags: tags
-        .split(",")
-        .map((tag) => tag.trim())
-        .filter(Boolean),
-    });
+    setSaving(true);
+    try {
+      await onSave({
+        content,
+        name: name.trim() || content.trim().slice(0, 48) || "Favorite",
+        iconKey,
+        tags: tags
+          .split(",")
+          .map((tag) => tag.trim())
+          .filter(Boolean),
+      });
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -408,8 +367,8 @@ function FavoriteEditor({
             <button type="button" onClick={onCancel}>
               Cancel
             </button>
-            <button className="primary-action" type="submit">
-              Save Favorite
+            <button className="primary-action" type="submit" disabled={saving}>
+              {saving ? "Saving…" : "Save Favorite"}
             </button>
           </div>
         </form>
@@ -426,40 +385,6 @@ function FavoriteEditor({
 }
 
 function getIconKey(item: QuickInsertItem | null): string | null {
-  if (!item || !("icon_key" in item)) return null;
-  const iconKey = (item as QuickInsertItem & { icon_key?: unknown }).icon_key;
-  return typeof iconKey === "string" && iconKey !== "none" ? iconKey : null;
-}
-
-function itemKey(item: QuickInsertItem): string {
-  return `${item.source}:${item.id}`;
-}
-
-function moveOrder(order: string[], source: string, target: string): string[] {
-  const sourceIndex = order.indexOf(source);
-  const targetIndex = order.indexOf(target);
-  if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) {
-    return order;
-  }
-  const next = [...order];
-  const [moved] = next.splice(sourceIndex, 1);
-  next.splice(targetIndex, 0, moved);
-  return next;
-}
-
-function matchesQuery(item: QuickInsertItem, query: string): boolean {
-  return `${item.name ?? ""} ${item.preview_text ?? ""} ${item.source_app ?? ""} ${item.tags.join(" ")}`
-    .toLocaleLowerCase()
-    .includes(query);
-}
-
-function isPromiseLike(
-  value: QuickInsertItem | void | Promise<QuickInsertItem | void> | undefined,
-): value is Promise<QuickInsertItem | void> {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "then" in value &&
-    typeof value.then === "function"
-  );
+  const iconKey = item?.icon_key;
+  return iconKey && iconKey !== "none" ? iconKey : null;
 }

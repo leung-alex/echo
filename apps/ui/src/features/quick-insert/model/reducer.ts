@@ -4,10 +4,15 @@ import type {
   QuickInsertView,
   StatusKind,
 } from "./types";
+import type { HistoryMode, SearchMode } from "./interaction";
 
 export type QuickInsertReducerAction =
   | { type: "view_changed"; view: QuickInsertView }
   | { type: "query_changed"; query: string }
+  | { type: "search_mode_changed"; mode: SearchMode }
+  | { type: "history_mode_changed"; mode: HistoryMode }
+  | { type: "batch_selection_toggled"; id: number }
+  | { type: "batch_selection_set"; ids: number[] }
   | { type: "load_started"; generation: number }
   | {
       type: "load_succeeded";
@@ -43,6 +48,9 @@ export function initialQuickInsertState(
     statusKind: "info",
     generation: 0,
     session,
+    searchMode: "navigation",
+    historyMode: "browse",
+    batchSelectedIds: [],
   };
 }
 
@@ -63,6 +71,9 @@ export function quickInsertReducer(
         nextCursor: null,
         status: "Loading",
         statusKind: "info",
+        searchMode: "navigation",
+        historyMode: "browse",
+        batchSelectedIds: [],
       };
     case "query_changed":
       return {
@@ -74,6 +85,25 @@ export function quickInsertReducer(
         nextCursor: null,
         status: "Loading",
         statusKind: "info",
+      };
+    case "search_mode_changed":
+      return { ...state, searchMode: action.mode };
+    case "history_mode_changed":
+      return {
+        ...state,
+        historyMode: action.mode,
+        batchSelectedIds: [],
+      };
+    case "batch_selection_toggled": {
+      const selected = new Set(state.batchSelectedIds);
+      if (selected.has(action.id)) selected.delete(action.id);
+      else selected.add(action.id);
+      return { ...state, batchSelectedIds: [...selected] };
+    }
+    case "batch_selection_set":
+      return {
+        ...state,
+        batchSelectedIds: [...new Set(action.ids)],
       };
     case "load_started":
       return {

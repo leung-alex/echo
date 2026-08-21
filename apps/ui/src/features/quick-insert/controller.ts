@@ -6,8 +6,8 @@ import {
   useRef,
   useState,
 } from "react";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import {
   initialQuickInsertState,
@@ -16,14 +16,18 @@ import {
 } from "./model/reducer";
 import { nextSelection, selectionForKey } from "./model/navigation";
 import type {
+  ActivePanelChangedEvent,
+  FavoriteDraft,
+  FavoriteUpdate,
+  LibraryChangedEvent,
   PasteSession,
   QuickInsertAction,
   QuickInsertItem,
   QuickInsertState,
   QuickInsertView,
-  HistoryChangedEvent,
-  SavedItemUpdate,
+  RuntimeContext,
   StatusKind,
+  WindowRole,
 } from "./model/types";
 import {
   quickInsertClient,
@@ -34,8 +38,10 @@ export interface QuickInsertControllerOptions {
   initialSession?: PasteSession | null;
   initialView?: QuickInsertView;
   initialQuery?: string;
+  runtimeContext?: RuntimeContext;
+  windowRole?: WindowRole;
   onClose: () => void | Promise<void>;
-  focusSearch: () => void;
+  focusSearch: (select?: boolean) => void;
   client?: QuickInsertClient;
 }
 
@@ -43,18 +49,29 @@ export interface QuickInsertController {
   state: QuickInsertState;
   selectedItem: QuickInsertItem | null;
   emptyMessage: string;
+  runtimeContext: RuntimeContext;
   setView(view: QuickInsertView): void;
   setQuery(query: string): void;
+  setSearchMode(mode: "navigation" | "text-edit"): void;
+  enterTextEditMode(): void;
+  enterBatchMode(): void;
+  cancelBatchMode(): void;
+  toggleBatchSelection(id: number): void;
+  selectAllBatch(): void;
   select(index: number): void;
   moveSelection(key: string): void;
+  confirmSelection(): void;
   execute(item: QuickInsertItem, action?: QuickInsertAction): Promise<void>;
   toggleFavorite(item: QuickInsertItem): Promise<void>;
   remove(item: QuickInsertItem): Promise<void>;
-  updateSavedItem(
-    item: QuickInsertItem,
-    update: SavedItemUpdate,
-  ): Promise<void>;
-  deleteSavedItems(ids: number[]): Promise<boolean>;
+  createFavorite(draft: FavoriteDraft): Promise<QuickInsertItem>;
+  updateFavorite(item: QuickInsertItem, update: FavoriteUpdate): Promise<void>;
+  reorderFavorites(orderedIds: number[]): Promise<void>;
+  togglePin(item: QuickInsertItem): Promise<void>;
+  bulkFavorite(ids: number[]): Promise<boolean>;
+  bulkPin(ids: number[]): Promise<boolean>;
+  bulkDelete(ids: number[]): Promise<boolean>;
+  clearUnpinnedHistory(): Promise<void>;
   loadMore(): Promise<void>;
   handleEscape(composing: boolean): void;
   report(status: string, kind?: StatusKind): void;
@@ -64,7 +81,9 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-async function restoreAfterInsertFailure(focusSearch: () => void) {
+async function restoreAfterInsertFailure(
+  focusSearch: (select?: boolean) => void,
+) {
   try {
     const window = getCurrentWindow();
     await window.show();
@@ -76,10 +95,23 @@ async function restoreAfterInsertFailure(focusSearch: () => void) {
   focusSearch();
 }
 
+function eventAffectsView(
+  kind: LibraryChangedEvent["kind"],
+  view: QuickInsertView,
+): boolean {
+  return (
+    kind === "history_and_favorites" ||
+    (kind === "history" && view === "history") ||
+    (kind === "favorites" && view === "favorites")
+  );
+}
+
 export function useQuickInsertController({
   initialSession = null,
   initialView = "history",
   initialQuery = "",
+  runtimeContext = "manager",
+  windowRole = "main",
   onClose,
   focusSearch,
   client = quickInsertClient,
@@ -90,7 +122,12 @@ export function useQuickInsertController({
   );
   const generationRef = useRef(0);
   const mountedRef = useRef(true);
+  const viewRef = useRef(initialView);
   const [loadQuery, setLoadQuery] = useState(initialQuery);
+
+  const report = useCallback((status: string, kind: StatusKind = "info") => {
+    dispatch({ type: "status", status, kind });
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -121,8 +158,8 @@ export function useQuickInsertController({
     void load();
     let active = true;
     let unlisten: (() => void) | undefined;
-    void listen<HistoryChangedEvent>("echo-history-changed", () => {
-      if (active) void load();
+    void listen<LibraryChangedEvent>("echo-library-changed", ({ payload }) => {
+      if (active && eventAffectsView(payload.kind, state.view)) void load();
     })
       .then((stop) => {
         if (active) unlisten = stop;
@@ -133,7 +170,39 @@ export function useQuickInsertController({
       active = false;
       unlisten?.();
     };
-  }, [load]);
+  }, [load, state.view]);
+
+  useEffect(() => {
+    if (windowRole !== "main") return;
+
+    let active = true;
+    let unlisten: (() => void) | undefined;
+    const applyPanel = (view: QuickInsertView) => {
+      if (!active || viewRef.current === view) return;
+      viewRef.current = view;
+      dispatch({ type: "view_changed", view });
+      setLoadQuery("");
+    };
+
+    void client
+      .activePanel()
+      .then(applyPanel)
+      .catch(() => undefined);
+    void listen<ActivePanelChangedEvent>(
+      "echo-active-panel-changed",
+      ({ payload }) => applyPanel(payload.panel),
+    )
+      .then((stop) => {
+        if (active) unlisten = stop;
+        else stop();
+      })
+      .catch(() => undefined);
+
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  }, [client, windowRole]);
 
   useEffect(() => {
     if (state.query === loadQuery) return;
@@ -141,14 +210,51 @@ export function useQuickInsertController({
     return () => window.clearTimeout(timer);
   }, [loadQuery, state.query]);
 
-  const setView = useCallback((view: QuickInsertView) => {
-    dispatch({ type: "view_changed", view });
-    setLoadQuery("");
-  }, []);
+  const setView = useCallback(
+    (view: QuickInsertView) => {
+      if (viewRef.current === view) return;
+      viewRef.current = view;
+      dispatch({ type: "view_changed", view });
+      setLoadQuery("");
+      if (windowRole === "main") {
+        void client.activatePanel(view).catch((error) => {
+          report(errorMessage(error), "error");
+        });
+      }
+    },
+    [client, report, windowRole],
+  );
 
   const setQuery = useCallback((query: string) => {
     dispatch({ type: "query_changed", query });
   }, []);
+
+  const setSearchMode = useCallback((mode: "navigation" | "text-edit") => {
+    dispatch({ type: "search_mode_changed", mode });
+  }, []);
+
+  const enterTextEditMode = useCallback(() => {
+    setSearchMode("text-edit");
+  }, [setSearchMode]);
+
+  const enterBatchMode = useCallback(() => {
+    dispatch({ type: "history_mode_changed", mode: "batch" });
+  }, []);
+
+  const cancelBatchMode = useCallback(() => {
+    dispatch({ type: "history_mode_changed", mode: "browse" });
+  }, []);
+
+  const toggleBatchSelection = useCallback((id: number) => {
+    dispatch({ type: "batch_selection_toggled", id });
+  }, []);
+
+  const selectAllBatch = useCallback(() => {
+    dispatch({
+      type: "batch_selection_set",
+      ids: state.items.map((item) => item.id),
+    });
+  }, [state.items]);
 
   const loadMore = useCallback(async () => {
     if (state.loading || state.loadingMore || state.nextCursor === null) return;
@@ -194,12 +300,17 @@ export function useQuickInsertController({
     [select, state.items.length, state.selection],
   );
 
-  const report = useCallback((status: string, kind: StatusKind = "info") => {
-    dispatch({ type: "status", status, kind });
-  }, []);
+  const confirmSelection = useCallback(() => {
+    report("Selected", "success");
+  }, [report]);
 
   const execute = useCallback(
     async (item: QuickInsertItem, action: QuickInsertAction = "insert") => {
+      if (action === "insert" && runtimeContext === "manager") {
+        confirmSelection();
+        return;
+      }
+
       report(action === "insert" ? "Inserting..." : "Copying...");
       let hiddenForInsert = false;
       try {
@@ -230,18 +341,15 @@ export function useQuickInsertController({
         if (!hiddenForInsert) focusSearch();
       }
     },
-    [client, focusSearch, onClose, report],
+    [client, confirmSelection, focusSearch, onClose, report, runtimeContext],
   );
 
   const toggleFavorite = useCallback(
     async (item: QuickInsertItem) => {
+      if (item.source !== "history") return;
       try {
-        const saved = item.source === "favorite" || item.saved_item_id !== null;
-        await client.setFavorite(item.source, item.id, !saved);
-        report(
-          saved ? "Removed from Favorites" : "Added to Favorites",
-          "success",
-        );
+        await client.moveHistoryToFavorite(item.id);
+        report("Added to Favorites", "success");
       } catch (error) {
         report(errorMessage(error), "error");
       }
@@ -261,11 +369,57 @@ export function useQuickInsertController({
     [client, report],
   );
 
-  const updateSavedItem = useCallback(
-    async (item: QuickInsertItem, update: SavedItemUpdate) => {
+  const createFavorite = useCallback(
+    async (draft: FavoriteDraft) => {
       try {
-        await client.updateSavedItem(item.id, update);
-        report("Saved item updated", "success");
+        const item = await client.createFavorite(draft);
+        report("Favorite created", "success");
+        return item;
+      } catch (error) {
+        report(errorMessage(error), "error");
+        throw error;
+      }
+    },
+    [client, report],
+  );
+
+  const updateFavorite = useCallback(
+    async (item: QuickInsertItem, update: FavoriteUpdate) => {
+      try {
+        await client.updateFavorite(item.id, update);
+        report("Favorite updated", "success");
+      } catch (error) {
+        report(errorMessage(error), "error");
+        throw error;
+      }
+    },
+    [client, report],
+  );
+
+  const reorderFavorites = useCallback(
+    async (orderedIds: number[]) => {
+      try {
+        await client.reorderFavorites(orderedIds);
+        report("Favorites reordered", "success");
+      } catch (error) {
+        report(errorMessage(error), "error");
+        throw error;
+      }
+    },
+    [client, report],
+  );
+
+  const togglePin = useCallback(
+    async (item: QuickInsertItem) => {
+      if (item.source !== "history") return;
+      try {
+        if (item.pinned_at === null) {
+          await client.pinHistory(item.id);
+          report("Pinned", "success");
+        } else {
+          await client.unpinHistory(item.id);
+          report("Unpinned", "success");
+        }
       } catch (error) {
         report(errorMessage(error), "error");
       }
@@ -273,28 +427,76 @@ export function useQuickInsertController({
     [client, report],
   );
 
-  const deleteSavedItems = useCallback(
-    async (ids: number[]): Promise<boolean> => {
+  const bulkFavorite = useCallback(
+    async (ids: number[]) => {
       if (ids.length === 0) return false;
       try {
-        await client.deleteSavedItems(ids);
-        report("Deleted", "success");
+        const moved = await client.moveHistoryManyToFavorites(ids);
+        cancelBatchMode();
+        report(
+          `${moved.length} item${moved.length === 1 ? "" : "s"} added to Favorites`,
+          "success",
+        );
         return true;
       } catch (error) {
         report(errorMessage(error), "error");
         return false;
       }
     },
-    [client, report],
+    [cancelBatchMode, client, report],
   );
+
+  const bulkPin = useCallback(
+    async (ids: number[]) => {
+      if (ids.length === 0) return false;
+      try {
+        await client.pinHistoryMany(ids);
+        cancelBatchMode();
+        report("History pinned", "success");
+        return true;
+      } catch (error) {
+        report(errorMessage(error), "error");
+        return false;
+      }
+    },
+    [cancelBatchMode, client, report],
+  );
+
+  const bulkDelete = useCallback(
+    async (ids: number[]) => {
+      if (ids.length === 0) return false;
+      try {
+        await client.deleteHistoryMany(ids);
+        cancelBatchMode();
+        report("History deleted", "success");
+        return true;
+      } catch (error) {
+        report(errorMessage(error), "error");
+        return false;
+      }
+    },
+    [cancelBatchMode, client, report],
+  );
+
+  const clearUnpinnedHistory = useCallback(async () => {
+    try {
+      await client.clearUnpinnedHistory();
+      cancelBatchMode();
+      setQuery("");
+      report("History cleared", "success");
+    } catch (error) {
+      report(errorMessage(error), "error");
+      throw error;
+    }
+  }, [cancelBatchMode, client, report, setQuery]);
 
   const handleEscape = useCallback(
     (composing: boolean) => {
       if (composing) return;
-      if (state.query) setQuery("");
-      else void onClose();
+      if (state.historyMode === "batch") cancelBatchMode();
+      void onClose();
     },
-    [onClose, setQuery, state.query],
+    [cancelBatchMode, onClose, state.historyMode],
   );
 
   const selectedItem = useMemo(
@@ -307,23 +509,35 @@ export function useQuickInsertController({
       ? "Unable to load results"
       : state.view === "history"
         ? "No clipboard history"
-        : state.view === "favorites"
-          ? "No favorites yet"
-          : "No clipboard history";
+        : "No favorites yet";
 
   return {
     state,
     selectedItem,
     emptyMessage,
+    runtimeContext,
     setView,
     setQuery,
+    setSearchMode,
+    enterTextEditMode,
+    enterBatchMode,
+    cancelBatchMode,
+    toggleBatchSelection,
+    selectAllBatch,
     select,
     moveSelection,
+    confirmSelection,
     execute,
     toggleFavorite,
     remove,
-    updateSavedItem,
-    deleteSavedItems,
+    createFavorite,
+    updateFavorite,
+    reorderFavorites,
+    togglePin,
+    bulkFavorite,
+    bulkPin,
+    bulkDelete,
+    clearUnpinnedHistory,
     loadMore,
     handleEscape,
     report,

@@ -1,146 +1,66 @@
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type KeyboardEvent,
-  type ReactElement,
-} from "react";
+import { useEffect, useRef, useState, type ReactElement } from "react";
 
 import {
   QuickInsertResults,
   type SharedEntryResultsProps,
 } from "../quick-insert/components/QuickInsertResults";
-import type { QuickInsertItem } from "../quick-insert/model/types";
 
 export interface HistoryResultsProps extends SharedEntryResultsProps {
-  clearAll?: () => Promise<void> | void;
+  batchMode: boolean;
+  selectedIds: ReadonlySet<number>;
+  enterBatchMode: () => void;
+  cancelBatchMode: () => void;
+  toggleSelected: (id: number) => void;
+  bulkFavorite: (ids: number[]) => Promise<boolean>;
+  bulkPin: (ids: number[]) => Promise<boolean>;
+  bulkDelete: (ids: number[]) => Promise<boolean>;
+  clearAll: () => Promise<void>;
 }
 
 export function HistoryResults({
   items,
   selected,
-  select,
-  toggleFavorite,
-  remove,
+  batchMode,
+  selectedIds,
+  enterBatchMode,
+  cancelBatchMode,
+  toggleSelected,
+  bulkFavorite,
+  bulkPin,
+  bulkDelete,
   clearAll,
   ...props
 }: HistoryResultsProps): ReactElement {
-  const [batchMode, setBatchMode] = useState(false);
-  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
-  const [pinnedIds, setPinnedIds] = useState<Set<number>>(new Set());
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
   const [clearError, setClearError] = useState<string | null>(null);
   const batchSurfaceRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const available = new Set(items.map((item) => item.id));
-    setSelectedIds((current) => {
-      const next = new Set([...current].filter((id) => available.has(id)));
-      return next.size === current.size ? current : next;
-    });
-  }, [items]);
-
-  useEffect(() => {
     if (batchMode) batchSurfaceRef.current?.focus();
   }, [batchMode]);
 
-  const enterBatchMode = () => {
+  const startBatchMode = () => {
     setClearError(null);
-    setBatchMode(true);
-    setSelectedIds(new Set());
-  };
-
-  const cancelBatchMode = useCallback(() => {
-    setBatchMode(false);
-    setSelectedIds(new Set());
-  }, []);
-
-  const toggleSelected = useCallback((id: number) => {
-    setSelectedIds((current) => {
-      const next = new Set(current);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }, []);
-
-  const togglePin = useCallback((item: QuickInsertItem) => {
-    setPinnedIds((current) => {
-      const next = new Set(current);
-      if (next.has(item.id)) next.delete(item.id);
-      else next.add(item.id);
-      return next;
-    });
-  }, []);
-
-  const selectedItems = items.filter((item) => selectedIds.has(item.id));
-
-  const bulkFavorite = () => {
-    selectedItems.forEach((item) => toggleFavorite(item));
-    setSelectedIds(new Set());
-  };
-
-  const bulkPin = () => {
-    setPinnedIds((current) => {
-      const next = new Set(current);
-      selectedItems.forEach((item) => next.add(item.id));
-      return next;
-    });
-  };
-
-  const bulkDelete = () => {
-    selectedItems.forEach((item) => remove(item));
-    setSelectedIds(new Set());
-  };
-
-  const handleBatchKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (!batchMode || event.target !== batchSurfaceRef.current) return;
-    if (event.key === "Escape") {
-      event.preventDefault();
-      event.stopPropagation();
-      cancelBatchMode();
-      return;
-    }
-    if (event.ctrlKey && event.key.toLowerCase() === "a") {
-      event.preventDefault();
-      event.stopPropagation();
-      setSelectedIds(new Set(items.map((item) => item.id)));
-      return;
-    }
-    if (event.key === "ArrowUp" || event.key === "ArrowDown") {
-      event.preventDefault();
-      event.stopPropagation();
-      const direction = event.key === "ArrowUp" ? -1 : 1;
-      select(Math.max(0, Math.min(items.length - 1, selected + direction)));
-      return;
-    }
-    if (event.key === " " || event.key === "Enter") {
-      event.preventDefault();
-      event.stopPropagation();
-      const current = items[selected];
-      if (current) toggleSelected(current.id);
-    }
+    enterBatchMode();
   };
 
   const confirmClearAll = async () => {
-    if (!clearAll) return;
     setClearError(null);
     try {
       await clearAll();
       setClearConfirmOpen(false);
-      cancelBatchMode();
     } catch (error) {
       setClearError(error instanceof Error ? error.message : String(error));
     }
   };
+
+  const selectedIdList = [...selectedIds];
 
   return (
     <div
       ref={batchSurfaceRef}
       className={`history-results${batchMode ? " is-batch-mode" : ""}`}
       tabIndex={batchMode ? 0 : -1}
-      onKeyDown={handleBatchKeyDown}
       data-testid="history-results"
       aria-label="History presentation"
     >
@@ -156,7 +76,7 @@ export function HistoryResults({
           <button
             className="history-heading-button"
             type="button"
-            onClick={batchMode ? cancelBatchMode : enterBatchMode}
+            onClick={batchMode ? cancelBatchMode : startBatchMode}
           >
             {batchMode ? "Cancel" : "Select"}
           </button>
@@ -164,12 +84,7 @@ export function HistoryResults({
             className="history-heading-button danger"
             type="button"
             onClick={() => setClearConfirmOpen(true)}
-            disabled={!clearAll}
-            title={
-              clearAll
-                ? "Clear unpinned History"
-                : "Available after transport wiring"
-            }
+            title="Clear unpinned History"
           >
             Clear all
           </button>
@@ -192,14 +107,14 @@ export function HistoryResults({
             <button
               type="button"
               disabled={selectedIds.size === 0}
-              onClick={bulkFavorite}
+              onClick={() => void bulkFavorite(selectedIdList)}
             >
               Favorite selected
             </button>
             <button
               type="button"
               disabled={selectedIds.size === 0}
-              onClick={bulkPin}
+              onClick={() => void bulkPin(selectedIdList)}
             >
               Pin selected
             </button>
@@ -207,7 +122,7 @@ export function HistoryResults({
               className="danger"
               type="button"
               disabled={selectedIds.size === 0}
-              onClick={bulkDelete}
+              onClick={() => void bulkDelete(selectedIdList)}
             >
               Delete selected
             </button>
@@ -226,14 +141,10 @@ export function HistoryResults({
         items={items}
         view="history"
         selected={selected}
-        select={select}
-        toggleFavorite={toggleFavorite}
-        remove={remove}
         selectionMode={batchMode ? "batch" : "browse"}
         selectedIds={selectedIds}
         toggleSelected={toggleSelected}
-        isPinned={(item) => pinnedIds.has(item.id)}
-        togglePin={togglePin}
+        isPinned={(item) => item.pinned_at !== null}
       />
 
       {clearConfirmOpen ? (

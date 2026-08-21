@@ -22,7 +22,7 @@ test("renders Favorites as direct-action rows with persistent-order affordances"
     page.getByRole("button", { name: "Copy" }).first(),
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "Edit saved item" }).first(),
+    page.getByRole("button", { name: "Edit" }).first(),
   ).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Delete" }).first(),

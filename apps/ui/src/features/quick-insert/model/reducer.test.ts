@@ -12,10 +12,10 @@ const item = {
   tags: [],
   source_app: "Fixture",
   updated_at: 1,
-  saved_item_id: null,
-  is_independent: false,
+  pinned_at: null,
+  icon_key: null,
+  favorite_order: null,
   preview: null,
-  group_name: null,
 };
 
 describe("quick insert reducer", () => {
@@ -77,5 +77,31 @@ describe("quick insert reducer", () => {
     });
     expect(state.status).toBe("Inserted");
     expect(state.statusKind).toBe("success");
+  });
+
+  it("tracks search mode and preserves batch precedence in explicit state", () => {
+    let state = initialQuickInsertState();
+    state = quickInsertReducer(state, {
+      type: "search_mode_changed",
+      mode: "text-edit",
+    });
+    state = quickInsertReducer(state, {
+      type: "history_mode_changed",
+      mode: "batch",
+    });
+    state = quickInsertReducer(state, {
+      type: "batch_selection_set",
+      ids: [1, 2, 2],
+    });
+    expect(state.searchMode).toBe("text-edit");
+    expect(state.historyMode).toBe("batch");
+    expect(state.batchSelectedIds).toEqual([1, 2]);
+
+    state = quickInsertReducer(state, {
+      type: "view_changed",
+      view: "favorites",
+    });
+    expect(state.historyMode).toBe("browse");
+    expect(state.batchSelectedIds).toEqual([]);
   });
 });
