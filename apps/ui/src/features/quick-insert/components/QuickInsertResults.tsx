@@ -24,6 +24,7 @@ const VIRTUAL_OVERSCAN = 5;
 // their actual height.
 const DEFAULT_HISTORY_ESTIMATE = 112;
 const DEFAULT_FAVORITE_ESTIMATE = 88;
+const POINTER_REORDER_THRESHOLD = 4;
 
 export type ResultSelectionMode = "browse" | "batch";
 
@@ -144,6 +145,14 @@ function VirtualizedResults({
 }: Omit<QuickInsertResultsProps, "emptyMessage">): ReactElement {
   const [draggingId, setDraggingId] = useState<number | null>(null);
   const justDraggedRef = useRef(false);
+  const pointerReorderRef = useRef<{
+    pointerId: number;
+    sourceId: number;
+    targetId: number | null;
+    startX: number;
+    startY: number;
+    active: boolean;
+  } | null>(null);
   const rowVirtualizer = useVirtualizer({
     count: items.length,
     getScrollElement: () => scrollElementRef.current,
@@ -238,8 +247,9 @@ function VirtualizedResults({
             aria-label={displayText(item)}
             tabIndex={rowCanReceiveTab ? 0 : -1}
             data-index={index}
+            data-item-id={item.id}
             data-virtualized-row="true"
-            draggable={reorderEnabled}
+            draggable={false}
             ref={rowVirtualizer.measureElement}
             style={{
               position: "absolute",
@@ -255,8 +265,93 @@ function VirtualizedResults({
               ) {
                 return;
               }
+              if (event.button !== 0) return;
               if (!reorderEnabled) event.preventDefault();
+              if (reorderEnabled) {
+                pointerReorderRef.current = {
+                  pointerId: event.pointerId,
+                  sourceId: item.id,
+                  targetId: item.id,
+                  startX: event.clientX,
+                  startY: event.clientY,
+                  active: false,
+                };
+                event.currentTarget.setPointerCapture(event.pointerId);
+              }
               select(index);
+            }}
+            onPointerMove={(event) => {
+              const pointerReorder = pointerReorderRef.current;
+              if (
+                !pointerReorder ||
+                pointerReorder.pointerId !== event.pointerId
+              ) {
+                return;
+              }
+              if (!pointerReorder.active) {
+                const distance = Math.hypot(
+                  event.clientX - pointerReorder.startX,
+                  event.clientY - pointerReorder.startY,
+                );
+                if (distance < POINTER_REORDER_THRESHOLD) return;
+                pointerReorder.active = true;
+                justDraggedRef.current = true;
+                setDraggingId(pointerReorder.sourceId);
+              }
+              event.preventDefault();
+              const target = document
+                .elementFromPoint(event.clientX, event.clientY)
+                ?.closest<HTMLElement>(
+                  '[data-virtualized-row="true"][data-item-id]',
+                );
+              const targetId = Number(target?.dataset.itemId);
+              if (
+                Number.isSafeInteger(targetId) &&
+                items.some((candidate) => candidate.id === targetId)
+              ) {
+                pointerReorder.targetId = targetId;
+              } else {
+                pointerReorder.targetId = null;
+              }
+            }}
+            onPointerUp={(event) => {
+              const pointerReorder = pointerReorderRef.current;
+              if (
+                !pointerReorder ||
+                pointerReorder.pointerId !== event.pointerId
+              ) {
+                return;
+              }
+              pointerReorderRef.current = null;
+              if (pointerReorder.active) {
+                event.preventDefault();
+                const targetId = pointerReorder.targetId;
+                if (targetId !== null && pointerReorder.sourceId !== targetId) {
+                  onReorder?.(pointerReorder.sourceId, targetId);
+                }
+                setDraggingId(null);
+                window.setTimeout(() => {
+                  justDraggedRef.current = false;
+                }, 0);
+              }
+              if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+                event.currentTarget.releasePointerCapture(event.pointerId);
+              }
+            }}
+            onPointerCancel={(event) => {
+              const pointerReorder = pointerReorderRef.current;
+              if (
+                !pointerReorder ||
+                pointerReorder.pointerId !== event.pointerId
+              ) {
+                return;
+              }
+              pointerReorderRef.current = null;
+              setDraggingId(null);
+              justDraggedRef.current = false;
+              if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+                event.currentTarget.releasePointerCapture(event.pointerId);
+              }
             }}
             onFocus={() => {
               if (selected !== index) select(index);
@@ -296,33 +391,6 @@ function VirtualizedResults({
                 return;
               }
               primaryAction(item, index);
-            }}
-            onDragStart={(event) => {
-              if (!reorderEnabled) return;
-              justDraggedRef.current = true;
-              setDraggingId(item.id);
-              event.dataTransfer.effectAllowed = "move";
-              event.dataTransfer.setData("text/plain", String(item.id));
-            }}
-            onDragEnd={() => {
-              setDraggingId(null);
-              window.setTimeout(() => {
-                justDraggedRef.current = false;
-              }, 0);
-            }}
-            onDragOver={(event) => {
-              if (!reorderEnabled || draggingId === null) return;
-              event.preventDefault();
-              event.dataTransfer.dropEffect = "move";
-            }}
-            onDrop={(event) => {
-              if (!reorderEnabled) return;
-              event.preventDefault();
-              const sourceId = Number(event.dataTransfer.getData("text/plain"));
-              if (Number.isFinite(sourceId) && sourceId !== item.id) {
-                onReorder?.(sourceId, item.id);
-              }
-              setDraggingId(null);
             }}
           >
             {view === "history" ? (

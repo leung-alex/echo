@@ -5,6 +5,7 @@ package main
 import (
 	"encoding/binary"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"unicode/utf16"
@@ -59,6 +60,31 @@ func TestDropFilesPayloadUsesWideDoubleTerminatedPath(t *testing.T) {
 	}
 	if got := string(utf16.Decode(words)); got != path+"\x00\x00" {
 		t.Fatalf("path payload = %q", got)
+	}
+}
+
+func TestParseTargetFlagsAcceptsPowerShellArgumentListTitle(t *testing.T) {
+	root := t.TempDir()
+	pathFor := func(name string) string { return filepath.Join(root, name) }
+	args := []string{
+		"--run-id", "run-1",
+		"--title", "Echo", "target", "fixture", "run-1",
+		"--ready", pathFor("ready.json"),
+		"--command", pathFor("command.json"),
+		"--response", pathFor("response.json"),
+		"--primary", pathFor("primary.txt"),
+		"--secondary", pathFor("secondary.txt"),
+		"--password", pathFor("password.txt"),
+		"--readonly", pathFor("readonly.txt"),
+		"--unknown", pathFor("unknown.txt"),
+	}
+
+	flags, err := parseTargetFlags(args)
+	if err != nil {
+		t.Fatalf("parse target flags: %v", err)
+	}
+	if flags.title != "Echo target fixture run-1" {
+		t.Fatalf("title = %q", flags.title)
 	}
 }
 

@@ -186,6 +186,12 @@ func runTarget(args []string) error {
 }
 
 func parseTargetFlags(args []string) (targetFlags, error) {
+	// PowerShell's Start-Process -ArgumentList accepts an array but joins it
+	// without quoting values that contain spaces. Reassemble the title before
+	// handing the arguments to flag.FlagSet so an approved RunAs launch cannot
+	// terminate before readiness solely because the human-readable title was
+	// split into multiple tokens.
+	args = normalizeTargetArgs(args)
 	fs := flag.NewFlagSet("target", flag.ContinueOnError)
 	flags := targetFlags{}
 	fs.StringVar(&flags.runID, "run-id", "", "fixture run identity")
@@ -222,6 +228,26 @@ func parseTargetFlags(args []string) (targetFlags, error) {
 		}
 	}
 	return flags, nil
+}
+
+func normalizeTargetArgs(args []string) []string {
+	normalized := make([]string, 0, len(args))
+	for index := 0; index < len(args); index++ {
+		if args[index] != "--title" || index+1 >= len(args) {
+			normalized = append(normalized, args[index])
+			continue
+		}
+
+		normalized = append(normalized, "--title")
+		index++
+		parts := []string{args[index]}
+		for index+1 < len(args) && !strings.HasPrefix(args[index+1], "--") {
+			index++
+			parts = append(parts, args[index])
+		}
+		normalized = append(normalized, strings.Join(parts, " "))
+	}
+	return normalized
 }
 
 func (state *targetState) run() error {
