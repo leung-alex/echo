@@ -79,6 +79,158 @@ test("renders History batch selection affordances without row insertion", async 
   await expect(page.getByText("1 selected")).toBeVisible();
 });
 
+test("makes selected row actions keyboard reachable without executing the row", async ({
+  page,
+}) => {
+  const search = page.getByRole("combobox", {
+    name: "Search clipboard history",
+  });
+  const row = page.getByRole("row").first();
+
+  await search.press("ArrowUp");
+  await expect(row).toHaveAttribute("aria-selected", "true");
+  await expect(row).toHaveAttribute("tabindex", "0");
+  await expect(row.getByRole("button", { name: "Favorite" })).toHaveAttribute(
+    "tabindex",
+    "0",
+  );
+
+  await row.focus();
+  await expect(row).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(row.getByRole("button", { name: "Favorite" })).toBeFocused();
+  await page.keyboard.press("Enter");
+
+  await expect(page.getByText("Added to Favorites")).toBeVisible();
+  expect(
+    await page.evaluate(
+      () =>
+        !(
+          window as Window & {
+            __echoMockState?: { calls: Array<{ command: string }> };
+          }
+        ).__echoMockState?.calls.some(
+          (call) => call.command === "quick_insert_execute",
+        ),
+    ),
+  ).toBe(true);
+});
+
+test("keeps variable-height rows separated through resize and filtering", async ({
+  page,
+}) => {
+  await page.evaluate(() => {
+    const windowWithEcho = window as Window & {
+      __echoMockState?: {
+        history: Array<{
+          preview_text: string | null;
+          editable_text: string | null;
+        }>;
+      };
+      __emitEchoHistoryChanged?: () => void;
+    };
+    const longText = Array.from(
+      { length: 18 },
+      (_, index) => `Variable row line ${index + 1}`,
+    ).join("\n");
+    const first = windowWithEcho.__echoMockState?.history[0];
+    if (first) {
+      first.preview_text = longText;
+      first.editable_text = longText;
+    }
+    windowWithEcho.__emitEchoHistoryChanged?.();
+  });
+
+  await expect(page.getByText("Variable row line 18")).toBeVisible();
+  const getRowGeometry = () =>
+    page.locator('[data-virtualized-row="true"]').evaluateAll((rows) =>
+      rows.map((row) => {
+        const rect = row.getBoundingClientRect();
+        return { top: rect.top, bottom: rect.bottom, height: rect.height };
+      }),
+    );
+
+  await expect
+    .poll(async () => {
+      const rows = await getRowGeometry();
+      return (
+        rows.length === 2 &&
+        rows[0].height > 200 &&
+        rows[1].top >= rows[0].bottom - 1
+      );
+    })
+    .toBe(true);
+
+  await page.setViewportSize({ width: 420, height: 360 });
+  await expect
+    .poll(async () => {
+      const rows = await getRowGeometry();
+      return rows.length === 2 && rows[1].top >= rows[0].bottom - 1;
+    })
+    .toBe(true);
+
+  const search = page.getByRole("combobox", {
+    name: "Search clipboard history",
+  });
+  await search.fill("Variable row line 18");
+  await expect(page.getByRole("row")).toHaveCount(1);
+  await search.fill("");
+  await expect(page.getByRole("row")).toHaveCount(2);
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+});
+
+test("traps editor and icon-picker focus and restores the launcher focus", async ({
+  page,
+}) => {
+  await page.getByRole("button", { name: "Favorite" }).first().click();
+  await page.getByRole("tab", { name: "Favorites" }).click();
+  await page.getByRole("button", { name: "Edit saved item" }).click();
+
+  const editor = page.getByRole("dialog", { name: "Edit favorite" });
+  await expect(editor).toBeVisible();
+  await expect(page.locator("#favorite-content")).toBeFocused();
+
+  const iconField = page.getByRole("button", { name: "Choose favorite icon" });
+  await iconField.click();
+  const picker = page.getByRole("dialog", { name: "Choose favorite icon" });
+  const iconSearch = picker.getByPlaceholder("Search the full icon catalog");
+  await expect(iconSearch).toBeFocused();
+  await iconSearch.press("ArrowDown");
+  await expect(iconSearch).toHaveAttribute(
+    "aria-activedescendant",
+    /^favorite-icon-option-\d+$/,
+  );
+  await iconSearch.press("Enter");
+  await expect(picker).toHaveCount(0);
+  await expect(iconField).toBeFocused();
+
+  await page.keyboard.press("Escape");
+  await expect(editor).toHaveCount(0);
+  await expect(page.getByRole("row").first()).toBeFocused();
+});
+
+test("disables UI motion under prefers-reduced-motion", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const styles = await page.evaluate(() => {
+    const row = document.querySelector<HTMLElement>(
+      '[data-virtualized-row="true"]',
+    );
+    const caret = document.querySelector<HTMLElement>(
+      ".echo-search-field__caret",
+    );
+    return {
+      rowTransition: row ? getComputedStyle(row).transitionProperty : "",
+      caretAnimation: caret ? getComputedStyle(caret).animationName : "",
+    };
+  });
+  expect(styles.rowTransition).toBe("none");
+  expect(styles.caretAnimation).toBe("none");
+});
+
 test("shows the clear-all confirmation copy and preserves the presentation contract", async ({
   page,
 }) => {

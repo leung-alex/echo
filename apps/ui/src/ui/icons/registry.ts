@@ -34,8 +34,6 @@ const semanticIcons = {
   themeDark: AppsSdkIcons.DarkMode,
   themeLight: AppsSdkIcons.Sun,
   themeSystem: AppsSdkIcons.SystemMode,
-  viewCompact: AppsSdkIcons.VideoList,
-  viewDetailed: AppsSdkIcons.TableFilled,
   unpin: AppsSdkIcons.Unpin,
 } satisfies Record<string, EchoIconComponent>;
 

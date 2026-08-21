@@ -19,6 +19,9 @@ import {
 import type { QuickInsertItem, QuickInsertView } from "../model/types";
 
 const VIRTUAL_OVERSCAN = 5;
+// These are only first-pass estimates. Every mounted row is measured so text
+// wrapping, image metadata, action states, and viewport changes can settle on
+// their actual height.
 const DEFAULT_HISTORY_ESTIMATE = 112;
 const DEFAULT_FAVORITE_ESTIMATE = 88;
 
@@ -152,6 +155,21 @@ function VirtualizedResults({
   const virtualItems = rowVirtualizer.getVirtualItems();
 
   useEffect(() => {
+    const scrollElement = scrollElementRef.current;
+    if (!scrollElement || typeof ResizeObserver === "undefined") return;
+
+    let lastWidth = scrollElement.getBoundingClientRect().width;
+    const resizeObserver = new ResizeObserver(([entry]) => {
+      const nextWidth = entry?.contentRect.width;
+      if (nextWidth === undefined || nextWidth === lastWidth) return;
+      lastWidth = nextWidth;
+      rowVirtualizer.measure();
+    });
+    resizeObserver.observe(scrollElement);
+    return () => resizeObserver.disconnect();
+  }, [rowVirtualizer, scrollElementRef]);
+
+  useEffect(() => {
     const last = virtualItems[virtualItems.length - 1];
     if (
       hasMore &&
@@ -173,6 +191,7 @@ function VirtualizedResults({
       aria-label={
         view === "favorites" ? "Favorite entries" : "Clipboard history"
       }
+      aria-rowcount={items.length}
       style={{ height: rowVirtualizer.getTotalSize() }}
     >
       {virtualItems.map((virtualRow) => {
@@ -187,11 +206,15 @@ function VirtualizedResults({
           favoriteIconKey && getFavoriteIconComponent(favoriteIconKey),
         );
         const isImage = item.content_type.startsWith("image");
+        const keyboardActionsVisible = selectedByCursor || selectedInBatch;
+        const rowCanReceiveTab =
+          selectedByCursor || (selected < 0 && index === 0);
         const actions = (
           <EntryActions
             item={item}
             view={view}
             pinned={pinned}
+            keyboardReachable={keyboardActionsVisible}
             copy={() => execute(item, "copy")}
             toggleFavorite={() => toggleFavorite(item)}
             togglePin={togglePin ? () => togglePin(item) : undefined}
@@ -209,7 +232,7 @@ function VirtualizedResults({
             aria-rowindex={index + 1}
             aria-selected={selectedByCursor || selectedInBatch}
             aria-label={displayText(item)}
-            tabIndex={-1}
+            tabIndex={rowCanReceiveTab ? 0 : -1}
             data-index={index}
             data-virtualized-row="true"
             draggable={reorderEnabled}
@@ -230,6 +253,33 @@ function VirtualizedResults({
               }
               if (!reorderEnabled) event.preventDefault();
               select(index);
+            }}
+            onFocus={() => {
+              if (selected !== index) select(index);
+            }}
+            onKeyDown={(event) => {
+              if (
+                event.target instanceof Element &&
+                event.target.closest("button, input, textarea, select, a")
+              ) {
+                return;
+              }
+              if (
+                selectionMode === "batch" &&
+                toggleSelected &&
+                (event.key === " " || event.key === "Enter")
+              ) {
+                event.preventDefault();
+                event.stopPropagation();
+                toggleSelected(item.id);
+                if (selected !== index) select(index);
+                return;
+              }
+              if (selectionMode === "browse" && event.key === "Enter") {
+                event.preventDefault();
+                event.stopPropagation();
+                execute(item);
+              }
             }}
             onClick={() => {
               if (justDraggedRef.current) {
@@ -345,9 +395,7 @@ function EntryContent({
         <div className="echo-image-preview-shell">
           {item.preview ? <PreviewImage item={item} /> : <ImagePlaceholder />}
           {imageActions ? (
-            <span className="echo-image-actions" role="gridcell">
-              {imageActions}
-            </span>
+            <span className="echo-image-actions">{imageActions}</span>
           ) : null}
         </div>
       ) : (
@@ -418,6 +466,7 @@ function EntryActions({
   item,
   view,
   pinned,
+  keyboardReachable,
   copy,
   toggleFavorite,
   togglePin,
@@ -427,6 +476,7 @@ function EntryActions({
   item: QuickInsertItem;
   view: QuickInsertView;
   pinned: boolean;
+  keyboardReachable: boolean;
   copy: () => void;
   toggleFavorite: () => void;
   togglePin?: () => void;
@@ -435,22 +485,29 @@ function EntryActions({
 }): ReactElement {
   if (view === "favorites") {
     return (
-      <div className="echo-row-actions" aria-label="Favorite actions">
+      <div
+        className="echo-row-actions"
+        role="group"
+        aria-label="Favorite actions"
+      >
         <ActionButton
           label="Copy"
           icon="copy"
+          tabIndex={keyboardReachable ? 0 : -1}
           onClick={copy}
           testId="favorite-copy-action"
         />
         <ActionButton
           label="Edit saved item"
           icon="edit"
+          tabIndex={keyboardReachable ? 0 : -1}
           onClick={() => edit?.()}
           testId="favorite-edit-action"
         />
         <ActionButton
           label="Delete"
           icon="delete"
+          tabIndex={keyboardReachable ? 0 : -1}
           onClick={remove}
           danger
           testId="favorite-delete-action"
@@ -460,16 +517,18 @@ function EntryActions({
   }
 
   return (
-    <div className="echo-row-actions" aria-label="History actions">
+    <div className="echo-row-actions" role="group" aria-label="History actions">
       <ActionButton
         label="Favorite"
         icon="favorite"
+        tabIndex={keyboardReachable ? 0 : -1}
         onClick={toggleFavorite}
         testId="history-favorite-action"
       />
       <ActionButton
         label={pinned ? "Unpin" : "Pin"}
         icon={pinned ? "unpin" : "pin"}
+        tabIndex={keyboardReachable ? 0 : -1}
         onClick={togglePin}
         pressed={pinned}
         testId="history-pin-action"
@@ -477,12 +536,14 @@ function EntryActions({
       <ActionButton
         label="Copy"
         icon="copy"
+        tabIndex={keyboardReachable ? 0 : -1}
         onClick={copy}
         testId="history-copy-action"
       />
       <ActionButton
         label="Delete"
         icon="delete"
+        tabIndex={keyboardReachable ? 0 : -1}
         onClick={remove}
         danger
         testId="history-delete-action"
@@ -494,6 +555,7 @@ function EntryActions({
 function ActionButton({
   label,
   icon,
+  tabIndex,
   onClick,
   pressed,
   danger = false,
@@ -501,6 +563,7 @@ function ActionButton({
 }: {
   label: string;
   icon: Parameters<typeof EchoIcon>[0]["name"];
+  tabIndex: number;
   onClick?: () => void;
   pressed?: boolean;
   danger?: boolean;
@@ -512,6 +575,7 @@ function ActionButton({
       type="button"
       aria-label={label}
       aria-pressed={pressed}
+      tabIndex={tabIndex}
       title={label}
       data-testid={testId}
       onPointerDown={(event) => {

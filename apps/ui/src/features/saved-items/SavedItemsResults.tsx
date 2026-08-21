@@ -4,6 +4,7 @@ import {
   useRef,
   useState,
   type FormEvent,
+  type KeyboardEvent,
   type ReactElement,
 } from "react";
 
@@ -52,6 +53,8 @@ export function SavedItemsResults({
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [manualOrder, setManualOrder] = useState<string[]>([]);
   const [localFavorites, setLocalFavorites] = useState<QuickInsertItem[]>([]);
+  const addButtonRef = useRef<HTMLButtonElement>(null);
+  const previousEditorRef = useRef<EditorState | null>(null);
 
   const allItems = useMemo(() => {
     const known = new Set(items.map(itemKey));
@@ -98,6 +101,25 @@ export function SavedItemsResults({
   const orderedSelected = selectedKey
     ? orderedItems.findIndex((item) => itemKey(item) === selectedKey)
     : -1;
+
+  useEffect(() => {
+    const previousEditor = previousEditorRef.current;
+    if (previousEditor && !editor) {
+      window.requestAnimationFrame(() => {
+        if (previousEditor.mode === "create") {
+          addButtonRef.current?.focus();
+          return;
+        }
+        const rowIndex = orderedSelected >= 0 ? orderedSelected : 0;
+        document
+          .querySelector<HTMLElement>(
+            `[data-virtualized-row="true"][data-index="${rowIndex}"]`,
+          )
+          ?.focus();
+      });
+    }
+    previousEditorRef.current = editor;
+  }, [editor, orderedSelected]);
 
   const selectOrdered = (index: number) => {
     const item = orderedItems[index];
@@ -160,6 +182,7 @@ export function SavedItemsResults({
           </div>
         </div>
         <button
+          ref={addButtonRef}
           className="favorites-add-button"
           type="button"
           aria-label="Create favorite"
@@ -209,6 +232,7 @@ function FavoriteEditor({
   onCancel: () => void;
   onSave: (draft: FavoriteEditorDraft) => void;
 }): ReactElement {
+  const iconButtonRef = useRef<HTMLButtonElement>(null);
   const [name, setName] = useState(item?.name ?? "");
   const [iconKey, setIconKey] = useState<string | null>(getIconKey(item));
   const [tags, setTags] = useState(item?.tags.join(", ") ?? "");
@@ -219,6 +243,38 @@ function FavoriteEditor({
   const [iconPickerOpen, setIconPickerOpen] = useState(false);
   const contentRef = useRef<HTMLTextAreaElement>(null);
   const editableContent = item?.editable_text !== null;
+
+  const closeIconPicker = () => {
+    setIconPickerOpen(false);
+    window.requestAnimationFrame(() => iconButtonRef.current?.focus());
+  };
+
+  const handleEditorKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      if (iconPickerOpen) closeIconPicker();
+      else onCancel();
+      return;
+    }
+    if (event.key !== "Tab") return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    const focusable = Array.from(
+      event.currentTarget.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ),
+    ).filter((element) => element.tabIndex >= 0);
+    if (focusable.length === 0) return;
+    const currentIndex = focusable.indexOf(
+      document.activeElement as HTMLElement,
+    );
+    const direction = event.shiftKey ? -1 : 1;
+    const nextIndex =
+      (currentIndex + direction + focusable.length) % focusable.length;
+    focusable[nextIndex]?.focus();
+  };
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -249,6 +305,7 @@ function FavoriteEditor({
         role="dialog"
         aria-modal="true"
         aria-label={item ? "Edit favorite" : "Create favorite"}
+        onKeyDown={handleEditorKeyDown}
       >
         <div className="favorite-editor__header">
           <div>
@@ -324,6 +381,7 @@ function FavoriteEditor({
           <label>
             Icon
             <button
+              ref={iconButtonRef}
               className="favorite-icon-field"
               type="button"
               aria-label="Choose favorite icon"
@@ -359,7 +417,7 @@ function FavoriteEditor({
           <FavoriteIconPicker
             value={iconKey}
             onChange={(key) => setIconKey(key === "none" ? null : key)}
-            onClose={() => setIconPickerOpen(false)}
+            onClose={closeIconPicker}
           />
         ) : null}
       </section>

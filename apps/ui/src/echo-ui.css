@@ -135,6 +135,7 @@
 .echo-direct-action {
   display: inline-grid;
   place-items: center;
+  cursor: pointer;
   color: var(--echo-text-secondary);
   background: transparent;
   border-radius: var(--echo-radius-control);
@@ -237,4 +238,14 @@ textarea:focus-visible {
 .echo-switch[data-state="checked"] .echo-switch__thumb {
   background: var(--echo-canvas);
   transform: translateX(16px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition: none !important;
+    animation: none !important;
+  }
 }

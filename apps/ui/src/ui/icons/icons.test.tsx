@@ -8,14 +8,18 @@ import {
   getFavoriteIconComponent,
   NO_ICON_KEY,
 } from "./favorite-icon-catalog";
-import { getEchoIcon } from "./registry";
+import { echoIconRegistry, getEchoIcon } from "./registry";
 
 describe("Echo icon registry", () => {
   it("maps semantic names to verified Apps SDK components", () => {
     expect(getEchoIcon("search")).not.toBeNull();
     expect(getEchoIcon("settings")).not.toBeNull();
-    expect(getEchoIcon("viewDetailed")).not.toBeNull();
     expect(getEchoIcon("unknown")).toBeNull();
+    expect(
+      Object.keys(echoIconRegistry).some((name) =>
+        name.toLocaleLowerCase().includes("view"),
+      ),
+    ).toBe(false);
   });
 
   it("exposes No icon first and keeps the public catalog searchable", () => {

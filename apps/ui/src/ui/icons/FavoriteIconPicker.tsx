@@ -1,6 +1,7 @@
 import {
   useEffect,
   useMemo,
+  useRef,
   useState,
   type KeyboardEvent,
   type ReactElement,
@@ -29,6 +30,7 @@ export function FavoriteIconPicker({
   onChange,
   onClose,
 }: FavoriteIconPickerProps): ReactElement {
+  const searchRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
   const normalizedQuery = query.trim().toLocaleLowerCase();
@@ -46,6 +48,10 @@ export function FavoriteIconPicker({
     setActiveIndex(0);
   }, [normalizedQuery]);
 
+  useEffect(() => {
+    searchRef.current?.focus();
+  }, []);
+
   const choose = (key: FavoriteIconKey) => {
     onChange(key);
     onClose();
@@ -56,6 +62,24 @@ export function FavoriteIconPicker({
       event.preventDefault();
       event.stopPropagation();
       onClose();
+      return;
+    }
+    if (event.key === "Tab") {
+      event.preventDefault();
+      event.stopPropagation();
+      const focusable = Array.from(
+        event.currentTarget.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter((element) => element.tabIndex >= 0);
+      if (focusable.length === 0) return;
+      const currentIndex = focusable.indexOf(
+        document.activeElement as HTMLElement,
+      );
+      const direction = event.shiftKey ? -1 : 1;
+      const nextIndex =
+        (currentIndex + direction + focusable.length) % focusable.length;
+      focusable[nextIndex]?.focus();
       return;
     }
     if (visibleKeys.length === 0) return;
@@ -104,9 +128,18 @@ export function FavoriteIconPicker({
       <label className="favorite-icon-picker__search">
         <span className="sr-only">Search icons</span>
         <input
-          autoFocus
+          ref={searchRef}
           value={query}
           placeholder="Search the full icon catalog"
+          role="combobox"
+          aria-autocomplete="list"
+          aria-controls="favorite-icon-options"
+          aria-expanded="true"
+          aria-activedescendant={
+            visibleKeys.length > 0
+              ? `favorite-icon-option-${activeIndex}`
+              : undefined
+          }
           onChange={(event) => setQuery(event.target.value)}
         />
       </label>
@@ -117,9 +150,10 @@ export function FavoriteIconPicker({
       </div>
       <div
         className="favorite-icon-picker__grid"
+        id="favorite-icon-options"
         role="listbox"
         aria-label="Favorite icon choices"
-        tabIndex={0}
+        tabIndex={-1}
       >
         {visibleKeys.map((key, index) => {
           const selected = key === value || (!value && key === NO_ICON_KEY);
@@ -128,10 +162,12 @@ export function FavoriteIconPicker({
           return (
             <button
               className={`favorite-icon-choice${selected ? " is-selected" : ""}${index === activeIndex ? " is-active" : ""}`}
+              id={`favorite-icon-option-${index}`}
               key={key}
               type="button"
               role="option"
               aria-selected={selected}
+              tabIndex={-1}
               title={formatIconLabel(key)}
               onMouseEnter={() => setActiveIndex(index)}
               onClick={() => choose(key)}
