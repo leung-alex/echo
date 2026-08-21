@@ -1332,6 +1332,7 @@ impl ClipboardStore {
                     Value::Text(query_lower.clone()),
                     Value::Text(query_lower.clone()),
                 ],
+                RankOrder::Ascending,
             )?;
             let pattern = format!("%{}%", escape_like_pattern(&query_lower));
             let sql = format!(
@@ -1372,6 +1373,7 @@ impl ClipboardStore {
                 cursor,
                 "CAST((-bm25(clipboard_fts)) * 1000000 AS INTEGER)",
                 &[],
+                RankOrder::Descending,
             )?;
             let sql = format!(
                 "SELECT e.id, e.created_at, e.updated_at, e.source_app, e.source_executable,
@@ -2051,6 +2053,7 @@ impl ClipboardStore {
                     Value::Text(query_lower.clone()),
                     Value::Text(query_lower.clone()),
                 ],
+                RankOrder::Ascending,
             )?;
             let pattern = format!("%{}%", escape_like_pattern(&query_lower));
             let sql = format!(
@@ -2084,6 +2087,7 @@ impl ClipboardStore {
                 cursor,
                 "CAST((-bm25(saved_items_fts)) * 1000000 AS INTEGER)",
                 &[],
+                RankOrder::Descending,
             )?;
             let sql = format!(
                 "SELECT s.id, s.source_history_id, s.created_at, s.updated_at, s.name,
@@ -3053,11 +3057,28 @@ fn history_cursor_filter(cursor: Option<PageCursor>) -> Result<(String, Vec<Valu
     }
 }
 
+#[derive(Clone, Copy)]
+enum RankOrder {
+    Ascending,
+    Descending,
+}
+
+impl RankOrder {
+    fn after_operator(self) -> &'static str {
+        match self {
+            Self::Ascending => ">",
+            Self::Descending => "<",
+        }
+    }
+}
+
 fn history_search_cursor_filter_with_rank(
     cursor: Option<PageCursor>,
     rank_expression: &str,
     rank_values: &[Value],
+    rank_order: RankOrder,
 ) -> Result<(String, Vec<Value>)> {
+    let after_operator = rank_order.after_operator();
     match cursor {
         None => Ok((String::new(), Vec::new())),
         Some(PageCursor::HistorySearch {
@@ -3069,15 +3090,15 @@ fn history_search_cursor_filter_with_rank(
             format!(
                 "AND (e.history_pinned_at IS NULL OR
                       (e.history_pinned_at IS NOT NULL AND
-                       ({rank_expression} < ? OR
+                       ({rank_expression} {after_operator} ? OR
                         ({rank_expression} = ? AND
                          (e.updated_at < ? OR (e.updated_at = ? AND e.id < ?))))))"
             ),
             [
                 rank_values.to_vec(),
+                vec![Value::Integer(relevance)],
                 rank_values.to_vec(),
                 vec![
-                    Value::Integer(relevance),
                     Value::Integer(relevance),
                     Value::Integer(updated_at),
                     Value::Integer(updated_at),
@@ -3096,15 +3117,15 @@ fn history_search_cursor_filter_with_rank(
         }) => Ok((
             format!(
                 "AND e.history_pinned_at IS NULL AND
-                      ({rank_expression} < ? OR
+                      ({rank_expression} {after_operator} ? OR
                        ({rank_expression} = ? AND
                         (e.updated_at < ? OR (e.updated_at = ? AND e.id < ?))))"
             ),
             [
                 rank_values.to_vec(),
+                vec![Value::Integer(relevance)],
                 rank_values.to_vec(),
                 vec![
-                    Value::Integer(relevance),
                     Value::Integer(relevance),
                     Value::Integer(updated_at),
                     Value::Integer(updated_at),
@@ -3142,7 +3163,9 @@ fn favorites_search_cursor_filter_with_rank(
     cursor: Option<PageCursor>,
     rank_expression: &str,
     rank_values: &[Value],
+    rank_order: RankOrder,
 ) -> Result<(String, Vec<Value>)> {
+    let after_operator = rank_order.after_operator();
     match cursor {
         None => Ok((String::new(), Vec::new())),
         Some(PageCursor::FavoritesSearch {
@@ -3151,16 +3174,16 @@ fn favorites_search_cursor_filter_with_rank(
             id,
         }) => Ok((
             format!(
-                "AND ({rank_expression} < ? OR
+                "AND ({rank_expression} {after_operator} ? OR
                       ({rank_expression} = ? AND
                        (s.favorite_order > ? OR
                         (s.favorite_order = ? AND s.id > ?))))"
             ),
             [
                 rank_values.to_vec(),
+                vec![Value::Integer(relevance)],
                 rank_values.to_vec(),
                 vec![
-                    Value::Integer(relevance),
                     Value::Integer(relevance),
                     Value::Integer(favorite_order),
                     Value::Integer(favorite_order),
@@ -4016,6 +4039,134 @@ mod tests {
         seen_favorites.sort_unstable();
         favorite_ids.sort_unstable();
         assert_eq!(seen_favorites, favorite_ids);
+    }
+
+    #[test]
+    fn short_history_search_cursor_crosses_relevance_ranks_without_duplicates() {
+        let root = TempDir::new().unwrap();
+        let mut store = ClipboardStore::open(root.path()).unwrap();
+        let exact = store.record_capture(text_capture("ab", 1)).unwrap().id;
+        let prefix_one = store
+            .record_capture(text_capture("ab prefix one", 2))
+            .unwrap()
+            .id;
+        let prefix_two = store
+            .record_capture(text_capture("ab prefix two", 3))
+            .unwrap()
+            .id;
+        let contains = store
+            .record_capture(text_capture("contains ab", 4))
+            .unwrap()
+            .id;
+
+        let expected = store.list_entries("ab", 20).unwrap();
+        assert_eq!(expected.len(), 4);
+        assert_eq!(expected[0].id, exact);
+        assert!(expected[1..3]
+            .iter()
+            .all(|entry| [prefix_one, prefix_two].contains(&entry.id)));
+        assert_eq!(expected[3].id, contains);
+        let expected_ids = expected.iter().map(|entry| entry.id).collect::<Vec<_>>();
+
+        let mut cursor = None;
+        let mut seen = Vec::new();
+        for _ in 0..8 {
+            let page = store.list_entries_page("ab", 1, cursor).unwrap();
+            seen.extend(page.items.iter().map(|entry| entry.id));
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+
+        assert!(
+            cursor.is_none(),
+            "short history pagination did not terminate"
+        );
+        assert_eq!(seen, expected_ids);
+        assert_eq!(
+            seen.iter()
+                .copied()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            seen.len()
+        );
+    }
+
+    #[test]
+    fn short_favorites_search_cursor_crosses_relevance_ranks_without_duplicates() {
+        let root = TempDir::new().unwrap();
+        let mut store = ClipboardStore::open(root.path()).unwrap();
+        let prefix_one = store
+            .create_favorite(FavoriteDraft {
+                content: "ab favorite one".to_owned(),
+                name: None,
+                icon_key: None,
+                tags: Vec::new(),
+            })
+            .unwrap()
+            .id;
+        let prefix_two = store
+            .create_favorite(FavoriteDraft {
+                content: "ab favorite two".to_owned(),
+                name: None,
+                icon_key: None,
+                tags: Vec::new(),
+            })
+            .unwrap()
+            .id;
+        let contains_one = store
+            .create_favorite(FavoriteDraft {
+                content: "contains ab favorite one".to_owned(),
+                name: Some("Other one".to_owned()),
+                icon_key: None,
+                tags: Vec::new(),
+            })
+            .unwrap()
+            .id;
+        let contains_two = store
+            .create_favorite(FavoriteDraft {
+                content: "contains ab favorite two".to_owned(),
+                name: Some("Other two".to_owned()),
+                icon_key: None,
+                tags: Vec::new(),
+            })
+            .unwrap()
+            .id;
+
+        let expected = store.list_saved_items("ab", 20).unwrap();
+        assert_eq!(expected.len(), 4);
+        assert!(expected[..2]
+            .iter()
+            .all(|item| [prefix_one, prefix_two].contains(&item.id)));
+        assert!(expected[2..]
+            .iter()
+            .all(|item| [contains_one, contains_two].contains(&item.id)));
+        let expected_ids = expected.iter().map(|item| item.id).collect::<Vec<_>>();
+
+        let mut cursor = None;
+        let mut seen = Vec::new();
+        for _ in 0..8 {
+            let page = store.list_saved_items_page("ab", 1, cursor).unwrap();
+            seen.extend(page.items.iter().map(|item| item.id));
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+
+        assert!(
+            cursor.is_none(),
+            "short favorites pagination did not terminate"
+        );
+        assert_eq!(seen, expected_ids);
+        assert_eq!(
+            seen.iter()
+                .copied()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            seen.len()
+        );
     }
 
     #[test]
