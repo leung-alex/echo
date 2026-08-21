@@ -120,6 +120,7 @@ test("keeps inline image actions non-interactive until fully visible", async ({
   let state = await readInlineImageActionState(rail);
   expect(state.actionCount).toBeGreaterThan(0);
   expect(state.transitionProperty).toBe("none");
+  expect(state.transitionDuration).toMatch(/^0s(?:,\s*0s)*$/);
   expect(state.minContrast).toBeGreaterThanOrEqual(4.5);
 
   await row.focus();
@@ -131,6 +132,7 @@ test("keeps inline image actions non-interactive until fully visible", async ({
   expect(state.visibility).toBe("visible");
   expect(state.opacity).toBe("1");
   expect(state.pointerEvents).toBe("auto");
+  expect(state.transitionDuration).toMatch(/^0s(?:,\s*0s)*$/);
   expect(state.minContrast).toBeGreaterThanOrEqual(4.5);
 
   await favoriteAction.hover();

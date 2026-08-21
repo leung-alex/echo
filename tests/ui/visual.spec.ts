@@ -28,13 +28,37 @@ async function expectHealthySurface(page: Page, keyText = "Alpha clipboard") {
 
 async function expectInlineImageActionsReady(row: Locator): Promise<void> {
   const rail = row.locator(".echo-image-actions .echo-row-actions");
-  await expect(rail).toHaveCSS("visibility", "visible");
-  await expect(rail).toHaveCSS("opacity", "1");
-  await expect(rail).toHaveCSS("pointer-events", "auto");
-  const state = await readInlineImageActionState(rail);
-  expect(state.actionCount).toBeGreaterThan(0);
-  expect(state.transitionProperty).toBe("none");
-  expect(state.minContrast).toBeGreaterThanOrEqual(4.5);
+  await expect
+    .poll(
+      async () => {
+        try {
+          const state = await readInlineImageActionState(rail);
+          return {
+            hasActions: state.actionCount > 0,
+            visible: state.visibility === "visible" && state.opacity === "1",
+            pointerActive: state.pointerEvents === "auto",
+            transitionFree: /^0s(?:,\s*0s)*$/.test(state.transitionDuration),
+            contrastSafe: state.minContrast >= 4.5,
+          };
+        } catch {
+          return {
+            hasActions: false,
+            visible: false,
+            pointerActive: false,
+            transitionFree: false,
+            contrastSafe: false,
+          };
+        }
+      },
+      { message: "inline image actions must be capture-ready" },
+    )
+    .toMatchObject({
+      hasActions: true,
+      visible: true,
+      pointerActive: true,
+      transitionFree: true,
+      contrastSafe: true,
+    });
 }
 
 test.beforeEach(async ({ page }) => {

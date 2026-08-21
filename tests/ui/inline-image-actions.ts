@@ -6,6 +6,7 @@ export type InlineImageActionState = {
   opacity: string;
   pointerEvents: string;
   transitionProperty: string;
+  transitionDuration: string;
   minContrast: number;
 };
 
@@ -82,6 +83,7 @@ export async function readInlineImageActionState(
       opacity: railStyle.opacity,
       pointerEvents: railStyle.pointerEvents,
       transitionProperty: railStyle.transitionProperty,
+      transitionDuration: railStyle.transitionDuration,
       minContrast: Math.min(...buttonContrasts),
     };
   });
