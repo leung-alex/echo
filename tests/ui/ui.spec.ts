@@ -12,17 +12,37 @@ test.beforeEach(async ({ page }) => {
   await expect(page.getByText("Alpha clipboard")).toBeVisible();
 });
 
-test("keeps History, Favorites, copy, search, and settings on one Echo surface", async ({
+test("keeps History, Favorites, direct actions, and settings on one Echo surface", async ({
   page,
 }) => {
   await page.getByRole("tab", { name: "Favorites" }).click();
   await expect(page.getByText("No favorites yet")).toBeVisible();
 
   await page.getByRole("tab", { name: "History" }).click();
+  await expect(page.getByRole("button", { name: "Pin" }).first()).toBeVisible();
   await page.getByRole("button", { name: "Favorite" }).first().click();
   await expect(page.getByText("Added to Favorites")).toBeVisible();
+  await expect(page.getByText("Alpha clipboard")).toHaveCount(0);
+  expect(
+    await page.evaluate(
+      () =>
+        !(
+          window as Window & {
+            __echoMockState?: { calls: Array<{ command: string }> };
+          }
+        ).__echoMockState?.calls.some(
+          (call) => call.command === "quick_insert_execute",
+        ),
+    ),
+  ).toBe(true);
   await page.getByRole("tab", { name: "Favorites" }).click();
   await expect(page.getByText("Alpha clipboard")).toBeVisible();
+  await page.getByRole("button", { name: "Edit saved item" }).click();
+  await expect(
+    page.getByRole("dialog", { name: "Edit favorite" }),
+  ).toContainText("Content");
+  await expect(page.getByLabel("Choose favorite icon")).toBeVisible();
+  await page.getByRole("button", { name: "Close favorite editor" }).click();
 
   await page.getByRole("tab", { name: "History" }).click();
   await page.getByRole("button", { name: "Copy" }).first().click();
@@ -34,6 +54,43 @@ test("keeps History, Favorites, copy, search, and settings on one Echo surface",
   await page.getByRole("switch", { name: "Record sensitive content" }).click();
   await page.getByRole("button", { name: "Save settings" }).click();
   await expect(page.getByText("Settings updated")).toBeVisible();
+});
+
+test("renders History batch selection affordances without row insertion", async ({
+  page,
+}) => {
+  await page.getByRole("button", { name: "Select" }).click();
+  await expect(page.getByRole("button", { name: "Cancel" })).toBeVisible();
+  await expect(
+    page.getByRole("toolbar", { name: "History batch actions" }),
+  ).toBeVisible();
+
+  await page.getByRole("row").first().click();
+  await expect(page.getByText("1 selected")).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Favorite selected" }),
+  ).toBeEnabled();
+
+  await page.locator('[data-testid="history-results"]').press("Space");
+  await expect(page.getByText("0 selected")).toBeVisible();
+  await page.locator('[data-testid="history-results"]').press("Control+A");
+  await expect(page.getByText("2 selected")).toBeVisible();
+  await page.locator('[data-testid="history-results"]').press("Enter");
+  await expect(page.getByText("1 selected")).toBeVisible();
+});
+
+test("shows the clear-all confirmation copy and preserves the presentation contract", async ({
+  page,
+}) => {
+  await page.getByRole("button", { name: "Clear all" }).click();
+  await expect(page.getByRole("alertdialog")).toContainText(
+    "Pinned items and Favorites are preserved",
+  );
+  await expect(
+    page.getByRole("button", { name: "Clear unpinned History" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Cancel" }).last().click();
+  await expect(page.getByText("Alpha clipboard")).toBeVisible();
 });
 
 test("keeps activation and successful insert behavior recoverable", async ({

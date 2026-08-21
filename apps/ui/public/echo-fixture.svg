@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360" role="img" aria-labelledby="title desc">
+  <title id="title">Echo inline image fixture</title>
+  <desc id="desc">A warm amber and porcelain abstract image used by browser UI fixtures.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#171b1e" />
+      <stop offset="1" stop-color="#667078" />
+    </linearGradient>
+    <radialGradient id="sun" cx="0.72" cy="0.28" r="0.55">
+      <stop offset="0" stop-color="#ffc400" stop-opacity="0.95" />
+      <stop offset="1" stop-color="#ffc400" stop-opacity="0" />
+    </radialGradient>
+  </defs>
+  <rect width="640" height="360" rx="28" fill="url(#bg)" />
+  <rect width="640" height="360" rx="28" fill="url(#sun)" />
+  <path d="M0 288c96-84 154-18 246-72 82-48 142-48 210 6 69 55 103 33 184-24v162H0Z" fill="#e9edeb" fill-opacity="0.82" />
+  <circle cx="462" cy="104" r="52" fill="#ffc400" fill-opacity="0.88" />
+  <path d="M62 286h282" stroke="#171b1e" stroke-linecap="round" stroke-opacity="0.58" stroke-width="12" />
+</svg>

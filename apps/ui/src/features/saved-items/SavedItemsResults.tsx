@@ -6,7 +6,8 @@ import {
   type ReactElement,
 } from "react";
 
-import { EchoIcon } from "../../ui/icons/EchoIcon";
+import { FavoriteIcon } from "../../ui/icons/EchoIcon";
+import { FavoriteIconPicker } from "../../ui/icons/FavoriteIconPicker";
 import type {
   QuickInsertItem,
   SavedItemUpdate,
@@ -16,147 +17,355 @@ import {
   type SharedEntryResultsProps,
 } from "../quick-insert/components/QuickInsertResults";
 
+export interface FavoriteEditorDraft {
+  content: string;
+  name: string;
+  iconKey: string | null;
+  tags: string[];
+}
+
+export type CreateFavoriteAdapter = (
+  draft: FavoriteEditorDraft,
+) => Promise<QuickInsertItem | void> | QuickInsertItem | void;
+
 export interface SavedItemsResultsProps extends SharedEntryResultsProps {
   updateSavedItem: (item: QuickInsertItem, update: SavedItemUpdate) => void;
-  deleteSavedItems: (ids: number[]) => Promise<boolean>;
+  createFavorite?: CreateFavoriteAdapter;
+  reorderFavorites?: (sourceId: number, targetId: number) => void;
 }
+
+type EditorState =
+  | { mode: "create"; item: null }
+  | { mode: "edit"; item: QuickInsertItem };
 
 export function SavedItemsResults({
   items,
+  query,
+  selected,
+  select,
   updateSavedItem,
-  deleteSavedItems,
+  createFavorite,
+  reorderFavorites,
   ...props
 }: SavedItemsResultsProps): ReactElement {
-  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
-  const [editing, setEditing] = useState<QuickInsertItem | null>(null);
+  const [editor, setEditor] = useState<EditorState | null>(null);
+  const [manualOrder, setManualOrder] = useState<string[]>([]);
+  const [localFavorites, setLocalFavorites] = useState<QuickInsertItem[]>([]);
+
+  const allItems = useMemo(() => {
+    const known = new Set(items.map(itemKey));
+    return [
+      ...localFavorites.filter((item) => !known.has(itemKey(item))),
+      ...items,
+    ];
+  }, [items, localFavorites]);
 
   useEffect(() => {
-    const available = new Set(items.map((item) => item.id));
-    setSelectedIds((current) => {
-      const next = new Set([...current].filter((id) => available.has(id)));
-      return next.size === current.size ? current : next;
+    const incoming = allItems.map(itemKey);
+    setManualOrder((current) => {
+      const incomingSet = new Set(incoming);
+      const retained = current.filter((key) => incomingSet.has(key));
+      const retainedSet = new Set(retained);
+      const added = incoming.filter((key) => !retainedSet.has(key));
+      const next = [...retained, ...added];
+      return next.length === current.length &&
+        next.every((key, i) => key === current[i])
+        ? current
+        : next;
     });
-  }, [items]);
+  }, [allItems]);
 
-  const selected = useMemo(() => [...selectedIds], [selectedIds]);
-  const toggleSelected = (id: number) => {
-    setSelectedIds((current) => {
-      const next = new Set(current);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+  const orderedItems = useMemo(() => {
+    const normalizedQuery = query.trim().toLocaleLowerCase();
+    const matching = normalizedQuery
+      ? allItems.filter((item) => matchesQuery(item, normalizedQuery))
+      : allItems;
+    if (normalizedQuery) return matching;
+
+    const byKey = new Map(matching.map((item) => [itemKey(item), item]));
+    return [
+      ...manualOrder.flatMap((key) => {
+        const item = byKey.get(key);
+        return item ? [item] : [];
+      }),
+      ...matching.filter((item) => !manualOrder.includes(itemKey(item))),
+    ];
+  }, [allItems, manualOrder, query]);
+
+  const selectedKey =
+    selected >= 0 && items[selected] ? itemKey(items[selected]) : null;
+  const orderedSelected = selectedKey
+    ? orderedItems.findIndex((item) => itemKey(item) === selectedKey)
+    : -1;
+
+  const selectOrdered = (index: number) => {
+    const item = orderedItems[index];
+    if (!item) return;
+    const sourceIndex = items.findIndex(
+      (candidate) => itemKey(candidate) === itemKey(item),
+    );
+    if (sourceIndex >= 0) select(sourceIndex);
+  };
+
+  const handleReorder = (sourceId: number, targetId: number) => {
+    setManualOrder((current) =>
+      moveOrder(current, `favorite:${sourceId}`, `favorite:${targetId}`),
+    );
+    reorderFavorites?.(sourceId, targetId);
+  };
+
+  const saveEditor = (draft: FavoriteEditorDraft) => {
+    if (editor?.mode === "edit") {
+      const update: SavedItemUpdate = {
+        name: draft.name,
+        tags: draft.tags,
+        editable_text:
+          editor.item.editable_text === null ? null : draft.content,
+      };
+      // The current generated update contract has no icon field yet. The
+      // icon remains presentation-owned until the frozen transport carries it.
+      updateSavedItem(editor.item, update);
+      setEditor(null);
+      return;
+    }
+
+    if (editor?.mode === "create") {
+      const created = createFavorite?.(draft);
+      if (isPromiseLike(created)) {
+        void created.then((item) => {
+          if (item) setLocalFavorites((current) => [item, ...current]);
+        });
+      } else if (created) {
+        setLocalFavorites((current) => [created, ...current]);
+      }
+      setEditor(null);
+    }
   };
 
   return (
-    <>
-      {selected.length > 0 ? (
-        <div className="saved-items-toolbar">
-          <span>{selected.length} selected</span>
-          <button
-            className="danger"
-            type="button"
-            onClick={() => {
-              void deleteSavedItems(selected).then((deleted) => {
-                if (deleted) setSelectedIds(new Set());
-              });
-            }}
-          >
-            <EchoIcon name="delete" size={15} aria-hidden="true" />
-            Delete selected
-          </button>
+    <div className="favorites-results" data-testid="favorites-results">
+      <header className="favorites-heading">
+        <div className="favorites-heading-title">
+          <span className="favorites-heading-mark" aria-hidden="true">
+            <FavoriteIcon iconKey="StarFilled" size={18} />
+          </span>
+          <div>
+            <span className="history-heading-eyebrow">Durable collection</span>
+            <h2>Favorites</h2>
+            <span className="history-heading-count">
+              {orderedItems.length}{" "}
+              {orderedItems.length === 1 ? "item" : "items"}
+            </span>
+          </div>
         </div>
-      ) : null}
+        <button
+          className="favorites-add-button"
+          type="button"
+          aria-label="Create favorite"
+          title="Create favorite"
+          onClick={() => setEditor({ mode: "create", item: null })}
+        >
+          <FavoriteIcon iconKey="Plus" size={18} aria-hidden="true" />
+          <span>New</span>
+        </button>
+      </header>
+      <div
+        className="favorites-order-note"
+        data-searching={Boolean(query.trim())}
+      >
+        {query.trim()
+          ? "Search relevance · drag reorder disabled"
+          : "Manual order · drag to rearrange"}
+      </div>
       <QuickInsertResults
         {...props}
-        items={items}
+        items={orderedItems}
+        query={query}
         view="favorites"
-        edit={setEditing}
-        selectedIds={selectedIds}
-        toggleSelected={toggleSelected}
+        selected={orderedSelected}
+        select={selectOrdered}
+        edit={(item) => setEditor({ mode: "edit", item })}
+        reorderEnabled={!query.trim() && !editor}
+        onReorder={handleReorder}
       />
-      {editing ? (
-        <SavedItemEditor
-          item={editing}
-          onCancel={() => setEditing(null)}
-          onSave={(update) => {
-            updateSavedItem(editing, update);
-            setEditing(null);
-          }}
+      {editor ? (
+        <FavoriteEditor
+          item={editor.item}
+          onCancel={() => setEditor(null)}
+          onSave={saveEditor}
         />
       ) : null}
-    </>
+    </div>
   );
 }
 
-function SavedItemEditor({
+function FavoriteEditor({
   item,
   onCancel,
   onSave,
 }: {
-  item: QuickInsertItem;
+  item: QuickInsertItem | null;
   onCancel: () => void;
-  onSave: (update: SavedItemUpdate) => void;
+  onSave: (draft: FavoriteEditorDraft) => void;
 }): ReactElement {
-  const [name, setName] = useState(item.name ?? "Saved item");
-  const [tags, setTags] = useState(item.tags.join(", "));
-  const [text, setText] = useState(item.editable_text ?? "");
+  const [name, setName] = useState(item?.name ?? "");
+  const [iconKey, setIconKey] = useState<string | null>(getIconKey(item));
+  const [tags, setTags] = useState(item?.tags.join(", ") ?? "");
+  const [content, setContent] = useState(
+    item?.editable_text ?? item?.preview_text ?? "",
+  );
+  const [iconPickerOpen, setIconPickerOpen] = useState(false);
+  const editableContent = item?.editable_text !== null;
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     onSave({
-      name,
+      content,
+      name: name.trim() || content.trim().slice(0, 48) || "Favorite",
+      iconKey,
       tags: tags
         .split(",")
         .map((tag) => tag.trim())
         .filter(Boolean),
-      editable_text: item.editable_text === null ? null : text,
     });
   };
 
   return (
     <div
-      className="saved-item-editor"
-      role="dialog"
-      aria-label="Edit saved item"
+      className="echo-confirm-backdrop favorite-editor-backdrop"
+      role="presentation"
     >
-      <form onSubmit={submit}>
-        <label>
-          Name
-          <input
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-            autoFocus
-          />
-        </label>
-        <label>
-          Tags
-          <input
-            value={tags}
-            onChange={(event) => setTags(event.target.value)}
-          />
-        </label>
-        {item.editable_text !== null ? (
-          <label>
-            Text
-            <textarea
-              value={text}
-              onChange={(event) => setText(event.target.value)}
-              rows={6}
-            />
-          </label>
-        ) : null}
-        <div className="saved-item-editor-actions">
-          <button type="button" onClick={onCancel}>
-            <EchoIcon name="close" size={15} aria-hidden="true" />
-            Cancel
-          </button>
-          <button className="primary-action" type="submit">
-            <EchoIcon name="check" size={15} aria-hidden="true" />
-            Save
+      <section
+        className="favorite-editor"
+        role="dialog"
+        aria-modal="true"
+        aria-label={item ? "Edit favorite" : "Create favorite"}
+      >
+        <div className="favorite-editor__header">
+          <div>
+            <span className="history-heading-eyebrow">
+              {item ? "Edit favorite" : "New favorite"}
+            </span>
+            <h3>{item ? "Edit Favorite" : "Create Favorite"}</h3>
+          </div>
+          <button
+            className="echo-icon-button"
+            type="button"
+            aria-label="Close favorite editor"
+            title="Close favorite editor"
+            onClick={onCancel}
+          >
+            <FavoriteIcon iconKey="X" size={16} aria-hidden="true" />
           </button>
         </div>
-      </form>
+        <form onSubmit={submit}>
+          <label>
+            Content
+            <textarea
+              value={content}
+              onChange={(event) => setContent(event.target.value)}
+              readOnly={!editableContent}
+              aria-describedby={
+                !editableContent ? "favorite-content-note" : undefined
+              }
+              rows={5}
+              autoFocus
+            />
+            {!editableContent ? (
+              <small id="favorite-content-note">
+                Binary content is preserved; edit its metadata below.
+              </small>
+            ) : null}
+          </label>
+          <label>
+            Name
+            <input
+              value={name}
+              placeholder="Generated from content when blank"
+              onChange={(event) => setName(event.target.value)}
+            />
+          </label>
+          <label>
+            Icon
+            <button
+              className="favorite-icon-field"
+              type="button"
+              aria-label="Choose favorite icon"
+              onClick={() => setIconPickerOpen(true)}
+            >
+              {iconKey ? <FavoriteIcon iconKey={iconKey} size={17} /> : null}
+              <span>
+                {iconKey
+                  ? iconKey.replace(/([a-z])([A-Z])/g, "$1 $2")
+                  : "No icon"}
+              </span>
+            </button>
+          </label>
+          <label>
+            Tags
+            <input
+              value={tags}
+              placeholder="work, reusable"
+              onChange={(event) => setTags(event.target.value)}
+            />
+            <small>Separate tags with commas.</small>
+          </label>
+          <div className="favorite-editor__actions">
+            <button type="button" onClick={onCancel}>
+              Cancel
+            </button>
+            <button className="primary-action" type="submit">
+              Save Favorite
+            </button>
+          </div>
+        </form>
+        {iconPickerOpen ? (
+          <FavoriteIconPicker
+            value={iconKey}
+            onChange={(key) => setIconKey(key === "none" ? null : key)}
+            onClose={() => setIconPickerOpen(false)}
+          />
+        ) : null}
+      </section>
     </div>
+  );
+}
+
+function getIconKey(item: QuickInsertItem | null): string | null {
+  if (!item || !("icon_key" in item)) return null;
+  const iconKey = (item as QuickInsertItem & { icon_key?: unknown }).icon_key;
+  return typeof iconKey === "string" && iconKey !== "none" ? iconKey : null;
+}
+
+function itemKey(item: QuickInsertItem): string {
+  return `${item.source}:${item.id}`;
+}
+
+function moveOrder(order: string[], source: string, target: string): string[] {
+  const sourceIndex = order.indexOf(source);
+  const targetIndex = order.indexOf(target);
+  if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) {
+    return order;
+  }
+  const next = [...order];
+  const [moved] = next.splice(sourceIndex, 1);
+  next.splice(targetIndex, 0, moved);
+  return next;
+}
+
+function matchesQuery(item: QuickInsertItem, query: string): boolean {
+  return `${item.name ?? ""} ${item.preview_text ?? ""} ${item.source_app ?? ""} ${item.tags.join(" ")}`
+    .toLocaleLowerCase()
+    .includes(query);
+}
+
+function isPromiseLike(
+  value: QuickInsertItem | void | Promise<QuickInsertItem | void> | undefined,
+): value is Promise<QuickInsertItem | void> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "then" in value &&
+    typeof value.then === "function"
   );
 }

@@ -1,20 +1,33 @@
-import { useEffect, useState, type ReactElement, type RefObject } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ReactElement,
+  type RefObject,
+} from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
 import {
   getSearchMatchIndices,
   SearchMatchText,
 } from "../../../ui/SearchMatchText";
-import { EchoIcon } from "../../../ui/icons/EchoIcon";
+import { EchoIcon, FavoriteIcon } from "../../../ui/icons/EchoIcon";
+import {
+  getFavoriteIconComponent,
+  type FavoriteIconKey,
+} from "../../../ui/icons/favorite-icon-catalog";
 import type { QuickInsertItem, QuickInsertView } from "../model/types";
 
 const VIRTUAL_OVERSCAN = 5;
+const DEFAULT_HISTORY_ESTIMATE = 112;
+const DEFAULT_FAVORITE_ESTIMATE = 88;
+
+export type ResultSelectionMode = "browse" | "batch";
 
 export interface QuickInsertResultsProps {
   items: QuickInsertItem[];
   query: string;
   view: QuickInsertView;
-  viewMode: "detailed" | "compact";
   selected: number;
   emptyMessage: string;
   getResultId: (key: string) => string;
@@ -23,8 +36,13 @@ export interface QuickInsertResultsProps {
   toggleFavorite: (item: QuickInsertItem) => void;
   remove: (item: QuickInsertItem) => void;
   edit?: (item: QuickInsertItem) => void;
-  selectedIds?: Set<number>;
+  selectionMode?: ResultSelectionMode;
+  selectedIds?: ReadonlySet<number>;
   toggleSelected?: (id: number) => void;
+  isPinned?: (item: QuickInsertItem) => boolean;
+  togglePin?: (item: QuickInsertItem) => void;
+  reorderEnabled?: boolean;
+  onReorder?: (sourceId: number, targetId: number) => void;
   hasMore: boolean;
   loadingMore: boolean;
   loadMore: () => void;
@@ -37,7 +55,6 @@ export function QuickInsertResults({
   items,
   query,
   view,
-  viewMode,
   selected,
   emptyMessage,
   getResultId,
@@ -46,31 +63,47 @@ export function QuickInsertResults({
   toggleFavorite,
   remove,
   edit,
+  selectionMode = "browse",
   selectedIds,
   toggleSelected,
+  isPinned,
+  togglePin,
+  reorderEnabled = false,
+  onReorder,
   hasMore,
   loadingMore,
   loadMore,
   scrollElementRef,
 }: QuickInsertResultsProps): ReactElement {
-  if (items.length === 0) return <EmptyState message={emptyMessage} />;
+  if (items.length === 0) {
+    return (
+      <EmptyState
+        message={
+          query.trim() ? `No matches for “${query.trim()}”` : emptyMessage
+        }
+      />
+    );
+  }
 
   return (
     <VirtualizedResults
       items={items}
       query={query}
       view={view}
-      viewMode={viewMode}
       selected={selected}
-      emptyMessage={emptyMessage}
       getResultId={getResultId}
       select={select}
       execute={execute}
       toggleFavorite={toggleFavorite}
       remove={remove}
       edit={edit}
+      selectionMode={selectionMode}
       selectedIds={selectedIds}
       toggleSelected={toggleSelected}
+      isPinned={isPinned}
+      togglePin={togglePin}
+      reorderEnabled={reorderEnabled}
+      onReorder={onReorder}
       hasMore={hasMore}
       loadingMore={loadingMore}
       loadMore={loadMore}
@@ -83,7 +116,6 @@ function VirtualizedResults({
   items,
   query,
   view,
-  viewMode,
   selected,
   getResultId,
   select,
@@ -91,18 +123,26 @@ function VirtualizedResults({
   toggleFavorite,
   remove,
   edit,
+  selectionMode,
   selectedIds,
   toggleSelected,
+  isPinned,
+  togglePin,
+  reorderEnabled,
+  onReorder,
   hasMore,
   loadingMore,
   loadMore,
   scrollElementRef,
-}: QuickInsertResultsProps): ReactElement {
-  const rowHeight = viewMode === "compact" ? 52 : 76;
+}: Omit<QuickInsertResultsProps, "emptyMessage">): ReactElement {
+  const [draggingId, setDraggingId] = useState<number | null>(null);
+  const justDraggedRef = useRef(false);
   const rowVirtualizer = useVirtualizer({
     count: items.length,
     getScrollElement: () => scrollElementRef.current,
-    estimateSize: () => rowHeight + 6,
+    estimateSize: () =>
+      view === "history" ? DEFAULT_HISTORY_ESTIMATE : DEFAULT_FAVORITE_ESTIMATE,
+    measureElement: (element) => element.getBoundingClientRect().height,
     overscan: VIRTUAL_OVERSCAN,
     getItemKey: (index) => {
       const item = items[index];
@@ -123,12 +163,12 @@ function VirtualizedResults({
     }
   }, [hasMore, items.length, loadMore, loadingMore, virtualItems]);
 
-  const className =
-    viewMode === "compact" ? "echo-compact-list" : "echo-history-list";
   return (
     <div
       id="echo-entry-results"
-      className={className}
+      className={
+        view === "history" ? "echo-history-list" : "echo-favorites-list"
+      }
       role="grid"
       aria-label={
         view === "favorites" ? "Favorite entries" : "Clipboard history"
@@ -139,19 +179,42 @@ function VirtualizedResults({
         const item = items[virtualRow.index];
         if (!item) return null;
         const index = virtualRow.index;
+        const selectedByCursor = index === selected;
+        const selectedInBatch = selectedIds?.has(item.id) ?? false;
+        const pinned = isPinned?.(item) ?? false;
+        const favoriteIconKey = getFavoriteIconKey(item);
+        const hasFavoriteIcon = Boolean(
+          favoriteIconKey && getFavoriteIconComponent(favoriteIconKey),
+        );
+        const isImage = item.content_type.startsWith("image");
+        const actions = (
+          <EntryActions
+            item={item}
+            view={view}
+            pinned={pinned}
+            copy={() => execute(item, "copy")}
+            toggleFavorite={() => toggleFavorite(item)}
+            togglePin={togglePin ? () => togglePin(item) : undefined}
+            remove={() => remove(item)}
+            edit={view === "favorites" ? () => edit?.(item) : undefined}
+          />
+        );
+
         return (
-          <div
+          <article
             id={getResultId(`${item.source}:${item.id}`)}
-            className={`echo-history-row${viewMode === "compact" ? " echo-history-row--compact" : ""}${view === "favorites" && selectedIds ? " echo-saved-row" : ""}`}
+            className={`echo-entry-row echo-entry-row--${view}${selectedByCursor ? " is-cursor" : ""}${selectedInBatch ? " is-batch-selected" : ""}${hasFavoriteIcon ? " has-leading-icon" : ""}${draggingId === item.id ? " is-dragging" : ""}`}
             key={virtualRow.key}
             role="row"
             aria-rowindex={index + 1}
-            aria-selected={index === selected}
+            aria-selected={selectedByCursor || selectedInBatch}
             aria-label={displayText(item)}
             tabIndex={-1}
+            data-index={index}
             data-virtualized-row="true"
+            draggable={reorderEnabled}
+            ref={rowVirtualizer.measureElement}
             style={{
-              height: rowHeight,
               position: "absolute",
               top: 0,
               left: 0,
@@ -162,31 +225,66 @@ function VirtualizedResults({
               if (
                 event.target instanceof Element &&
                 event.target.closest("button, input, textarea, select, a")
-              )
+              ) {
                 return;
-              event.preventDefault();
+              }
+              if (!reorderEnabled) event.preventDefault();
               select(index);
             }}
-            onClick={() => execute(item)}
+            onClick={() => {
+              if (justDraggedRef.current) {
+                justDraggedRef.current = false;
+                return;
+              }
+              if (selectionMode === "batch" && toggleSelected) {
+                toggleSelected(item.id);
+                select(index);
+                return;
+              }
+              execute(item);
+            }}
+            onDragStart={(event) => {
+              if (!reorderEnabled) return;
+              justDraggedRef.current = true;
+              setDraggingId(item.id);
+              event.dataTransfer.effectAllowed = "move";
+              event.dataTransfer.setData("text/plain", String(item.id));
+            }}
+            onDragEnd={() => {
+              setDraggingId(null);
+              window.setTimeout(() => {
+                justDraggedRef.current = false;
+              }, 0);
+            }}
+            onDragOver={(event) => {
+              if (!reorderEnabled || draggingId === null) return;
+              event.preventDefault();
+              event.dataTransfer.dropEffect = "move";
+            }}
+            onDrop={(event) => {
+              if (!reorderEnabled) return;
+              event.preventDefault();
+              const sourceId = Number(event.dataTransfer.getData("text/plain"));
+              if (Number.isFinite(sourceId) && sourceId !== item.id) {
+                onReorder?.(sourceId, item.id);
+              }
+              setDraggingId(null);
+            }}
           >
-            {view === "favorites" && selectedIds && toggleSelected ? (
-              <input
-                type="checkbox"
-                aria-label={`Select ${item.name ?? "saved item"}`}
-                checked={selectedIds.has(item.id)}
-                onPointerDown={(event) => event.stopPropagation()}
-                onChange={() => toggleSelected(item.id)}
-                onClick={(event) => event.stopPropagation()}
-              />
+            {view === "history" ? (
+              <HistoryTimeRail timestamp={item.updated_at} />
+            ) : hasFavoriteIcon ? (
+              <span className="echo-favorite-leading" aria-hidden="true">
+                <FavoriteIcon iconKey={favoriteIconKey} size={18} />
+              </span>
             ) : null}
-            <span className="echo-type-mark" aria-hidden="true">
-              {item.content_type.startsWith("image")
-                ? "IMG"
-                : item.content_type.slice(0, 3).toUpperCase()}
-            </span>
-            <span className="echo-history-copy" role="gridcell">
-              <EntryContent item={item} query={query} />
-              <span className="echo-history-meta">
+            <div className="echo-entry-main" role="gridcell">
+              <EntryContent
+                item={item}
+                query={query}
+                imageActions={isImage ? actions : undefined}
+              />
+              <span className="echo-entry-meta">
                 <SearchMatchText
                   text={item.source_app ?? "Unknown source"}
                   indices={getSearchMatchIndices(
@@ -196,20 +294,36 @@ function VirtualizedResults({
                 />
                 <span aria-hidden="true">·</span>
                 <span>{relativeTime(item.updated_at)}</span>
+                {item.tags.length > 0 ? (
+                  <span className="echo-entry-tags">
+                    {item.tags.map((tag) => (
+                      <span className="echo-entry-tag" key={tag}>
+                        {tag}
+                      </span>
+                    ))}
+                  </span>
+                ) : null}
               </span>
-            </span>
-            <span className="echo-history-actions" role="gridcell">
-              <EntryActions
-                item={item}
-                copy={() => execute(item, "copy")}
-                toggleFavorite={() => toggleFavorite(item)}
-                remove={() => remove(item)}
-                edit={view === "favorites" ? () => edit?.(item) : undefined}
-              />
-            </span>
-          </div>
+            </div>
+            {!isImage ? (
+              <span className="echo-history-actions" role="gridcell">
+                {actions}
+              </span>
+            ) : null}
+          </article>
         );
       })}
+    </div>
+  );
+}
+
+function HistoryTimeRail({ timestamp }: { timestamp: number }): ReactElement {
+  const date = new Date(timestamp);
+  return (
+    <div className="echo-time-rail" role="gridcell">
+      <time dateTime={date.toISOString()}>{formatTime(timestamp)}</time>
+      <span className="echo-timeline-dot" aria-hidden="true" />
+      <span className="echo-timeline-connector" aria-hidden="true" />
     </div>
   );
 }
@@ -217,40 +331,56 @@ function VirtualizedResults({
 function EntryContent({
   item,
   query,
+  imageActions,
 }: {
   item: QuickInsertItem;
   query: string;
-}) {
+  imageActions?: ReactElement;
+}): ReactElement {
   const isImage = item.content_type.startsWith("image");
   const preview = displayText(item);
   return (
-    <span className="echo-content-preview" title={preview}>
+    <div className="echo-content-preview" title={preview}>
       {isImage ? (
-        item.preview ? (
-          <PreviewImage url={item.preview.url} />
-        ) : (
-          <ImagePlaceholder />
-        )
+        <div className="echo-image-preview-shell">
+          {item.preview ? <PreviewImage item={item} /> : <ImagePlaceholder />}
+          {imageActions ? (
+            <span className="echo-image-actions" role="gridcell">
+              {imageActions}
+            </span>
+          ) : null}
+        </div>
       ) : (
         <SearchMatchText
           text={preview}
           indices={getSearchMatchIndices(preview, query)}
         />
       )}
-    </span>
+    </div>
   );
 }
 
-function PreviewImage({ url }: { url: string }): ReactElement {
+function PreviewImage({ item }: { item: QuickInsertItem }): ReactElement {
   const [failed, setFailed] = useState(false);
-  if (failed) return <ImagePlaceholder />;
+  const preview = item.preview;
+  if (!preview || failed) return <ImagePlaceholder />;
+
   return (
-    <img
-      src={url}
-      alt="Clipboard image preview"
-      loading="lazy"
-      onError={() => setFailed(true)}
-    />
+    <figure
+      className="echo-inline-image"
+      style={{
+        aspectRatio: `${Math.max(1, preview.width)} / ${Math.max(1, preview.height)}`,
+      }}
+    >
+      <img
+        src={preview.url}
+        alt="Inline clipboard image preview"
+        loading="lazy"
+        width={preview.width}
+        height={preview.height}
+        onError={() => setFailed(true)}
+      />
+    </figure>
   );
 }
 
@@ -261,7 +391,7 @@ function ImagePlaceholder(): ReactElement {
       role="img"
       aria-label="Image preview unavailable"
     >
-      IMG
+      Image preview unavailable
     </span>
   );
 }
@@ -274,95 +404,148 @@ function displayText(item: QuickInsertItem): string {
   );
 }
 
+function getFavoriteIconKey(
+  item: QuickInsertItem,
+): FavoriteIconKey | string | null {
+  // `icon_key` is an optional presentation adapter field until the frozen
+  // Favorites transport exposes it. It is never written to generated DTOs.
+  if (!("icon_key" in item)) return null;
+  const iconKey = (item as QuickInsertItem & { icon_key?: unknown }).icon_key;
+  return typeof iconKey === "string" ? iconKey : null;
+}
+
 function EntryActions({
   item,
+  view,
+  pinned,
   copy,
   toggleFavorite,
+  togglePin,
   remove,
   edit,
 }: {
   item: QuickInsertItem;
+  view: QuickInsertView;
+  pinned: boolean;
   copy: () => void;
   toggleFavorite: () => void;
+  togglePin?: () => void;
   remove: () => void;
   edit?: () => void;
-}) {
-  const saved = item.source === "favorite" || item.saved_item_id !== null;
-  return (
-    <div className="echo-row-actions">
-      <button
-        className="echo-direct-action"
-        type="button"
-        aria-label="Copy"
-        title="Copy"
-        onPointerDown={(event) => event.preventDefault()}
-        onClick={(event) => {
-          event.stopPropagation();
-          copy();
-        }}
-      >
-        <EchoIcon name="copy" size={16} aria-hidden="true" />
-      </button>
-      <button
-        className="echo-direct-action"
-        type="button"
-        aria-label={saved ? "Unfavorite" : "Favorite"}
-        aria-pressed={saved}
-        title={saved ? "Unfavorite" : "Favorite"}
-        onPointerDown={(event) => event.preventDefault()}
-        onClick={(event) => {
-          event.stopPropagation();
-          toggleFavorite();
-        }}
-      >
-        <EchoIcon
-          name={saved ? "favoriteFilled" : "favorite"}
-          size={17}
-          aria-hidden="true"
+}): ReactElement {
+  if (view === "favorites") {
+    return (
+      <div className="echo-row-actions" aria-label="Favorite actions">
+        <ActionButton
+          label="Copy"
+          icon="copy"
+          onClick={copy}
+          testId="favorite-copy-action"
         />
-      </button>
-      {edit ? (
-        <button
-          className="echo-direct-action"
-          type="button"
-          aria-label="Edit saved item"
-          title="Edit saved item"
-          onPointerDown={(event) => event.preventDefault()}
-          onClick={(event) => {
-            event.stopPropagation();
-            edit();
-          }}
-        >
-          <EchoIcon name="edit" size={16} aria-hidden="true" />
-        </button>
-      ) : null}
-      <button
-        className="echo-direct-action danger"
-        type="button"
-        aria-label="Delete"
-        title="Delete"
-        onPointerDown={(event) => event.preventDefault()}
-        onClick={(event) => {
-          event.stopPropagation();
-          remove();
-        }}
-      >
-        <EchoIcon name="delete" size={16} aria-hidden="true" />
-      </button>
+        <ActionButton
+          label="Edit saved item"
+          icon="edit"
+          onClick={() => edit?.()}
+          testId="favorite-edit-action"
+        />
+        <ActionButton
+          label="Delete"
+          icon="delete"
+          onClick={remove}
+          danger
+          testId="favorite-delete-action"
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="echo-row-actions" aria-label="History actions">
+      <ActionButton
+        label="Favorite"
+        icon="favorite"
+        onClick={toggleFavorite}
+        testId="history-favorite-action"
+      />
+      <ActionButton
+        label={pinned ? "Unpin" : "Pin"}
+        icon={pinned ? "unpin" : "pin"}
+        onClick={togglePin}
+        pressed={pinned}
+        testId="history-pin-action"
+      />
+      <ActionButton
+        label="Copy"
+        icon="copy"
+        onClick={copy}
+        testId="history-copy-action"
+      />
+      <ActionButton
+        label="Delete"
+        icon="delete"
+        onClick={remove}
+        danger
+        testId="history-delete-action"
+      />
     </div>
   );
 }
 
-function EmptyState({ message }: { message: string }) {
+function ActionButton({
+  label,
+  icon,
+  onClick,
+  pressed,
+  danger = false,
+  testId,
+}: {
+  label: string;
+  icon: Parameters<typeof EchoIcon>[0]["name"];
+  onClick?: () => void;
+  pressed?: boolean;
+  danger?: boolean;
+  testId: string;
+}): ReactElement {
   return (
-    <div className="echo-empty-state">
+    <button
+      className={`echo-direct-action${danger ? " danger" : ""}`}
+      type="button"
+      aria-label={label}
+      aria-pressed={pressed}
+      title={label}
+      data-testid={testId}
+      onPointerDown={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      }}
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onClick?.();
+      }}
+    >
+      <EchoIcon name={icon} size={16} aria-hidden="true" />
+    </button>
+  );
+}
+
+function EmptyState({ message }: { message: string }): ReactElement {
+  return (
+    <div className="echo-empty-state" role="status" data-empty-state="true">
       <span className="echo-empty-mark" aria-hidden="true">
-        E
+        <EchoIcon name="history" size={22} />
       </span>
       <strong>{message}</strong>
       <small>Keep Echo running to capture new content.</small>
     </div>
   );
+}
+
+function formatTime(timestamp: number): string {
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(timestamp));
 }
 
 function relativeTime(timestamp: number): string {

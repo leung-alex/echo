@@ -14,7 +14,15 @@ export async function installEchoFixture(page: Page): Promise<void> {
       updated_at: number;
       saved_item_id: number | null;
       is_independent: boolean;
-      preview: null;
+      icon_key?: string | null;
+      preview: {
+        url: string;
+        mime_type: string;
+        width: number;
+        height: number;
+        byte_size: number;
+        content_hash: string;
+      } | null;
     };
 
     const state = {
@@ -25,7 +33,7 @@ export async function installEchoFixture(page: Page): Promise<void> {
           name: null,
           preview_text: "Alpha clipboard",
           content_type: "text",
-          editable_text: null,
+          editable_text: "Alpha clipboard",
           tags: [],
           source_app: "Echo fixture",
           updated_at: Date.now(),
@@ -45,9 +53,17 @@ export async function installEchoFixture(page: Page): Promise<void> {
           updated_at: Date.now(),
           saved_item_id: null,
           is_independent: false,
-          preview: null,
+          preview: {
+            url: "/echo-fixture.svg",
+            mime_type: "image/svg+xml",
+            width: 640,
+            height: 360,
+            byte_size: 512,
+            content_hash: "fixture-image-v1",
+          },
         },
       ] satisfies MockItem[],
+      favorites: [] as MockItem[],
       settings: {
         history_enabled: true,
         record_sensitive: false,
@@ -62,12 +78,7 @@ export async function installEchoFixture(page: Page): Promise<void> {
     const callbackEvents = new Map<number, string>();
     let nextCallback = 1;
     const listFor = (view: string, query: string): MockItem[] => {
-      const source =
-        view === "favorites"
-          ? state.history
-              .filter((item) => item.saved_item_id !== null)
-              .map((item) => ({ ...item, source: "favorite" as const }))
-          : state.history;
+      const source = view === "favorites" ? state.favorites : state.history;
       const normalized = query.trim().toLowerCase();
       return source
         .filter(
@@ -120,19 +131,28 @@ export async function installEchoFixture(page: Page): Promise<void> {
             const item = state.history.find(
               (candidate) => candidate.id === args.id,
             );
-            if (item) {
-              item.saved_item_id = Boolean(args.saved) ? item.id : null;
-              item.is_independent = false;
+            if (item && Boolean(args.saved)) {
+              const favorite = {
+                ...item,
+                source: "favorite" as const,
+                name: item.preview_text,
+                saved_item_id: item.id,
+                is_independent: true,
+                icon_key: item.id === 1 ? "StarFilled" : null,
+              } satisfies MockItem;
+              state.history = state.history.filter(
+                (candidate) => candidate.id !== item.id,
+              );
+              state.favorites.unshift(favorite);
               emitHistoryChanged();
             }
             return Boolean(item);
           }
           case "quick_insert_delete":
             if (args.source === "favorite") {
-              const item = state.history.find(
-                (candidate) => candidate.id === args.id,
+              state.favorites = state.favorites.filter(
+                (candidate) => candidate.id !== args.id,
               );
-              if (item) item.saved_item_id = null;
             } else {
               state.history = state.history.filter(
                 (item) => item.id !== args.id,
@@ -140,6 +160,38 @@ export async function installEchoFixture(page: Page): Promise<void> {
             }
             emitHistoryChanged();
             return true;
+          case "saved_item_update": {
+            const update = args.update as {
+              name?: string;
+              tags?: string[];
+              editable_text?: string | null;
+            };
+            const item = state.favorites.find(
+              (candidate) => candidate.id === args.id,
+            );
+            if (item) {
+              item.name = update.name ?? item.name;
+              item.tags = update.tags ?? item.tags;
+              if (
+                item.editable_text !== null &&
+                update.editable_text !== undefined
+              ) {
+                item.editable_text = update.editable_text;
+                item.preview_text = update.editable_text;
+              }
+            }
+            emitHistoryChanged();
+            return null;
+          }
+          case "saved_items_delete_many": {
+            const ids = new Set((args.ids as number[]) ?? []);
+            const before = state.favorites.length;
+            state.favorites = state.favorites.filter(
+              (item) => !ids.has(item.id),
+            );
+            emitHistoryChanged();
+            return before - state.favorites.length;
+          }
           case "quick_insert_execute":
             return args.action === "insert" ? "inserted" : "copied";
           case "settings_get":

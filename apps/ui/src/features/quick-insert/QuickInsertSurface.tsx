@@ -2,7 +2,6 @@ import {
   useCallback,
   useEffect,
   useRef,
-  useState,
   type KeyboardEvent,
   type MouseEvent,
   type RefObject,
@@ -15,24 +14,13 @@ import { SearchField } from "../../ui/SearchField";
 import { useActiveResultNavigation } from "../../ui/useActiveResultNavigation";
 import { HistoryResults } from "../history/HistoryResults";
 import { SavedItemsResults } from "../saved-items/SavedItemsResults";
+import { clearHistory } from "../settings/api";
 import { useQuickInsertController } from "./controller";
 import {
   quickInsertClient,
   type QuickInsertClient,
 } from "./api/quick-insert-client";
 import type { PasteSession, QuickInsertView } from "./model/types";
-
-type ClipboardViewMode = "detailed" | "compact";
-const VIEW_MODE_KEY = "echo.clipboard.view-mode.v1";
-
-function readViewMode(): ClipboardViewMode {
-  try {
-    const value = window.localStorage.getItem(VIEW_MODE_KEY);
-    return value === "compact" || value === "detailed" ? value : "detailed";
-  } catch {
-    return "detailed";
-  }
-}
 
 export interface QuickInsertSurfaceProps {
   initialSession?: PasteSession | null;
@@ -53,7 +41,6 @@ export function QuickInsertSurface({
 }: QuickInsertSurfaceProps): ReactElement {
   const searchRef = useRef<HTMLInputElement>(null);
   const workspaceRef = useRef<HTMLElement>(null);
-  const [viewMode, setViewMode] = useState<ClipboardViewMode>(readViewMode);
   const focusSearch = useCallback(() => {
     searchRef.current?.focus();
     try {
@@ -162,15 +149,6 @@ export function QuickInsertSurface({
       .startDragging()
       .catch(() => undefined);
   };
-  const selectViewMode = (mode: ClipboardViewMode) => {
-    setViewMode(mode);
-    try {
-      window.localStorage.setItem(VIEW_MODE_KEY, mode);
-    } catch {
-      /* storage is optional */
-    }
-    focusSearch();
-  };
   return (
     <main
       className="clipboard-window"
@@ -227,34 +205,10 @@ export function QuickInsertSurface({
             </button>
           ))}
         </div>
-        <div
-          className="clipboard-view-toggle"
-          role="group"
-          aria-label="Clipboard history view"
-        >
-          <button
-            type="button"
-            aria-label="Detailed view"
-            aria-pressed={viewMode === "detailed"}
-            title="Detailed view"
-            onClick={() => selectViewMode("detailed")}
-          >
-            <EchoIcon name="viewDetailed" size={15} aria-hidden="true" />
-          </button>
-          <button
-            type="button"
-            aria-label="Compact view"
-            aria-pressed={viewMode === "compact"}
-            title="Compact view"
-            onClick={() => selectViewMode("compact")}
-          >
-            <EchoIcon name="viewCompact" size={16} aria-hidden="true" />
-          </button>
-        </div>
       </nav>
       <section
         ref={workspaceRef}
-        className={`clipboard-entry-workspace clipboard-entry-workspace--${viewMode}`}
+        className="clipboard-entry-workspace"
         aria-label={
           state.view === "favorites" ? "Favorite entries" : "Clipboard entries"
         }
@@ -263,12 +217,10 @@ export function QuickInsertSurface({
           {state.view === "favorites" ? (
             <SavedItemsResults
               {...resultProps(controller, navigation, workspaceRef)}
-              viewMode={viewMode}
             />
           ) : (
             <HistoryResults
               {...resultProps(controller, navigation, workspaceRef)}
-              viewMode={viewMode}
             />
           )}
         </div>
@@ -329,6 +281,10 @@ function resultProps(
       update: Parameters<typeof controller.updateSavedItem>[1],
     ) => void controller.updateSavedItem(item, update),
     deleteSavedItems: (ids: number[]) => controller.deleteSavedItems(ids),
+    clearAll: async () => {
+      await clearHistory();
+      controller.setQuery("");
+    },
     hasMore: controller.state.nextCursor !== null,
     loadingMore: controller.state.loadingMore,
     loadMore: () => void controller.loadMore(),

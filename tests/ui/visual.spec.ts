@@ -3,50 +3,59 @@ import { mkdirSync } from "node:fs";
 
 import { installEchoFixture } from "./echo-fixture";
 
-const evidenceRoot = "test-results/p08-visual";
+const evidenceRoot =
+  process.env.ECHO_UI_EVIDENCE_ROOT ?? "test-results/p08-visual";
 
 test.beforeEach(async ({ page }) => {
   await installEchoFixture(page);
   await page.goto("/");
   await expect(page.getByText("Alpha clipboard")).toBeVisible();
-});
-
-test("captures Quick Insert visual parity states", async ({ page }) => {
   mkdirSync(evidenceRoot, { recursive: true });
-  await page.setViewportSize({ width: 1280, height: 720 });
-  await page.screenshot({
-    path: `${evidenceRoot}/quick-insert-history-detailed-1280x720.png`,
-    fullPage: true,
-  });
-  await page.getByRole("button", { name: "Compact view" }).click();
-  await page.screenshot({
-    path: `${evidenceRoot}/quick-insert-history-compact-1280x720.png`,
-    fullPage: true,
-  });
-  await page.getByRole("tab", { name: "Favorites" }).click();
-  await page.screenshot({
-    path: `${evidenceRoot}/quick-insert-favorites-1280x720.png`,
-    fullPage: true,
-  });
-  await page.getByRole("tab", { name: "History" }).click();
-  await page.screenshot({
-    path: `${evidenceRoot}/quick-insert-history-repeat-1280x720.png`,
-    fullPage: true,
-  });
-  expect(
-    await page.evaluate(
-      () => document.documentElement.scrollWidth <= window.innerWidth,
-    ),
-  ).toBe(true);
 });
 
-test("captures responsive and settings states without overflow", async ({
+test("captures History default, hover, selected, batch, image, and search states", async ({
   page,
 }) => {
-  mkdirSync(evidenceRoot, { recursive: true });
-  await page.setViewportSize({ width: 680, height: 480 });
+  await page.setViewportSize({ width: 1280, height: 720 });
   await page.screenshot({
-    path: `${evidenceRoot}/quick-insert-history-680x480.png`,
+    path: `${evidenceRoot}/history-default-light-1280x720.png`,
+    fullPage: true,
+  });
+
+  await page.getByRole("row").nth(1).hover();
+  await page.screenshot({
+    path: `${evidenceRoot}/history-hover-image-light-1280x720.png`,
+    fullPage: true,
+  });
+
+  await page
+    .getByRole("combobox", { name: "Search clipboard history" })
+    .press("ArrowDown");
+  await page.screenshot({
+    path: `${evidenceRoot}/history-selected-light-1280x720.png`,
+    fullPage: true,
+  });
+
+  await page.getByRole("button", { name: "Select" }).click();
+  await page.getByRole("row").first().click();
+  await page.screenshot({
+    path: `${evidenceRoot}/history-batch-light-1280x720.png`,
+    fullPage: true,
+  });
+
+  await page
+    .getByRole("combobox", { name: "Search clipboard history" })
+    .fill("Alpha");
+  await page.screenshot({
+    path: `${evidenceRoot}/history-search-highlight-light-1280x720.png`,
+    fullPage: true,
+  });
+  await page
+    .getByRole("combobox", { name: "Search clipboard history" })
+    .fill("missing");
+  await expect(page.getByText("No matches for “missing”")).toBeVisible();
+  await page.screenshot({
+    path: `${evidenceRoot}/history-empty-search-light-1280x720.png`,
     fullPage: true,
   });
   expect(
@@ -54,12 +63,43 @@ test("captures responsive and settings states without overflow", async ({
       () => document.documentElement.scrollWidth <= window.innerWidth,
     ),
   ).toBe(true);
-  await page.getByRole("button", { name: "Open settings" }).click();
-  await expect(
-    page.getByRole("heading", { name: "Clipboard Settings" }),
-  ).toBeVisible();
+});
+
+test("captures Favorites, editor, icon picker, dark, and minimum-size states", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.getByRole("button", { name: "Favorite" }).first().click();
+  await page.getByRole("button", { name: "Favorite" }).first().click();
+  await page.getByRole("tab", { name: "Favorites" }).click();
   await page.screenshot({
-    path: `${evidenceRoot}/clipboard-settings-680x480.png`,
+    path: `${evidenceRoot}/favorites-default-no-icon-light-1280x720.png`,
+    fullPage: true,
+  });
+
+  await page.getByRole("button", { name: "Create favorite" }).click();
+  await page.screenshot({
+    path: `${evidenceRoot}/favorite-editor-light-1280x720.png`,
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "Choose favorite icon" }).click();
+  await page.screenshot({
+    path: `${evidenceRoot}/favorite-icon-picker-light-1280x720.png`,
+    fullPage: true,
+  });
+
+  await page.getByRole("button", { name: "Close icon picker" }).click();
+  await page.getByRole("button", { name: "Close favorite editor" }).click();
+  await page.getByRole("tab", { name: "History" }).click();
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.screenshot({
+    path: `${evidenceRoot}/history-default-dark-1280x720.png`,
+    fullPage: true,
+  });
+
+  await page.setViewportSize({ width: 420, height: 360 });
+  await page.screenshot({
+    path: `${evidenceRoot}/history-min-size-dark-420x360.png`,
     fullPage: true,
   });
   expect(
