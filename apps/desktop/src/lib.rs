@@ -3,11 +3,16 @@ use tauri::{Manager, WindowEvent};
 
 use crate::activation::handle_activation;
 use crate::commands::{
-    activation_ack, activation_state, history_clear, quick_insert_begin_session,
-    quick_insert_delete, quick_insert_execute, quick_insert_list, quick_insert_set_favorite,
-    saved_item_delete, saved_item_update, saved_items_delete_many, settings_get, settings_update,
+    activation_ack, activation_state, history_clear, quick_insert_activate_panel,
+    quick_insert_active_panel, quick_insert_begin_session, quick_insert_clear_session,
+    quick_insert_clear_unpinned_history, quick_insert_create_favorite,
+    quick_insert_delete_favorite, quick_insert_delete_history_many, quick_insert_execute,
+    quick_insert_list, quick_insert_move_history_many_to_favorites,
+    quick_insert_move_history_to_favorite, quick_insert_pin_history, quick_insert_pin_history_many,
+    quick_insert_reorder_favorites, quick_insert_unpin_history, quick_insert_update_favorite,
+    settings_get, settings_update,
 };
-use crate::composition::{create_main_window, EchoState};
+use crate::composition::{create_main_window, hide_composition, reposition_favorites, EchoState};
 use crate::events::create_tray;
 
 mod activation;
@@ -34,11 +39,20 @@ pub fn run() {
             quick_insert_list,
             quick_insert_begin_session,
             quick_insert_execute,
-            quick_insert_set_favorite,
-            quick_insert_delete,
-            saved_item_update,
-            saved_item_delete,
-            saved_items_delete_many,
+            quick_insert_clear_session,
+            quick_insert_move_history_to_favorite,
+            quick_insert_move_history_many_to_favorites,
+            quick_insert_create_favorite,
+            quick_insert_update_favorite,
+            quick_insert_pin_history,
+            quick_insert_unpin_history,
+            quick_insert_pin_history_many,
+            quick_insert_delete_history_many,
+            quick_insert_clear_unpinned_history,
+            quick_insert_reorder_favorites,
+            quick_insert_delete_favorite,
+            quick_insert_activate_panel,
+            quick_insert_active_panel,
             settings_get,
             settings_update,
             history_clear,
@@ -54,16 +68,33 @@ pub fn run() {
             let args = std::env::args().collect::<Vec<_>>();
             if let Some(Ok(envelope)) = decode_args(args.iter().map(String::as_str)) {
                 handle_activation(app.handle(), envelope).map_err(std::io::Error::other)?;
-            } else if let Some(window) = app.get_webview_window("main") {
-                window.show().map_err(std::io::Error::other)?;
+            } else {
+                crate::composition::show_composition(app.handle())
+                    .map_err(std::io::Error::other)?;
             }
             Ok(())
         })
-        .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
+        .on_window_event(|window, event| match event {
+            WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
-                let _ = window.hide();
+                hide_composition(window.app_handle());
             }
+            WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
+                if window.label() == "main" {
+                    reposition_favorites(window.app_handle());
+                }
+            }
+            WindowEvent::ScaleFactorChanged { .. } => {
+                reposition_favorites(window.app_handle());
+            }
+            WindowEvent::Destroyed => {
+                if window.label() == "main" {
+                    if let Some(favorites) = window.app_handle().get_webview_window("favorites") {
+                        let _ = favorites.close();
+                    }
+                }
+            }
+            _ => {}
         });
     builder
         .run(tauri::generate_context!())

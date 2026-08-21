@@ -16,11 +16,29 @@ export type QuickInsertSource = "history" | "favorite";
 export type QuickInsertAction = "copy" | "insert";
 export type QuickInsertOutcome = "copied" | "inserted" | "clipboard_staged";
 export type ActivationRoute = "history" | "quick_insert" | "settings";
+export type ThemeMode = "system" | "light" | "dark";
 
-export interface HistoryCursor {
-  updated_at: number;
-  id: number;
-}
+export type QuickInsertCursor =
+  | {
+      kind: "history";
+      pinned_at: number | null;
+      updated_at: number;
+      id: number;
+    }
+  | {
+      kind: "history_search";
+      pinned_at: number | null;
+      relevance: number;
+      updated_at: number;
+      id: number;
+    }
+  | { kind: "favorites"; favorite_order: number; id: number }
+  | {
+      kind: "favorites_search";
+      relevance: number;
+      favorite_order: number;
+      id: number;
+    };
 
 export interface QuickInsertItem {
   id: number;
@@ -32,18 +50,33 @@ export interface QuickInsertItem {
   tags: string[];
   source_app: string | null;
   updated_at: number;
-  saved_item_id: number | null;
-  is_independent: boolean;
+  pinned_at: number | null;
+  icon_key: string | null;
+  favorite_order: number | null;
   preview: PreviewAsset | null;
 }
 
 export interface QuickInsertPage {
   items: QuickInsertItem[];
-  next_cursor: HistoryCursor | null;
+  next_cursor: QuickInsertCursor | null;
 }
 
 export interface HistoryChangedEvent {
   version: number;
+}
+
+export type LibraryChangeKind =
+  | "history"
+  | "favorites"
+  | "history_and_favorites";
+
+export interface LibraryChangedEvent {
+  version: number;
+  kind: LibraryChangeKind;
+}
+
+export interface ActivePanelChangedEvent {
+  panel: QuickInsertView;
 }
 
 export interface PreviewAsset {
@@ -55,10 +88,26 @@ export interface PreviewAsset {
   content_hash: string;
 }
 
-export interface SavedItemUpdate {
-  name: string;
+export interface FavoriteDraft {
+  content: string;
+  name: string | null;
+  icon_key: string | null;
+  tags: string[];
+}
+
+export interface FavoriteUpdate {
+  name: string | null;
+  icon_key: string | null;
   tags: string[];
   editable_text: string | null;
+}
+
+export interface HistoryIds {
+  ids: number[];
+}
+
+export interface FavoriteReorderRequest {
+  ordered_ids: number[];
 }
 
 export interface PasteSession {
@@ -72,6 +121,12 @@ export interface ClipboardSettings {
   max_entries: number;
   max_total_bytes: number;
   max_item_bytes: number;
+  theme: ThemeMode;
+}
+
+export interface ThemeChangedEvent {
+  mode: ThemeMode;
+  nativeMica: boolean;
 }
 
 export interface ActivationPayload {

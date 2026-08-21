@@ -1,6 +1,6 @@
-use tauri::State;
+use tauri::{Emitter, State};
 
-use echo_engine::QuickInsertRequest;
+use echo_engine::{FavoriteDraft, FavoriteUpdate, QuickInsertRequest};
 
 use crate::{
     composition::EchoState,
@@ -13,7 +13,7 @@ pub(crate) fn quick_insert_list(
     view: transport::QuickInsertView,
     query: String,
     limit: u32,
-    cursor: Option<transport::HistoryCursor>,
+    cursor: Option<transport::QuickInsertCursor>,
 ) -> Result<transport::QuickInsertPage, String> {
     state
         .quick_insert
@@ -32,10 +32,14 @@ pub(crate) fn quick_insert_begin_session(
     state: State<'_, EchoState>,
 ) -> Result<transport::PasteSession, String> {
     state
-        .quick_insert
-        .begin_session()
+        .begin_quick_insert_session()
         .map(|has_target| transport::PasteSession { has_target })
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub(crate) fn quick_insert_clear_session(state: State<'_, EchoState>) {
+    state.clear_quick_insert_session();
 }
 
 #[tauri::command]
@@ -45,74 +49,157 @@ pub(crate) fn quick_insert_execute(
     id: i64,
     action: QuickInsertAction,
 ) -> Result<transport::QuickInsertOutcome, String> {
-    state
+    let outcome = state
         .quick_insert
         .execute(source.into(), id, action.into())
+        .map(Into::into)
+        .map_err(|error| error.to_string())?;
+    if matches!(outcome, transport::QuickInsertOutcome::Inserted) {
+        state.clear_quick_insert_session_marker();
+    }
+    Ok(outcome)
+}
+
+#[tauri::command]
+pub(crate) fn quick_insert_move_history_to_favorite(
+    state: State<'_, EchoState>,
+    id: i64,
+) -> Result<transport::QuickInsertItem, String> {
+    state
+        .quick_insert
+        .move_history_to_favorite(id)
         .map(Into::into)
         .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-pub(crate) fn quick_insert_set_favorite(
+pub(crate) fn quick_insert_move_history_many_to_favorites(
     state: State<'_, EchoState>,
-    source: QuickInsertSource,
+    request: transport::HistoryIds,
+) -> Result<Vec<transport::QuickInsertItem>, String> {
+    state
+        .quick_insert
+        .move_history_many_to_favorites(&request.ids)
+        .map(|items| items.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub(crate) fn quick_insert_create_favorite(
+    state: State<'_, EchoState>,
+    draft: transport::FavoriteDraft,
+) -> Result<transport::QuickInsertItem, String> {
+    state
+        .quick_insert
+        .create_favorite(FavoriteDraft::from(draft))
+        .map(Into::into)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub(crate) fn quick_insert_update_favorite(
+    state: State<'_, EchoState>,
     id: i64,
-    saved: bool,
+    update: transport::FavoriteUpdate,
+) -> Result<transport::QuickInsertItem, String> {
+    state
+        .quick_insert
+        .update_favorite(id, FavoriteUpdate::from(update))
+        .map(Into::into)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub(crate) fn quick_insert_pin_history(
+    state: State<'_, EchoState>,
+    id: i64,
 ) -> Result<bool, String> {
     state
         .quick_insert
-        .set_favorite(source.into(), id, saved)
+        .pin_history(id)
         .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-pub(crate) fn saved_item_update(
+pub(crate) fn quick_insert_unpin_history(
     state: State<'_, EchoState>,
     id: i64,
-    update: transport::SavedItemUpdate,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     state
         .quick_insert
-        .update_saved_item(
-            id,
-            echo_engine::SavedItemUpdate {
-                name: update.name,
-                tags: update.tags,
-                editable_text: update.editable_text,
-            },
-        )
-        .map(|_| ())
+        .unpin_history(id)
         .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-pub(crate) fn saved_item_delete(state: State<'_, EchoState>, id: i64) -> Result<bool, String> {
-    state
-        .quick_insert
-        .delete_saved_items(&[id])
-        .map(|count| count == 1)
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-pub(crate) fn saved_items_delete_many(
+pub(crate) fn quick_insert_pin_history_many(
     state: State<'_, EchoState>,
-    ids: Vec<i64>,
+    request: transport::HistoryIds,
 ) -> Result<usize, String> {
     state
         .quick_insert
-        .delete_saved_items(&ids)
+        .pin_history_many(&request.ids)
         .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-pub(crate) fn quick_insert_delete(
+pub(crate) fn quick_insert_delete_history_many(
     state: State<'_, EchoState>,
-    source: QuickInsertSource,
+    request: transport::HistoryIds,
+) -> Result<usize, String> {
+    state
+        .quick_insert
+        .delete_history_many(&request.ids)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub(crate) fn quick_insert_clear_unpinned_history(
+    state: State<'_, EchoState>,
+) -> Result<usize, String> {
+    state
+        .quick_insert
+        .clear_unpinned_history()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub(crate) fn quick_insert_reorder_favorites(
+    state: State<'_, EchoState>,
+    request: transport::FavoriteReorderRequest,
+) -> Result<(), String> {
+    state
+        .quick_insert
+        .reorder_favorites(&request.ordered_ids)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub(crate) fn quick_insert_delete_favorite(
+    state: State<'_, EchoState>,
     id: i64,
 ) -> Result<bool, String> {
     state
         .quick_insert
-        .delete(source.into(), id)
+        .delete_favorite(id)
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub(crate) fn quick_insert_activate_panel(
+    app: tauri::AppHandle,
+    state: State<'_, EchoState>,
+    panel: transport::QuickInsertView,
+) -> Result<(), String> {
+    state.set_active_panel(panel);
+    app.emit(
+        "echo-active-panel-changed",
+        transport::ActivePanelChangedEvent { panel },
+    )
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub(crate) fn quick_insert_active_panel(state: State<'_, EchoState>) -> transport::QuickInsertView {
+    state.active_panel()
 }

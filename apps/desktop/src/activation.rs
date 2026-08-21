@@ -2,7 +2,7 @@ use echo_activation::{quick_insert_payload, ActivationEnvelope};
 use tauri::{Emitter, Manager};
 
 use crate::{
-    composition::{create_main_window, EchoState},
+    composition::{active_panel_event, route_panel, show_composition, EchoState},
     transport::{ActivationPayload, ActivationRoute},
 };
 
@@ -14,12 +14,21 @@ pub(crate) fn show_main(
     query: Option<&str>,
     request_id: &str,
 ) -> Result<(), String> {
-    create_main_window(app)?;
+    let state = app
+        .try_state::<EchoState>()
+        .ok_or_else(|| "Echo state is not initialized".to_owned())?;
+    if route == ActivationRoute::History {
+        // A normal manager open must never reuse a target captured by an old
+        // Quick Insert activation.
+        state.clear_quick_insert_session();
+    }
+    if let Some(panel) = route_panel(route) {
+        active_panel_event(app, &state, panel)?;
+    }
+    show_composition(app)?;
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| "Echo main window is unavailable".to_owned())?;
-    window.show().map_err(|error| error.to_string())?;
-    window.set_focus().map_err(|error| error.to_string())?;
     window
         .emit(
             "echo-activation",
@@ -53,7 +62,9 @@ pub(crate) fn handle_activation(
         }
         "echo.quick_insert" => {
             let payload = quick_insert_payload(&envelope).map_err(|error| error.to_string())?;
-            let _ = state.quick_insert.begin_session();
+            state
+                .begin_quick_insert_activation()
+                .map_err(|error| error.to_string())?;
             *state
                 .pending_activation
                 .lock()
