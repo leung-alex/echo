@@ -335,6 +335,8 @@ export async function installEchoFixture(page: Page): Promise<void> {
       __echoMockState: state,
       __emitEchoActivation: (payload: unknown) =>
         emit("echo-activation", payload),
+      __emitEchoThemeChanged: (payload: unknown) =>
+        emit("echo-theme-changed", payload),
       __emitEchoHistoryChanged: () => emitHistoryChanged(),
     });
   });

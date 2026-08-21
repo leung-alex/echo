@@ -176,7 +176,11 @@ export function SettingsPage({ onBack }: { onBack: () => void }): ReactElement {
                   className="danger"
                   type="button"
                   onClick={() => {
-                    if (window.confirm("Clear clipboard history?"))
+                    if (
+                      window.confirm(
+                        "Clear clipboard history? Pinned History items and Favorites are preserved.",
+                      )
+                    )
                       void clearHistory()
                         .then(() => report("History cleared", "success"))
                         .catch((error) => report(String(error), "error"));

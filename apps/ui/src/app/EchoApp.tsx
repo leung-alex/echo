@@ -37,27 +37,36 @@ export function EchoApp(): ReactElement {
     let unlisten: (() => void) | undefined;
     const applyTheme = (
       mode: ThemeChangedEvent["mode"],
-      nativeMica: boolean,
+      nativeMica?: boolean,
     ) => {
       if (disposed) return;
       if (mode === "system") delete document.documentElement.dataset.theme;
       else document.documentElement.dataset.theme = mode;
-      document.documentElement.dataset.mica = nativeMica
-        ? "native"
-        : "fallback";
+      if (nativeMica !== undefined) {
+        document.documentElement.dataset.mica = nativeMica
+          ? "native"
+          : "fallback";
+      }
     };
 
-    void getSettings()
-      .then((settings) => applyTheme(settings.theme, false))
-      .catch(() => undefined);
-    void listen<ThemeChangedEvent>("echo-theme-changed", ({ payload }) => {
-      applyTheme(payload.mode, payload.nativeMica);
-    })
-      .then((cleanup) => {
+    void (async () => {
+      try {
+        const cleanup = await listen<ThemeChangedEvent>(
+          "echo-theme-changed",
+          ({ payload }) => applyTheme(payload.mode, payload.nativeMica),
+        );
         if (disposed) cleanup();
         else unlisten = cleanup;
-      })
-      .catch(() => undefined);
+      } catch {
+        // Browser-owned tests and non-Tauri previews may not expose events.
+      }
+      try {
+        const settings = await getSettings();
+        applyTheme(settings.theme);
+      } catch {
+        // Theme application is best effort while the UI is bootstrapping.
+      }
+    })();
     return () => {
       disposed = true;
       unlisten?.();

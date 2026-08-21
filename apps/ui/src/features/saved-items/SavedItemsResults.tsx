@@ -142,7 +142,6 @@ export function SavedItemsResults({
           onClick={() => setEditor({ mode: "create", item: null })}
         >
           <FavoriteIcon iconKey="Plus" size={18} aria-hidden="true" />
-          <span>+</span>
         </button>
       </header>
       <div

@@ -17,6 +17,10 @@ test("keeps History, Favorites, direct actions, and settings on one Echo surface
 }) => {
   await page.getByRole("tab", { name: "Favorites" }).click();
   await expect(page.getByText("No favorites yet")).toBeVisible();
+  const createFavorite = page.getByRole("button", { name: "Create favorite" });
+  await expect(createFavorite).toHaveAttribute("type", "button");
+  await expect(createFavorite).toHaveAttribute("aria-label", "Create favorite");
+  await expect(createFavorite).toHaveText("");
 
   await page.getByRole("tab", { name: "History" }).click();
   await expect(page.getByRole("button", { name: "Pin" }).first()).toBeVisible();
@@ -54,6 +58,43 @@ test("keeps History, Favorites, direct actions, and settings on one Echo surface
   await page.getByRole("switch", { name: "Record sensitive content" }).click();
   await page.getByRole("button", { name: "Save settings" }).click();
   await expect(page.getByText("Settings updated")).toBeVisible();
+});
+
+test("states the clear-history preservation policy in the confirmation copy", async ({
+  page,
+}) => {
+  await page.getByRole("button", { name: "Open settings" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Clipboard Settings" }),
+  ).toBeVisible();
+
+  const dialogMessage = new Promise<string>((resolve) => {
+    page.once("dialog", async (dialog) => {
+      resolve(dialog.message());
+      await dialog.dismiss();
+    });
+  });
+  await page.getByRole("button", { name: "Clear history" }).click();
+  await expect(await dialogMessage).toContain(
+    "Pinned History items and Favorites are preserved.",
+  );
+});
+
+test("applies typed theme capability events without inventing initial Mica state", async ({
+  page,
+}) => {
+  const root = page.locator("html");
+  await expect(root).not.toHaveAttribute("data-mica", "fallback");
+
+  await page.evaluate(() =>
+    (
+      window as Window & {
+        __emitEchoThemeChanged?: (payload: unknown) => void;
+      }
+    ).__emitEchoThemeChanged?.({ mode: "light", nativeMica: true }),
+  );
+  await expect(root).toHaveAttribute("data-theme", "light");
+  await expect(root).toHaveAttribute("data-mica", "native");
 });
 
 test("renders History batch selection affordances without row insertion", async ({
