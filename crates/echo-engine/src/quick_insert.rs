@@ -4,8 +4,8 @@ use std::time::Instant;
 use crate::{
     ClipboardError, ClipboardPlatform, ClipboardService, FavoriteDraft, FavoriteUpdate, Library,
     LibraryError, LibraryItem, LibraryItemKind, LibraryPage, LibraryStore, LibraryView,
-    OperationMetrics, PageCursor, PasteDelivery, PasteDeliveryFailure, PasteTarget, SavedItem,
-    Thumbnail, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE,
+    OperationMetrics, PageCursor, PasteDelivery, PasteDeliveryFailure, PasteTarget, PlatformError,
+    SavedItem, Thumbnail, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -182,11 +182,24 @@ impl<S: LibraryStore> QuickInsertService<S> {
             QuickInsertAction::Copy => {
                 match self.clipboard.copy_representations(&payload) {
                     Ok(_) => {}
-                    Err(error) if is_target_preflight_rejection(&error) => {
+                    Err(error) => {
+                        let Some(preflight_error) =
+                            target_preflight_error(&error).map(str::to_owned)
+                        else {
+                            return Err(error.into());
+                        };
                         self.clear_session();
-                        self.clipboard.copy_representations(&payload)?;
+                        return match self.clipboard.copy_representations(&payload) {
+                            // The preflight target was cleared, so report the existing
+                            // target-free copy outcome rather than claiming a session remains.
+                            Ok(_) => Ok(QuickInsertOutcome::ClipboardStaged),
+                            Err(retry_error) => Err(QuickInsertError::Clipboard(
+                                ClipboardError::Platform(PlatformError(format!(
+                                    "{preflight_error}; retry failed: {retry_error}"
+                                ))),
+                            )),
+                        };
                     }
-                    Err(error) => return Err(error.into()),
                 }
                 Ok(QuickInsertOutcome::Copied)
             }
@@ -332,14 +345,16 @@ impl<S: LibraryStore> QuickInsertService<S> {
     }
 }
 
-fn is_target_preflight_rejection(error: &ClipboardError) -> bool {
+fn target_preflight_error(error: &ClipboardError) -> Option<&str> {
     matches!(
         error,
         ClipboardError::Platform(platform_error)
-            if platform_error
-                .0
-                .starts_with("paste target was rejected before clipboard staging:")
+            if platform_error.0.starts_with("paste target was rejected before clipboard staging:")
     )
+    .then(|| match error {
+        ClipboardError::Platform(platform_error) => platform_error.0.as_str(),
+        _ => unreachable!("target preflight errors are platform errors"),
+    })
 }
 
 fn to_item(item: LibraryItem) -> QuickInsertItem {
@@ -366,7 +381,7 @@ fn to_item(item: LibraryItem) -> QuickInsertItem {
 #[cfg(test)]
 mod tests {
     use std::convert::Infallible;
-    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
     use super::*;
     use crate::{
@@ -398,6 +413,7 @@ mod tests {
         clipboard: Mutex<Vec<u8>>,
         writes: AtomicUsize,
         paste_calls: AtomicUsize,
+        fail_writes: AtomicBool,
     }
 
     impl StatefulPlatform {
@@ -431,6 +447,10 @@ mod tests {
 
         fn paste_calls(&self) -> usize {
             self.paste_calls.load(Ordering::Acquire)
+        }
+
+        fn set_write_failure(&self, fail: bool) {
+            self.fail_writes.store(fail, Ordering::Release);
         }
     }
 
@@ -467,6 +487,9 @@ mod tests {
                         .to_owned(),
                 )),
                 Some(TargetState::Live) | None => {
+                    if self.fail_writes.load(Ordering::Acquire) {
+                        return Err(PlatformError("generic clipboard write failure".to_owned()));
+                    }
                     let bytes = representations
                         .first()
                         .map(|representation| representation.bytes.clone())
@@ -731,7 +754,7 @@ mod tests {
         let outcome = service
             .execute(QuickInsertSource::Favorite, 1, QuickInsertAction::Copy)
             .expect("copy must recover from stale insertion session");
-        assert_eq!(outcome, QuickInsertOutcome::Copied);
+        assert_eq!(outcome, QuickInsertOutcome::ClipboardStaged);
         assert_eq!(platform.clipboard_text(), "elevated target payload");
         assert_eq!(platform.writes(), 1);
         assert_eq!(platform.paste_calls(), 0);
@@ -751,6 +774,60 @@ mod tests {
         assert_eq!(outcome, QuickInsertOutcome::Inserted);
         assert_eq!(platform.clipboard_text(), "elevated target payload");
         assert_eq!(platform.writes(), 3);
+        assert_eq!(platform.paste_calls(), 1);
+        clipboard.shutdown();
+    }
+
+    #[test]
+    fn copy_failure_keeps_live_target_but_clears_preflight_target() {
+        let platform = Arc::new(StatefulPlatform::default());
+        let clipboard = Arc::new(ClipboardService::new(
+            Arc::clone(&platform) as Arc<dyn ClipboardPlatform>,
+            Arc::new(TestSink),
+        ));
+        let service = QuickInsertService::new(
+            Library::new(Arc::new(TestStore)),
+            Arc::clone(&clipboard),
+            Arc::clone(&platform) as Arc<dyn ClipboardPlatform>,
+        );
+
+        platform.set_clipboard("clipboard sentinel");
+        platform.set_write_failure(true);
+        platform.set_target_state(TargetState::Live);
+        assert!(service.begin_session().expect("live target capture"));
+        let error = service
+            .execute(QuickInsertSource::Favorite, 1, QuickInsertAction::Copy)
+            .expect_err("generic live copy failure must be surfaced");
+        assert_eq!(
+            error.to_string(),
+            "platform error: generic clipboard write failure"
+        );
+        assert_eq!(platform.clipboard_text(), "clipboard sentinel");
+        assert_eq!(platform.writes(), 0);
+
+        platform.set_write_failure(false);
+        let outcome = service
+            .execute(QuickInsertSource::Favorite, 1, QuickInsertAction::Insert)
+            .expect("live target must remain available after generic copy failure");
+        assert_eq!(outcome, QuickInsertOutcome::Inserted);
+        assert_eq!(platform.writes(), 1);
+        assert_eq!(platform.paste_calls(), 1);
+
+        platform.set_clipboard("clipboard sentinel");
+        platform.set_write_failure(true);
+        platform.set_target_state(TargetState::Stale);
+        assert!(service.begin_session().expect("stale target capture"));
+        let error = service
+            .execute(QuickInsertSource::Favorite, 1, QuickInsertAction::Copy)
+            .expect_err("retry failure must be surfaced");
+        assert!(error
+            .to_string()
+            .contains("paste target was rejected before clipboard staging:"));
+        assert!(error
+            .to_string()
+            .contains("generic clipboard write failure"));
+        assert_eq!(platform.clipboard_text(), "clipboard sentinel");
+        assert_eq!(platform.writes(), 1);
         assert_eq!(platform.paste_calls(), 1);
         clipboard.shutdown();
     }

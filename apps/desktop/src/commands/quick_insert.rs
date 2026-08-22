@@ -52,16 +52,73 @@ pub(crate) fn quick_insert_execute(
     let outcome = match state.quick_insert.execute(source.into(), id, action.into()) {
         Ok(outcome) => outcome.into(),
         Err(error) => {
-            if matches!(action, QuickInsertAction::Copy) {
+            let error = error.to_string();
+            if should_clear_quick_insert_session_marker(action, None, Some(&error)) {
                 state.clear_quick_insert_session_marker();
             }
-            return Err(error.to_string());
+            return Err(error);
         }
     };
-    if matches!(action, QuickInsertAction::Insert) {
+    if should_clear_quick_insert_session_marker(action, Some(outcome), None) {
         state.clear_quick_insert_session_marker();
     }
     Ok(outcome)
+}
+
+fn should_clear_quick_insert_session_marker(
+    action: QuickInsertAction,
+    outcome: Option<transport::QuickInsertOutcome>,
+    error: Option<&str>,
+) -> bool {
+    match action {
+        QuickInsertAction::Copy => {
+            matches!(
+                outcome,
+                Some(transport::QuickInsertOutcome::ClipboardStaged)
+            ) || error.is_some_and(is_target_preflight_error)
+        }
+        QuickInsertAction::Insert => {
+            matches!(outcome, Some(transport::QuickInsertOutcome::Inserted))
+        }
+    }
+}
+
+fn is_target_preflight_error(error: &str) -> bool {
+    error.starts_with("platform error: paste target was rejected before clipboard staging:")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quick_insert_marker_transitions_follow_target_lifecycle() {
+        assert!(should_clear_quick_insert_session_marker(
+            QuickInsertAction::Copy,
+            Some(transport::QuickInsertOutcome::ClipboardStaged),
+            None,
+        ));
+        assert!(!should_clear_quick_insert_session_marker(
+            QuickInsertAction::Copy,
+            Some(transport::QuickInsertOutcome::Copied),
+            None,
+        ));
+        assert!(should_clear_quick_insert_session_marker(
+            QuickInsertAction::Copy,
+            None,
+            Some("platform error: paste target was rejected before clipboard staging: ElevatedTarget"),
+        ));
+        assert!(!should_clear_quick_insert_session_marker(
+            QuickInsertAction::Copy,
+            None,
+            Some("platform error: Windows clipboard is busy"),
+        ));
+        assert!(should_clear_quick_insert_session_marker(
+            QuickInsertAction::Insert,
+            Some(transport::QuickInsertOutcome::Inserted),
+            None,
+        ));
+    }
 }
 
 #[tauri::command]

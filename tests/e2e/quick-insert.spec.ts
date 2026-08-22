@@ -84,6 +84,20 @@ test.describe("Echo Quick Insert acceptance", () => {
       await row.getByRole("button", { name: "Copy" }).click();
       await expect(surface.getByText("Copied")).toBeVisible();
       await expect.poll(() => runClipboardFixture("read-text")).toBe(content);
+      const liveCopySentinel = `Echo live Copy failure sentinel ${Date.now()}`;
+      await runClipboardFixture("copy-text", liveCopySentinel);
+      clipboardHolder = await holdClipboardFixture();
+      await row.getByRole("button", { name: "Copy" }).click();
+      await expect(surface.getByRole("alert")).toContainText(
+        "Windows clipboard is busy",
+      );
+      await clipboardHolder.stop();
+      clipboardHolder = undefined;
+      await expect
+        .poll(() => runClipboardFixture("read-text"))
+        .toBe(liveCopySentinel);
+      // Echo remains visible while the failed Copy is observed. The next
+      // row action proves the live target was retained for Insert.
       await row.click();
       await expect
         .poll(() => target.command("read-primary"))
@@ -174,9 +188,16 @@ test.describe("Echo Quick Insert acceptance", () => {
         .getByRole("row", { name: new RegExp(content) })
         .getByRole("button", { name: "Copy" })
         .click();
-      await expect(surface.getByText("Copied")).toBeVisible();
+      await expect(surface.getByText("Clipboard staged")).toBeVisible();
       await expect.poll(() => runClipboardFixture("read-text")).toBe(content);
-      await hideEcho(surface);
+      // Observe the post-Copy session while Echo is still visible. This is
+      // state evidence only; recapture below uses the canonical activation
+      // handoff and never asks the visible UI to capture a target.
+      const staleCopySession = await invoke<{ hasTarget: boolean }>(
+        main,
+        "quick_insert_begin_session",
+      );
+      expect(staleCopySession.hasTarget).toBe(false);
       await target.command("focus-primary");
       await target.allowEchoForeground();
       await sendActivation("echo.quick_insert", { query: content });
@@ -207,18 +228,15 @@ test.describe("Echo Quick Insert acceptance", () => {
       await expect
         .poll(() => runClipboardFixture("read-text"))
         .toBe(retrySentinel);
-      await hideEcho(surface);
-      await target.command("focus-primary");
-      const preShowSession = await invoke<{ hasTarget: boolean }>(
+      const retryFailureSession = await invoke<{ hasTarget: boolean }>(
         main,
         "quick_insert_begin_session",
       );
-      expect(preShowSession.hasTarget).toBe(true);
-      await invoke(main, "quick_insert_execute", {
-        source: "history",
-        id: itemId,
-        action: "insert",
-      });
+      expect(retryFailureSession.hasTarget).toBe(false);
+      await target.command("focus-primary");
+      await sendActivation("echo.quick_insert", { query: content });
+      surface = await waitForMainPage(browser);
+      await surface.getByRole("row", { name: new RegExp(content) }).click();
       await expect
         .poll(() => target.command("read-primary"))
         .toBe(`a${content}${content}${content}c`);
