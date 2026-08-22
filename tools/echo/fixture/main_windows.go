@@ -86,8 +86,45 @@ func runClipboard(args []string) error {
 		_, err = fmt.Fprintln(os.Stdout, text)
 		return err
 	}
+	if *operation == "hold-open" {
+		return holdClipboardOpen()
+	}
 
 	return writeClipboard(*operation, *value)
+}
+
+func holdClipboardOpen() error {
+	runtime.LockOSThread()
+	className := mustUTF16("STATIC")
+	title := mustUTF16("Echo clipboard holder")
+	owner, _, callErr := procCreateWindowEx.Call(
+		0,
+		uintptr(unsafe.Pointer(className)),
+		uintptr(unsafe.Pointer(title)),
+		wsOverlappedWindow,
+		cwUseDefault,
+		cwUseDefault,
+		1,
+		1,
+		0,
+		0,
+		0,
+		0,
+	)
+	if owner == 0 {
+		runtime.UnlockOSThread()
+		return fmt.Errorf("CreateWindowEx clipboard owner failed: %w", callErr)
+	}
+	defer procDestroyWindow.Call(owner)
+	procShowWindow.Call(owner, 0)
+	if result, _, callErr := procOpenClipboard.Call(owner); result == 0 {
+		runtime.UnlockOSThread()
+		return fmt.Errorf("OpenClipboard failed: %w", callErr)
+	}
+	fmt.Fprintln(os.Stdout, "ready")
+	for {
+		time.Sleep(time.Hour)
+	}
 }
 
 func writeClipboard(operation, value string) error {

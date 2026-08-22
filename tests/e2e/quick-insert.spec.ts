@@ -7,7 +7,7 @@ import {
   sendActivation,
   waitForMainPage,
 } from "./tauri";
-import { runClipboardFixture } from "./native-fixture";
+import { holdClipboardFixture, runClipboardFixture } from "./native-fixture";
 import { EchoTargetFixture } from "./target-fixture";
 
 test.describe("Echo Quick Insert acceptance", () => {
@@ -66,6 +66,10 @@ test.describe("Echo Quick Insert acceptance", () => {
     const target = await EchoTargetFixture.start();
     const content = `Echo native target payload ${Date.now()}`;
     let deadTarget: EchoTargetFixture | undefined;
+    let retryTarget: EchoTargetFixture | undefined;
+    let clipboardHolder:
+      | Awaited<ReturnType<typeof holdClipboardFixture>>
+      | undefined;
     try {
       await runClipboardFixture("copy-text", content);
       const itemId = await waitForHistoryId(main, content);
@@ -172,14 +176,55 @@ test.describe("Echo Quick Insert acceptance", () => {
         .click();
       await expect(surface.getByText("Copied")).toBeVisible();
       await expect.poll(() => runClipboardFixture("read-text")).toBe(content);
+      await hideEcho(surface);
       await target.command("focus-primary");
       await target.allowEchoForeground();
-      await invoke(main, "quick_insert_begin_session");
+      await sendActivation("echo.quick_insert", { query: content });
+      surface = await waitForMainPage(browser);
       await surface.getByRole("row", { name: new RegExp(content) }).click();
       await expect
         .poll(() => target.command("read-primary"))
         .toBe(`a${content}${content}c`);
+
+      retryTarget = await EchoTargetFixture.start();
+      await retryTarget.command("focus-primary");
+      await retryTarget.allowEchoForeground();
+      await sendActivation("echo.quick_insert", { query: content });
+      surface = await waitForMainPage(browser);
+      const retrySentinel = `Echo retry failure sentinel ${Date.now()}`;
+      await runClipboardFixture("copy-text", retrySentinel);
+      clipboardHolder = await holdClipboardFixture();
+      await retryTarget.stop();
+      await surface
+        .getByRole("row", { name: new RegExp(content) })
+        .getByRole("button", { name: "Copy" })
+        .click();
+      await expect(surface.getByRole("alert")).toContainText(
+        "Windows clipboard is busy",
+      );
+      await clipboardHolder.stop();
+      clipboardHolder = undefined;
+      await expect
+        .poll(() => runClipboardFixture("read-text"))
+        .toBe(retrySentinel);
+      await hideEcho(surface);
+      await target.command("focus-primary");
+      const preShowSession = await invoke<{ hasTarget: boolean }>(
+        main,
+        "quick_insert_begin_session",
+      );
+      expect(preShowSession.hasTarget).toBe(true);
+      await invoke(main, "quick_insert_execute", {
+        source: "history",
+        id: itemId,
+        action: "insert",
+      });
+      await expect
+        .poll(() => target.command("read-primary"))
+        .toBe(`a${content}${content}${content}c`);
     } finally {
+      await clipboardHolder?.stop().catch(() => undefined);
+      await retryTarget?.stop().catch(() => undefined);
       await deadTarget?.stop().catch(() => undefined);
       await target.stop().catch(() => undefined);
       await browser.close();

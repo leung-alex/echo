@@ -49,15 +49,16 @@ pub(crate) fn quick_insert_execute(
     id: i64,
     action: QuickInsertAction,
 ) -> Result<transport::QuickInsertOutcome, String> {
-    let outcome = state
-        .quick_insert
-        .execute(source.into(), id, action.into())
-        .map(Into::into)
-        .map_err(|error| error.to_string())?;
-    if matches!(
-        outcome,
-        transport::QuickInsertOutcome::Copied | transport::QuickInsertOutcome::Inserted
-    ) {
+    let outcome = match state.quick_insert.execute(source.into(), id, action.into()) {
+        Ok(outcome) => outcome.into(),
+        Err(error) => {
+            if matches!(action, QuickInsertAction::Copy) {
+                state.clear_quick_insert_session_marker();
+            }
+            return Err(error.to_string());
+        }
+    };
+    if matches!(action, QuickInsertAction::Insert) {
         state.clear_quick_insert_session_marker();
     }
     Ok(outcome)

@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -23,4 +23,53 @@ export async function runClipboardFixture(
     { windowsHide: true, timeout: 15_000 },
   );
   return result.stdout.trim();
+}
+
+export async function holdClipboardFixture(): Promise<{
+  stop: () => Promise<void>;
+}> {
+  const child = spawn(
+    nativeFixtureExecutable(),
+    ["clipboard", "--operation", "hold-open"],
+    { windowsHide: true },
+  );
+  await waitForClipboardFixtureReady(child);
+  return {
+    stop: async () => {
+      if (child.exitCode !== null) return;
+      child.kill();
+      await new Promise<void>((resolve) => {
+        child.once("exit", () => resolve());
+      });
+    },
+  };
+}
+
+async function waitForClipboardFixtureReady(
+  child: ChildProcess,
+): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    let output = "";
+    const timeout = setTimeout(() => {
+      child.kill();
+      reject(new Error("clipboard holder did not become ready"));
+    }, 15_000);
+    child.stdout?.on("data", (chunk: Buffer | string) => {
+      output += chunk.toString();
+      if (output.includes("ready")) {
+        clearTimeout(timeout);
+        resolve();
+      }
+    });
+    child.once("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    child.once("exit", (code) => {
+      if (code !== null) {
+        clearTimeout(timeout);
+        reject(new Error(`clipboard holder exited before ready (${code})`));
+      }
+    });
+  });
 }
