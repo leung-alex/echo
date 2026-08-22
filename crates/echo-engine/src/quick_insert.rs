@@ -144,6 +144,14 @@ impl<S: LibraryStore> QuickInsertService<S> {
     }
 
     pub fn begin_session(&self) -> Result<bool> {
+        if self
+            .target
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .is_some()
+        {
+            return Ok(true);
+        }
         let target = self
             .platform
             .capture_target()
@@ -172,8 +180,14 @@ impl<S: LibraryStore> QuickInsertService<S> {
         let payload = self.library.payload(source.kind(), id)?;
         match action {
             QuickInsertAction::Copy => {
-                self.clear_session();
-                self.clipboard.copy_representations(&payload)?;
+                match self.clipboard.copy_representations(&payload) {
+                    Ok(_) => {}
+                    Err(error) if is_target_preflight_rejection(&error) => {
+                        self.clear_session();
+                        self.clipboard.copy_representations(&payload)?;
+                    }
+                    Err(error) => return Err(error.into()),
+                }
                 Ok(QuickInsertOutcome::Copied)
             }
             QuickInsertAction::Insert => {
@@ -316,6 +330,16 @@ impl<S: LibraryStore> QuickInsertService<S> {
     pub fn metrics_snapshot(&self) -> Vec<crate::OperationMetric> {
         self.metrics.snapshot()
     }
+}
+
+fn is_target_preflight_rejection(error: &ClipboardError) -> bool {
+    matches!(
+        error,
+        ClipboardError::Platform(platform_error)
+            if platform_error
+                .0
+                .starts_with("paste target was rejected before clipboard staging:")
+    )
 }
 
 fn to_item(item: LibraryItem) -> QuickInsertItem {
@@ -670,7 +694,7 @@ mod tests {
     }
 
     #[test]
-    fn target_validation_preserves_clipboard_and_copy_clears_stale_session() {
+    fn target_validation_preserves_clipboard_and_copy_recovers_session_without_blocking_copy() {
         let platform = Arc::new(StatefulPlatform::default());
         let clipboard = Arc::new(ClipboardService::new(
             Arc::clone(&platform) as Arc<dyn ClipboardPlatform>,
@@ -691,7 +715,9 @@ mod tests {
         assert!(error.to_string().contains("ElevatedTarget"));
         assert_eq!(platform.clipboard_text(), "clipboard sentinel");
         assert_eq!(platform.writes(), 0);
+        assert_eq!(platform.paste_calls(), 0);
 
+        service.clear_session();
         platform.set_target_state(TargetState::Stale);
         assert!(service.begin_session().expect("stale target capture"));
         let error = service
@@ -704,10 +730,28 @@ mod tests {
 
         let outcome = service
             .execute(QuickInsertSource::Favorite, 1, QuickInsertAction::Copy)
-            .expect("copy must clear stale insertion session");
+            .expect("copy must recover from stale insertion session");
         assert_eq!(outcome, QuickInsertOutcome::Copied);
         assert_eq!(platform.clipboard_text(), "elevated target payload");
         assert_eq!(platform.writes(), 1);
+        assert_eq!(platform.paste_calls(), 0);
+
+        platform.set_target_state(TargetState::Live);
+        assert!(service.begin_session().expect("fresh target capture"));
+        let outcome = service
+            .execute(QuickInsertSource::Favorite, 1, QuickInsertAction::Copy)
+            .expect("copy with a live target");
+        assert_eq!(outcome, QuickInsertOutcome::Copied);
+        assert_eq!(platform.clipboard_text(), "elevated target payload");
+        assert_eq!(platform.writes(), 2);
+
+        let outcome = service
+            .execute(QuickInsertSource::Favorite, 1, QuickInsertAction::Insert)
+            .expect("insert after copy must retain the live target");
+        assert_eq!(outcome, QuickInsertOutcome::Inserted);
+        assert_eq!(platform.clipboard_text(), "elevated target payload");
+        assert_eq!(platform.writes(), 3);
+        assert_eq!(platform.paste_calls(), 1);
         clipboard.shutdown();
     }
 }

@@ -54,7 +54,10 @@ pub(crate) fn quick_insert_execute(
         .execute(source.into(), id, action.into())
         .map(Into::into)
         .map_err(|error| error.to_string())?;
-    if matches!(outcome, transport::QuickInsertOutcome::Inserted) {
+    if matches!(
+        outcome,
+        transport::QuickInsertOutcome::Copied | transport::QuickInsertOutcome::Inserted
+    ) {
         state.clear_quick_insert_session_marker();
     }
     Ok(outcome)

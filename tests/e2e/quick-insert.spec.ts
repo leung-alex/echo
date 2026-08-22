@@ -77,6 +77,9 @@ test.describe("Echo Quick Insert acceptance", () => {
       let surface = await waitForMainPage(browser);
       const row = surface.getByRole("row", { name: new RegExp(content) });
       await expect(row).toBeVisible();
+      await row.getByRole("button", { name: "Copy" }).click();
+      await expect(surface.getByText("Copied")).toBeVisible();
+      await expect.poll(() => runClipboardFixture("read-text")).toBe(content);
       await row.click();
       await expect
         .poll(() => target.command("read-primary"))
@@ -169,6 +172,13 @@ test.describe("Echo Quick Insert acceptance", () => {
         .click();
       await expect(surface.getByText("Copied")).toBeVisible();
       await expect.poll(() => runClipboardFixture("read-text")).toBe(content);
+      await target.command("focus-primary");
+      await target.allowEchoForeground();
+      await invoke(main, "quick_insert_begin_session");
+      await surface.getByRole("row", { name: new RegExp(content) }).click();
+      await expect
+        .poll(() => target.command("read-primary"))
+        .toBe(`a${content}${content}c`);
     } finally {
       await deadTarget?.stop().catch(() => undefined);
       await target.stop().catch(() => undefined);
