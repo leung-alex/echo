@@ -413,6 +413,7 @@ mod tests {
         clipboard: Mutex<Vec<u8>>,
         writes: AtomicUsize,
         paste_calls: AtomicUsize,
+        captures: AtomicUsize,
         fail_writes: AtomicBool,
     }
 
@@ -447,6 +448,10 @@ mod tests {
 
         fn paste_calls(&self) -> usize {
             self.paste_calls.load(Ordering::Acquire)
+        }
+
+        fn captures(&self) -> usize {
+            self.captures.load(Ordering::Acquire)
         }
 
         fn set_write_failure(&self, fail: bool) {
@@ -505,6 +510,7 @@ mod tests {
         }
 
         fn capture_target(&self) -> std::result::Result<Option<PasteTarget>, PlatformError> {
+            self.captures.fetch_add(1, Ordering::AcqRel);
             *self
                 .captured_target
                 .lock()
@@ -739,6 +745,22 @@ mod tests {
         assert_eq!(platform.clipboard_text(), "clipboard sentinel");
         assert_eq!(platform.writes(), 0);
         assert_eq!(platform.paste_calls(), 0);
+        assert_eq!(platform.captures(), 1);
+
+        // Copy against the same elevated target performs the authorized
+        // target-preflight retry: the elevated window is never mutated, the
+        // payload is staged, and the engine session is cleared.
+        service.clear_session();
+        platform.set_target_state(TargetState::Elevated);
+        assert!(service.begin_session().expect("elevated Copy capture"));
+        assert_eq!(platform.captures(), 2);
+        let outcome = service
+            .execute(QuickInsertSource::Favorite, 1, QuickInsertAction::Copy)
+            .expect("elevated Copy retry should stage without target");
+        assert_eq!(outcome, QuickInsertOutcome::ClipboardStaged);
+        assert_eq!(platform.clipboard_text(), "elevated target payload");
+        assert_eq!(platform.writes(), 1);
+        assert_eq!(platform.paste_calls(), 0);
 
         service.clear_session();
         platform.set_target_state(TargetState::Stale);
@@ -747,33 +769,36 @@ mod tests {
             .execute(QuickInsertSource::Favorite, 1, QuickInsertAction::Insert)
             .expect_err("stale target must be rejected");
         assert!(error.to_string().contains("OriginalWindowUnavailable"));
-        assert_eq!(platform.clipboard_text(), "clipboard sentinel");
-        assert_eq!(platform.writes(), 0);
+        assert_eq!(platform.clipboard_text(), "elevated target payload");
+        assert_eq!(platform.writes(), 1);
         assert_eq!(platform.paste_calls(), 0);
+        assert_eq!(platform.captures(), 3);
 
         let outcome = service
             .execute(QuickInsertSource::Favorite, 1, QuickInsertAction::Copy)
             .expect("copy must recover from stale insertion session");
         assert_eq!(outcome, QuickInsertOutcome::ClipboardStaged);
         assert_eq!(platform.clipboard_text(), "elevated target payload");
-        assert_eq!(platform.writes(), 1);
+        assert_eq!(platform.writes(), 2);
         assert_eq!(platform.paste_calls(), 0);
+        assert_eq!(platform.captures(), 3);
 
         platform.set_target_state(TargetState::Live);
         assert!(service.begin_session().expect("fresh target capture"));
+        assert_eq!(platform.captures(), 4);
         let outcome = service
             .execute(QuickInsertSource::Favorite, 1, QuickInsertAction::Copy)
             .expect("copy with a live target");
         assert_eq!(outcome, QuickInsertOutcome::Copied);
         assert_eq!(platform.clipboard_text(), "elevated target payload");
-        assert_eq!(platform.writes(), 2);
+        assert_eq!(platform.writes(), 3);
 
         let outcome = service
             .execute(QuickInsertSource::Favorite, 1, QuickInsertAction::Insert)
             .expect("insert after copy must retain the live target");
         assert_eq!(outcome, QuickInsertOutcome::Inserted);
         assert_eq!(platform.clipboard_text(), "elevated target payload");
-        assert_eq!(platform.writes(), 3);
+        assert_eq!(platform.writes(), 4);
         assert_eq!(platform.paste_calls(), 1);
         clipboard.shutdown();
     }
@@ -829,6 +854,21 @@ mod tests {
         assert_eq!(platform.clipboard_text(), "clipboard sentinel");
         assert_eq!(platform.writes(), 1);
         assert_eq!(platform.paste_calls(), 1);
+        assert_eq!(platform.captures(), 2);
+
+        // A failed retry still clears the captured target. A later legitimate
+        // activation can capture a new live target instead of reusing stale
+        // session state.
+        platform.set_write_failure(false);
+        platform.set_target_state(TargetState::Live);
+        assert!(service
+            .begin_session()
+            .expect("recapture after retry failure"));
+        assert_eq!(platform.captures(), 3);
+        let outcome = service
+            .execute(QuickInsertSource::Favorite, 1, QuickInsertAction::Insert)
+            .expect("recaptured live target remains usable");
+        assert_eq!(outcome, QuickInsertOutcome::Inserted);
         clipboard.shutdown();
     }
 }

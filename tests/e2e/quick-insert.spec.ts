@@ -190,14 +190,9 @@ test.describe("Echo Quick Insert acceptance", () => {
         .click();
       await expect(surface.getByText("Clipboard staged")).toBeVisible();
       await expect.poll(() => runClipboardFixture("read-text")).toBe(content);
-      // Observe the post-Copy session while Echo is still visible. This is
-      // state evidence only; recapture below uses the canonical activation
-      // handoff and never asks the visible UI to capture a target.
-      const staleCopySession = await invoke<{ hasTarget: boolean }>(
-        main,
-        "quick_insert_begin_session",
-      );
-      expect(staleCopySession.hasTarget).toBe(false);
+      // The marker/target cleanup is proved by the desktop's private Rust
+      // regression. Recapture below must go through the canonical activation
+      // handoff, which captures before showing Echo.
       await target.command("focus-primary");
       await target.allowEchoForeground();
       await sendActivation("echo.quick_insert", { query: content });
@@ -228,12 +223,10 @@ test.describe("Echo Quick Insert acceptance", () => {
       await expect
         .poll(() => runClipboardFixture("read-text"))
         .toBe(retrySentinel);
-      const retryFailureSession = await invoke<{ hasTarget: boolean }>(
-        main,
-        "quick_insert_begin_session",
-      );
-      expect(retryFailureSession.hasTarget).toBe(false);
+      // Retry failure also clears the target/marker. The next canonical
+      // activation captures the focused safe target before Echo is shown.
       await target.command("focus-primary");
+      await expect.poll(() => target.command("primary-focused")).toBe("true");
       await sendActivation("echo.quick_insert", { query: content });
       surface = await waitForMainPage(browser);
       await surface.getByRole("row", { name: new RegExp(content) }).click();
@@ -245,6 +238,64 @@ test.describe("Echo Quick Insert acceptance", () => {
       await retryTarget?.stop().catch(() => undefined);
       await deadTarget?.stop().catch(() => undefined);
       await target.stop().catch(() => undefined);
+      await browser.close();
+    }
+  });
+
+  test("stages Copy for an elevated target and recaptures a safe target", async () => {
+    test.skip(
+      process.env.ECHO_ACCEPTANCE_ELEVATED !== "1",
+      "requires the explicit human-approved RunAs acceptance handoff",
+    );
+    const browser = await connectToEcho();
+    const main = await waitForMainPage(browser);
+    const elevatedTarget = await EchoTargetFixture.startElevated();
+    const safeTarget = await EchoTargetFixture.start();
+    const content = `Echo elevated Copy payload ${Date.now()}`;
+    const clipboardSentinel = `Echo elevated Copy sentinel ${Date.now()}`;
+    try {
+      await runClipboardFixture("copy-text", content);
+      await waitForHistoryId(main, content);
+      await runClipboardFixture("copy-text", clipboardSentinel);
+      await elevatedTarget.command("focus-primary");
+      await expect
+        .poll(() => elevatedTarget.command("primary-focused"))
+        .toBe("true");
+      await elevatedTarget.allowEchoForeground();
+      await sendActivation("echo.quick_insert", { query: content });
+      let surface = await waitForMainPage(browser);
+      const row = surface.getByRole("row", { name: new RegExp(content) });
+      await expect(row).toBeVisible();
+      await expect
+        .poll(() => runClipboardFixture("read-text"))
+        .toBe(clipboardSentinel);
+      await expect
+        .poll(() => elevatedTarget.command("read-primary"))
+        .toBe("ac");
+
+      await row.getByRole("button", { name: "Copy" }).click();
+      await expect(surface.getByText("Clipboard staged")).toBeVisible();
+      await expect.poll(() => runClipboardFixture("read-text")).toBe(content);
+      await expect
+        .poll(() => elevatedTarget.command("read-primary"))
+        .toBe("ac");
+
+      // A new activation is the only native recapture path: the safe target
+      // is focused first, then desktop captures it before showing Echo.
+      await safeTarget.command("focus-primary");
+      await safeTarget.allowEchoForeground();
+      await sendActivation("echo.quick_insert", { query: content });
+      surface = await waitForMainPage(browser);
+      await surface.getByRole("row", { name: new RegExp(content) }).click();
+      await expect
+        .poll(() => safeTarget.command("read-primary"))
+        .toBe(`a${content}c`);
+      await expect
+        .poll(() => elevatedTarget.command("read-primary"))
+        .toBe("ac");
+    } finally {
+      await safeTarget.stop().catch(() => undefined);
+      await elevatedTarget.stop().catch(() => undefined);
       await browser.close();
     }
   });

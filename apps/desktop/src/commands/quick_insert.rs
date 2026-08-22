@@ -93,6 +93,60 @@ mod tests {
 
     #[test]
     fn quick_insert_marker_transitions_follow_target_lifecycle() {
+        let mut marker = Some(true);
+        if should_clear_quick_insert_session_marker(
+            QuickInsertAction::Copy,
+            Some(transport::QuickInsertOutcome::ClipboardStaged),
+            None,
+        ) {
+            marker = None;
+        }
+        assert_eq!(marker, None, "staged Copy clears the desktop marker");
+
+        marker = Some(true);
+        if should_clear_quick_insert_session_marker(
+            QuickInsertAction::Copy,
+            None,
+            Some(
+                "platform error: paste target was rejected before clipboard staging: ElevatedTarget; retry failed: Windows clipboard is busy",
+            ),
+        ) {
+            marker = None;
+        }
+        assert_eq!(
+            marker, None,
+            "elevated Copy retry failure clears the desktop marker"
+        );
+
+        marker = Some(true);
+        if should_clear_quick_insert_session_marker(
+            QuickInsertAction::Copy,
+            None,
+            Some(
+                "platform error: paste target was rejected before clipboard staging: OriginalWindowUnavailable; retry failed: Windows clipboard is busy",
+            ),
+        ) {
+            marker = None;
+        }
+        assert_eq!(
+            marker, None,
+            "stale Copy retry failure clears the desktop marker"
+        );
+
+        marker = Some(true);
+        if should_clear_quick_insert_session_marker(
+            QuickInsertAction::Copy,
+            None,
+            Some("platform error: Windows clipboard is busy"),
+        ) {
+            marker = None;
+        }
+        assert_eq!(
+            marker,
+            Some(true),
+            "a generic live-target Copy failure retains the marker"
+        );
+
         assert!(should_clear_quick_insert_session_marker(
             QuickInsertAction::Copy,
             Some(transport::QuickInsertOutcome::ClipboardStaged),
