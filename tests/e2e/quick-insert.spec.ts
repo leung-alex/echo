@@ -163,6 +163,12 @@ test.describe("Echo Quick Insert acceptance", () => {
       await expect
         .poll(() => runClipboardFixture("read-text"))
         .toBe(staleClipboardSentinel);
+      await surface
+        .getByRole("row", { name: new RegExp(content) })
+        .getByRole("button", { name: "Copy" })
+        .click();
+      await expect(surface.getByText("Copied")).toBeVisible();
+      await expect.poll(() => runClipboardFixture("read-text")).toBe(content);
     } finally {
       await deadTarget?.stop().catch(() => undefined);
       await target.stop().catch(() => undefined);

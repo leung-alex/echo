@@ -110,11 +110,6 @@ mod windows_impl {
                 return Ok(());
             };
             validate_target_identity(&target).map_err(target_delivery_error)?;
-            let foreground = unsafe { GetForegroundWindow() };
-            let target_window = HWND(target.window_id as *mut c_void);
-            if foreground != target_window {
-                return Ok(());
-            }
             validate_target_integrity(target.process_id).map_err(target_delivery_error)
         }
     }

@@ -172,6 +172,7 @@ impl<S: LibraryStore> QuickInsertService<S> {
         let payload = self.library.payload(source.kind(), id)?;
         match action {
             QuickInsertAction::Copy => {
+                self.clear_session();
                 self.clipboard.copy_representations(&payload)?;
                 Ok(QuickInsertOutcome::Copied)
             }
@@ -341,7 +342,7 @@ fn to_item(item: LibraryItem) -> QuickInsertItem {
 #[cfg(test)]
 mod tests {
     use std::convert::Infallible;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
     use super::*;
     use crate::{
@@ -351,25 +352,71 @@ mod tests {
         PlatformChangeSubscription, PlatformError, RecordResult, ThemeMode,
     };
 
-    #[derive(Default)]
-    struct RejectingPlatform {
-        changes: PlatformChangePublisher,
-        writes: AtomicUsize,
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum TargetState {
+        Live,
+        Elevated,
+        Stale,
     }
 
-    impl RejectingPlatform {
-        fn writes(&self) -> usize {
-            self.writes.load(Ordering::Acquire)
+    impl Default for TargetState {
+        fn default() -> Self {
+            Self::Live
         }
     }
 
-    impl ClipboardPlatform for RejectingPlatform {
+    #[derive(Default)]
+    struct StatefulPlatform {
+        changes: PlatformChangePublisher,
+        target_state: Mutex<TargetState>,
+        captured_target: Mutex<Option<TargetState>>,
+        sequence: AtomicU64,
+        clipboard: Mutex<Vec<u8>>,
+        writes: AtomicUsize,
+        paste_calls: AtomicUsize,
+    }
+
+    impl StatefulPlatform {
+        fn set_target_state(&self, state: TargetState) {
+            *self
+                .target_state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = state;
+        }
+
+        fn set_clipboard(&self, value: &str) {
+            *self
+                .clipboard
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = value.as_bytes().to_vec();
+        }
+
+        fn clipboard_text(&self) -> String {
+            String::from_utf8(
+                self.clipboard
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .clone(),
+            )
+            .expect("stateful clipboard stores UTF-8 test text")
+        }
+
+        fn writes(&self) -> usize {
+            self.writes.load(Ordering::Acquire)
+        }
+
+        fn paste_calls(&self) -> usize {
+            self.paste_calls.load(Ordering::Acquire)
+        }
+    }
+
+    impl ClipboardPlatform for StatefulPlatform {
         fn subscribe_changes(&self) -> PlatformChangeSubscription {
             self.changes.subscribe()
         }
 
         fn clipboard_sequence(&self) -> u64 {
-            1
+            self.sequence.load(Ordering::Acquire)
         }
 
         fn read_clipboard(
@@ -381,14 +428,45 @@ mod tests {
 
         fn write_clipboard(
             &self,
-            _representations: &[ClipboardRepresentation],
+            representations: &[ClipboardRepresentation],
         ) -> std::result::Result<u64, PlatformError> {
-            Err(PlatformError(
-                "paste target was rejected before clipboard staging: ElevatedTarget".to_owned(),
-            ))
+            match *self
+                .captured_target
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+            {
+                Some(TargetState::Elevated) => Err(PlatformError(
+                    "paste target was rejected before clipboard staging: ElevatedTarget".to_owned(),
+                )),
+                Some(TargetState::Stale) => Err(PlatformError(
+                    "paste target was rejected before clipboard staging: OriginalWindowUnavailable"
+                        .to_owned(),
+                )),
+                Some(TargetState::Live) | None => {
+                    let bytes = representations
+                        .first()
+                        .map(|representation| representation.bytes.clone())
+                        .unwrap_or_default();
+                    *self
+                        .clipboard
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner()) = bytes;
+                    self.writes.fetch_add(1, Ordering::AcqRel);
+                    Ok(self.sequence.fetch_add(1, Ordering::AcqRel) + 1)
+                }
+            }
         }
 
         fn capture_target(&self) -> std::result::Result<Option<PasteTarget>, PlatformError> {
+            *self
+                .captured_target
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = Some(
+                *self
+                    .target_state
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()),
+            );
             Ok(Some(test_target()))
         }
 
@@ -396,7 +474,15 @@ mod tests {
             &self,
             _target: &PasteTarget,
         ) -> std::result::Result<PasteDelivery, PlatformError> {
-            panic!("paste must not be reached after target rejection")
+            self.paste_calls.fetch_add(1, Ordering::AcqRel);
+            Ok(PasteDelivery::Pasted)
+        }
+
+        fn reset_paste_window_session(&self) {
+            *self
+                .captured_target
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = None;
         }
     }
 
@@ -584,8 +670,8 @@ mod tests {
     }
 
     #[test]
-    fn elevated_target_is_rejected_before_clipboard_staging() {
-        let platform = Arc::new(RejectingPlatform::default());
+    fn target_validation_preserves_clipboard_and_copy_clears_stale_session() {
+        let platform = Arc::new(StatefulPlatform::default());
         let clipboard = Arc::new(ClipboardService::new(
             Arc::clone(&platform) as Arc<dyn ClipboardPlatform>,
             Arc::new(TestSink),
@@ -596,11 +682,32 @@ mod tests {
             Arc::clone(&platform) as Arc<dyn ClipboardPlatform>,
         );
 
+        platform.set_clipboard("clipboard sentinel");
+        platform.set_target_state(TargetState::Elevated);
         assert!(service.begin_session().expect("target capture"));
-        let result = service.execute(QuickInsertSource::Favorite, 1, QuickInsertAction::Insert);
-        let error = result.expect_err("elevated target must be rejected");
+        let error = service
+            .execute(QuickInsertSource::Favorite, 1, QuickInsertAction::Insert)
+            .expect_err("elevated target must be rejected");
         assert!(error.to_string().contains("ElevatedTarget"));
+        assert_eq!(platform.clipboard_text(), "clipboard sentinel");
         assert_eq!(platform.writes(), 0);
+
+        platform.set_target_state(TargetState::Stale);
+        assert!(service.begin_session().expect("stale target capture"));
+        let error = service
+            .execute(QuickInsertSource::Favorite, 1, QuickInsertAction::Insert)
+            .expect_err("stale target must be rejected");
+        assert!(error.to_string().contains("OriginalWindowUnavailable"));
+        assert_eq!(platform.clipboard_text(), "clipboard sentinel");
+        assert_eq!(platform.writes(), 0);
+        assert_eq!(platform.paste_calls(), 0);
+
+        let outcome = service
+            .execute(QuickInsertSource::Favorite, 1, QuickInsertAction::Copy)
+            .expect("copy must clear stale insertion session");
+        assert_eq!(outcome, QuickInsertOutcome::Copied);
+        assert_eq!(platform.clipboard_text(), "elevated target payload");
+        assert_eq!(platform.writes(), 1);
         clipboard.shutdown();
     }
 }
