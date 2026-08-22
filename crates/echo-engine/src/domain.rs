@@ -204,12 +204,6 @@ pub trait ClipboardPlatform: Send + Sync {
         representations: &[ClipboardRepresentation],
     ) -> Result<u64, PlatformError>;
     fn capture_target(&self) -> Result<Option<PasteTarget>, PlatformError>;
-    fn validate_paste_target(
-        &self,
-        _target: &PasteTarget,
-    ) -> std::result::Result<(), PasteDeliveryFailure> {
-        Ok(())
-    }
     fn paste_to_target(&self, target: &PasteTarget) -> Result<PasteDelivery, PlatformError>;
     fn reset_paste_window_session(&self) {}
 }

@@ -68,6 +68,7 @@ mod windows_impl {
         clipboard_window: Arc<AtomicIsize>,
         clipboard_worker: Mutex<Option<JoinHandle<()>>>,
         source: Arc<Mutex<SourceContext>>,
+        captured_paste_target: Mutex<Option<PasteTarget>>,
     }
 
     impl WindowsPlatform {
@@ -95,7 +96,26 @@ mod windows_impl {
                 clipboard_window: window,
                 clipboard_worker: Mutex::new(worker),
                 source,
+                captured_paste_target: Mutex::new(None),
             }
+        }
+
+        fn validate_captured_target_before_clipboard(&self) -> Result<(), PlatformError> {
+            let target = self
+                .captured_paste_target
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone();
+            let Some(target) = target else {
+                return Ok(());
+            };
+            validate_target_identity(&target).map_err(target_delivery_error)?;
+            let foreground = unsafe { GetForegroundWindow() };
+            let target_window = HWND(target.window_id as *mut c_void);
+            if foreground != target_window {
+                return Ok(());
+            }
+            validate_target_integrity(target.process_id).map_err(target_delivery_error)
         }
     }
 
@@ -248,6 +268,7 @@ mod windows_impl {
             &self,
             representations: &[ClipboardRepresentation],
         ) -> Result<u64, PlatformError> {
+            self.validate_captured_target_before_clipboard()?;
             let _clipboard = ClipboardGuard::open()?;
             unsafe { EmptyClipboard() }.map_err(platform_error)?;
             for representation in representations {
@@ -277,30 +298,27 @@ mod windows_impl {
         }
 
         fn capture_target(&self) -> Result<Option<PasteTarget>, PlatformError> {
-            capture_native_target()
+            let target = capture_native_target();
+            *self
+                .captured_paste_target
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) =
+                target.as_ref().ok().cloned().flatten();
+            target
         }
 
-        fn validate_paste_target(&self, target: &PasteTarget) -> Result<(), PasteDeliveryFailure> {
-            validate_target_integrity(target.process_id)
+        fn reset_paste_window_session(&self) {
+            *self
+                .captured_paste_target
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = None;
         }
 
         fn paste_to_target(&self, target: &PasteTarget) -> Result<PasteDelivery, PlatformError> {
-            let hwnd = HWND(target.window_id as *mut c_void);
-            if hwnd.0.is_null() || !unsafe { IsWindow(Some(hwnd)) }.as_bool() {
-                return Ok(PasteDelivery::Failed(
-                    PasteDeliveryFailure::OriginalWindowUnavailable,
-                ));
-            }
-            let mut process_id = 0;
-            unsafe { GetWindowThreadProcessId(hwnd, Some(&mut process_id)) };
-            if process_id != target.process_id
-                || process_started_at(process_id).unwrap_or_default() != target.process_started_at
-                || window_class_name(hwnd).as_deref() != Some(target.window_class.as_str())
-            {
-                return Ok(PasteDelivery::Failed(
-                    PasteDeliveryFailure::OriginalWindowUnavailable,
-                ));
-            }
+            let hwnd = match validate_target_identity(target) {
+                Ok(hwnd) => hwnd,
+                Err(reason) => return Ok(PasteDelivery::Failed(reason)),
+            };
             if let Err(reason) = validate_target_integrity(target.process_id) {
                 return Ok(PasteDelivery::Failed(reason));
             }
@@ -926,6 +944,28 @@ mod windows_impl {
             let _ = CloseHandle(process);
         }
         result
+    }
+
+    fn validate_target_identity(target: &PasteTarget) -> Result<HWND, PasteDeliveryFailure> {
+        let hwnd = HWND(target.window_id as *mut c_void);
+        if hwnd.0.is_null() || !unsafe { IsWindow(Some(hwnd)) }.as_bool() {
+            return Err(PasteDeliveryFailure::OriginalWindowUnavailable);
+        }
+        let mut process_id = 0;
+        unsafe { GetWindowThreadProcessId(hwnd, Some(&mut process_id)) };
+        if process_id != target.process_id
+            || process_started_at(process_id).unwrap_or_default() != target.process_started_at
+            || window_class_name(hwnd).as_deref() != Some(target.window_class.as_str())
+        {
+            return Err(PasteDeliveryFailure::OriginalWindowUnavailable);
+        }
+        Ok(hwnd)
+    }
+
+    fn target_delivery_error(reason: PasteDeliveryFailure) -> PlatformError {
+        PlatformError(format!(
+            "paste target was rejected before clipboard staging: {reason:?}"
+        ))
     }
 
     fn validate_target_integrity(process_id: u32) -> Result<(), PasteDeliveryFailure> {

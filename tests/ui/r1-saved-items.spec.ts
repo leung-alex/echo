@@ -2,6 +2,8 @@ import { expect, test } from "@playwright/test";
 
 import { installEchoFixture } from "./echo-fixture";
 
+const uiFixtureUrl = "http://127.0.0.1:5187/";
+
 test("keeps Favorites order across native pointer, search, reload, restart, and actions", async ({
   browser,
   context,
@@ -180,7 +182,8 @@ test("keeps Favorites order across native pointer, search, reload, restart, and 
   const restartedPage = await restartedContext.newPage();
   try {
     await installEchoFixture(restartedPage);
-    await restartedPage.goto("/");
+    await restartedPage.goto(uiFixtureUrl);
+    await expect(restartedPage).toHaveURL(uiFixtureUrl);
     await restartedPage.getByRole("tab", { name: "Favorites" }).click();
     await expect(restartedPage.getByRole("row").first()).toContainText(
       "Alpha clipboard",

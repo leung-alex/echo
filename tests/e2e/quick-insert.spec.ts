@@ -153,11 +153,16 @@ test.describe("Echo Quick Insert acceptance", () => {
       await expect(
         surface.getByRole("row", { name: new RegExp(content) }),
       ).toBeVisible();
+      const staleClipboardSentinel = `Echo stale target sentinel ${Date.now()}`;
+      await runClipboardFixture("copy-text", staleClipboardSentinel);
       await deadTarget.stop();
       await surface.getByRole("row", { name: new RegExp(content) }).click();
       await expect(surface.getByRole("alert")).toContainText(
         "OriginalWindowUnavailable",
       );
+      await expect
+        .poll(() => runClipboardFixture("read-text"))
+        .toBe(staleClipboardSentinel);
     } finally {
       await deadTarget?.stop().catch(() => undefined);
       await target.stop().catch(() => undefined);

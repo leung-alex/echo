@@ -182,9 +182,6 @@ impl<S: LibraryStore> QuickInsertService<S> {
                     .unwrap_or_else(|error| error.into_inner())
                     .clone()
                     .ok_or(QuickInsertError::NoTarget)?;
-                self.platform
-                    .validate_paste_target(&target)
-                    .map_err(QuickInsertError::DeliveryFailed)?;
                 self.clipboard.copy_representations(&payload)?;
                 match self
                     .platform
@@ -386,19 +383,13 @@ mod tests {
             &self,
             _representations: &[ClipboardRepresentation],
         ) -> std::result::Result<u64, PlatformError> {
-            self.writes.fetch_add(1, Ordering::AcqRel);
-            Ok(2)
+            Err(PlatformError(
+                "paste target was rejected before clipboard staging: ElevatedTarget".to_owned(),
+            ))
         }
 
         fn capture_target(&self) -> std::result::Result<Option<PasteTarget>, PlatformError> {
             Ok(Some(test_target()))
-        }
-
-        fn validate_paste_target(
-            &self,
-            _target: &PasteTarget,
-        ) -> std::result::Result<(), PasteDeliveryFailure> {
-            Err(PasteDeliveryFailure::ElevatedTarget)
         }
 
         fn paste_to_target(
@@ -607,12 +598,8 @@ mod tests {
 
         assert!(service.begin_session().expect("target capture"));
         let result = service.execute(QuickInsertSource::Favorite, 1, QuickInsertAction::Insert);
-        match result {
-            Err(QuickInsertError::DeliveryFailed(reason)) => {
-                assert_eq!(reason, PasteDeliveryFailure::ElevatedTarget)
-            }
-            other => panic!("unexpected insertion result: {other:?}"),
-        }
+        let error = result.expect_err("elevated target must be rejected");
+        assert!(error.to_string().contains("ElevatedTarget"));
         assert_eq!(platform.writes(), 0);
         clipboard.shutdown();
     }
