@@ -19,6 +19,10 @@ mod windows_impl {
     };
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::{CloseHandle, HANDLE, HGLOBAL, HWND, LPARAM, RECT, WPARAM};
+    use windows::Win32::Security::{
+        GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, TokenIntegrityLevel,
+        TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
+    };
     use windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
         COINIT_APARTMENTTHREADED,
@@ -36,8 +40,8 @@ mod windows_impl {
         SafeArrayUnaccessData,
     };
     use windows::Win32::System::Threading::{
-        GetProcessTimes, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
-        PROCESS_QUERY_LIMITED_INFORMATION,
+        GetCurrentProcess, GetProcessTimes, OpenProcess, OpenProcessToken,
+        QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
     };
     use windows::Win32::UI::Accessibility::{
         CUIAutomation, IUIAutomation, IUIAutomationElement, UIA_ComboBoxControlTypeId,
@@ -276,6 +280,10 @@ mod windows_impl {
             capture_native_target()
         }
 
+        fn validate_paste_target(&self, target: &PasteTarget) -> Result<(), PasteDeliveryFailure> {
+            validate_target_integrity(target.process_id)
+        }
+
         fn paste_to_target(&self, target: &PasteTarget) -> Result<PasteDelivery, PlatformError> {
             let hwnd = HWND(target.window_id as *mut c_void);
             if hwnd.0.is_null() || !unsafe { IsWindow(Some(hwnd)) }.as_bool() {
@@ -292,6 +300,9 @@ mod windows_impl {
                 return Ok(PasteDelivery::Failed(
                     PasteDeliveryFailure::OriginalWindowUnavailable,
                 ));
+            }
+            if let Err(reason) = validate_target_integrity(target.process_id) {
+                return Ok(PasteDelivery::Failed(reason));
             }
             if unsafe { GetForegroundWindow() } != hwnd {
                 let _ = unsafe { SetForegroundWindow(hwnd) };
@@ -917,6 +928,77 @@ mod windows_impl {
         result
     }
 
+    fn validate_target_integrity(process_id: u32) -> Result<(), PasteDeliveryFailure> {
+        validate_integrity_levels(
+            current_process_integrity_level(),
+            process_integrity_level(process_id),
+        )
+    }
+
+    fn validate_integrity_levels(
+        current: Option<u32>,
+        target: Option<u32>,
+    ) -> Result<(), PasteDeliveryFailure> {
+        match (current, target) {
+            (Some(current), Some(target)) if target <= current => Ok(()),
+            _ => Err(PasteDeliveryFailure::ElevatedTarget),
+        }
+    }
+
+    fn current_process_integrity_level() -> Option<u32> {
+        token_integrity_level(unsafe { GetCurrentProcess() })
+    }
+
+    fn process_integrity_level(process_id: u32) -> Option<u32> {
+        let process =
+            unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id) }.ok()?;
+        let result = token_integrity_level(process);
+        unsafe {
+            let _ = CloseHandle(process);
+        }
+        result
+    }
+
+    fn token_integrity_level(process: HANDLE) -> Option<u32> {
+        let mut token = HANDLE::default();
+        unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token).ok()? };
+        let result = query_token_integrity_level(token);
+        unsafe {
+            let _ = CloseHandle(token);
+        }
+        result
+    }
+
+    fn query_token_integrity_level(token: HANDLE) -> Option<u32> {
+        let mut required = 0_u32;
+        let _ = unsafe { GetTokenInformation(token, TokenIntegrityLevel, None, 0, &mut required) };
+        if required < size_of::<TOKEN_MANDATORY_LABEL>() as u32 {
+            return None;
+        }
+        let word_count = (required as usize + size_of::<usize>() - 1) / size_of::<usize>();
+        let mut buffer = vec![0_usize; word_count];
+        unsafe {
+            GetTokenInformation(
+                token,
+                TokenIntegrityLevel,
+                Some(buffer.as_mut_ptr().cast()),
+                required,
+                &mut required,
+            )
+            .ok()?;
+        }
+        let label = unsafe { &*buffer.as_ptr().cast::<TOKEN_MANDATORY_LABEL>() };
+        let sid = label.Label.Sid;
+        if sid.0.is_null() {
+            return None;
+        }
+        let count = unsafe { GetSidSubAuthorityCount(sid).as_ref() }.copied()? as u32;
+        if count == 0 {
+            return None;
+        }
+        unsafe { GetSidSubAuthority(sid, count - 1).as_ref() }.copied()
+    }
+
     fn window_class_name(window: HWND) -> Option<String> {
         let mut buffer = [0_u16; 256];
         let length = unsafe { GetClassNameW(window, &mut buffer) };
@@ -1039,6 +1121,39 @@ mod windows_impl {
 
     fn wide(value: &str) -> Vec<u16> {
         value.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn higher_integrity_target_is_rejected_before_delivery() {
+            assert_eq!(
+                validate_integrity_levels(Some(0x2000), Some(0x3000)),
+                Err(PasteDeliveryFailure::ElevatedTarget)
+            );
+            assert_eq!(
+                validate_integrity_levels(Some(0x3000), Some(0x2000)),
+                Ok(())
+            );
+            assert_eq!(
+                validate_integrity_levels(Some(0x3000), Some(0x3000)),
+                Ok(())
+            );
+        }
+
+        #[test]
+        fn inability_to_prove_integrity_fails_closed() {
+            assert_eq!(
+                validate_integrity_levels(None, Some(0x3000)),
+                Err(PasteDeliveryFailure::ElevatedTarget)
+            );
+            assert_eq!(
+                validate_integrity_levels(Some(0x3000), None),
+                Err(PasteDeliveryFailure::ElevatedTarget)
+            );
+        }
     }
 }
 

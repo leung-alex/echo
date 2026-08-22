@@ -20,7 +20,7 @@ pub enum QuickInsertError {
     NoTarget,
     #[error("paste target was no longer valid")]
     InvalidTarget,
-    #[error("paste was staged in the clipboard but could not be delivered: {0:?}")]
+    #[error("paste target was rejected for safe delivery: {0:?}")]
     DeliveryFailed(PasteDeliveryFailure),
 }
 
@@ -182,6 +182,9 @@ impl<S: LibraryStore> QuickInsertService<S> {
                     .unwrap_or_else(|error| error.into_inner())
                     .clone()
                     .ok_or(QuickInsertError::NoTarget)?;
+                self.platform
+                    .validate_paste_target(&target)
+                    .map_err(QuickInsertError::DeliveryFailed)?;
                 self.clipboard.copy_representations(&payload)?;
                 match self
                     .platform
@@ -335,5 +338,282 @@ fn to_item(item: LibraryItem) -> QuickInsertItem {
         icon_key: item.icon_key,
         favorite_order: item.favorite_order,
         thumbnail: item.thumbnail,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::convert::Infallible;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+    use crate::{
+        CapturePolicy, CaptureSettings, ClipboardPlatform, ClipboardRepresentation,
+        ClipboardService, ClipboardSettings, ClipboardSink, ClipboardSnapshot, HistoryEntry,
+        InputTargetGeometry, NormalizedCapture, PhysicalRect, PlatformChangePublisher,
+        PlatformChangeSubscription, PlatformError, RecordResult, ThemeMode,
+    };
+
+    #[derive(Default)]
+    struct RejectingPlatform {
+        changes: PlatformChangePublisher,
+        writes: AtomicUsize,
+    }
+
+    impl RejectingPlatform {
+        fn writes(&self) -> usize {
+            self.writes.load(Ordering::Acquire)
+        }
+    }
+
+    impl ClipboardPlatform for RejectingPlatform {
+        fn subscribe_changes(&self) -> PlatformChangeSubscription {
+            self.changes.subscribe()
+        }
+
+        fn clipboard_sequence(&self) -> u64 {
+            1
+        }
+
+        fn read_clipboard(
+            &self,
+            _policy: &CapturePolicy,
+        ) -> std::result::Result<Option<ClipboardSnapshot>, PlatformError> {
+            Ok(None)
+        }
+
+        fn write_clipboard(
+            &self,
+            _representations: &[ClipboardRepresentation],
+        ) -> std::result::Result<u64, PlatformError> {
+            self.writes.fetch_add(1, Ordering::AcqRel);
+            Ok(2)
+        }
+
+        fn capture_target(&self) -> std::result::Result<Option<PasteTarget>, PlatformError> {
+            Ok(Some(test_target()))
+        }
+
+        fn validate_paste_target(
+            &self,
+            _target: &PasteTarget,
+        ) -> std::result::Result<(), PasteDeliveryFailure> {
+            Err(PasteDeliveryFailure::ElevatedTarget)
+        }
+
+        fn paste_to_target(
+            &self,
+            _target: &PasteTarget,
+        ) -> std::result::Result<PasteDelivery, PlatformError> {
+            panic!("paste must not be reached after target rejection")
+        }
+    }
+
+    struct TestSink;
+
+    impl ClipboardSink for TestSink {
+        fn settings(&self) -> std::result::Result<CaptureSettings, String> {
+            Ok(CaptureSettings::default())
+        }
+
+        fn record(&self, _capture: NormalizedCapture) -> std::result::Result<RecordResult, String> {
+            Ok(RecordResult {
+                id: 1,
+                duplicate: false,
+            })
+        }
+    }
+
+    struct TestStore;
+
+    fn unused<T>() -> std::result::Result<T, Infallible> {
+        panic!("unused test store operation")
+    }
+
+    impl LibraryStore for TestStore {
+        type Error = Infallible;
+
+        fn list_entries(
+            &self,
+            _query: &str,
+            _limit: u32,
+            _cursor: Option<PageCursor>,
+        ) -> std::result::Result<LibraryPage<HistoryEntry>, Self::Error> {
+            unused()
+        }
+
+        fn entry(&self, _id: i64) -> std::result::Result<Option<HistoryEntry>, Self::Error> {
+            unused()
+        }
+
+        fn entry_payload(
+            &self,
+            _id: i64,
+        ) -> std::result::Result<Vec<ClipboardRepresentation>, Self::Error> {
+            unused()
+        }
+
+        fn move_history_to_favorite(
+            &self,
+            _history_id: i64,
+        ) -> std::result::Result<SavedItem, Self::Error> {
+            unused()
+        }
+
+        fn move_history_many_to_favorites(
+            &self,
+            _history_ids: &[i64],
+        ) -> std::result::Result<Vec<SavedItem>, Self::Error> {
+            unused()
+        }
+
+        fn create_favorite(
+            &self,
+            _draft: FavoriteDraft,
+        ) -> std::result::Result<SavedItem, Self::Error> {
+            unused()
+        }
+
+        fn update_favorite(
+            &self,
+            _id: i64,
+            _update: FavoriteUpdate,
+        ) -> std::result::Result<SavedItem, Self::Error> {
+            unused()
+        }
+
+        fn pin_history(&self, _history_id: i64) -> std::result::Result<bool, Self::Error> {
+            unused()
+        }
+
+        fn unpin_history(&self, _history_id: i64) -> std::result::Result<bool, Self::Error> {
+            unused()
+        }
+
+        fn pin_history_many(
+            &self,
+            _history_ids: &[i64],
+        ) -> std::result::Result<usize, Self::Error> {
+            unused()
+        }
+
+        fn delete_history_many(
+            &self,
+            _history_ids: &[i64],
+        ) -> std::result::Result<usize, Self::Error> {
+            unused()
+        }
+
+        fn delete_entry(&self, _id: i64) -> std::result::Result<bool, Self::Error> {
+            unused()
+        }
+
+        fn clear_unpinned_history(&self) -> std::result::Result<usize, Self::Error> {
+            unused()
+        }
+
+        fn reorder_favorites(&self, _ordered_ids: &[i64]) -> std::result::Result<(), Self::Error> {
+            unused()
+        }
+
+        fn delete_favorite(&self, _id: i64) -> std::result::Result<bool, Self::Error> {
+            unused()
+        }
+
+        fn settings(&self) -> std::result::Result<ClipboardSettings, Self::Error> {
+            Ok(ClipboardSettings {
+                history_enabled: true,
+                record_sensitive: false,
+                store_window_titles: false,
+                max_entries: 100,
+                max_total_bytes: 1024,
+                max_item_bytes: 1024,
+                theme: ThemeMode::System,
+            })
+        }
+
+        fn update_settings(
+            &self,
+            _settings: &ClipboardSettings,
+        ) -> std::result::Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn list_saved_items(
+            &self,
+            _query: &str,
+            _limit: u32,
+            _cursor: Option<PageCursor>,
+        ) -> std::result::Result<LibraryPage<SavedItem>, Self::Error> {
+            unused()
+        }
+
+        fn saved_item_payload(
+            &self,
+            _id: i64,
+        ) -> std::result::Result<Vec<ClipboardRepresentation>, Self::Error> {
+            Ok(vec![ClipboardRepresentation {
+                format: "text".to_owned(),
+                mime_type: "text/plain".to_owned(),
+                bytes: b"elevated target payload".to_vec(),
+            }])
+        }
+
+        fn delete_saved_items(&self, _ids: &[i64]) -> std::result::Result<usize, Self::Error> {
+            unused()
+        }
+    }
+
+    fn test_target() -> PasteTarget {
+        PasteTarget {
+            window_id: 1,
+            window_class: "Edit".to_owned(),
+            process_id: 42,
+            process_started_at: 1,
+            focused_control: None,
+            app_name: None,
+            selected_text: None,
+            is_single_line: Some(true),
+            geometry: InputTargetGeometry {
+                target: PhysicalRect {
+                    x: 0,
+                    y: 0,
+                    width: 1,
+                    height: 1,
+                },
+                work_area: PhysicalRect {
+                    x: 0,
+                    y: 0,
+                    width: 1,
+                    height: 1,
+                },
+                dpi: 96,
+            },
+        }
+    }
+
+    #[test]
+    fn elevated_target_is_rejected_before_clipboard_staging() {
+        let platform = Arc::new(RejectingPlatform::default());
+        let clipboard = Arc::new(ClipboardService::new(
+            Arc::clone(&platform) as Arc<dyn ClipboardPlatform>,
+            Arc::new(TestSink),
+        ));
+        let service = QuickInsertService::new(
+            Library::new(Arc::new(TestStore)),
+            Arc::clone(&clipboard),
+            Arc::clone(&platform) as Arc<dyn ClipboardPlatform>,
+        );
+
+        assert!(service.begin_session().expect("target capture"));
+        let result = service.execute(QuickInsertSource::Favorite, 1, QuickInsertAction::Insert);
+        match result {
+            Err(QuickInsertError::DeliveryFailed(reason)) => {
+                assert_eq!(reason, PasteDeliveryFailure::ElevatedTarget)
+            }
+            other => panic!("unexpected insertion result: {other:?}"),
+        }
+        assert_eq!(platform.writes(), 0);
+        clipboard.shutdown();
     }
 }

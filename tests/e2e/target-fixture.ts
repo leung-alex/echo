@@ -11,6 +11,24 @@ type TargetReady = {
   title: string;
 };
 
+type TargetPaths = {
+  ready: string;
+  command: string;
+  response: string;
+  primary: string;
+  secondary: string;
+  password: string;
+  readonly: string;
+  unknown: string;
+};
+
+type TargetLauncher = (
+  executable: string,
+  runId: string,
+  title: string,
+  paths: TargetPaths,
+) => ChildProcessWithoutNullStreams;
+
 export class EchoTargetFixture {
   private nextRequest = 0;
   private output = "";
@@ -25,6 +43,98 @@ export class EchoTargetFixture {
   }
 
   static async start(): Promise<EchoTargetFixture> {
+    return this.startWithLauncher((executable, runId, title, paths) =>
+      spawn(
+        executable,
+        [
+          "target",
+          "--run-id",
+          runId,
+          "--title",
+          title,
+          "--ready",
+          paths.ready,
+          "--command",
+          paths.command,
+          "--response",
+          paths.response,
+          "--primary",
+          paths.primary,
+          "--secondary",
+          paths.secondary,
+          "--password",
+          paths.password,
+          "--readonly",
+          paths.readonly,
+          "--unknown",
+          paths.unknown,
+        ],
+        {
+          cwd: process.cwd(),
+          windowsHide: true,
+          env: targetEnvironment(runId, title, paths),
+        },
+      ),
+    );
+  }
+
+  /**
+   * RunAs is deliberately a human-approved acceptance handoff. The helper is
+   * reachable only from the authorized native gate and the explicit elevated
+   * opt-in; it never supplies credentials or attempts to answer UAC.
+   */
+  static async startElevated(): Promise<EchoTargetFixture> {
+    if (
+      process.platform !== "win32" ||
+      process.env.ECHO_WINDOWS_ACCEPTANCE !== "1"
+    ) {
+      throw new Error(
+        "elevated target acceptance requires ECHO_WINDOWS_ACCEPTANCE=1",
+      );
+    }
+    if (process.env.ECHO_ACCEPTANCE_ELEVATED !== "1") {
+      throw new Error(
+        "set ECHO_ACCEPTANCE_ELEVATED=1 to opt into the human UAC handoff",
+      );
+    }
+    return this.startWithLauncher((executable, runId, title, paths) =>
+      spawn(
+        executable,
+        [
+          "target-elevated",
+          "--run-id",
+          runId,
+          "--title",
+          title,
+          "--ready",
+          paths.ready,
+          "--command",
+          paths.command,
+          "--response",
+          paths.response,
+          "--primary",
+          paths.primary,
+          "--secondary",
+          paths.secondary,
+          "--password",
+          paths.password,
+          "--readonly",
+          paths.readonly,
+          "--unknown",
+          paths.unknown,
+        ],
+        {
+          cwd: process.cwd(),
+          windowsHide: true,
+          env: targetEnvironment(runId, title, paths),
+        },
+      ),
+    );
+  }
+
+  private static async startWithLauncher(
+    launch: TargetLauncher,
+  ): Promise<EchoTargetFixture> {
     const acceptanceRoot = process.env.ECHO_ACCEPTANCE_RUN_ROOT;
     if (!acceptanceRoot) {
       throw new Error(
@@ -34,7 +144,7 @@ export class EchoTargetFixture {
     const runId = randomUUID();
     const root = resolve(acceptanceRoot, "echo-target-fixture", runId);
     await mkdir(root, { recursive: true });
-    const paths = {
+    const paths: TargetPaths = {
       ready: resolve(root, "ready.json"),
       command: resolve(root, "command.json"),
       response: resolve(root, "response.json"),
@@ -52,47 +162,7 @@ export class EchoTargetFixture {
     if (!isAbsolute(executable)) {
       throw new Error("ECHO_ACCEPTANCE_FIXTURE_EXE must be absolute");
     }
-    const child = spawn(
-      executable,
-      [
-        "target",
-        "--run-id",
-        runId,
-        "--title",
-        title,
-        "--ready",
-        paths.ready,
-        "--command",
-        paths.command,
-        "--response",
-        paths.response,
-        "--primary",
-        paths.primary,
-        "--secondary",
-        paths.secondary,
-        "--password",
-        paths.password,
-        "--readonly",
-        paths.readonly,
-        "--unknown",
-        paths.unknown,
-      ],
-      {
-        cwd: process.cwd(),
-        windowsHide: true,
-        env: {
-          ...process.env,
-          ECHO_TARGET_RUN_ID: runId,
-          ECHO_TARGET_TITLE: title,
-          ECHO_TARGET_READY: paths.ready,
-          ECHO_TARGET_COMMAND: paths.command,
-          ECHO_TARGET_RESPONSE: paths.response,
-          ECHO_TARGET_PRIMARY_OUTPUT: paths.primary,
-          ECHO_TARGET_SECONDARY_OUTPUT: paths.secondary,
-          ECHO_TARGET_PASSWORD_OUTPUT: paths.password,
-        },
-      },
-    );
+    const child = launch(executable, runId, title, paths);
     const fixture = new EchoTargetFixture(child, runId, root);
     try {
       const ready = JSON.parse(
@@ -209,4 +279,22 @@ export class EchoTargetFixture {
     }
     throw new Error(`Echo target fixture timed out waiting for ${path}`);
   }
+}
+
+function targetEnvironment(
+  runId: string,
+  title: string,
+  paths: TargetPaths,
+): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    ECHO_TARGET_RUN_ID: runId,
+    ECHO_TARGET_TITLE: title,
+    ECHO_TARGET_READY: paths.ready,
+    ECHO_TARGET_COMMAND: paths.command,
+    ECHO_TARGET_RESPONSE: paths.response,
+    ECHO_TARGET_PRIMARY_OUTPUT: paths.primary,
+    ECHO_TARGET_SECONDARY_OUTPUT: paths.secondary,
+    ECHO_TARGET_PASSWORD_OUTPUT: paths.password,
+  };
 }

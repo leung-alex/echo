@@ -44,7 +44,7 @@ var (
 
 func main() {
 	if len(os.Args) < 2 {
-		fatalf("usage: echo-native-fixture <clipboard|target> ...")
+		fatalf("usage: echo-native-fixture <clipboard|target|target-elevated> ...")
 	}
 	var err error
 	switch os.Args[1] {
@@ -52,6 +52,8 @@ func main() {
 		err = runClipboard(os.Args[2:])
 	case "target":
 		err = runTarget(os.Args[2:])
+	case "target-elevated":
+		err = runTargetElevated(os.Args[2:])
 	default:
 		err = fmt.Errorf("unknown fixture mode %q", os.Args[1])
 	}

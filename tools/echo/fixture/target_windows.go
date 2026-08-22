@@ -87,7 +87,36 @@ var (
 	procSetCursorPos        = targetUser32.NewProc("SetCursorPos")
 	procGetWindowRect       = targetUser32.NewProc("GetWindowRect")
 	procMouseEvent          = targetUser32.NewProc("mouse_event")
+	procShellExecuteEx      = syscall.NewLazyDLL("shell32.dll").NewProc("ShellExecuteExW")
+	procWaitForSingleObject = targetKernel32.NewProc("WaitForSingleObject")
+	procGetExitCodeProcess  = targetKernel32.NewProc("GetExitCodeProcess")
+	procCloseHandle         = targetKernel32.NewProc("CloseHandle")
 )
+
+const (
+	seeMaskNoCloseProcess = 0x00000040
+	waitObject0           = 0x00000000
+	waitFailed            = 0xffffffff
+	infiniteWait          = 0xffffffff
+)
+
+type shellExecuteInfo struct {
+	cbSize       uint32
+	fMask        uint32
+	hwnd         uintptr
+	lpVerb       *uint16
+	lpFile       *uint16
+	lpParameters *uint16
+	lpDirectory  *uint16
+	nShow        int32
+	hInstApp     uintptr
+	lpIDList     uintptr
+	lpClass      *uint16
+	hkeyClass    uintptr
+	dwHotKey     uint32
+	hIcon        uintptr
+	hProcess     uintptr
+}
 
 type targetFlags struct {
 	runID           string
@@ -185,12 +214,112 @@ func runTarget(args []string) error {
 	return state.run()
 }
 
+// runTargetElevated is an acceptance-only handoff. ShellExecuteExW presents
+// the normal user UAC prompt; this fixture never supplies or inspects
+// credentials. The elevated target then remains alive until the normal target
+// command protocol asks it to shut down.
+func runTargetElevated(args []string) error {
+	if os.Getenv("ECHO_WINDOWS_ACCEPTANCE") != "1" || os.Getenv("ECHO_ACCEPTANCE_ELEVATED") != "1" {
+		return fmt.Errorf("target-elevated requires the explicit Windows acceptance and elevated opt-ins")
+	}
+	flags, err := parseTargetFlags(args)
+	if err != nil {
+		return err
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve native fixture executable: %w", err)
+	}
+	verb := mustUTF16("runas")
+	file := mustUTF16(executable)
+	parameters := mustUTF16(windowsCommandLine(append([]string{"target"}, targetArguments(flags)...)))
+	info := shellExecuteInfo{
+		cbSize:       uint32(unsafe.Sizeof(shellExecuteInfo{})),
+		fMask:        seeMaskNoCloseProcess,
+		lpVerb:       verb,
+		lpFile:       file,
+		lpParameters: parameters,
+		nShow:        swShow,
+	}
+	if result, _, callErr := procShellExecuteEx.Call(uintptr(unsafe.Pointer(&info))); result == 0 {
+		return fmt.Errorf("ShellExecuteExW runas failed: %w", callErr)
+	}
+	if info.hProcess == 0 {
+		return fmt.Errorf("ShellExecuteExW runas returned no process handle")
+	}
+	defer procCloseHandle.Call(info.hProcess)
+	if result, _, callErr := procWaitForSingleObject.Call(info.hProcess, infiniteWait); result == waitFailed {
+		return fmt.Errorf("WaitForSingleObject elevated target failed: %w", callErr)
+	} else if result != waitObject0 {
+		return fmt.Errorf("WaitForSingleObject elevated target returned %d", result)
+	}
+	var exitCode uint32
+	if result, _, callErr := procGetExitCodeProcess.Call(info.hProcess, uintptr(unsafe.Pointer(&exitCode))); result == 0 {
+		return fmt.Errorf("GetExitCodeProcess elevated target failed: %w", callErr)
+	}
+	if exitCode != 0 {
+		return fmt.Errorf("elevated target exited with code %d", exitCode)
+	}
+	return nil
+}
+
+func targetArguments(flags targetFlags) []string {
+	return []string{
+		"--run-id", flags.runID,
+		"--title", flags.title,
+		"--ready", flags.readyPath,
+		"--command", flags.commandPath,
+		"--response", flags.responsePath,
+		"--primary", flags.primaryOutput,
+		"--secondary", flags.secondaryOutput,
+		"--password", flags.passwordOutput,
+		"--readonly", flags.readonlyOutput,
+		"--unknown", flags.unknownOutput,
+	}
+}
+
+func windowsCommandLine(args []string) string {
+	parts := make([]string, len(args))
+	for index, arg := range args {
+		parts[index] = quoteWindowsArgument(arg)
+	}
+	return strings.Join(parts, " ")
+}
+
+func quoteWindowsArgument(arg string) string {
+	if arg != "" && !strings.ContainsAny(arg, " \t\n\v\"") {
+		return arg
+	}
+	var result strings.Builder
+	result.WriteByte('"')
+	backslashes := 0
+	for _, character := range arg {
+		switch character {
+		case '\\':
+			backslashes++
+		case '"':
+			result.WriteString(strings.Repeat("\\", backslashes*2+1))
+			result.WriteByte('"')
+			backslashes = 0
+		default:
+			if backslashes > 0 {
+				result.WriteString(strings.Repeat("\\", backslashes))
+				backslashes = 0
+			}
+			result.WriteRune(character)
+		}
+	}
+	if backslashes > 0 {
+		result.WriteString(strings.Repeat("\\", backslashes*2))
+	}
+	result.WriteByte('"')
+	return result.String()
+}
+
 func parseTargetFlags(args []string) (targetFlags, error) {
-	// PowerShell's Start-Process -ArgumentList accepts an array but joins it
-	// without quoting values that contain spaces. Reassemble the title before
-	// handing the arguments to flag.FlagSet so an approved RunAs launch cannot
-	// terminate before readiness solely because the human-readable title was
-	// split into multiple tokens.
+	// Reassemble a title that a launcher may have split into multiple tokens
+	// before handing the arguments to flag.FlagSet. This keeps readiness
+	// independent of the launcher's command-line quoting behavior.
 	args = normalizeTargetArgs(args)
 	fs := flag.NewFlagSet("target", flag.ContinueOnError)
 	flags := targetFlags{}

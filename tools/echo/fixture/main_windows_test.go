@@ -63,7 +63,7 @@ func TestDropFilesPayloadUsesWideDoubleTerminatedPath(t *testing.T) {
 	}
 }
 
-func TestParseTargetFlagsAcceptsPowerShellArgumentListTitle(t *testing.T) {
+func TestParseTargetFlagsReassemblesSplitTitle(t *testing.T) {
 	root := t.TempDir()
 	pathFor := func(name string) string { return filepath.Join(root, name) }
 	args := []string{
@@ -85,6 +85,22 @@ func TestParseTargetFlagsAcceptsPowerShellArgumentListTitle(t *testing.T) {
 	}
 	if flags.title != "Echo target fixture run-1" {
 		t.Fatalf("title = %q", flags.title)
+	}
+}
+
+func TestWindowsCommandLineQuotesElevatedTargetValues(t *testing.T) {
+	line := windowsCommandLine([]string{
+		"target",
+		"--title",
+		"Echo target fixture run-1",
+		"--ready",
+		`C:\\Users\\Public\\Echo Acceptance\\ready.json`,
+	})
+	if !strings.Contains(line, `--title "Echo target fixture run-1"`) {
+		t.Fatalf("title was not quoted in command line: %q", line)
+	}
+	if !strings.Contains(line, `--ready "C:\\Users\\Public\\Echo Acceptance\\ready.json"`) {
+		t.Fatalf("path was not quoted in command line: %q", line)
 	}
 }
 

@@ -25,6 +25,17 @@ export async function installEchoFixture(page: Page): Promise<void> {
       } | null;
     };
 
+    const favoritesStorageKey = "echo-ui-fixture-favorites-v1";
+    const storedFavorites = (() => {
+      try {
+        const raw = window.localStorage.getItem(favoritesStorageKey);
+        const parsed: unknown = raw ? JSON.parse(raw) : null;
+        return Array.isArray(parsed) ? (parsed as MockItem[]) : [];
+      } catch {
+        return [];
+      }
+    })();
+
     const state = {
       history: [
         {
@@ -65,7 +76,7 @@ export async function installEchoFixture(page: Page): Promise<void> {
           },
         },
       ] satisfies MockItem[],
-      favorites: [] as MockItem[],
+      favorites: storedFavorites,
       activePanel: "history" as const,
       nextFavoriteId: 100,
       settings: {
@@ -101,6 +112,16 @@ export async function installEchoFixture(page: Page): Promise<void> {
         favorite_order: index,
       }));
     };
+    const persistFavorites = () => {
+      try {
+        window.localStorage.setItem(
+          favoritesStorageKey,
+          JSON.stringify(state.favorites),
+        );
+      } catch {
+        // The fixture remains usable in an opaque browser context.
+      }
+    };
     const findFavorite = (id: unknown) =>
       state.favorites.find((candidate) => candidate.id === id);
 
@@ -118,6 +139,7 @@ export async function installEchoFixture(page: Page): Promise<void> {
       state.history = state.history.filter((candidate) => candidate.id !== id);
       state.favorites.unshift(favorite);
       normalizeFavoriteOrder();
+      persistFavorites();
       emitLibraryChanged("history_and_favorites");
       return { ...favorite };
     };
@@ -200,6 +222,7 @@ export async function installEchoFixture(page: Page): Promise<void> {
             };
             state.favorites.unshift(favorite);
             normalizeFavoriteOrder();
+            persistFavorites();
             emitLibraryChanged("favorites");
             return { ...favorite };
           }
@@ -220,6 +243,7 @@ export async function installEchoFixture(page: Page): Promise<void> {
               item.editable_text = update.editable_text;
               item.preview_text = update.editable_text;
             }
+            persistFavorites();
             emitLibraryChanged("favorites");
             return { ...item };
           }
@@ -282,6 +306,7 @@ export async function installEchoFixture(page: Page): Promise<void> {
               ...state.favorites.filter((item) => !order.includes(item.id)),
             ];
             normalizeFavoriteOrder();
+            persistFavorites();
             emitLibraryChanged("favorites");
             return null;
           }
@@ -291,6 +316,7 @@ export async function installEchoFixture(page: Page): Promise<void> {
               (item) => item.id !== Number(args.id),
             );
             normalizeFavoriteOrder();
+            persistFavorites();
             emitLibraryChanged("favorites");
             return before !== state.favorites.length;
           }

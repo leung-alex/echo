@@ -164,6 +164,44 @@ test.describe("Echo Quick Insert acceptance", () => {
       await browser.close();
     }
   });
+
+  test("rejects an elevated target before clipboard staging", async () => {
+    test.skip(
+      process.env.ECHO_ACCEPTANCE_ELEVATED !== "1",
+      "requires the explicit human-approved RunAs acceptance handoff",
+    );
+    const browser = await connectToEcho();
+    const main = await waitForMainPage(browser);
+    const target = await EchoTargetFixture.startElevated();
+    const content = `Echo elevated target payload ${Date.now()}`;
+    const clipboardSentinel = `Echo elevated clipboard sentinel ${Date.now()}`;
+    try {
+      await runClipboardFixture("copy-text", content);
+      const itemId = await waitForHistoryId(main, content);
+      await runClipboardFixture("copy-text", clipboardSentinel);
+      await target.command("focus-primary");
+      await expect.poll(() => target.command("primary-focused")).toBe("true");
+      await target.allowEchoForeground();
+      await sendActivation("echo.quick_insert", { query: content });
+      const surface = await waitForMainPage(browser);
+      await surface.getByRole("row", { name: new RegExp(content) }).click();
+      await expect(surface.getByRole("alert")).toContainText("ElevatedTarget");
+      await expect.poll(() => target.command("read-primary")).toBe("ac");
+      await expect
+        .poll(() => runClipboardFixture("read-text"))
+        .toBe(clipboardSentinel);
+      await expect(
+        invoke(main, "quick_insert_execute", {
+          source: "history",
+          id: itemId,
+          action: "insert",
+        }),
+      ).rejects.toThrow("ElevatedTarget");
+    } finally {
+      await target.stop().catch(() => undefined);
+      await browser.close();
+    }
+  });
 });
 
 async function waitForHistoryId(
