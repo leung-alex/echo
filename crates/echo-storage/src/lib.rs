@@ -2833,6 +2833,7 @@ impl SharedRuntime {
                 return Ok(());
             }
             state.accepting = false;
+            self.admission_changed.notify_all();
             while state.active != 0 {
                 state = self
                     .admission_changed
@@ -3127,11 +3128,9 @@ impl SharedClipboardStore {
     }
 }
 
-impl Drop for SharedClipboardStore {
+impl Drop for SharedRuntime {
     fn drop(&mut self) {
-        if Arc::strong_count(&self.runtime) == 1 {
-            let _ = self.runtime.shutdown();
-        }
+        let _ = self.shutdown();
     }
 }
 
@@ -3774,26 +3773,80 @@ mod tests {
                 })
                 .unwrap()
         });
-        entered_receiver
-            .recv_timeout(std::time::Duration::from_secs(1))
-            .unwrap();
+        entered_receiver.recv().unwrap();
 
         let shutdown_store = store.clone();
+        let (shutdown_returned, shutdown_returned_receiver) = std::sync::mpsc::channel();
         let (shutdown_done, shutdown_done_receiver) = std::sync::mpsc::sync_channel(0);
         let shutdown_handle = std::thread::spawn(move || {
-            shutdown_done.send(shutdown_store.shutdown()).unwrap();
+            let result = shutdown_store.shutdown();
+            shutdown_returned.send(()).unwrap();
+            shutdown_done.send(result).unwrap();
         });
-        assert!(shutdown_done_receiver
-            .recv_timeout(std::time::Duration::from_millis(50))
-            .is_err());
+
+        let mut state = store
+            .runtime
+            .admission
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        while state.accepting {
+            state = store
+                .runtime
+                .admission_changed
+                .wait(state)
+                .unwrap_or_else(|error| error.into_inner());
+        }
+        assert_eq!(state.active, 1);
+        assert!(!state.shutdown_complete);
+        drop(state);
+        assert!(matches!(
+            shutdown_returned_receiver.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        assert!(matches!(
+            shutdown_done_receiver.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
 
         release.send(()).unwrap();
-        assert!(shutdown_done_receiver
-            .recv_timeout(std::time::Duration::from_secs(1))
-            .unwrap()
-            .is_ok());
+        shutdown_returned_receiver.recv().unwrap();
+        assert!(shutdown_done_receiver.recv().unwrap().is_ok());
         assert!(write_handle.join().unwrap() > 0);
         shutdown_handle.join().unwrap();
+    }
+
+    #[test]
+    fn concurrent_last_clone_drops_release_physical_database_handles() {
+        let test_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/test-tmp/echo-storage");
+        std::fs::create_dir_all(&test_root).unwrap();
+        let root = tempfile::tempdir_in(test_root).unwrap();
+        let data_dir = root.path().to_path_buf();
+        let store = SharedClipboardStore::open(&data_dir).unwrap();
+        ClipboardSink::record(&store, text_capture("concurrent drop regression", 1)).unwrap();
+        let left = store.clone();
+        let right = store.clone();
+        drop(store);
+
+        let start = std::sync::Arc::new(std::sync::Barrier::new(3));
+        std::thread::scope(|scope| {
+            let left_start = std::sync::Arc::clone(&start);
+            scope.spawn(move || {
+                left_start.wait();
+                drop(left);
+            });
+            let right_start = std::sync::Arc::clone(&start);
+            scope.spawn(move || {
+                right_start.wait();
+                drop(right);
+            });
+            start.wait();
+        });
+
+        let renamed = data_dir.with_extension("concurrent-drop-complete");
+        std::fs::rename(&data_dir, &renamed)
+            .expect("concurrent last-clone drops must release database handles");
+        std::fs::remove_dir_all(renamed).unwrap();
     }
 
     #[test]

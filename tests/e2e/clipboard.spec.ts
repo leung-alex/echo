@@ -144,8 +144,12 @@ test.describe("Echo Clipboard acceptance", () => {
         name: new RegExp(`^${escapedValue}(?:\\s|$)`),
       });
       await expect(originalEntry).toBeVisible();
-      await originalEntry.hover();
-      await originalEntry.getByRole("button", { name: "Favorite" }).click();
+      const favoriteButton = originalEntry.getByRole("button", {
+        name: "Favorite",
+      });
+      await favoriteButton.focus();
+      await expect(favoriteButton).toBeFocused();
+      await favoriteButton.press("Enter");
       await expect(main.getByText("Added to Favorites")).toBeVisible();
       await invoke(main, "history_clear");
       await main.getByRole("tab", { name: "Favorites" }).click();
