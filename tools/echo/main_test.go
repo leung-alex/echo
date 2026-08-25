@@ -152,6 +152,51 @@ func TestAcceptanceFailsClosedWithoutAuthorization(t *testing.T) {
 	}
 }
 
+func TestStorageLeakScannerRejectsEchoResidue(t *testing.T) {
+	root := t.TempDir()
+	entryRoot := filepath.Join(root, "echo-storage-run")
+	if err := os.MkdirAll(entryRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(entryRoot, "echo.sqlite3-wal"), []byte("residue"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	after := map[string]storageTempEntry{
+		entryRoot: {path: entryRoot, isDir: true},
+	}
+	err := scanStorageLeak(map[string]storageTempEntry{}, after, nil)
+	if err == nil || !strings.Contains(err.Error(), "echo.sqlite3-wal") {
+		t.Fatalf("Echo residue was not rejected: %v", err)
+	}
+}
+
+func TestStorageLeakScannerIgnoresGenericCodexTemp(t *testing.T) {
+	root := t.TempDir()
+	entryRoot := filepath.Join(root, ".tmpCodex123")
+	if err := os.MkdirAll(entryRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(entryRoot, "trace.txt"), []byte("generic"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	after := map[string]storageTempEntry{
+		entryRoot: {path: entryRoot, isDir: true},
+	}
+	if err := scanStorageLeak(map[string]storageTempEntry{}, after, nil); err != nil {
+		t.Fatalf("generic Codex TEMP residue was rejected: %v", err)
+	}
+}
+
+func TestStorageLeakScannerAcceptsCleanRepositoryRoot(t *testing.T) {
+	if err := scanStorageLeak(
+		map[string]storageTempEntry{},
+		map[string]storageTempEntry{},
+		nil,
+	); err != nil {
+		t.Fatalf("clean storage run was rejected: %v", err)
+	}
+}
+
 func TestGeneratedBindingsDriftCheckFailsClosed(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, filepath.FromSlash(generatedTransportPath))

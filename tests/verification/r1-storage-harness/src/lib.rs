@@ -1,24 +1,12 @@
 #[cfg(test)]
 mod tests {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
     use echo_engine::{
-        fingerprint, ClipboardRepresentation, ContentType, NormalizedCapture, SavedItemDraft,
-        SourceContext,
+        fingerprint, ClipboardRepresentation, ContentType, NormalizedCapture, SourceContext,
     };
     use echo_storage::ClipboardStore;
 
     #[test]
     fn saved_file_name_uses_the_file_name_not_the_source_path() {
-        let root = std::env::temp_dir().join(format!(
-            "echo-r1-verifier-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-
         let path = r"C:\Users\Verifier\report.txt";
         let representation = ClipboardRepresentation {
             format: "files".to_owned(),
@@ -36,15 +24,10 @@ mod tests {
             representations: vec![representation],
         };
 
-        let mut store = ClipboardStore::open(&root).unwrap();
+        let mut store = ClipboardStore::open_in_memory_for_tests("r1-storage-memory").unwrap();
         let history_id = store.record_capture(capture).unwrap().id;
-        let entry = store.entry(history_id).unwrap().unwrap().entry;
-        let payload = store.entry_payload(history_id).unwrap();
-        let saved = store
-            .save_history_item(SavedItemDraft::from_history(&entry), payload)
-            .unwrap();
+        let saved = store.move_history_to_favorite(history_id).unwrap();
 
         assert_eq!(saved.name, "report.txt");
-        let _ = std::fs::remove_dir_all(root);
     }
 }

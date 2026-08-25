@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { isAbsolute, relative, resolve } from "node:path";
 
 import {
   connectToEcho,
@@ -125,6 +126,16 @@ test.describe("Echo Clipboard acceptance", () => {
         })
         .toEqual({ html: 1, rtf: 1, image: 1, files: 1 });
       expect(filePath).toContain("echo-clipboard-");
+      const acceptanceRoot = process.env.ECHO_ACCEPTANCE_RUN_ROOT;
+      expect(acceptanceRoot).toBeTruthy();
+      const relativePath = relative(
+        resolve(acceptanceRoot!),
+        resolve(filePath),
+      );
+      expect(
+        relativePath === "" ||
+          (!relativePath.startsWith("..") && !isAbsolute(relativePath)),
+      ).toBe(true);
 
       const search = main.getByPlaceholder("Search clipboard history...");
       await search.fill(value);

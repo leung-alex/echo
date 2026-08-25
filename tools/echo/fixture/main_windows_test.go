@@ -5,6 +5,7 @@ package main
 import (
 	"encoding/binary"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -101,6 +102,33 @@ func TestWindowsCommandLineQuotesElevatedTargetValues(t *testing.T) {
 	}
 	if !strings.Contains(line, `--ready "C:\\Users\\Public\\Echo Acceptance\\ready.json"`) {
 		t.Fatalf("path was not quoted in command line: %q", line)
+	}
+}
+
+func TestCreateClipboardFixtureFileRequiresAcceptanceRoot(t *testing.T) {
+	t.Setenv("ECHO_ACCEPTANCE_RUN_ROOT", "")
+	if _, err := createClipboardFixtureFile("fixture"); err == nil || !strings.Contains(err.Error(), "ECHO_ACCEPTANCE_RUN_ROOT") {
+		t.Fatalf("missing acceptance root was not rejected: %v", err)
+	}
+}
+
+func TestCreateClipboardFixtureFileStaysInsideAcceptanceRoot(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("ECHO_ACCEPTANCE_RUN_ROOT", root)
+	path, err := createClipboardFixtureFile("fixture value")
+	if err != nil {
+		t.Fatalf("createClipboardFixtureFile: %v", err)
+	}
+	relative, err := filepath.Rel(root, path)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		t.Fatalf("fixture path escaped acceptance root: %q", path)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read fixture file: %v", err)
+	}
+	if string(contents) != "fixture value" {
+		t.Fatalf("fixture contents = %q", contents)
 	}
 }
 

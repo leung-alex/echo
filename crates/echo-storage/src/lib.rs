@@ -4,7 +4,7 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, SyncSender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -100,6 +100,20 @@ pub struct ClipboardStore {
 impl ClipboardStore {
     pub fn open(data_dir: impl AsRef<Path>) -> Result<Self> {
         Self::open_with_metrics(data_dir.as_ref(), Arc::new(OperationMetrics::default()))
+    }
+
+    #[cfg(any(test, feature = "test-storage"))]
+    pub fn open_in_memory_for_tests(data_dir: impl AsRef<Path>) -> Result<Self> {
+        let data_dir = data_dir.as_ref().to_path_buf();
+        let mut store = Self {
+            connection: Connection::open_in_memory()?,
+            blobs_dir: data_dir.join("blobs"),
+            thumbnails_dir: data_dir.join("thumbnails"),
+            metrics: Arc::new(OperationMetrics::default()),
+        };
+        store.configure()?;
+        store.ensure_schema()?;
+        Ok(store)
     }
 
     fn open_with_metrics(data_dir: &Path, metrics: Arc<OperationMetrics>) -> Result<Self> {
@@ -2538,7 +2552,8 @@ struct WriteRequest {
 }
 
 struct WriterRuntime {
-    sender: SyncSender<WriteRequest>,
+    sender: Mutex<Option<SyncSender<WriteRequest>>>,
+    handle: Mutex<Option<thread::JoinHandle<()>>>,
 }
 
 impl WriterRuntime {
@@ -2546,7 +2561,7 @@ impl WriterRuntime {
         let (sender, receiver) = mpsc::sync_channel(32);
         let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
         let data_dir = data_dir.to_path_buf();
-        thread::Builder::new()
+        let handle = thread::Builder::new()
             .name("echo-storage-writer".to_owned())
             .spawn(move || {
                 let mut store = match ClipboardStore::open_with_metrics(&data_dir, metrics) {
@@ -2565,11 +2580,22 @@ impl WriterRuntime {
                 StorageError::Invalid(format!("cannot start storage writer: {error}"))
             })?;
         match ready_receiver.recv() {
-            Ok(Ok(())) => Ok(Self { sender }),
-            Ok(Err(error)) => Err(StorageError::Invalid(error)),
-            Err(error) => Err(StorageError::Invalid(format!(
-                "storage writer did not start: {error}"
-            ))),
+            Ok(Ok(())) => Ok(Self {
+                sender: Mutex::new(Some(sender)),
+                handle: Mutex::new(Some(handle)),
+            }),
+            Ok(Err(error)) => {
+                drop(sender);
+                let _ = handle.join();
+                Err(StorageError::Invalid(error))
+            }
+            Err(error) => {
+                drop(sender);
+                let _ = handle.join();
+                Err(StorageError::Invalid(format!(
+                    "storage writer did not start: {error}"
+                )))
+            }
         }
     }
 
@@ -2579,7 +2605,14 @@ impl WriterRuntime {
         F: FnOnce(&mut ClipboardStore) -> Result<T> + Send + 'static,
     {
         let (response_sender, response_receiver) = mpsc::sync_channel(1);
-        self.sender
+        let sender = self
+            .sender
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .cloned()
+            .ok_or_else(storage_runtime_shutdown_error)?;
+        sender
             .send(WriteRequest {
                 operation: Box::new(move |store| {
                     operation(store).map(|value| Box::new(value) as Box<dyn Any + Send>)
@@ -2594,6 +2627,27 @@ impl WriterRuntime {
             StorageError::Invalid("storage writer returned an invalid result".to_owned())
         })
     }
+
+    fn shutdown(&self) -> Result<()> {
+        let sender = self
+            .sender
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+        drop(sender);
+
+        let handle = self
+            .handle
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+        if let Some(handle) = handle {
+            handle.join().map_err(|_| {
+                StorageError::Invalid("storage writer thread panicked during shutdown".to_owned())
+            })?;
+        }
+        Ok(())
+    }
 }
 
 fn writer_loop(store: &mut ClipboardStore, receiver: mpsc::Receiver<WriteRequest>) {
@@ -2604,13 +2658,13 @@ fn writer_loop(store: &mut ClipboardStore, receiver: mpsc::Receiver<WriteRequest
 }
 
 struct ReaderRuntime {
-    store: Mutex<ClipboardStore>,
+    store: Mutex<Option<ClipboardStore>>,
 }
 
 impl ReaderRuntime {
     fn open(data_dir: &Path, metrics: Arc<OperationMetrics>) -> Result<Self> {
         Ok(Self {
-            store: Mutex::new(ClipboardStore::open_read_only(data_dir, metrics)?),
+            store: Mutex::new(Some(ClipboardStore::open_read_only(data_dir, metrics)?)),
         })
     }
 
@@ -2619,18 +2673,29 @@ impl ReaderRuntime {
             .store
             .lock()
             .map_err(|_| StorageError::Invalid("storage reader is unavailable".to_owned()))?;
-        operation(&store)
+        let store = store.as_ref().ok_or_else(storage_runtime_shutdown_error)?;
+        operation(store)
+    }
+
+    fn shutdown(&self) {
+        let store = self
+            .store
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+        drop(store);
     }
 }
 
 struct MaintenanceRuntime {
-    sender: SyncSender<Duration>,
+    sender: Mutex<Option<SyncSender<Duration>>>,
+    handle: Mutex<Option<thread::JoinHandle<()>>>,
 }
 
 impl MaintenanceRuntime {
-    fn new(writer: Arc<WriterRuntime>, metrics: Arc<OperationMetrics>) -> Self {
+    fn new(writer: Arc<WriterRuntime>, metrics: Arc<OperationMetrics>) -> Result<Self> {
         let (sender, receiver) = mpsc::sync_channel(32);
-        thread::Builder::new()
+        let handle = thread::Builder::new()
             .name("echo-storage-maintenance".to_owned())
             .spawn(move || {
                 while let Ok(delay) = receiver.recv() {
@@ -2657,21 +2722,163 @@ impl MaintenanceRuntime {
                     );
                 }
             })
-            .expect("Echo storage maintenance thread");
-        Self { sender }
+            .map_err(|error| {
+                StorageError::Invalid(format!("cannot start storage maintenance: {error}"))
+            })?;
+        Ok(Self {
+            sender: Mutex::new(Some(sender)),
+            handle: Mutex::new(Some(handle)),
+        })
     }
 
     fn request(&self, delay: Duration) {
-        let _ = self.sender.try_send(delay);
+        let sender = self
+            .sender
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .cloned();
+        if let Some(sender) = sender {
+            let _ = sender.try_send(delay);
+        }
+    }
+
+    fn shutdown(&self) -> Result<()> {
+        let sender = self
+            .sender
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+        drop(sender);
+
+        let handle = self
+            .handle
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+        if let Some(handle) = handle {
+            handle.join().map_err(|_| {
+                StorageError::Invalid(
+                    "storage maintenance thread panicked during shutdown".to_owned(),
+                )
+            })?;
+        }
+        Ok(())
+    }
+}
+
+const STORAGE_RUNTIME_SHUTDOWN_ERROR: &str = "storage runtime is shut down";
+
+fn storage_runtime_shutdown_error() -> StorageError {
+    StorageError::Invalid(STORAGE_RUNTIME_SHUTDOWN_ERROR.to_owned())
+}
+
+struct RuntimeState {
+    accepting: bool,
+    active: usize,
+    shutdown_complete: bool,
+}
+
+struct SharedRuntime {
+    writer: Arc<WriterRuntime>,
+    reader: Arc<ReaderRuntime>,
+    maintenance: Arc<MaintenanceRuntime>,
+    metrics: Arc<OperationMetrics>,
+    admission: Mutex<RuntimeState>,
+    admission_changed: Condvar,
+    shutdown_lock: Mutex<()>,
+}
+
+struct AdmissionGuard<'a> {
+    runtime: &'a SharedRuntime,
+}
+
+impl Drop for AdmissionGuard<'_> {
+    fn drop(&mut self) {
+        let mut state = self
+            .runtime
+            .admission
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        state.active = state.active.saturating_sub(1);
+        self.runtime.admission_changed.notify_all();
+    }
+}
+
+impl SharedRuntime {
+    fn enter(&self) -> Result<AdmissionGuard<'_>> {
+        let mut state = self
+            .admission
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if !state.accepting {
+            return Err(storage_runtime_shutdown_error());
+        }
+        state.active += 1;
+        drop(state);
+        Ok(AdmissionGuard { runtime: self })
+    }
+
+    fn shutdown(&self) -> Result<()> {
+        let _shutdown_lock = self
+            .shutdown_lock
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        {
+            let mut state = self
+                .admission
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if state.shutdown_complete {
+                return Ok(());
+            }
+            state.accepting = false;
+            while state.active != 0 {
+                state = self
+                    .admission_changed
+                    .wait(state)
+                    .unwrap_or_else(|error| error.into_inner());
+            }
+        }
+
+        let mut first_error = None;
+        if let Err(error) = self.maintenance.shutdown() {
+            first_error = Some(error);
+        }
+
+        let final_reconcile = self.writer.execute(|store| {
+            if store.maintenance_pending()? {
+                store.reconcile_blob_store()?;
+            }
+            Ok::<_, StorageError>(())
+        });
+        if let Err(error) = final_reconcile {
+            if first_error.is_none() {
+                first_error = Some(error);
+            }
+        }
+
+        if let Err(error) = self.writer.shutdown() {
+            if first_error.is_none() {
+                first_error = Some(error);
+            }
+        }
+        self.reader.shutdown();
+
+        self.admission
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .shutdown_complete = true;
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 }
 
 #[derive(Clone)]
 pub struct SharedClipboardStore {
-    writer: Arc<WriterRuntime>,
-    reader: Arc<ReaderRuntime>,
-    maintenance: Arc<MaintenanceRuntime>,
-    metrics: Arc<OperationMetrics>,
+    runtime: Arc<SharedRuntime>,
 }
 
 impl SharedClipboardStore {
@@ -2679,19 +2886,42 @@ impl SharedClipboardStore {
         let data_dir = data_dir.as_ref().to_path_buf();
         let metrics = Arc::new(OperationMetrics::default());
         let writer = Arc::new(WriterRuntime::open(&data_dir, Arc::clone(&metrics))?);
-        let reader = Arc::new(ReaderRuntime::open(&data_dir, Arc::clone(&metrics))?);
-        let maintenance = Arc::new(MaintenanceRuntime::new(
-            Arc::clone(&writer),
-            Arc::clone(&metrics),
-        ));
+        let reader = match ReaderRuntime::open(&data_dir, Arc::clone(&metrics)) {
+            Ok(reader) => Arc::new(reader),
+            Err(error) => {
+                let _ = writer.shutdown();
+                return Err(error);
+            }
+        };
+        let maintenance = match MaintenanceRuntime::new(Arc::clone(&writer), Arc::clone(&metrics)) {
+            Ok(maintenance) => Arc::new(maintenance),
+            Err(error) => {
+                let _ = writer.shutdown();
+                reader.shutdown();
+                return Err(error);
+            }
+        };
         let shared = Self {
-            writer,
-            reader,
-            maintenance,
-            metrics,
+            runtime: Arc::new(SharedRuntime {
+                writer,
+                reader,
+                maintenance,
+                metrics,
+                admission: Mutex::new(RuntimeState {
+                    accepting: true,
+                    active: 0,
+                    shutdown_complete: false,
+                }),
+                admission_changed: Condvar::new(),
+                shutdown_lock: Mutex::new(()),
+            }),
         };
         shared.request_maintenance_now();
         Ok(shared)
+    }
+
+    pub fn shutdown(&self) -> Result<()> {
+        self.runtime.shutdown()
     }
 
     fn with_store<T, F>(&self, operation: F) -> Result<T>
@@ -2699,19 +2929,20 @@ impl SharedClipboardStore {
         T: Send + 'static,
         F: FnOnce(&mut ClipboardStore) -> Result<T> + Send + 'static,
     {
-        self.writer.execute(operation)
+        let _admission = self.runtime.enter()?;
+        self.runtime.writer.execute(operation)
     }
 
     pub fn metrics_snapshot(&self) -> Vec<OperationMetric> {
-        self.metrics.snapshot()
+        self.runtime.metrics.snapshot()
     }
 
     fn request_maintenance(&self) {
-        self.maintenance.request(Duration::from_millis(100));
+        self.runtime.maintenance.request(Duration::from_millis(100));
     }
 
     fn request_maintenance_now(&self) {
-        self.maintenance.request(Duration::ZERO);
+        self.runtime.maintenance.request(Duration::ZERO);
     }
 
     fn request_after_pending_write(&self, pending: bool) {
@@ -2721,7 +2952,8 @@ impl SharedClipboardStore {
     }
 
     pub fn settings(&self) -> Result<ClipboardSettings> {
-        self.reader.read(|store| store.settings())
+        let _admission = self.runtime.enter()?;
+        self.runtime.reader.read(|store| store.settings())
     }
 
     pub fn update_settings(&self, settings: &ClipboardSettings) -> Result<()> {
@@ -2731,7 +2963,10 @@ impl SharedClipboardStore {
 
     pub fn list_entries(&self, query: &str, limit: u32) -> Result<Vec<ClipboardEntry>> {
         let query = query.to_owned();
-        self.reader.read(|store| store.list_entries(&query, limit))
+        let _admission = self.runtime.enter()?;
+        self.runtime
+            .reader
+            .read(|store| store.list_entries(&query, limit))
     }
 
     pub fn list_entries_page(
@@ -2741,12 +2976,15 @@ impl SharedClipboardStore {
         cursor: Option<PageCursor>,
     ) -> Result<LibraryPage<ClipboardEntry>> {
         let query = query.to_owned();
-        self.reader
+        let _admission = self.runtime.enter()?;
+        self.runtime
+            .reader
             .read(|store| store.list_entries_page(&query, limit, cursor))
     }
 
     pub fn entry(&self, id: i64) -> Result<Option<StoredClipboardEntry>> {
-        self.reader.read(|store| store.entry(id))
+        let _admission = self.runtime.enter()?;
+        self.runtime.reader.read(|store| store.entry(id))
     }
 
     pub fn history_entry(&self, id: i64) -> Result<Option<ClipboardEntry>> {
@@ -2754,18 +2992,23 @@ impl SharedClipboardStore {
     }
 
     pub fn entry_payload(&self, id: i64) -> Result<Vec<ClipboardRepresentation>> {
-        self.reader.read(|store| store.entry_payload(id))
+        let _admission = self.runtime.enter()?;
+        self.runtime.reader.read(|store| store.entry_payload(id))
     }
 
     pub fn read_thumbnail(&self, content_hash: &str) -> Result<Option<StoredThumbnail>> {
         let content_hash = content_hash.to_owned();
-        self.reader
+        let _admission = self.runtime.enter()?;
+        self.runtime
+            .reader
             .read(|store| store.read_thumbnail(&content_hash))
     }
 
     pub fn list_saved_items(&self, query: &str, limit: u32) -> Result<Vec<SavedItem>> {
         let query = query.to_owned();
-        self.reader
+        let _admission = self.runtime.enter()?;
+        self.runtime
+            .reader
             .read(|store| store.list_saved_items(&query, limit))
     }
 
@@ -2776,16 +3019,22 @@ impl SharedClipboardStore {
         cursor: Option<PageCursor>,
     ) -> Result<LibraryPage<SavedItem>> {
         let query = query.to_owned();
-        self.reader
+        let _admission = self.runtime.enter()?;
+        self.runtime
+            .reader
             .read(|store| store.list_saved_items_page(&query, limit, cursor))
     }
 
     pub fn saved_item(&self, id: i64) -> Result<Option<StoredSavedItem>> {
-        self.reader.read(|store| store.saved_item(id))
+        let _admission = self.runtime.enter()?;
+        self.runtime.reader.read(|store| store.saved_item(id))
     }
 
     pub fn saved_item_payload(&self, id: i64) -> Result<Vec<ClipboardRepresentation>> {
-        self.reader.read(|store| store.saved_item_payload(id))
+        let _admission = self.runtime.enter()?;
+        self.runtime
+            .reader
+            .read(|store| store.saved_item_payload(id))
     }
 
     pub fn move_history_to_favorite(&self, id: i64) -> Result<SavedItem> {
@@ -2878,6 +3127,14 @@ impl SharedClipboardStore {
     }
 }
 
+impl Drop for SharedClipboardStore {
+    fn drop(&mut self) {
+        if Arc::strong_count(&self.runtime) == 1 {
+            let _ = self.runtime.shutdown();
+        }
+    }
+}
+
 impl ClipboardSink for SharedClipboardStore {
     fn settings(&self) -> std::result::Result<CaptureSettings, String> {
         self.settings()
@@ -2891,7 +3148,8 @@ impl ClipboardSink for SharedClipboardStore {
             .preview_source()
             .map(|source| self.preview_disposition(source))
             .transpose()?;
-        let captured = generate_preview_if_requested(captured, preview_disposition, &self.metrics);
+        let captured =
+            generate_preview_if_requested(captured, preview_disposition, &self.runtime.metrics);
         self.record_captured(captured)
     }
 
@@ -2905,7 +3163,9 @@ impl ClipboardSink for SharedClipboardStore {
         &self,
         source: &RepresentationIdentity,
     ) -> std::result::Result<PreviewDisposition, String> {
-        self.reader
+        let _admission = self.runtime.enter().map_err(|error| error.to_string())?;
+        self.runtime
+            .reader
             .read(|store| store.preview_disposition_for_source(&source.hash))
             .map_err(|error| error.to_string())
     }
@@ -3410,7 +3670,18 @@ fn next_pin_order_tx(tx: &Transaction<'_>) -> Result<i64> {
 mod tests {
     use super::*;
     use echo_engine::{fingerprint, ClipboardRepresentation, ContentType, SourceContext};
-    use tempfile::TempDir;
+    use tempfile::{tempdir_in, TempDir};
+
+    fn disk_tempdir() -> TempDir {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/test-tmp/echo-storage");
+        std::fs::create_dir_all(&root).unwrap();
+        tempdir_in(root).unwrap()
+    }
+
+    fn memory_store() -> ClipboardStore {
+        ClipboardStore::open_in_memory_for_tests("echo-storage-memory-test").unwrap()
+    }
 
     fn text_capture(text: &str, sequence: u64) -> NormalizedCapture {
         let representation = ClipboardRepresentation {
@@ -3431,9 +3702,103 @@ mod tests {
     }
 
     #[test]
+    fn shared_store_drop_releases_physical_database_handles() {
+        let test_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/test-tmp/echo-storage");
+        std::fs::create_dir_all(&test_root).unwrap();
+        let root = tempfile::tempdir_in(test_root).unwrap();
+        let data_dir = root.path().to_path_buf();
+        let store = SharedClipboardStore::open(&data_dir).unwrap();
+        let recorded =
+            ClipboardSink::record(&store, text_capture("shutdown regression", 1)).unwrap();
+        assert!(recorded.id > 0);
+        drop(store);
+
+        let renamed = data_dir.with_extension("renamed");
+        std::fs::rename(&data_dir, &renamed)
+            .expect("dropping SharedClipboardStore must release the database handles");
+        std::fs::remove_dir_all(renamed).unwrap();
+    }
+
+    #[test]
+    fn shared_store_shutdown_is_idempotent_and_rejects_new_work() {
+        let root = disk_tempdir();
+        let data_dir = root.path().to_path_buf();
+        let store = SharedClipboardStore::open(&data_dir).unwrap();
+        ClipboardSink::record(&store, text_capture("explicit shutdown", 1)).unwrap();
+        for name in ["echo.sqlite3", "echo.sqlite3-wal", "echo.sqlite3-shm"] {
+            assert!(
+                data_dir.join(name).is_file(),
+                "representative write did not create {name}"
+            );
+        }
+
+        store.shutdown().unwrap();
+        store.shutdown().unwrap();
+
+        let error = store.list_entries("", 20).unwrap_err();
+        assert!(matches!(
+            error,
+            StorageError::Invalid(message) if message == STORAGE_RUNTIME_SHUTDOWN_ERROR
+        ));
+        let error = store
+            .update_settings(&ClipboardSettings::default())
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            StorageError::Invalid(message) if message == STORAGE_RUNTIME_SHUTDOWN_ERROR
+        ));
+        let error = ClipboardSink::record(&store, text_capture("rejected", 2)).unwrap_err();
+        assert!(error.ends_with(STORAGE_RUNTIME_SHUTDOWN_ERROR));
+
+        drop(store);
+        let renamed = data_dir.with_extension("shutdown-complete");
+        std::fs::rename(&data_dir, &renamed)
+            .expect("explicit shutdown must release the database handles");
+        std::fs::remove_dir_all(renamed).unwrap();
+    }
+
+    #[test]
+    fn shutdown_waits_for_an_admitted_write_before_joining_the_writer() {
+        let root = disk_tempdir();
+        let store = SharedClipboardStore::open(root.path()).unwrap();
+        let writer = store.clone();
+        let (entered, entered_receiver) = std::sync::mpsc::sync_channel(0);
+        let (release, release_receiver) = std::sync::mpsc::sync_channel(0);
+        let write_handle = std::thread::spawn(move || {
+            writer
+                .with_store(move |store| {
+                    entered.send(()).unwrap();
+                    release_receiver.recv().unwrap();
+                    Ok::<_, StorageError>(store.record_capture(text_capture("drained", 1))?.id)
+                })
+                .unwrap()
+        });
+        entered_receiver
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
+
+        let shutdown_store = store.clone();
+        let (shutdown_done, shutdown_done_receiver) = std::sync::mpsc::sync_channel(0);
+        let shutdown_handle = std::thread::spawn(move || {
+            shutdown_done.send(shutdown_store.shutdown()).unwrap();
+        });
+        assert!(shutdown_done_receiver
+            .recv_timeout(std::time::Duration::from_millis(50))
+            .is_err());
+
+        release.send(()).unwrap();
+        assert!(shutdown_done_receiver
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap()
+            .is_ok());
+        assert!(write_handle.join().unwrap() > 0);
+        shutdown_handle.join().unwrap();
+    }
+
+    #[test]
     fn record_deduplicates_and_refreshes_the_timestamp() {
-        let root = TempDir::new().unwrap();
-        let mut store = ClipboardStore::open(root.path()).unwrap();
+        let mut store = memory_store();
         let first = store.record_capture(text_capture("hello", 1)).unwrap();
         let before = store.entry(first.id).unwrap().unwrap().entry.updated_at;
         std::thread::sleep(std::time::Duration::from_millis(2));
@@ -3447,7 +3812,7 @@ mod tests {
 
     #[test]
     fn large_representation_is_stored_and_reconciled_as_a_blob() {
-        let root = TempDir::new().unwrap();
+        let root = disk_tempdir();
         let mut store = ClipboardStore::open(root.path()).unwrap();
         let mut capture = text_capture("large", 1);
         capture.representations[0].bytes = vec![7; INLINE_LIMIT + 5];
@@ -3463,7 +3828,7 @@ mod tests {
 
     #[test]
     fn duplicate_large_capture_skips_blob_preparation_and_reconcile_is_not_hot_path() {
-        let root = TempDir::new().unwrap();
+        let root = disk_tempdir();
         let mut store = ClipboardStore::open(root.path()).unwrap();
         let mut capture = text_capture("large duplicate", 1);
         capture.representations[0].bytes = vec![9; INLINE_LIMIT + 7];
@@ -3503,8 +3868,7 @@ mod tests {
 
     #[test]
     fn favorites_survive_history_clear_and_source_delete() {
-        let root = TempDir::new().unwrap();
-        let mut store = ClipboardStore::open(root.path()).unwrap();
+        let mut store = memory_store();
         let id = store
             .record_capture(text_capture("favorite", 1))
             .unwrap()
@@ -3521,8 +3885,7 @@ mod tests {
 
     #[test]
     fn saved_text_edits_replace_the_canonical_payload_and_normalize_tags() {
-        let root = TempDir::new().unwrap();
-        let mut store = ClipboardStore::open(root.path()).unwrap();
+        let mut store = memory_store();
         let history_id = store
             .record_capture(text_capture("original", 1))
             .unwrap()
@@ -3558,7 +3921,7 @@ mod tests {
 
     #[test]
     fn image_metadata_edits_preserve_binary_payload_and_bulk_delete_is_atomic() {
-        let root = TempDir::new().unwrap();
+        let root = disk_tempdir();
         let mut store = ClipboardStore::open(root.path()).unwrap();
         let mut capture = text_capture("image", 1);
         capture.content_type = ContentType::Image;
@@ -3608,7 +3971,7 @@ mod tests {
 
     #[test]
     fn image_capture_persists_a_content_addressed_thumbnail_without_changing_original_bytes() {
-        let root = TempDir::new().unwrap();
+        let root = disk_tempdir();
         let mut store = ClipboardStore::open(root.path()).unwrap();
         let original = one_pixel_png();
         let mut capture = text_capture("image", 1);
@@ -3652,7 +4015,7 @@ mod tests {
                 .unwrap_or(0)
         }
 
-        let root = TempDir::new().unwrap();
+        let root = disk_tempdir();
         let mut store = ClipboardStore::open(root.path()).unwrap();
         let mut capture = text_capture("picture", 1);
         capture.content_type = ContentType::Image;
@@ -3696,8 +4059,7 @@ mod tests {
 
     #[test]
     fn fts_match_and_cursor_pages_are_bounded_and_stable() {
-        let root = TempDir::new().unwrap();
-        let mut store = ClipboardStore::open(root.path()).unwrap();
+        let mut store = memory_store();
         for sequence in 1..=3 {
             store
                 .record_capture(text_capture(&format!("searchable-{sequence}"), sequence))
@@ -3727,7 +4089,7 @@ mod tests {
 
     #[test]
     fn move_history_to_favorite_is_atomic_and_preserves_original_representations() {
-        let root = TempDir::new().unwrap();
+        let root = disk_tempdir();
         let mut store = ClipboardStore::open(root.path()).unwrap();
         let mut capture = text_capture("move payload", 1);
         capture.representations.push(ClipboardRepresentation {
@@ -3778,8 +4140,7 @@ mod tests {
 
     #[test]
     fn move_history_to_favorite_rolls_back_when_history_delete_fails() {
-        let root = TempDir::new().unwrap();
-        let mut store = ClipboardStore::open(root.path()).unwrap();
+        let mut store = memory_store();
         let history_id = store
             .record_capture(text_capture("rollback", 1))
             .unwrap()
@@ -3803,8 +4164,7 @@ mod tests {
 
     #[test]
     fn pinned_history_is_stable_and_protected_from_capacity_and_clear_all() {
-        let root = TempDir::new().unwrap();
-        let mut store = ClipboardStore::open(root.path()).unwrap();
+        let mut store = memory_store();
         let first = store.record_capture(text_capture("first", 1)).unwrap().id;
         let second = store.record_capture(text_capture("second", 2)).unwrap().id;
         let third = store.record_capture(text_capture("third", 3)).unwrap().id;
@@ -3842,7 +4202,7 @@ mod tests {
 
     #[test]
     fn favorite_create_order_reorder_and_relevance_persist() {
-        let root = TempDir::new().unwrap();
+        let root = disk_tempdir();
         let mut store = ClipboardStore::open(root.path()).unwrap();
         let first = store
             .create_favorite(FavoriteDraft {
@@ -3901,7 +4261,7 @@ mod tests {
 
     #[test]
     fn theme_setting_defaults_round_trips_and_reopens_from_clipboard_settings() {
-        let root = TempDir::new().unwrap();
+        let root = disk_tempdir();
         let mut store = ClipboardStore::open(root.path()).unwrap();
         assert_eq!(store.settings().unwrap().theme, ThemeMode::System);
         assert_eq!(
@@ -3930,7 +4290,7 @@ mod tests {
 
     #[test]
     fn schema_v5_settings_backfill_adds_theme_without_bumping_version() {
-        let root = TempDir::new().unwrap();
+        let root = disk_tempdir();
         let database = root.path().join("echo.sqlite3");
         {
             let store = ClipboardStore::open(root.path()).unwrap();
@@ -3983,7 +4343,7 @@ mod tests {
 
     #[test]
     fn migration_failure_keeps_linked_history_and_schema_version() {
-        let root = TempDir::new().unwrap();
+        let root = disk_tempdir();
         let database = root.path().join("echo.sqlite3");
         let connection = Connection::open(&database).unwrap();
         connection
@@ -4018,7 +4378,7 @@ mod tests {
 
     #[test]
     fn migration_failure_rejects_a_corrupt_linked_blob_without_deleting_history() {
-        let root = TempDir::new().unwrap();
+        let root = disk_tempdir();
         let database = root.path().join("echo.sqlite3");
         let connection = Connection::open(&database).unwrap();
         connection
@@ -4069,8 +4429,7 @@ mod tests {
 
     #[test]
     fn batch_move_and_pin_are_transactional_and_idempotent() {
-        let root = TempDir::new().unwrap();
-        let mut store = ClipboardStore::open(root.path()).unwrap();
+        let mut store = memory_store();
         let first = store
             .record_capture(text_capture("batch one", 1))
             .unwrap()
@@ -4095,8 +4454,7 @@ mod tests {
 
     #[test]
     fn authoritative_search_cursors_cross_pinned_and_relevance_partitions() {
-        let root = TempDir::new().unwrap();
-        let mut store = ClipboardStore::open(root.path()).unwrap();
+        let mut store = memory_store();
         let mut history_ids = Vec::new();
         for sequence in 1..=4 {
             history_ids.push(
@@ -4153,8 +4511,7 @@ mod tests {
 
     #[test]
     fn short_history_search_cursor_crosses_relevance_ranks_without_duplicates() {
-        let root = TempDir::new().unwrap();
-        let mut store = ClipboardStore::open(root.path()).unwrap();
+        let mut store = memory_store();
         let exact = store.record_capture(text_capture("ab", 1)).unwrap().id;
         let prefix_one = store
             .record_capture(text_capture("ab prefix one", 2))
@@ -4205,8 +4562,7 @@ mod tests {
 
     #[test]
     fn short_favorites_search_cursor_crosses_relevance_ranks_without_duplicates() {
-        let root = TempDir::new().unwrap();
-        let mut store = ClipboardStore::open(root.path()).unwrap();
+        let mut store = memory_store();
         let prefix_one = store
             .create_favorite(FavoriteDraft {
                 content: "ab favorite one".to_owned(),
@@ -4286,7 +4642,7 @@ mod tests {
             (include_str!("../fixtures/migrations/pre-r1.sql"), 0, 1),
             (include_str!("../fixtures/migrations/pre-r2.sql"), 0, 1),
         ] {
-            let root = TempDir::new().unwrap();
+            let root = disk_tempdir();
             let database = root.path().join("echo.sqlite3");
             let connection = Connection::open(&database).unwrap();
             connection.execute_batch(fixture).unwrap();
@@ -4334,7 +4690,7 @@ mod tests {
 
     #[test]
     fn pre_r0_saved_item_fixture_migrates_payload_and_removes_legacy_tables() {
-        let root = TempDir::new().unwrap();
+        let root = disk_tempdir();
         let database = root.path().join("echo.sqlite3");
         let connection = Connection::open(&database).unwrap();
         connection
@@ -4372,7 +4728,7 @@ mod tests {
 
     #[test]
     fn storage_reader_progresses_while_writer_is_blocked() {
-        let root = TempDir::new().unwrap();
+        let root = disk_tempdir();
         let store = SharedClipboardStore::open(root.path()).unwrap();
         let writer = store.clone();
         let (entered, entered_receiver) = std::sync::mpsc::channel();
@@ -4394,11 +4750,12 @@ mod tests {
         assert!(started.elapsed() < std::time::Duration::from_millis(500));
         release.send(()).unwrap();
         handle.join().unwrap();
+        store.shutdown().unwrap();
     }
 
     #[test]
     fn preview_file_reads_do_not_wait_for_the_writer_runtime() {
-        let root = TempDir::new().unwrap();
+        let root = disk_tempdir();
         let store = SharedClipboardStore::open(root.path()).unwrap();
         let mut capture = text_capture("preview", 1);
         let original = one_pixel_png();
@@ -4439,11 +4796,12 @@ mod tests {
         assert!(store.read_thumbnail(&hash).unwrap().is_some());
         release.send(()).unwrap();
         handle.join().unwrap();
+        store.shutdown().unwrap();
     }
 
     #[test]
     fn maintenance_runs_on_startup_and_delete_not_on_normal_insert() {
-        let root = TempDir::new().unwrap();
+        let root = disk_tempdir();
         let store = SharedClipboardStore::open(root.path()).unwrap();
         let deadline = Instant::now() + std::time::Duration::from_secs(1);
         while Instant::now() < deadline
@@ -4496,12 +4854,12 @@ mod tests {
             .map(|metric| metric.samples)
             .unwrap_or(0);
         assert_eq!(delete_runs, startup_runs + 1);
+        store.shutdown().unwrap();
     }
 
     #[test]
     fn instrumentation_is_structured_and_redacts_capture_values() {
-        let root = TempDir::new().unwrap();
-        let mut store = ClipboardStore::open(root.path()).unwrap();
+        let mut store = memory_store();
         store
             .record_capture(text_capture("never-log-this-payload", 1))
             .unwrap();
@@ -4509,7 +4867,7 @@ mod tests {
         assert!(encoded.contains("dedupe"));
         assert!(encoded.contains("db_commit"));
         assert!(!encoded.contains("never-log-this-payload"));
-        assert!(!encoded.contains(root.path().to_string_lossy().as_ref()));
+        assert!(!encoded.contains("echo-storage-memory-test"));
     }
 
     fn one_pixel_png() -> Vec<u8> {
@@ -4524,8 +4882,7 @@ mod tests {
 
     #[test]
     fn deleting_a_favorite_does_not_resurrect_its_history_source() {
-        let root = TempDir::new().unwrap();
-        let mut store = ClipboardStore::open(root.path()).unwrap();
+        let mut store = memory_store();
         let history_id = store.record_capture(text_capture("source", 1)).unwrap().id;
         let saved = store.move_history_to_favorite(history_id).unwrap();
         store

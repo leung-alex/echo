@@ -7,7 +7,7 @@ use echo_engine::{
     PlatformChangePublisher, PlatformChangeSubscription, PlatformError, SourceContext,
 };
 use echo_storage::SharedClipboardStore;
-use tempfile::TempDir;
+use tempfile::{tempdir_in, TempDir};
 
 struct SnapshotPlatform {
     sequence: AtomicU64,
@@ -114,6 +114,13 @@ fn samples(metrics: &[OperationMetric], operation: &str) -> u64 {
         .unwrap_or(0)
 }
 
+fn disk_tempdir() -> TempDir {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../.local/test-tmp/echo-storage");
+    std::fs::create_dir_all(&root).unwrap();
+    tempdir_in(root).unwrap()
+}
+
 fn capture_fixture() -> (
     TempDir,
     Arc<SnapshotPlatform>,
@@ -121,7 +128,7 @@ fn capture_fixture() -> (
     ClipboardService,
     Vec<u8>,
 ) {
-    let root = TempDir::new().unwrap();
+    let root = disk_tempdir();
     let image = large_bmp(512, 512);
     let platform = Arc::new(SnapshotPlatform::new(image_snapshot(1, &image)));
     let store = Arc::new(SharedClipboardStore::open(root.path()).unwrap());
@@ -158,6 +165,7 @@ fn duplicate_large_image_reuses_the_existing_thumbnail_without_new_writes() {
     assert_eq!(samples(&store.metrics_snapshot(), "thumbnail_write"), 1);
     assert_eq!(store.entry_payload(first_id).unwrap()[0].bytes, image);
     service.shutdown();
+    store.shutdown().unwrap();
 }
 
 #[test]
@@ -199,4 +207,5 @@ fn corrupt_thumbnail_is_regenerated_once_and_repaired() {
         .is_some());
     assert_eq!(store.entry_payload(first_id).unwrap()[0].bytes, image);
     service.shutdown();
+    store.shutdown().unwrap();
 }

@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"syscall"
@@ -289,11 +290,25 @@ func registerClipboardFormat(name string) (uint32, error) {
 }
 
 func createClipboardFixtureFile(value string) (string, error) {
-	file, err := os.CreateTemp("", "echo-clipboard-*.txt")
+	acceptanceRoot := os.Getenv("ECHO_ACCEPTANCE_RUN_ROOT")
+	if acceptanceRoot == "" {
+		return "", fmt.Errorf("ECHO_ACCEPTANCE_RUN_ROOT is required for copy-files")
+	}
+	fixtureRoot := filepath.Join(acceptanceRoot, "clipboard-files")
+	if err := os.MkdirAll(fixtureRoot, 0o755); err != nil {
+		return "", fmt.Errorf("create clipboard fixture root: %w", err)
+	}
+	file, err := os.CreateTemp(fixtureRoot, "echo-clipboard-*.txt")
 	if err != nil {
 		return "", fmt.Errorf("create clipboard fixture file: %w", err)
 	}
 	path := file.Name()
+	relative, err := filepath.Rel(acceptanceRoot, path)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		_ = file.Close()
+		_ = os.Remove(path)
+		return "", fmt.Errorf("clipboard fixture escaped ECHO_ACCEPTANCE_RUN_ROOT")
+	}
 	if _, err := file.WriteString(value); err != nil {
 		_ = file.Close()
 		_ = os.Remove(path)

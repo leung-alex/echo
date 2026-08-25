@@ -37,6 +37,8 @@ Usage:
       Run the focused Clipboard ownership gates.
   echo.cmd verify quick-insert
       Run the focused Quick Insert ownership gates.
+  echo.cmd verify storage
+      Run the focused storage tests and global TEMP leak gate.
   echo.cmd bindings [--check]
       Generate or check the checked-in TypeScript transport bindings.
   echo.cmd self-check
@@ -266,7 +268,7 @@ func (a *app) verifyCommand(args []string) error {
 		return fmt.Errorf("verify accepts at most one scope")
 	}
 	switch fs.Arg(0) {
-	case "clipboard", "quick-insert":
+	case "clipboard", "quick-insert", "storage":
 		return a.verifyScope(fs.Arg(0))
 	default:
 		return fmt.Errorf("unknown verify scope %q", fs.Arg(0))
@@ -350,6 +352,8 @@ func (a *app) verifyScope(scope string) error {
 			return err
 		}
 		return a.run("cargo", "check", "-p", "echo-desktop")
+	case "storage":
+		return a.verifyStorage()
 	case "quick-insert":
 		if err := a.run("cargo", "test", "-p", "echo-engine"); err != nil {
 			return err
@@ -364,6 +368,175 @@ func (a *app) verifyScope(scope string) error {
 	default:
 		return fmt.Errorf("unknown verification scope %q", scope)
 	}
+}
+
+type storageTempEntry struct {
+	path  string
+	size  int64
+	isDir bool
+}
+
+func snapshotStorageTempTopLevel(root string) (map[string]storageTempEntry, error) {
+	entries := make(map[string]storageTempEntry)
+	children, err := os.ReadDir(root)
+	if os.IsNotExist(err) {
+		return entries, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read storage TEMP root %s: %w", root, err)
+	}
+	for _, child := range children {
+		path := filepath.Join(root, child.Name())
+		info, err := child.Info()
+		if err != nil {
+			return nil, fmt.Errorf("stat storage TEMP entry %s: %w", path, err)
+		}
+		entry := storageTempEntry{path: path, isDir: info.IsDir()}
+		if !info.IsDir() {
+			entry.size = info.Size()
+		}
+		entries[path] = entry
+	}
+	return entries, nil
+}
+
+func newStorageTempEntries(
+	before, after map[string]storageTempEntry,
+) []storageTempEntry {
+	entries := make([]storageTempEntry, 0)
+	for path, entry := range after {
+		if _, existed := before[path]; !existed {
+			entries = append(entries, entry)
+		}
+	}
+	sort.Slice(entries, func(left, right int) bool {
+		return entries[left].path < entries[right].path
+	})
+	return entries
+}
+
+func isEchoStorageResidue(path string) bool {
+	name := strings.ToLower(filepath.Base(path))
+	if strings.HasPrefix(name, "echo-") {
+		return true
+	}
+	switch name {
+	case "echo.sqlite", "echo.sqlite3", "echo.sqlite-wal", "echo.sqlite3-wal", "echo.sqlite-shm", "echo.sqlite3-shm":
+		return true
+	default:
+		return false
+	}
+}
+
+func scanNewStorageTempEntry(entry storageTempEntry) ([]string, error) {
+	residue := make([]string, 0)
+	visit := func(path string) error {
+		if isEchoStorageResidue(path) {
+			residue = append(residue, path)
+		}
+		return nil
+	}
+	if err := visit(entry.path); err != nil {
+		return nil, err
+	}
+	if !entry.isDir {
+		return residue, nil
+	}
+	if err := filepath.WalkDir(entry.path, func(path string, _ os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if path == entry.path {
+			return nil
+		}
+		return visit(path)
+	}); err != nil {
+		return nil, fmt.Errorf("scan new storage TEMP entry %s: %w", entry.path, err)
+	}
+	return residue, nil
+}
+
+func snapshotStorageRepoEntries(root string) ([]string, error) {
+	if !directoryExists(root) {
+		return nil, nil
+	}
+	entries := make([]string, 0)
+	if err := filepath.WalkDir(root, func(path string, _ os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if path != root {
+			relative, err := filepath.Rel(root, path)
+			if err != nil {
+				return err
+			}
+			entries = append(entries, filepath.ToSlash(relative))
+		}
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("scan repository storage test root %s: %w", root, err)
+	}
+	sort.Strings(entries)
+	return entries, nil
+}
+
+func scanStorageLeak(
+	before, after map[string]storageTempEntry,
+	repoEntries []string,
+) error {
+	newEntries := newStorageTempEntries(before, after)
+	residue := make([]string, 0)
+	for _, entry := range newEntries {
+		found, err := scanNewStorageTempEntry(entry)
+		if err != nil {
+			return err
+		}
+		residue = append(residue, found...)
+	}
+	if len(residue) != 0 {
+		return fmt.Errorf("Echo storage residue found in system TEMP: %s", strings.Join(residue, ", "))
+	}
+	if len(repoEntries) != 0 {
+		return fmt.Errorf("repository-local storage test root was not cleaned: %s", strings.Join(repoEntries, ", "))
+	}
+	return nil
+}
+
+func (a *app) verifyStorage() error {
+	tempRoot := os.TempDir()
+	repoRoot := filepath.Join(a.root, ".local", "test-tmp", "echo-storage")
+	beforeTemp, err := snapshotStorageTempTopLevel(tempRoot)
+	if err != nil {
+		return err
+	}
+	if _, err := snapshotStorageRepoEntries(repoRoot); err != nil {
+		return err
+	}
+	started := time.Now()
+	runErr := a.run("cargo", "test", "-p", "echo-storage", "--locked")
+	afterTemp, snapshotErr := snapshotStorageTempTopLevel(tempRoot)
+	if snapshotErr != nil {
+		return snapshotErr
+	}
+	repoEntries, repoErr := snapshotStorageRepoEntries(repoRoot)
+	if repoErr != nil {
+		return repoErr
+	}
+	if runErr != nil {
+		return runErr
+	}
+	if err := scanStorageLeak(beforeTemp, afterTemp, repoEntries); err != nil {
+		return err
+	}
+	newEntries := newStorageTempEntries(beforeTemp, afterTemp)
+	fmt.Fprintf(
+		a.out,
+		"Echo storage verification passed; TEMP new top-level=%d; repo-local residual=%d; wall=%s\n",
+		len(newEntries),
+		len(repoEntries),
+		time.Since(started).Round(time.Millisecond),
+	)
+	return nil
 }
 
 func (a *app) verifyProfile(profile ValidationProfile) error {

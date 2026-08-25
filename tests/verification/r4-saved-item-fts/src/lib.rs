@@ -1,16 +1,22 @@
 #[cfg(test)]
 mod tests {
     use echo_engine::{
-        fingerprint, ClipboardRepresentation, ContentType, NormalizedCapture, SavedItemDraft,
-        SourceContext,
+        fingerprint, ClipboardRepresentation, ContentType, NormalizedCapture, SourceContext,
     };
     use echo_storage::ClipboardStore;
     use rusqlite::Connection;
-    use tempfile::TempDir;
+    use tempfile::{tempdir_in, TempDir};
+
+    fn disk_tempdir() -> TempDir {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../.local/test-tmp/echo-storage");
+        std::fs::create_dir_all(&root).unwrap();
+        tempdir_in(root).unwrap()
+    }
 
     #[test]
-    fn unsaving_a_history_item_removes_its_saved_item_fts_document() {
-        let root = TempDir::new().unwrap();
+    fn deleting_a_saved_item_removes_its_saved_item_fts_document() {
+        let root = disk_tempdir();
         let representation = ClipboardRepresentation {
             format: "text".to_owned(),
             mime_type: "text/plain;charset=utf-8".to_owned(),
@@ -28,14 +34,10 @@ mod tests {
         };
         let mut store = ClipboardStore::open(root.path()).unwrap();
         let history_id = store.record_capture(capture).unwrap().id;
-        let entry = store.entry(history_id).unwrap().unwrap().entry;
-        let payload = store.entry_payload(history_id).unwrap();
-        let saved = store
-            .save_history_item(SavedItemDraft::from_history(&entry), payload)
-            .unwrap();
+        let saved = store.move_history_to_favorite(history_id).unwrap();
 
         assert_eq!(store.list_saved_items("document", 20).unwrap().len(), 1);
-        assert!(store.unsave_history_item(history_id).unwrap());
+        assert!(store.delete_favorite(saved.id).unwrap());
         drop(store);
 
         let connection = Connection::open(root.path().join("echo.sqlite3")).unwrap();
