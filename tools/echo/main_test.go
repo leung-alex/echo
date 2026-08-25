@@ -197,6 +197,225 @@ func TestStorageLeakScannerAcceptsCleanRepositoryRoot(t *testing.T) {
 	}
 }
 
+type recordedCommand struct {
+	name string
+	args []string
+}
+
+func newRecordingApp(commands *[]recordedCommand, storageGates *int) *app {
+	return &app{
+		root:   filepath.Clean(`D:\Project\echo`),
+		out:    &bytes.Buffer{},
+		errOut: &bytes.Buffer{},
+		runOverride: func(name string, args ...string) error {
+			*commands = append(*commands, recordedCommand{name: name, args: append([]string(nil), args...)})
+			return nil
+		},
+		storageGateOverride: func() error {
+			(*storageGates)++
+			return nil
+		},
+	}
+}
+
+func hasRecordedCommand(commands []recordedCommand, name string, args ...string) bool {
+	for _, command := range commands {
+		if command.name == name && reflect.DeepEqual(command.args, args) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasGate(gates []string, want string) bool {
+	for _, gate := range gates {
+		if gate == want {
+			return true
+		}
+	}
+	return false
+}
+
+func TestStorageFocusedScopeRunsCanonicalGateOnce(t *testing.T) {
+	var commands []recordedCommand
+	storageGates := 0
+	a := newRecordingApp(&commands, &storageGates)
+	if err := a.verifyScopeGates("storage"); err != nil {
+		t.Fatalf("storage scope gates failed: %v", err)
+	}
+	if storageGates != 1 {
+		t.Fatalf("storage gate count = %d, want 1", storageGates)
+	}
+	if hasRecordedCommand(commands, "cargo", "test", "-p", "echo-storage", "--locked") {
+		t.Fatal("focused storage scope ran an independent storage package test")
+	}
+	plan := OwnerPlan{Owners: []string{"storage"}}
+	if !hasGate(ownerGateNames(plan, ValidationDeveloper), "echo.cmd verify storage") {
+		t.Fatalf("storage planner omitted canonical gate: %v", ownerGateNames(plan, ValidationDeveloper))
+	}
+}
+
+func TestStorageOwnerRunsCanonicalGateWithoutPackageDuplicate(t *testing.T) {
+	var commands []recordedCommand
+	storageGates := 0
+	a := newRecordingApp(&commands, &storageGates)
+	plan := OwnerPlan{Owners: []string{"storage"}}
+	if err := a.runOwnerPlanGates(plan, ValidationDeveloper); err != nil {
+		t.Fatalf("storage owner gates failed: %v", err)
+	}
+	if storageGates != 1 {
+		t.Fatalf("storage gate count = %d, want 1", storageGates)
+	}
+	if hasRecordedCommand(commands, "cargo", "test", "-p", "echo-storage") {
+		t.Fatal("storage owner ran an independent storage package test")
+	}
+	gates := ownerGateNames(plan, ValidationDeveloper)
+	if !hasGate(gates, "echo.cmd verify storage") || hasGate(gates, "cargo test -p echo-storage") {
+		t.Fatalf("storage planner gates = %v, want canonical storage gate only", gates)
+	}
+}
+
+func TestMixedStorageClipboardRunsCanonicalGateOnce(t *testing.T) {
+	var commands []recordedCommand
+	storageGates := 0
+	a := newRecordingApp(&commands, &storageGates)
+	plan := OwnerPlan{Owners: []string{"clipboard", "storage"}}
+	if err := a.runOwnerPlanGates(plan, ValidationDeveloper); err != nil {
+		t.Fatalf("mixed clipboard/storage gates failed: %v", err)
+	}
+	if storageGates != 1 {
+		t.Fatalf("storage gate count = %d, want 1", storageGates)
+	}
+	if !hasRecordedCommand(commands, "cargo", "test", "-p", "echo-engine") || hasRecordedCommand(commands, "cargo", "test", "-p", "echo-storage") {
+		t.Fatalf("mixed clipboard/storage package calls = %#v", commands)
+	}
+	gates := ownerGateNames(plan, ValidationDeveloper)
+	if !hasGate(gates, "echo.cmd verify storage") || hasGate(gates, "cargo test -p echo-storage") {
+		t.Fatalf("mixed clipboard/storage planner gates = %v", gates)
+	}
+}
+
+func TestMixedStorageTestsRunsCanonicalGateOnce(t *testing.T) {
+	var commands []recordedCommand
+	storageGates := 0
+	a := newRecordingApp(&commands, &storageGates)
+	plan := OwnerPlan{Owners: []string{"storage", "tests"}}
+	if err := a.runOwnerPlanGates(plan, ValidationDeveloper); err != nil {
+		t.Fatalf("mixed tests/storage gates failed: %v", err)
+	}
+	if storageGates != 1 {
+		t.Fatalf("storage gate count = %d, want 1", storageGates)
+	}
+	if hasRecordedCommand(commands, "cargo", "test", "-p", "echo-storage") {
+		t.Fatal("mixed tests/storage ran an independent storage package test")
+	}
+	for _, packageName := range []string{"echo-engine", "echo-windows", "echo-activation"} {
+		if !hasRecordedCommand(commands, "cargo", "test", "-p", packageName) {
+			t.Fatalf("mixed tests/storage omitted %s test: %#v", packageName, commands)
+		}
+	}
+	if !hasRecordedCommand(commands, "pnpm", "--dir", "apps/ui", "test") || !hasRecordedCommand(commands, "cargo", "check", "-p", "echo-desktop") {
+		t.Fatalf("mixed tests/storage omitted UI or desktop gate: %#v", commands)
+	}
+	gates := ownerGateNames(plan, ValidationDeveloper)
+	if hasGate(gates, "cargo test --workspace --locked") || hasGate(gates, "cargo test -p echo-storage") {
+		t.Fatalf("mixed tests/storage planner retained duplicate workspace/storage gate: %v", gates)
+	}
+	for _, gate := range []string{
+		"cargo test -p echo-engine",
+		"cargo test -p echo-windows",
+		"cargo test -p echo-activation",
+		"pnpm --dir apps/ui test",
+		"cargo check -p echo-desktop",
+		"echo.cmd verify storage",
+	} {
+		if !hasGate(gates, gate) {
+			t.Fatalf("mixed tests/storage planner omitted actual gate %q: %v", gate, gates)
+		}
+	}
+}
+
+func TestTestsOwnerPlannerMatchesOrdinaryPackageExecution(t *testing.T) {
+	var commands []recordedCommand
+	storageGates := 0
+	a := newRecordingApp(&commands, &storageGates)
+	plan := OwnerPlan{Owners: []string{"tests"}}
+	if err := a.runOwnerPlanGates(plan, ValidationDeveloper); err != nil {
+		t.Fatalf("tests owner gates failed: %v", err)
+	}
+	if storageGates != 0 {
+		t.Fatalf("tests-only storage gate count = %d, want 0", storageGates)
+	}
+	for _, packageName := range []string{"echo-engine", "echo-windows", "echo-activation", "echo-storage"} {
+		if !hasRecordedCommand(commands, "cargo", "test", "-p", packageName) {
+			t.Fatalf("tests-only omitted %s test: %#v", packageName, commands)
+		}
+	}
+	gates := ownerGateNames(plan, ValidationDeveloper)
+	if hasGate(gates, "cargo test --workspace --locked") || hasGate(gates, "echo.cmd verify storage") {
+		t.Fatalf("tests-only planner contained an unrelated aggregate/canonical gate: %v", gates)
+	}
+	for _, gate := range []string{
+		"cargo test -p echo-engine",
+		"cargo test -p echo-windows",
+		"cargo test -p echo-activation",
+		"cargo test -p echo-storage",
+		"pnpm --dir apps/ui test",
+		"cargo check -p echo-desktop",
+	} {
+		if !hasGate(gates, gate) {
+			t.Fatalf("tests-only planner omitted actual gate %q: %v", gate, gates)
+		}
+	}
+	if len(gates) != 10 {
+		t.Fatalf("tests-only planner gates = %v, want %d entries", gates, 10)
+	}
+	if !hasRecordedCommand(commands, "cargo", "check", "-p", "echo-desktop") || !hasRecordedCommand(commands, "pnpm", "--dir", "apps/ui", "test") {
+		t.Fatalf("tests-only omitted UI or desktop gate: %#v", commands)
+	}
+}
+
+func TestFullVerificationRunsExcludedWorkspaceAndCanonicalGateOnce(t *testing.T) {
+	var commands []recordedCommand
+	storageGates := 0
+	a := newRecordingApp(&commands, &storageGates)
+	if err := a.verifyProfileGates(ValidationDeveloper); err != nil {
+		t.Fatalf("full verification gates failed: %v", err)
+	}
+	if storageGates != 1 {
+		t.Fatalf("storage gate count = %d, want 1", storageGates)
+	}
+	if !hasRecordedCommand(commands, "cargo", "test", "--workspace", "--exclude", "echo-storage", "--locked") {
+		t.Fatalf("full verification did not exclude echo-storage: %#v", commands)
+	}
+	if hasRecordedCommand(commands, "cargo", "test", "--workspace", "--locked") {
+		t.Fatal("full verification also ran the unexcluded workspace test")
+	}
+	plan := OwnerPlan{Full: true}
+	gates := ownerGateNames(plan, ValidationDeveloper)
+	if !hasGate(gates, "cargo test --workspace --exclude echo-storage --locked") || !hasGate(gates, "echo.cmd verify storage") {
+		t.Fatalf("full planner gates = %v", gates)
+	}
+}
+
+func TestStorageLeakScannerRejectsNonEmptyRepositoryRoot(t *testing.T) {
+	root := t.TempDir()
+	repoRoot := filepath.Join(root, ".local", "test-tmp", "echo-storage")
+	if err := os.MkdirAll(repoRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "leftover.txt"), []byte("residue"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repoEntries, err := snapshotStorageRepoEntries(repoRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := scanStorageLeak(map[string]storageTempEntry{}, map[string]storageTempEntry{}, repoEntries); err == nil || !strings.Contains(err.Error(), "leftover.txt") {
+		t.Fatalf("repository-local residue was not rejected: %v", err)
+	}
+}
+
 func TestGeneratedBindingsDriftCheckFailsClosed(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, filepath.FromSlash(generatedTransportPath))

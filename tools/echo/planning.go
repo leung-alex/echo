@@ -15,6 +15,11 @@ const (
 	ValidationCI        ValidationProfile = "ci"
 )
 
+const (
+	canonicalStorageGateName = "echo.cmd verify storage"
+	storagePackageGateName   = "cargo test -p echo-storage"
+)
+
 type ChangeStatus string
 
 const (
@@ -120,7 +125,8 @@ func ownerGateNames(plan OwnerPlan, profile ValidationProfile) []string {
 			"echo.cmd format --check",
 			"go test ./...",
 			"go vet ./...",
-			"cargo test --workspace --locked",
+			"cargo test --workspace --exclude echo-storage --locked",
+			canonicalStorageGateName,
 			"pnpm --dir apps/ui test",
 			"pnpm --dir apps/ui build",
 		}
@@ -136,13 +142,15 @@ func ownerGateNames(plan OwnerPlan, profile ValidationProfile) []string {
 		"go test ./...":           true,
 		"go vet ./...":            true,
 	}
+	needStorageGate := contains(plan.Owners, "storage")
 	for _, owner := range plan.Owners {
 		switch owner {
 		case "clipboard", "engine":
 			gateSet["cargo test -p echo-engine"] = true
-			gateSet["cargo test -p echo-storage"] = true
+			if !needStorageGate {
+				gateSet[storagePackageGateName] = true
+			}
 		case "storage":
-			gateSet["cargo test -p echo-storage"] = true
 		case "library":
 			gateSet["cargo test -p echo-engine"] = true
 		case "quick-insert":
@@ -156,11 +164,20 @@ func ownerGateNames(plan OwnerPlan, profile ValidationProfile) []string {
 		case "windows":
 			gateSet["cargo test -p echo-windows"] = true
 		case "tests":
-			gateSet["cargo test --workspace --locked"] = true
+			gateSet["cargo test -p echo-engine"] = true
+			gateSet["cargo test -p echo-windows"] = true
+			gateSet["cargo test -p echo-activation"] = true
+			if !needStorageGate {
+				gateSet[storagePackageGateName] = true
+			}
 			gateSet["pnpm --dir apps/ui test"] = true
+			gateSet["cargo check -p echo-desktop"] = true
 		case "tooling":
 			gateSet["echo.cmd self-check"] = true
 		}
+	}
+	if needStorageGate {
+		gateSet[canonicalStorageGateName] = true
 	}
 	if profile == ValidationCI {
 		gateSet["echo.cmd build --release"] = true

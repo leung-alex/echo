@@ -10,7 +10,7 @@
 | Activation | `crates/echo-activation/src` | Echo envelope encoding, validation, and `--echo-activate` parsing. |
 | Browser UI | `tests/ui/ui.spec.ts`, `tests/ui/visual.spec.ts`, `tests/ui/echo-fixture.ts` | History, Favorites, search, copy, insert recovery, settings, activation, responsive layout, and no-markup regressions. |
 | Native acceptance | `tests/e2e/*.spec.ts` | Actual Echo process over WebView2 CDP with isolated data, clipboard persistence, activation, and target-safe insertion. |
-| Tooling | `tools/echo/*_test.go` | Command dispatch, flags, root resolution, ownership planning, architecture boundaries, generated transport drift, bootstrap independence, and cleanup. |
+| Tooling | `tools/echo/*_test.go` | Command dispatch, flags, root resolution, ownership planning, canonical storage leak-gate wiring, architecture boundaries, generated transport drift, bootstrap independence, and cleanup. |
 
 Concrete native specs are `tests/e2e/clipboard.spec.ts` and
 `tests/e2e/quick-insert.spec.ts`; both are launched only through the authorized
@@ -24,6 +24,11 @@ native acceptance gates below.
   Windows environment.
 - UI tests use the controlled IPC boundary and are not native acceptance.
 - Native tests use the real Echo executable and the Go-owned Windows fixtures.
+- The focused storage command, full verification, and changed-owner plans that
+  include `storage` share the canonical storage leak gate. Full verification
+  excludes `echo-storage` from its workspace test so the storage suite and
+  TEMP scanner run once; mixed owners likewise do not add a duplicate storage
+  package test.
 
 ## Acceptance Isolation
 

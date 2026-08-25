@@ -14,3 +14,12 @@
 
 Changed paths are classified by `tools/echo`. Use
 `.\echo.cmd verify --changed-from <base> --explain` to inspect the owner plan.
+
+Storage verification is a single canonical gate. `.\echo.cmd verify storage`
+runs the storage package tests together with the system-TEMP and repo-local
+residue scanner. Full verification runs the non-storage workspace tests with
+`--exclude echo-storage`, then invokes that same canonical storage gate before
+the UI tests and build. A changed-owner plan containing `storage` also invokes
+the canonical gate exactly once and does not schedule an independent
+`cargo test -p echo-storage`; mixed storage/clipboard/tests plans retain the
+same de-duplication.

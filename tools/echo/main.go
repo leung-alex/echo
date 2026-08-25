@@ -73,6 +73,10 @@ type app struct {
 	env           []string
 	syncMainPath  string
 	syncWorktrees []fixedWorktree
+	// Test-only seams. Production construction leaves both nil so command and
+	// storage verification use the real runners below.
+	runOverride         func(string, ...string) error
+	storageGateOverride func() error
 }
 
 type exitError struct {
@@ -334,15 +338,23 @@ func (a *app) printPlan(plan OwnerPlan, profile ValidationProfile) {
 }
 
 func (a *app) verifyScope(scope string) error {
+	if err := a.runVerificationPrelude(); err != nil {
+		return err
+	}
+	return a.verifyScopeGates(scope)
+}
+
+func (a *app) runVerificationPrelude() error {
 	if err := a.selfCheck(); err != nil {
 		return err
 	}
 	if err := a.format(true); err != nil {
 		return err
 	}
-	if err := a.runGoChecks(); err != nil {
-		return err
-	}
+	return a.runGoChecks()
+}
+
+func (a *app) verifyScopeGates(scope string) error {
 	switch scope {
 	case "clipboard":
 		if err := a.run("cargo", "test", "-p", "echo-engine"); err != nil {
@@ -353,7 +365,7 @@ func (a *app) verifyScope(scope string) error {
 		}
 		return a.run("cargo", "check", "-p", "echo-desktop")
 	case "storage":
-		return a.verifyStorage()
+		return a.runStorageGate()
 	case "quick-insert":
 		if err := a.run("cargo", "test", "-p", "echo-engine"); err != nil {
 			return err
@@ -502,7 +514,9 @@ func scanStorageLeak(
 	return nil
 }
 
-func (a *app) verifyStorage() error {
+func (a *app) runStorageGate() error {
+	started := time.Now()
+	fmt.Fprintln(a.out, "Echo storage verification start")
 	tempRoot := os.TempDir()
 	repoRoot := filepath.Join(a.root, ".local", "test-tmp", "echo-storage")
 	beforeTemp, err := snapshotStorageTempTopLevel(tempRoot)
@@ -512,7 +526,9 @@ func (a *app) verifyStorage() error {
 	if _, err := snapshotStorageRepoEntries(repoRoot); err != nil {
 		return err
 	}
-	started := time.Now()
+	if a.storageGateOverride != nil {
+		return a.storageGateOverride()
+	}
 	runErr := a.run("cargo", "test", "-p", "echo-storage", "--locked")
 	afterTemp, snapshotErr := snapshotStorageTempTopLevel(tempRoot)
 	if snapshotErr != nil {
@@ -540,16 +556,17 @@ func (a *app) verifyStorage() error {
 }
 
 func (a *app) verifyProfile(profile ValidationProfile) error {
-	if err := a.selfCheck(); err != nil {
+	if err := a.runVerificationPrelude(); err != nil {
 		return err
 	}
-	if err := a.format(true); err != nil {
+	return a.verifyProfileGates(profile)
+}
+
+func (a *app) verifyProfileGates(profile ValidationProfile) error {
+	if err := a.run("cargo", "test", "--workspace", "--exclude", "echo-storage", "--locked"); err != nil {
 		return err
 	}
-	if err := a.runGoChecks(); err != nil {
-		return err
-	}
-	if err := a.run("cargo", "test", "--workspace", "--locked"); err != nil {
+	if err := a.runStorageGate(); err != nil {
 		return err
 	}
 	if err := a.run("pnpm", "--dir", "apps/ui", "test"); err != nil {
@@ -567,27 +584,28 @@ func (a *app) verifyProfile(profile ValidationProfile) error {
 }
 
 func (a *app) runOwnerPlan(plan OwnerPlan, profile ValidationProfile) error {
+	if err := a.runVerificationPrelude(); err != nil {
+		return err
+	}
+	return a.runOwnerPlanGates(plan, profile)
+}
+
+func (a *app) runOwnerPlanGates(plan OwnerPlan, profile ValidationProfile) error {
 	if plan.Full {
-		return a.verifyProfile(profile)
-	}
-	if err := a.selfCheck(); err != nil {
-		return err
-	}
-	if err := a.format(true); err != nil {
-		return err
-	}
-	if err := a.runGoChecks(); err != nil {
-		return err
+		return a.verifyProfileGates(profile)
 	}
 	needFrontend := false
 	needDesktop := false
+	needStorageGate := contains(plan.Owners, "storage")
 	packages := map[string]bool{}
 	for _, owner := range plan.Owners {
 		switch owner {
 		case "clipboard", "engine":
-			packages["echo-engine"], packages["echo-storage"] = true, true
+			packages["echo-engine"] = true
+			if !needStorageGate {
+				packages["echo-storage"] = true
+			}
 		case "storage":
-			packages["echo-storage"] = true
 		case "library":
 			packages["echo-engine"] = true
 		case "quick-insert":
@@ -600,7 +618,11 @@ func (a *app) runOwnerPlan(plan OwnerPlan, profile ValidationProfile) error {
 		case "tests":
 			needFrontend = true
 			needDesktop = true
-			for _, packageName := range []string{"echo-engine", "echo-storage", "echo-windows", "echo-activation"} {
+			packageNames := []string{"echo-engine", "echo-windows", "echo-activation"}
+			if !needStorageGate {
+				packageNames = append(packageNames, "echo-storage")
+			}
+			for _, packageName := range packageNames {
 				packages[packageName] = true
 			}
 		case "tooling":
@@ -614,6 +636,11 @@ func (a *app) runOwnerPlan(plan OwnerPlan, profile ValidationProfile) error {
 	sort.Strings(packageNames)
 	for _, packageName := range packageNames {
 		if err := a.run("cargo", "test", "-p", packageName); err != nil {
+			return err
+		}
+	}
+	if needStorageGate {
+		if err := a.runStorageGate(); err != nil {
 			return err
 		}
 	}
@@ -1286,6 +1313,9 @@ func (a *app) command(name string, args ...string) *exec.Cmd {
 }
 
 func (a *app) run(name string, args ...string) error {
+	if a.runOverride != nil {
+		return a.runOverride(name, args...)
+	}
 	cmd := a.command(name, args...)
 	cmd.Stdout = a.out
 	cmd.Stderr = a.errOut
