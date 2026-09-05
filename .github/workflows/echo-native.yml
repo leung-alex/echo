@@ -1,0 +1,45 @@
+name: Echo native Rust and Slint
+on:
+  push:
+    branches: [codex/ui]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: echo-native-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  native-windows:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version: '1.26.2'
+          cache: false
+      - name: Pin native compiler
+        run: |
+          rustup toolchain install 1.97.0 --profile minimal --component rustfmt
+          if ($LASTEXITCODE) { throw 'Rust installation failed' }
+          rustup override set 1.97.0
+          if ($LASTEXITCODE) { throw 'Rust override failed' }
+      - name: Verify native ownership and tests
+        run: |
+          ./echo.cmd verify
+          if ($LASTEXITCODE) { throw 'Native verification failed' }
+      - name: Release build without a browser runtime
+        run: |
+          ./echo.cmd build --release
+          if ($LASTEXITCODE) { throw 'Native Release build failed' }
+      - name: Record platform acceptance boundary
+        if: always()
+        run: |
+          'This CI executes real Rust/Go tests and builds the native Release executable. Physical IME, visual inspection, clipboard insertion, installation and performance require separate authorized desktop evidence.' >> $env:GITHUB_STEP_SUMMARY

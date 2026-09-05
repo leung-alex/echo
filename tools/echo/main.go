@@ -2,14 +2,11 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"net"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,9 +25,9 @@ Usage:
   echo.cmd help
       Show this public command reference.
   echo.cmd install
-      Install the pinned frontend and Tauri development dependencies.
+      Fetch the locked Rust dependencies (no Node or browser runtime).
   echo.cmd format [--check]
-      Format or check Go, Rust, frontend, and test files.
+      Format or check Go and Rust source files.
   echo.cmd verify [--changed-from <sha>] [--profile <developer|ci>] [--explain]
       Run full verification, or verify only owners affected by Git changes.
   echo.cmd verify clipboard
@@ -39,22 +36,20 @@ Usage:
       Run the focused Quick Insert ownership gates.
   echo.cmd verify storage
       Run the focused storage tests and global TEMP leak gate.
-  echo.cmd bindings [--check]
-      Generate or check the checked-in TypeScript transport bindings.
   echo.cmd self-check
       Validate repository automation and independence invariants.
   echo.cmd build [--release]
-      Build the frontend and Echo desktop executable.
+      Build the native Slint desktop executable.
   echo.cmd dev
-      Start the Echo Tauri development application.
+      Start Echo with the native Slint renderer.
   echo.cmd smoke
-      Start Echo with isolated data and verify its local bootstrap.
+      Run authorized Release startup and graceful shutdown with synthetic data.
   echo.cmd perf
       Run the deterministic storage diagnostic and print JSON output.
-  echo.cmd acceptance <clipboard|quick-insert>
+  echo.cmd acceptance <clipboard|quick-insert|ui>
       Run separately authorized native Windows acceptance.
   echo.cmd package [--dir]
-      Build the NSIS package, or only the unpackaged release executable.
+      Build portable ZIP and optional NSIS installer, or only the release executable.
   echo.cmd release-candidate
       Verify clean inputs and produce a local release candidate manifest.
   echo.cmd sync [--all | --branch <fixed-branch>]
@@ -136,16 +131,6 @@ func (a *app) dispatch(args []string) error {
 		return a.format(*check)
 	case "verify":
 		return a.verifyCommand(args[1:])
-	case "bindings":
-		fs := newFlags("bindings", a.errOut)
-		check := fs.Bool("check", false, "check bindings without writing")
-		if err := parseFlags(fs, args[1:]); err != nil {
-			return err
-		}
-		if *check {
-			return a.checkGeneratedBindings()
-		}
-		return a.writeGeneratedBindings()
 	case "self-check":
 		return noArgs(args[1:], a.selfCheck)
 	case "build":
@@ -355,31 +340,24 @@ func (a *app) runVerificationPrelude() error {
 }
 
 func (a *app) verifyScopeGates(scope string) error {
-	switch scope {
-	case "clipboard":
-		if err := a.run("cargo", "test", "-p", "echo-engine"); err != nil {
-			return err
-		}
-		if err := a.run("cargo", "test", "-p", "echo-storage"); err != nil {
-			return err
-		}
-		return a.run("cargo", "check", "-p", "echo-desktop")
-	case "storage":
+	if scope == "storage" {
 		return a.runStorageGate()
-	case "quick-insert":
-		if err := a.run("cargo", "test", "-p", "echo-engine"); err != nil {
-			return err
-		}
-		if err := a.run("cargo", "test", "-p", "echo-activation"); err != nil {
-			return err
-		}
-		if err := a.run("pnpm", "--dir", "apps/ui", "test"); err != nil {
-			return err
-		}
-		return a.run("pnpm", "--dir", "apps/ui", "build")
-	default:
+	}
+	packages := []string{"echo-engine", "echo-presentation", "echo-activation", "echo-desktop"}
+	if scope == "clipboard" {
+		packages = []string{"echo-engine", "echo-windows", "echo-desktop"}
+	} else if scope != "quick-insert" {
 		return fmt.Errorf("unknown verification scope %q", scope)
 	}
+	for _, p := range packages {
+		if err := a.run("cargo", "test", "-p", p, "--locked"); err != nil {
+			return err
+		}
+	}
+	if scope == "clipboard" {
+		return a.runStorageGate()
+	}
+	return nil
 }
 
 type storageTempEntry struct {
@@ -569,16 +547,8 @@ func (a *app) verifyProfileGates(profile ValidationProfile) error {
 	if err := a.runStorageGate(); err != nil {
 		return err
 	}
-	if err := a.run("pnpm", "--dir", "apps/ui", "test"); err != nil {
-		return err
-	}
-	if err := a.run("pnpm", "--dir", "apps/ui", "build"); err != nil {
-		return err
-	}
 	if profile == ValidationCI {
-		if err := a.build(true); err != nil {
-			return err
-		}
+		return a.build(true)
 	}
 	return nil
 }
@@ -594,68 +564,14 @@ func (a *app) runOwnerPlanGates(plan OwnerPlan, profile ValidationProfile) error
 	if plan.Full {
 		return a.verifyProfileGates(profile)
 	}
-	needFrontend := false
-	needDesktop := false
-	needStorageGate := contains(plan.Owners, "storage")
-	packages := map[string]bool{}
-	for _, owner := range plan.Owners {
-		switch owner {
-		case "clipboard", "engine":
-			packages["echo-engine"] = true
-			if !needStorageGate {
-				packages["echo-storage"] = true
-			}
-		case "storage":
-		case "library":
-			packages["echo-engine"] = true
-		case "quick-insert":
-			packages["echo-engine"] = true
-			needFrontend = true
-		case "frontend":
-			needFrontend = true
-		case "desktop", "activation":
-			needDesktop = true
-		case "tests":
-			needFrontend = true
-			needDesktop = true
-			packageNames := []string{"echo-engine", "echo-windows", "echo-activation"}
-			if !needStorageGate {
-				packageNames = append(packageNames, "echo-storage")
-			}
-			for _, packageName := range packageNames {
-				packages[packageName] = true
-			}
-		case "tooling":
-			// self-check and Go checks above are the tooling gates.
-		}
-	}
-	packageNames := make([]string, 0, len(packages))
-	for packageName := range packages {
-		packageNames = append(packageNames, packageName)
-	}
-	sort.Strings(packageNames)
-	for _, packageName := range packageNames {
-		if err := a.run("cargo", "test", "-p", packageName); err != nil {
+	packages, storage := ownerPackages(plan)
+	for _, name := range packages {
+		if err := a.run("cargo", "test", "-p", name, "--locked"); err != nil {
 			return err
 		}
 	}
-	if needStorageGate {
+	if storage {
 		if err := a.runStorageGate(); err != nil {
-			return err
-		}
-	}
-	if needFrontend {
-		if err := a.run("pnpm", "--dir", "apps/ui", "test"); err != nil {
-			return err
-		}
-		if profile == ValidationCI || contains(plan.Owners, "frontend") {
-			if err := a.run("pnpm", "--dir", "apps/ui", "build"); err != nil {
-				return err
-			}
-		}
-	}
-	if needDesktop {
-		if err := a.run("cargo", "check", "-p", "echo-desktop"); err != nil {
 			return err
 		}
 	}
@@ -699,22 +615,9 @@ func (a *app) selfCheck() error {
 	if err := requireGoVersion(); err != nil {
 		return err
 	}
-	for _, relative := range []string{
-		"echo.cmd",
-		"Cargo.toml",
-		"pnpm-workspace.yaml",
-		"package.json",
-		"apps/ui/package.json",
-		"apps/desktop/tauri.conf.json",
-		"apps/desktop/icons/icon.ico",
-		"tools/echo/go.mod",
-		"tools/echo/fixture/main_windows.go",
-		"docs/TEST_OWNERSHIP_MAP.md",
-		"docs/VISUAL_PARITY_DEVIATIONS.md",
-		"docs/P08_VISUAL_HANDOFF.md",
-	} {
-		if !fileExists(filepath.Join(a.root, filepath.FromSlash(relative))) {
-			return fmt.Errorf("self-check expected file is missing: %s", relative)
+	for _, path := range []string{"echo.cmd", "Cargo.toml", "Cargo.lock", "apps/desktop/ui/app-window.slint", "apps/desktop/resources/echo.manifest", "apps/desktop/icons/icon.ico", "tools/echo/go.mod", "docs/TEST_OWNERSHIP_MAP.md"} {
+		if !fileExists(filepath.Join(a.root, filepath.FromSlash(path))) {
+			return fmt.Errorf("self-check expected file is missing: %s", path)
 		}
 	}
 	if fileExists(filepath.Join(a.root, ".gitmodules")) {
@@ -723,111 +626,26 @@ func (a *app) selfCheck() error {
 	if err := a.checkManifestIndependence(); err != nil {
 		return err
 	}
-	if err := a.checkFrontendPresentation(); err != nil {
-		return err
-	}
 	metadata, err := a.runCapture("cargo", "metadata", "--no-deps", "--locked", "--format-version", "1")
 	if err != nil {
 		return err
 	}
 	if containsForbiddenDependency(metadata) {
-		return fmt.Errorf("self-check found a sibling dependency in cargo metadata")
+		return fmt.Errorf("sibling dependency in Cargo metadata")
 	}
-	if err := a.checkGeneratedIgnore("apps/desktop/gen/schemas/desktop-schema.json"); err != nil {
+	if err = a.checkArchitectureContracts([]byte(metadata)); err != nil {
 		return err
 	}
-	if err := a.checkGeneratedBindings(); err != nil {
+	if err = a.checkNativeFixtureSources(); err != nil {
 		return err
 	}
-	if err := a.checkArchitectureContracts([]byte(metadata)); err != nil {
-		return err
-	}
-	if err := a.checkNativeFixtureSources(); err != nil {
-		return err
-	}
-	content, err := os.ReadFile(filepath.Join(a.root, "docs", "TEST_OWNERSHIP_MAP.md"))
-	if err != nil {
-		return fmt.Errorf("read test ownership map: %w", err)
-	}
-	for _, required := range []string{"clipboard.spec.ts", "quick-insert.spec.ts", "Native acceptance"} {
-		if !bytes.Contains(content, []byte(required)) {
-			return fmt.Errorf("test ownership map is missing %q", required)
-		}
-	}
-	return nil
+	return a.checkNoBrowserRuntime()
 }
 
 func (a *app) checkNativeFixtureSources() error {
-	for _, relative := range []string{
-		"tests/e2e/native-fixture.ts",
-		"tools/echo/fixture/main_windows.go",
-		"tools/echo/fixture/target_windows.go",
-	} {
-		if !fileExists(filepath.Join(a.root, filepath.FromSlash(relative))) {
-			return fmt.Errorf("native fixture source is missing: %s", relative)
-		}
-	}
-	var powershellFiles []string
-	err := filepath.WalkDir(filepath.Join(a.root, "tests", "e2e"), func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if !entry.IsDir() && strings.EqualFold(filepath.Ext(path), ".ps1") {
-			powershellFiles = append(powershellFiles, relativeToRoot(a.root, path))
-		}
-		return nil
-	})
-	if err != nil {
-		return fmt.Errorf("scan native fixture sources: %w", err)
-	}
-	if len(powershellFiles) != 0 {
-		return fmt.Errorf("legacy .ps1 native fixture remains: %s", strings.Join(powershellFiles, ", "))
-	}
-	return nil
-}
-
-func (a *app) checkFrontendPresentation() error {
-	root := filepath.Join(a.root, "apps", "ui", "src")
-	defined := map[string]bool{}
-	used := map[string]bool{}
-	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.IsDir() {
-			return nil
-		}
-		ext := strings.ToLower(filepath.Ext(path))
-		if ext != ".ts" && ext != ".tsx" && ext != ".css" {
-			return nil
-		}
-		content, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("read frontend source %s: %w", relativeToRoot(a.root, path), err)
-		}
-		textContent := string(content)
-		lower := strings.ToLower(textContent)
-		if strings.Contains(lower, "innerhtml") {
-			return fmt.Errorf("temporary innerHTML presentation remains in %s", relativeToRoot(a.root, path))
-		}
-		if ext != ".css" {
-			return nil
-		}
-		for _, occurrence := range echoTokenOccurrences(textContent) {
-			if occurrence.definition {
-				defined[occurrence.token] = true
-			} else {
-				used[occurrence.token] = true
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		return err
-	}
-	for token := range used {
-		if !defined[token] {
-			return fmt.Errorf("unresolved Echo UI token: %s", token)
+	for _, path := range []string{"tests/native/EchoUi.cs", "tests/native/EchoDriver.cs", "tests/native/Invoke-UiAcceptance.ps1", "tests/native/Invoke-NativeGate.ps1", "tools/echo/fixture/main_windows.go", "tools/echo/fixture/target_windows.go"} {
+		if !fileExists(filepath.Join(a.root, filepath.FromSlash(path))) {
+			return fmt.Errorf("native fixture source is missing: %s", path)
 		}
 	}
 	return nil
@@ -878,61 +696,29 @@ func requireGoVersion() error {
 }
 
 func (a *app) checkManifestIndependence() error {
-	files := []string{
-		"Cargo.toml",
-		"Cargo.lock",
-		"pnpm-workspace.yaml",
-		"pnpm-lock.yaml",
-		"package.json",
-		"apps/ui/package.json",
-		"apps/desktop/Cargo.toml",
-		"apps/desktop/tauri.conf.json",
-		"echo.cmd",
-		"tools/echo/go.mod",
-	}
-	err := filepath.WalkDir(a.root, func(path string, entry os.DirEntry, walkErr error) error {
+	return filepath.WalkDir(a.root, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
 		if entry.IsDir() {
-			if strings.EqualFold(relativeToRoot(a.root, path), "tests/verification") {
-				// Verification harnesses are standalone workspaces and intentionally depend on repo crates by path.
-				return filepath.SkipDir
-			}
-			name := entry.Name()
-			if name == ".git" || name == "target" || name == "node_modules" || name == ".local" || name == "dist" {
+			n := entry.Name()
+			if n == ".git" || n == "target" || n == "node_modules" || n == ".local" || n == "dist" || filepath.ToSlash(relativeToRoot(a.root, path)) == "tests/verification" {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		name := filepath.Base(path)
-		if name == "Cargo.toml" || name == "package.json" || name == "pnpm-workspace.yaml" || name == ".gitmodules" || name == "echo.cmd" || name == "go.mod" {
-			files = append(files, path)
+		switch entry.Name() {
+		case "Cargo.toml", "Cargo.lock", "echo.cmd", "go.mod":
+			content, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			if containsForbiddenDependency(string(content)) {
+				return fmt.Errorf("sibling dependency found in %s", relativeToRoot(a.root, path))
+			}
 		}
 		return nil
 	})
-	if err != nil {
-		return fmt.Errorf("scan Echo manifests: %w", err)
-	}
-	seen := map[string]bool{}
-	for _, path := range files {
-		absolute, err := filepath.Abs(path)
-		if err != nil {
-			return err
-		}
-		if seen[strings.ToLower(absolute)] {
-			continue
-		}
-		seen[strings.ToLower(absolute)] = true
-		content, err := os.ReadFile(absolute)
-		if err != nil {
-			return fmt.Errorf("read manifest %s: %w", path, err)
-		}
-		if containsForbiddenDependency(string(content)) {
-			return fmt.Errorf("sibling dependency found in %s", relativeToRoot(a.root, absolute))
-		}
-	}
-	return nil
 }
 
 func containsForbiddenDependency(content string) bool {
@@ -960,32 +746,22 @@ func (a *app) checkGeneratedIgnore(relative string) error {
 }
 
 func (a *app) format(check bool) error {
-	goFiles, err := a.goFiles()
+	files, err := a.goFiles()
 	if err != nil {
 		return err
 	}
 	if check {
-		if len(goFiles) != 0 {
-			if err := a.checkGoFormatting(goFiles); err != nil {
-				return err
-			}
-		}
-		if err := a.run("cargo", "fmt", "--all", "--", "--check"); err != nil {
+		if err = a.checkGoFormatting(files); err != nil {
 			return err
 		}
-		args := append([]string{"exec", "prettier", "--check", "--end-of-line", "auto"}, prettierTargets()...)
-		return a.run("pnpm", args...)
+		return a.run("cargo", "fmt", "--all", "--", "--check")
 	}
-	if len(goFiles) != 0 {
-		if err := a.run("gofmt", append([]string{"-w"}, goFiles...)...); err != nil {
+	if len(files) > 0 {
+		if err = a.run("gofmt", append([]string{"-w"}, files...)...); err != nil {
 			return err
 		}
 	}
-	if err := a.run("cargo", "fmt", "--all"); err != nil {
-		return err
-	}
-	args := append([]string{"exec", "prettier", "--write", "--end-of-line", "auto"}, prettierTargets()...)
-	return a.run("pnpm", args...)
+	return a.run("cargo", "fmt", "--all")
 }
 
 func (a *app) checkGoFormatting(files []string) error {
@@ -1015,15 +791,6 @@ func (a *app) checkGoFormatting(files []string) error {
 		return fmt.Errorf("gofmt would rewrite:\n%s", strings.Join(drift, "\n"))
 	}
 	return nil
-}
-
-func prettierTargets() []string {
-	return []string{
-		"apps/ui/**/*.{ts,tsx,css,json,html}",
-		"tests/**/*.ts",
-		"package.json",
-		"pnpm-workspace.yaml",
-	}
 }
 
 func (a *app) goFiles() ([]string, error) {
@@ -1056,79 +823,29 @@ func (a *app) install() error {
 	if err := requireGoVersion(); err != nil {
 		return err
 	}
-	return a.run("pnpm", "install", "--frozen-lockfile")
+	return a.run("cargo", "fetch", "--locked")
 }
 
 func (a *app) build(release bool) error {
-	if err := a.run("pnpm", "--dir", "apps/ui", "build"); err != nil {
-		return err
-	}
 	args := []string{"build", "-p", "echo-desktop", "--locked"}
 	if release {
-		args = append(args, "--release", "--features", "custom-protocol")
+		args = append(args, "--release")
 	}
 	return a.run("cargo", args...)
 }
 
-func (a *app) dev() error {
-	return a.run("pnpm", "exec", "tauri", "dev", "--config", "apps/desktop/tauri.conf.json")
-}
+func (a *app) dev() error { return a.run("cargo", "run", "-p", "echo-desktop", "--locked") }
 
 func (a *app) smoke() error {
-	if err := a.build(false); err != nil {
-		return err
+	if os.Getenv("ECHO_WINDOWS_ACCEPTANCE") != "1" {
+		return fmt.Errorf("native startup changes desktop state; set ECHO_WINDOWS_ACCEPTANCE=1")
 	}
-	runRoot := filepath.Join(a.root, ".local", "echo")
-	if err := os.MkdirAll(runRoot, 0o755); err != nil {
-		return fmt.Errorf("create smoke run root: %w", err)
-	}
-	dataDir, err := os.MkdirTemp(runRoot, "smoke-")
-	if err != nil {
-		return fmt.Errorf("create smoke data directory: %w", err)
-	}
-	defer os.RemoveAll(dataDir)
-	exe := a.desktopExecutable(false)
-	if !fileExists(exe) {
-		return fmt.Errorf("Echo desktop executable is missing: %s", exe)
-	}
-	logPath := filepath.Join(dataDir, "smoke.log")
-	logFile, err := os.Create(logPath)
-	if err != nil {
-		return fmt.Errorf("create smoke log: %w", err)
-	}
-	cmd := a.command(exe)
-	cmd.Env = mergeEnv(nil, map[string]string{"ECHO_DATA_DIR": filepath.Join(dataDir, "data")})
-	cmd.Stdout, cmd.Stderr = logFile, logFile
-	if err := cmd.Start(); err != nil {
-		_ = logFile.Close()
-		return fmt.Errorf("start Echo smoke process: %w", err)
-	}
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-	select {
-	case err := <-done:
-		_ = logFile.Close()
-		return fmt.Errorf("Echo exited during smoke: %w; log=%s", err, logPath)
-	case <-time.After(4 * time.Second):
-	}
-	dataPath := filepath.Join(dataDir, "data")
-	if !fileExists(filepath.Join(dataPath, "echo.sqlite3")) || !directoryExists(filepath.Join(dataPath, "blobs")) {
-		_ = stopOwnedProcess(cmd, done)
-		_ = logFile.Close()
-		return fmt.Errorf("Echo smoke did not create its database/blob root; log=%s", logPath)
-	}
-	if err := stopOwnedProcess(cmd, done); err != nil {
-		_ = logFile.Close()
-		return err
-	}
-	_ = logFile.Close()
-	fmt.Fprintf(a.out, "Echo smoke passed; isolated data=%s\n", dataPath)
-	return nil
+	return a.runNativeGate("smoke")
 }
 
 func (a *app) acceptanceCommand(args []string) error {
-	if len(args) != 1 || (args[0] != "clipboard" && args[0] != "quick-insert") {
-		return fmt.Errorf("acceptance requires exactly clipboard or quick-insert")
+	if len(args) != 1 || (args[0] != "clipboard" && args[0] != "quick-insert" && args[0] != "ui") {
+		return fmt.Errorf("acceptance requires exactly clipboard, quick-insert, or ui")
 	}
 	if os.Getenv("ECHO_WINDOWS_ACCEPTANCE") != "1" {
 		return fmt.Errorf("native acceptance is separately authorized; set ECHO_WINDOWS_ACCEPTANCE=1 to run it")
@@ -1136,82 +853,7 @@ func (a *app) acceptanceCommand(args []string) error {
 	return a.runAcceptance(args[0])
 }
 
-func (a *app) runAcceptance(owner string) error {
-	if runtime.GOOS != "windows" {
-		return fmt.Errorf("native acceptance requires Windows")
-	}
-	if err := a.build(true); err != nil {
-		return err
-	}
-	runRoot := filepath.Join(a.root, ".local", "echo")
-	if err := os.MkdirAll(runRoot, 0o755); err != nil {
-		return fmt.Errorf("create acceptance root: %w", err)
-	}
-	runDir, err := os.MkdirTemp(runRoot, "acceptance-")
-	if err != nil {
-		return fmt.Errorf("create acceptance run: %w", err)
-	}
-	defer os.RemoveAll(runDir)
-	fixtureExecutable, err := a.buildNativeFixture(runDir)
-	if err != nil {
-		return err
-	}
-	dataDir := filepath.Join(runDir, "data")
-	webviewDir := filepath.Join(runDir, "webview2")
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(webviewDir, 0o755); err != nil {
-		return err
-	}
-	port, err := freeLoopbackPort()
-	if err != nil {
-		return err
-	}
-	exe := a.desktopExecutable(true)
-	logPath := filepath.Join(runDir, "echo.log")
-	logFile, err := os.Create(logPath)
-	if err != nil {
-		return fmt.Errorf("create acceptance log: %w", err)
-	}
-	env := map[string]string{
-		"ECHO_WINDOWS_ACCEPTANCE":               "1",
-		"ECHO_ACCEPTANCE_CDP_PORT":              fmt.Sprint(port),
-		"ECHO_ACCEPTANCE_EXE":                   exe,
-		"ECHO_ACCEPTANCE_FIXTURE_EXE":           fixtureExecutable,
-		"ECHO_ACCEPTANCE_RUN_ROOT":              runDir,
-		"ECHO_DATA_DIR":                         dataDir,
-		"WEBVIEW2_USER_DATA_FOLDER":             webviewDir,
-		"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS": "--remote-debugging-port=" + fmt.Sprint(port),
-	}
-	cmd := a.command(exe)
-	cmd.Env = mergeEnv(nil, env)
-	cmd.Stdout, cmd.Stderr = logFile, logFile
-	if err := cmd.Start(); err != nil {
-		_ = logFile.Close()
-		return fmt.Errorf("start Echo acceptance process: %w", err)
-	}
-	env["ECHO_ACCEPTANCE_PID"] = fmt.Sprint(cmd.Process.Pid)
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-	if err := waitForCDP(port, done); err != nil {
-		_ = stopOwnedProcess(cmd, done)
-		_ = logFile.Close()
-		return fmt.Errorf("Echo acceptance did not become ready: %w; log=%s", err, logPath)
-	}
-	playwrightSpec := filepath.ToSlash(filepath.Join("tests", "e2e", owner+".spec.ts"))
-	args := []string{"exec", "playwright", "test", "--config", "tests/e2e/playwright.config.ts", playwrightSpec}
-	result := a.runWithEnv(env, "pnpm", args...)
-	stopErr := stopOwnedProcess(cmd, done)
-	_ = logFile.Close()
-	if result != nil {
-		return fmt.Errorf("Echo %s acceptance failed: %w; log=%s", owner, result, logPath)
-	}
-	if stopErr != nil {
-		return stopErr
-	}
-	return nil
-}
+func (a *app) runAcceptance(owner string) error { return a.runNativeGate(owner) }
 
 func (a *app) buildNativeFixture(outputDir string) (string, error) {
 	if runtime.GOOS != "windows" {
@@ -1228,17 +870,14 @@ func (a *app) buildNativeFixture(outputDir string) (string, error) {
 }
 
 func (a *app) packageCommand(dirOnly bool) error {
+	if err := a.build(true); err != nil {
+		return err
+	}
 	if dirOnly {
-		if err := a.build(true); err != nil {
-			return err
-		}
 		fmt.Fprintln(a.out, a.desktopExecutable(true))
 		return nil
 	}
-	if err := a.run("pnpm", "exec", "tauri", "build", "--config", "apps/desktop/tauri.conf.json"); err != nil {
-		return err
-	}
-	return nil
+	return a.run("pwsh", "-NoProfile", "-File", filepath.Join(a.root, "tools", "packaging", "Package.ps1"), "-Root", a.root, "-Executable", a.desktopExecutable(true))
 }
 
 func (a *app) releaseCandidate() error {
@@ -1252,7 +891,7 @@ func (a *app) releaseCandidate() error {
 	if err := a.verifyProfile(ValidationCI); err != nil {
 		return err
 	}
-	if err := a.packageCommand(true); err != nil {
+	if err := a.packageCommand(false); err != nil {
 		return err
 	}
 	manifestDir := filepath.Join(a.root, ".local", "echo")
@@ -1389,40 +1028,6 @@ func commandString(name string, args ...string) string {
 	return strings.Join(parts, " ")
 }
 
-func freeLoopbackPort() (int, error) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return 0, fmt.Errorf("reserve a loopback port: %w", err)
-	}
-	defer listener.Close()
-	return listener.Addr().(*net.TCPAddr).Port, nil
-}
-
-func waitForCDP(port int, done <-chan error) error {
-	client := &http.Client{Timeout: 500 * time.Millisecond}
-	url := fmt.Sprintf("http://127.0.0.1:%d/json/version", port)
-	deadline := time.Now().Add(60 * time.Second)
-	for time.Now().Before(deadline) {
-		select {
-		case err := <-done:
-			return fmt.Errorf("Echo exited before CDP readiness: %w", err)
-		default:
-		}
-		request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
-		if err == nil {
-			response, requestErr := client.Do(request)
-			if requestErr == nil {
-				_ = response.Body.Close()
-				if response.StatusCode >= 200 && response.StatusCode < 300 {
-					return nil
-				}
-			}
-		}
-		time.Sleep(250 * time.Millisecond)
-	}
-	return fmt.Errorf("CDP endpoint %s did not become ready", url)
-}
-
 func stopOwnedProcess(cmd *exec.Cmd, done <-chan error) error {
 	if cmd == nil || cmd.Process == nil || cmd.ProcessState != nil {
 		return nil
@@ -1435,7 +1040,7 @@ func stopOwnedProcess(cmd *exec.Cmd, done <-chan error) error {
 	select {
 	case <-done:
 		// The process is expected to report a non-zero status when taskkill
-		// terminates the WebView2 descendant tree. Ownership was already
+		// terminates an owned test process tree. Ownership was already
 		// established by the command we started, so that status is not a
 		// validation failure.
 		return nil

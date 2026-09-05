@@ -28,11 +28,11 @@ func TestParseNameStatusZ(t *testing.T) {
 
 func TestPlanForPathsMapsOwnersDeterministically(t *testing.T) {
 	plan := planForPaths([]string{
-		"apps/ui/src/main.ts",
+		"crates/echo-presentation/src/lib.rs",
 		"crates\\echo-storage\\src\\lib.rs",
-		"tests/e2e/quick-insert.spec.ts",
+		"tests/native/Invoke-UiAcceptance.ps1",
 	})
-	want := []string{"frontend", "quick-insert", "storage", "tests"}
+	want := []string{"presentation", "quick-insert", "storage", "tests"}
 	if !reflect.DeepEqual(plan.Owners, want) {
 		t.Fatalf("owners = %#v, want %#v", plan.Owners, want)
 	}
@@ -90,7 +90,7 @@ func TestCapturePathAllowsExplicitRepair(t *testing.T) {
 }
 
 func TestRootDependencyManifestsUseFullVerification(t *testing.T) {
-	plan := planForPaths([]string{"Cargo.toml", "pnpm-lock.yaml"})
+	plan := planForPaths([]string{"Cargo.toml", "Cargo.lock"})
 	if !plan.Full || !reflect.DeepEqual(plan.Owners, []string{"tooling"}) {
 		t.Fatalf("root manifests were not full verification: %#v", plan)
 	}
@@ -286,7 +286,7 @@ func TestMixedStorageClipboardRunsCanonicalGateOnce(t *testing.T) {
 	if storageGates != 1 {
 		t.Fatalf("storage gate count = %d, want 1", storageGates)
 	}
-	if !hasRecordedCommand(commands, "cargo", "test", "-p", "echo-engine") || hasRecordedCommand(commands, "cargo", "test", "-p", "echo-storage") {
+	if !hasRecordedCommand(commands, "cargo", "test", "-p", "echo-engine", "--locked") || hasRecordedCommand(commands, "cargo", "test", "-p", "echo-storage") {
 		t.Fatalf("mixed clipboard/storage package calls = %#v", commands)
 	}
 	gates := ownerGateNames(plan, ValidationDeveloper)
@@ -310,11 +310,11 @@ func TestMixedStorageTestsRunsCanonicalGateOnce(t *testing.T) {
 		t.Fatal("mixed tests/storage ran an independent storage package test")
 	}
 	for _, packageName := range []string{"echo-engine", "echo-windows", "echo-activation"} {
-		if !hasRecordedCommand(commands, "cargo", "test", "-p", packageName) {
+		if !hasRecordedCommand(commands, "cargo", "test", "-p", packageName, "--locked") {
 			t.Fatalf("mixed tests/storage omitted %s test: %#v", packageName, commands)
 		}
 	}
-	if !hasRecordedCommand(commands, "pnpm", "--dir", "apps/ui", "test") || !hasRecordedCommand(commands, "cargo", "check", "-p", "echo-desktop") {
+	if !hasRecordedCommand(commands, "cargo", "test", "-p", "echo-presentation", "--locked") || !hasRecordedCommand(commands, "cargo", "test", "-p", "echo-desktop", "--locked") {
 		t.Fatalf("mixed tests/storage omitted UI or desktop gate: %#v", commands)
 	}
 	gates := ownerGateNames(plan, ValidationDeveloper)
@@ -322,11 +322,11 @@ func TestMixedStorageTestsRunsCanonicalGateOnce(t *testing.T) {
 		t.Fatalf("mixed tests/storage planner retained duplicate workspace/storage gate: %v", gates)
 	}
 	for _, gate := range []string{
-		"cargo test -p echo-engine",
-		"cargo test -p echo-windows",
-		"cargo test -p echo-activation",
-		"pnpm --dir apps/ui test",
-		"cargo check -p echo-desktop",
+		"cargo test -p echo-engine --locked",
+		"cargo test -p echo-windows --locked",
+		"cargo test -p echo-activation --locked",
+		"cargo test -p echo-presentation --locked",
+		"cargo test -p echo-desktop --locked",
 		"echo.cmd verify storage",
 	} {
 		if !hasGate(gates, gate) {
@@ -335,43 +335,33 @@ func TestMixedStorageTestsRunsCanonicalGateOnce(t *testing.T) {
 	}
 }
 
-func TestTestsOwnerPlannerMatchesOrdinaryPackageExecution(t *testing.T) {
+func TestTestsOwnerPlannerMatchesCanonicalNativeExecution(t *testing.T) {
 	var commands []recordedCommand
 	storageGates := 0
 	a := newRecordingApp(&commands, &storageGates)
 	plan := OwnerPlan{Owners: []string{"tests"}}
 	if err := a.runOwnerPlanGates(plan, ValidationDeveloper); err != nil {
-		t.Fatalf("tests owner gates failed: %v", err)
+		t.Fatal(err)
 	}
-	if storageGates != 0 {
-		t.Fatalf("tests-only storage gate count = %d, want 0", storageGates)
-	}
-	for _, packageName := range []string{"echo-engine", "echo-windows", "echo-activation", "echo-storage"} {
-		if !hasRecordedCommand(commands, "cargo", "test", "-p", packageName) {
-			t.Fatalf("tests-only omitted %s test: %#v", packageName, commands)
-		}
+	if storageGates != 1 {
+		t.Fatalf("storage gate count=%d want1", storageGates)
 	}
 	gates := ownerGateNames(plan, ValidationDeveloper)
-	if hasGate(gates, "cargo test --workspace --locked") || hasGate(gates, "echo.cmd verify storage") {
-		t.Fatalf("tests-only planner contained an unrelated aggregate/canonical gate: %v", gates)
-	}
-	for _, gate := range []string{
-		"cargo test -p echo-engine",
-		"cargo test -p echo-windows",
-		"cargo test -p echo-activation",
-		"cargo test -p echo-storage",
-		"pnpm --dir apps/ui test",
-		"cargo check -p echo-desktop",
-	} {
-		if !hasGate(gates, gate) {
-			t.Fatalf("tests-only planner omitted actual gate %q: %v", gate, gates)
+	for _, name := range []string{"echo-engine", "echo-windows", "echo-activation", "echo-presentation", "echo-desktop"} {
+		if !hasRecordedCommand(commands, "cargo", "test", "-p", name, "--locked") {
+			t.Errorf("native package not tested: %s", name)
+		}
+		if !hasGate(gates, "cargo test -p "+name+" --locked") {
+			t.Errorf("planner omitted: %s", name)
 		}
 	}
-	if len(gates) != 10 {
-		t.Fatalf("tests-only planner gates = %v, want %d entries", gates, 10)
+	if !hasGate(gates, canonicalStorageGateName) || hasRecordedCommand(commands, "cargo", "test", "-p", "echo-storage", "--locked") {
+		t.Fatal("storage gate not canonical/exclusive")
 	}
-	if !hasRecordedCommand(commands, "cargo", "check", "-p", "echo-desktop") || !hasRecordedCommand(commands, "pnpm", "--dir", "apps/ui", "test") {
-		t.Fatalf("tests-only omitted UI or desktop gate: %#v", commands)
+	for _, cmd := range commands {
+		if cmd.name == "pnpm" || cmd.name == "node" {
+			t.Fatal("browser tooling remains")
+		}
 	}
 }
 
@@ -413,34 +403,6 @@ func TestStorageLeakScannerRejectsNonEmptyRepositoryRoot(t *testing.T) {
 	}
 	if err := scanStorageLeak(map[string]storageTempEntry{}, map[string]storageTempEntry{}, repoEntries); err == nil || !strings.Contains(err.Error(), "leftover.txt") {
 		t.Fatalf("repository-local residue was not rejected: %v", err)
-	}
-}
-
-func TestGeneratedBindingsDriftCheckFailsClosed(t *testing.T) {
-	root := t.TempDir()
-	path := filepath.Join(root, filepath.FromSlash(generatedTransportPath))
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte("stale"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	a := &app{root: root, out: &bytes.Buffer{}, errOut: &bytes.Buffer{}}
-	if err := a.checkGeneratedBindings(); err == nil {
-		t.Fatal("stale generated bindings were accepted")
-	}
-	if err := os.WriteFile(path, []byte(generatedTransportBindings()), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := a.checkGeneratedBindings(); err != nil {
-		t.Fatalf("fresh generated bindings were rejected: %v", err)
-	}
-	windows := bytes.ReplaceAll([]byte(generatedTransportBindings()), []byte{'\n'}, []byte{'\r', '\n'})
-	if err := os.WriteFile(path, windows, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := a.checkGeneratedBindings(); err != nil {
-		t.Fatalf("Windows line endings were rejected: %v", err)
 	}
 }
 

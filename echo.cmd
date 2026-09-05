@@ -23,7 +23,9 @@ if errorlevel 1 goto allocate_session
 set "KEY_INPUT=%SESSION_ROOT%\key.txt"
 break > "%KEY_INPUT%"
 for /f "delims=" %%F in ('git ls-files --cached --others --exclude-standard -- "tools/echo/*.go" "tools/echo/go.mod" "tools/echo/go.sum"') do (
-  for /f "delims=" %%H in ('git hash-object "%%F"') do echo %%H>>"%KEY_INPUT%"
+  if exist "%%F" (
+    for /f "delims=" %%H in ('git hash-object "%%F"') do echo %%H>>"%KEY_INPUT%"
+  )
 )
 for /f "delims=" %%K in ('git hash-object "%KEY_INPUT%"') do set "CACHE_KEY=%%K"
 del /q "%KEY_INPUT%" >nul 2>nul

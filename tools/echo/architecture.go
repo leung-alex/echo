@@ -31,7 +31,7 @@ func (a *app) checkArchitectureContracts(metadata []byte) error {
 	if err := validateCargoArchitecture(metadata); err != nil {
 		return err
 	}
-	if err := a.checkFrontendIPCBoundary(); err != nil {
+	if err := a.checkNativeUIBoundary(); err != nil {
 		return err
 	}
 	if err := a.checkActiveArchitectureResidue(); err != nil {
@@ -55,15 +55,17 @@ func validateCargoArchitecture(metadata []byte) error {
 		return fmt.Errorf("parse cargo metadata for architecture audit: %w", err)
 	}
 	allowed := map[string]map[string]bool{
-		"echo-engine":     {},
-		"echo-storage":    {"echo-engine": true},
-		"echo-windows":    {"echo-engine": true},
-		"echo-activation": {},
+		"echo-engine":       {},
+		"echo-storage":      {"echo-engine": true},
+		"echo-windows":      {"echo-engine": true},
+		"echo-activation":   {},
+		"echo-presentation": {"echo-engine": true},
 		"echo-desktop": {
-			"echo-activation": true,
-			"echo-engine":     true,
-			"echo-storage":    true,
-			"echo-windows":    true,
+			"echo-activation":   true,
+			"echo-presentation": true,
+			"echo-engine":       true,
+			"echo-storage":      true,
+			"echo-windows":      true,
 		},
 	}
 	for _, packageInfo := range document.Packages {
@@ -80,37 +82,24 @@ func validateCargoArchitecture(metadata []byte) error {
 	return nil
 }
 
-func (a *app) checkFrontendIPCBoundary() error {
-	root := filepath.Join(a.root, "apps", "ui", "src")
-	var rawImports []string
-	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.IsDir() {
-			return nil
-		}
-		ext := strings.ToLower(filepath.Ext(path))
-		if ext != ".ts" && ext != ".tsx" {
-			return nil
-		}
-		content, err := os.ReadFile(path)
+// Presentation is pure Rust; compiled Slint belongs only to the desktop host.
+func (a *app) checkNativeUIBoundary() error {
+	for _, layer := range []string{"echo-engine", "echo-presentation"} {
+		files, err := textFilesUnder(filepath.Join(a.root, "crates", layer, "src"))
 		if err != nil {
-			return fmt.Errorf("read frontend IPC source %s: %w", relativeToRoot(a.root, path), err)
+			return err
 		}
-		if bytes.Contains(content, []byte("@tauri-apps/api/core")) {
-			relative := filepath.ToSlash(relativeToRoot(a.root, path))
-			if relative != "apps/ui/src/shared/ipc/invoke.ts" {
-				rawImports = append(rawImports, relative)
+		for _, file := range files {
+			data, err := os.ReadFile(file)
+			if err != nil {
+				return err
+			}
+			for _, forbidden := range []string{"use slint", "use tauri", "use echo_storage", "use echo_windows", "windows_sys::", "rusqlite::"} {
+				if bytes.Contains(data, []byte(forbidden)) {
+					return fmt.Errorf("pure %s imports adapter/UI dependency %q in %s", layer, forbidden, file)
+				}
 			}
 		}
-		return nil
-	})
-	if err != nil {
-		return fmt.Errorf("scan frontend IPC boundary: %w", err)
-	}
-	if len(rawImports) != 0 {
-		return fmt.Errorf("raw Tauri invoke import outside shared IPC: %s", strings.Join(rawImports, ", "))
 	}
 	return nil
 }
@@ -140,8 +129,7 @@ func (a *app) checkActiveArchitectureResidue() error {
 				}
 			}
 			relative := filepath.ToSlash(relativeToRoot(a.root, file))
-			previewTransport := strings.HasPrefix(relative, "apps/ui/") ||
-				relative == "apps/desktop/src/preview_protocol.rs" ||
+			previewTransport := strings.HasPrefix(relative, "apps/desktop/ui/") ||
 				relative == "crates/echo-engine/src/preview.rs"
 			if previewTransport {
 				for _, pattern := range []string{"base64", "data:image", "todataurl"} {
@@ -150,7 +138,7 @@ func (a *app) checkActiveArchitectureResidue() error {
 					}
 				}
 			}
-			if strings.HasPrefix(relative, "apps/ui/") || strings.HasPrefix(relative, "apps/desktop/") {
+			if strings.HasPrefix(relative, "apps/desktop/") {
 				for _, pattern := range []string{"setinterval", "pollhistory", "history_poll", "favorites_poll", "background_poll", "900ms"} {
 					if strings.Contains(lower, pattern) {
 						return fmt.Errorf("history polling residue %q remains in %s", pattern, relative)
@@ -183,7 +171,7 @@ func textFilesUnder(root string) ([]string, error) {
 			return nil
 		}
 		switch strings.ToLower(filepath.Ext(path)) {
-		case ".rs", ".ts", ".tsx", ".css", ".go", ".toml", ".json", ".cmd":
+		case ".rs", ".slint", ".go", ".toml", ".json", ".cmd":
 			files = append(files, path)
 		}
 		return nil
@@ -269,7 +257,7 @@ func (a *app) checkCanonicalCommandSurface() error {
 	}
 	for _, required := range []string{
 		"echo.cmd self-check",
-		"echo.cmd bindings --check",
+		"echo.cmd acceptance ui",
 		"echo.cmd format --check",
 		"echo.cmd perf",
 		"--echo-activate",

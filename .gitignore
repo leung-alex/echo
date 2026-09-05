@@ -1,9 +1,5 @@
 /target/
-/node_modules/
-/apps/ui/node_modules/
-/apps/ui/dist/
 /apps/desktop/target/
-/apps/desktop/gen/
 /test-results/
 /.local/echo/
 /.local/test-tmp/echo-storage/

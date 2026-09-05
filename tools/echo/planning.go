@@ -73,7 +73,7 @@ func planForPaths(paths []string) OwnerPlan {
 
 func isFullBoundaryPath(path string) bool {
 	switch strings.ToLower(normalizeRepoPath(path)) {
-	case "cargo.toml", "cargo.lock", "pnpm-lock.yaml", "pnpm-workspace.yaml":
+	case "cargo.toml", "cargo.lock":
 		return true
 	default:
 		return false
@@ -83,10 +83,14 @@ func isFullBoundaryPath(path string) bool {
 func ownersForPath(path string) (bool, []string) {
 	path = strings.ToLower(normalizeRepoPath(path))
 	switch {
-	case path == "echo.cmd", path == "package.json", path == "pnpm-lock.yaml", path == "pnpm-workspace.yaml", path == "cargo.toml", path == "cargo.lock":
+	case path == "echo.cmd", path == "cargo.toml", path == "cargo.lock":
 		return true, []string{"tooling"}
-	case strings.HasPrefix(path, "tools/echo/"):
+	case strings.HasPrefix(path, "tools/"), strings.HasPrefix(path, ".github/workflows/"):
 		return true, []string{"tooling"}
+	case strings.HasPrefix(path, "vendor/"):
+		return false, nil
+	case strings.HasPrefix(path, "crates/echo-presentation/"):
+		return true, []string{"presentation", "quick-insert"}
 	case strings.HasPrefix(path, "crates/echo-engine/"):
 		return true, []string{"engine", "desktop"}
 	case strings.HasPrefix(path, "crates/echo-storage/"):
@@ -97,14 +101,8 @@ func ownersForPath(path string) (bool, []string) {
 		return true, []string{"desktop", "activation"}
 	case strings.HasPrefix(path, "apps/desktop/"):
 		return true, []string{"desktop", "activation", "quick-insert"}
-	case strings.HasPrefix(path, "apps/ui/"):
-		return true, []string{"frontend", "quick-insert"}
-	case strings.HasPrefix(path, "tests/e2e/clipboard"):
-		return true, []string{"tests", "clipboard"}
-	case strings.HasPrefix(path, "tests/e2e/quick-insert"):
+	case strings.HasPrefix(path, "tests/native/"):
 		return true, []string{"tests", "quick-insert"}
-	case strings.HasPrefix(path, "tests/ui/"):
-		return true, []string{"tests", "frontend"}
 	case strings.HasPrefix(path, "tests/"):
 		return true, []string{"tests"}
 	case path == "docs/test_ownership_map.md", path == "docs/p06_p07_handoff.md":
@@ -118,76 +116,60 @@ func ownersForPath(path string) (bool, []string) {
 	}
 }
 
-func ownerGateNames(plan OwnerPlan, profile ValidationProfile) []string {
-	if plan.Full {
-		gates := []string{
-			"echo.cmd self-check",
-			"echo.cmd format --check",
-			"go test ./...",
-			"go vet ./...",
-			"cargo test --workspace --exclude echo-storage --locked",
-			canonicalStorageGateName,
-			"pnpm --dir apps/ui test",
-			"pnpm --dir apps/ui build",
+// A single plan drives display and execution so --explain never advertises
+// different tests and every storage run includes the canonical leak gate.
+func ownerPackages(plan OwnerPlan) ([]string, bool) {
+	packages := map[string]bool{}
+	storage := contains(plan.Owners, "storage")
+	add := func(names ...string) {
+		for _, name := range names {
+			packages[name] = true
 		}
-		if profile == ValidationCI {
-			gates = append(gates, "echo.cmd build --release", "echo.cmd package --dir")
-		}
-		return gates
 	}
-
-	gateSet := map[string]bool{
-		"echo.cmd self-check":     true,
-		"echo.cmd format --check": true,
-		"go test ./...":           true,
-		"go vet ./...":            true,
-	}
-	needStorageGate := contains(plan.Owners, "storage")
 	for _, owner := range plan.Owners {
 		switch owner {
 		case "clipboard", "engine":
-			gateSet["cargo test -p echo-engine"] = true
-			if !needStorageGate {
-				gateSet[storagePackageGateName] = true
-			}
-		case "storage":
-		case "library":
-			gateSet["cargo test -p echo-engine"] = true
-		case "quick-insert":
-			gateSet["cargo test -p echo-engine"] = true
-			gateSet["pnpm --dir apps/ui test"] = true
-		case "frontend":
-			gateSet["pnpm --dir apps/ui test"] = true
-			gateSet["pnpm --dir apps/ui build"] = true
-		case "desktop", "activation":
-			gateSet["cargo check -p echo-desktop"] = true
+			add("echo-engine", "echo-windows")
+			storage = true
 		case "windows":
-			gateSet["cargo test -p echo-windows"] = true
+			add("echo-windows")
+		case "library":
+			add("echo-engine")
+		case "quick-insert":
+			add("echo-engine", "echo-windows", "echo-activation", "echo-presentation", "echo-desktop")
+		case "presentation":
+			add("echo-presentation", "echo-desktop")
+		case "desktop", "activation":
+			add("echo-desktop", "echo-activation")
 		case "tests":
-			gateSet["cargo test -p echo-engine"] = true
-			gateSet["cargo test -p echo-windows"] = true
-			gateSet["cargo test -p echo-activation"] = true
-			if !needStorageGate {
-				gateSet[storagePackageGateName] = true
-			}
-			gateSet["pnpm --dir apps/ui test"] = true
-			gateSet["cargo check -p echo-desktop"] = true
-		case "tooling":
-			gateSet["echo.cmd self-check"] = true
+			add("echo-engine", "echo-windows", "echo-activation", "echo-presentation", "echo-desktop")
+			storage = true
 		}
 	}
-	if needStorageGate {
-		gateSet[canonicalStorageGateName] = true
+	names := make([]string, 0, len(packages))
+	for name := range packages {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names, storage
+}
+func ownerGateNames(plan OwnerPlan, profile ValidationProfile) []string {
+	gates := []string{"echo.cmd self-check", "echo.cmd format --check", "go test ./...", "go vet ./..."}
+	if plan.Full {
+		gates = append(gates, "cargo test --workspace --exclude echo-storage --locked", canonicalStorageGateName)
+	} else {
+		packages, storage := ownerPackages(plan)
+		for _, name := range packages {
+			gates = append(gates, "cargo test -p "+name+" --locked")
+		}
+		if storage {
+			gates = append(gates, canonicalStorageGateName)
+		}
 	}
 	if profile == ValidationCI {
-		gateSet["echo.cmd build --release"] = true
+		gates = append(gates, "echo.cmd build --release")
 	}
-	result := make([]string, 0, len(gateSet))
-	for gate := range gateSet {
-		result = append(result, gate)
-	}
-	sort.Strings(result)
-	return result
+	return gates
 }
 
 func normalizeRepoPath(path string) string {

@@ -1,6 +1,0 @@
-packages:
-  - apps/ui
-allowBuilds:
-  esbuild: true
-onlyBuiltDependencies:
-  - esbuild
