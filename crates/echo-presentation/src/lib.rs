@@ -1,0 +1,430 @@
+//! Framework-independent interaction state for Echo's native surfaces.
+//! IDs remain i64 in Rust and cross the UI boundary only as opaque strings.
+use echo_engine::{
+    PageCursor, QuickInsertItem, QuickInsertPage, QuickInsertSource, QuickInsertView,
+};
+use std::{collections::BTreeSet, fmt, str::FromStr};
+pub mod interaction;
+pub mod session;
+
+pub const PAGE_SIZE: u32 = 50;
+pub const MAX_RESIDENT_ROWS: usize = 500;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RowKey {
+    pub source: QuickInsertSource,
+    pub id: i64,
+}
+impl RowKey {
+    pub fn of(item: &QuickInsertItem) -> Self {
+        Self {
+            source: item.source,
+            id: item.id,
+        }
+    }
+}
+impl fmt::Display for RowKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}:{}",
+            if self.source == QuickInsertSource::History {
+                "h"
+            } else {
+                "f"
+            },
+            self.id
+        )
+    }
+}
+impl FromStr for RowKey {
+    type Err = &'static str;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (kind, id) = s.split_once(':').ok_or("invalid item key")?;
+        let source = match kind {
+            "h" => QuickInsertSource::History,
+            "f" => QuickInsertSource::Favorite,
+            _ => return Err("invalid item source"),
+        };
+        let id = id.parse::<i64>().map_err(|_| "invalid item identity")?;
+        if id <= 0 {
+            return Err("invalid item identity");
+        }
+        Ok(Self { source, id })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LoadTicket {
+    pub epoch: u64,
+    pub serial: u64,
+    pub cursor: Option<PageCursor>,
+    pub append: bool,
+}
+
+pub struct Surface {
+    pub view: QuickInsertView,
+    pub query: String,
+    pub items: Vec<QuickInsertItem>,
+    pub selection: Option<RowKey>,
+    pub selected_ids: BTreeSet<i64>,
+    pub batch: bool,
+    pub visible: bool,
+    pub dirty: bool,
+    pub loading: bool,
+    pub status: String,
+    pub error: bool,
+    pub next_cursor: Option<PageCursor>,
+    pub window_start: Option<PageCursor>,
+    previous_windows: Vec<Option<PageCursor>>,
+    epoch: u64,
+    serial: u64,
+}
+impl Surface {
+    pub fn new(view: QuickInsertView) -> Self {
+        Self {
+            view,
+            query: String::new(),
+            items: Vec::new(),
+            selection: None,
+            selected_ids: BTreeSet::new(),
+            batch: false,
+            visible: false,
+            dirty: true,
+            loading: false,
+            status: String::new(),
+            error: false,
+            next_cursor: None,
+            window_start: None,
+            previous_windows: Vec::new(),
+            epoch: 0,
+            serial: 0,
+        }
+    }
+    pub fn set_query(&mut self, query: String) {
+        if self.query == query {
+            return;
+        }
+        self.query = query;
+        self.reset_page();
+    }
+    pub fn set_view(&mut self, view: QuickInsertView) {
+        if self.view == view {
+            return;
+        }
+        self.view = view;
+        self.query.clear();
+        self.reset_page();
+        self.set_batch(false);
+    }
+    fn reset_page(&mut self) {
+        self.epoch = self.epoch.wrapping_add(1);
+        self.selection = None;
+        self.next_cursor = None;
+        self.window_start = None;
+        self.previous_windows.clear();
+        self.selected_ids.clear();
+        self.dirty = true;
+        self.loading = false;
+    }
+    pub fn invalidate(&mut self) {
+        self.dirty = true;
+    }
+    pub fn hide(&mut self) {
+        self.visible = false;
+        self.epoch = self.epoch.wrapping_add(1);
+        self.loading = false;
+        self.dirty = true;
+    }
+    pub fn begin_load(&mut self, more: bool) -> Option<LoadTicket> {
+        if !self.visible || (more && (self.loading || self.next_cursor.is_none())) {
+            return None;
+        }
+        self.serial = self.serial.wrapping_add(1);
+        let mut append = more;
+        let cursor = if more {
+            self.next_cursor
+        } else {
+            self.window_start
+        };
+        if more && self.items.len() >= MAX_RESIDENT_ROWS {
+            self.previous_windows.push(self.window_start);
+            self.window_start = cursor;
+            append = false;
+        }
+        self.loading = true;
+        self.dirty = false;
+        Some(LoadTicket {
+            epoch: self.epoch,
+            serial: self.serial,
+            cursor,
+            append,
+        })
+    }
+    pub fn previous_window(&mut self) -> bool {
+        if let Some(cursor) = self.previous_windows.pop() {
+            self.window_start = cursor;
+            self.epoch = self.epoch.wrapping_add(1);
+            self.loading = false;
+            self.dirty = true;
+            true
+        } else {
+            false
+        }
+    }
+    pub fn has_previous(&self) -> bool {
+        !self.previous_windows.is_empty()
+    }
+    pub fn finish_load(
+        &mut self,
+        ticket: LoadTicket,
+        result: Result<QuickInsertPage, String>,
+    ) -> bool {
+        if ticket.epoch != self.epoch || ticket.serial != self.serial || !self.visible {
+            return false;
+        }
+        self.loading = false;
+        match result {
+            Ok(page) => {
+                if ticket.append {
+                    for item in page.items {
+                        if !self
+                            .items
+                            .iter()
+                            .any(|old| RowKey::of(old) == RowKey::of(&item))
+                        {
+                            self.items.push(item);
+                        }
+                    }
+                } else {
+                    self.items = page.items;
+                }
+                self.next_cursor = page.next_cursor;
+                if !self
+                    .items
+                    .iter()
+                    .any(|x| Some(RowKey::of(x)) == self.selection)
+                {
+                    self.selection = self.items.first().map(RowKey::of);
+                }
+                self.selected_ids.retain(|id| {
+                    self.items
+                        .iter()
+                        .any(|x| x.source == QuickInsertSource::History && x.id == *id)
+                });
+                if !self.error {
+                    self.status = format!("{} items", self.items.len());
+                }
+            }
+            Err(error) => {
+                self.error = true;
+                self.status = error;
+            }
+        }
+        true
+    }
+    pub fn select(&mut self, key: RowKey) -> bool {
+        if !self.items.iter().any(|item| RowKey::of(item) == key) {
+            return false;
+        }
+        self.selection = Some(key);
+        true
+    }
+    pub fn selected(&self) -> Option<&QuickInsertItem> {
+        self.items
+            .iter()
+            .find(|x| Some(RowKey::of(x)) == self.selection)
+    }
+    pub fn move_selection(&mut self, delta: i32) {
+        if self.items.is_empty() {
+            self.selection = None;
+            return;
+        }
+        let index = self
+            .items
+            .iter()
+            .position(|x| Some(RowKey::of(x)) == self.selection)
+            .unwrap_or(0);
+        let next = (index as i64 + i64::from(delta)).rem_euclid(self.items.len() as i64) as usize;
+        self.selection = Some(RowKey::of(&self.items[next]));
+    }
+    pub fn select_index(&mut self, index: usize) {
+        if let Some(item) = self.items.get(index) {
+            self.selection = Some(RowKey::of(item));
+        }
+    }
+    pub fn set_batch(&mut self, value: bool) {
+        self.batch = value && self.view == QuickInsertView::History;
+        self.selected_ids.clear();
+    }
+    pub fn toggle_selected(&mut self, id: i64) {
+        if !self.batch
+            || !self
+                .items
+                .iter()
+                .any(|x| x.id == id && x.source == QuickInsertSource::History)
+        {
+            return;
+        }
+        if !self.selected_ids.remove(&id) {
+            self.selected_ids.insert(id);
+        }
+    }
+    pub fn select_all(&mut self) {
+        if self.batch {
+            self.selected_ids = self
+                .items
+                .iter()
+                .filter(|x| x.source == QuickInsertSource::History)
+                .map(|x| x.id)
+                .collect();
+        }
+    }
+    pub fn report(&mut self, message: impl Into<String>, error: bool) {
+        self.status = message.into();
+        self.error = error;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn item(id: i64) -> QuickInsertItem {
+        QuickInsertItem {
+            id,
+            source: QuickInsertSource::History,
+            name: None,
+            preview_text: Some(format!("{id}")),
+            content_type: "text".into(),
+            editable_text: None,
+            tags: vec![],
+            source_app: None,
+            updated_at: 0,
+            pinned_at: None,
+            icon_key: None,
+            favorite_order: None,
+            thumbnail: None,
+        }
+    }
+    fn shown() -> Surface {
+        let mut s = Surface::new(QuickInsertView::History);
+        s.visible = true;
+        s
+    }
+    fn page(ids: &[i64]) -> QuickInsertPage {
+        QuickInsertPage {
+            items: ids.iter().copied().map(item).collect(),
+            next_cursor: None,
+        }
+    }
+    #[test]
+    fn identity_never_narrows() {
+        let key = RowKey {
+            source: QuickInsertSource::Favorite,
+            id: i64::MAX,
+        };
+        assert_eq!(key.to_string().parse::<RowKey>(), Ok(key));
+        for bad in ["", "0", "h:-1", "f:0", "x:1", "h:9223372036854775808"] {
+            assert!(bad.parse::<RowKey>().is_err());
+        }
+    }
+    #[test]
+    fn stale_query_cannot_replace_current_rows() {
+        let mut s = shown();
+        let old = s.begin_load(false).unwrap();
+        s.set_query("new".into());
+        let now = s.begin_load(false).unwrap();
+        assert!(!s.finish_load(old, Ok(page(&[1]))));
+        assert!(s.finish_load(now, Ok(page(&[2]))));
+        assert_eq!(s.selected().unwrap().id, 2);
+    }
+    #[test]
+    fn newer_refresh_wins() {
+        let mut s = shown();
+        let a = s.begin_load(false).unwrap();
+        let b = s.begin_load(false).unwrap();
+        assert!(s.finish_load(b, Ok(page(&[2]))));
+        assert!(!s.finish_load(a, Ok(page(&[1]))));
+    }
+    #[test]
+    fn selection_survives_reorder() {
+        let mut s = shown();
+        let a = s.begin_load(false).unwrap();
+        s.finish_load(a, Ok(page(&[1, 2])));
+        s.select_index(1);
+        let b = s.begin_load(false).unwrap();
+        s.finish_load(b, Ok(page(&[2, 1])));
+        assert_eq!(s.selected().unwrap().id, 2);
+    }
+    #[test]
+    fn hidden_surface_never_queries_or_accepts_late_results() {
+        let mut s = shown();
+        let a = s.begin_load(false).unwrap();
+        s.hide();
+        assert!(s.begin_load(false).is_none());
+        assert!(!s.finish_load(a, Ok(page(&[1]))));
+        assert!(s.dirty);
+    }
+    #[test]
+    fn panel_switch_cancels_batch_and_pending_load() {
+        let mut s = shown();
+        let a = s.begin_load(false).unwrap();
+        s.set_batch(true);
+        s.set_view(QuickInsertView::Favorites);
+        assert!(!s.batch);
+        assert!(!s.finish_load(a, Ok(page(&[1]))));
+    }
+    #[test]
+    fn navigation_wraps_and_empty_is_safe() {
+        let mut s = shown();
+        s.move_selection(-1);
+        assert!(s.selection.is_none());
+        let a = s.begin_load(false).unwrap();
+        s.finish_load(a, Ok(page(&[1, 2])));
+        s.move_selection(-1);
+        assert_eq!(s.selected().unwrap().id, 2);
+        s.move_selection(1);
+        assert_eq!(s.selected().unwrap().id, 1);
+    }
+    #[test]
+    fn batch_does_not_invent_ids() {
+        let mut s = shown();
+        let a = s.begin_load(false).unwrap();
+        s.finish_load(a, Ok(page(&[1, 2])));
+        s.set_batch(true);
+        s.toggle_selected(9);
+        assert!(s.selected_ids.is_empty());
+        s.select_all();
+        assert_eq!(s.selected_ids.len(), 2);
+        s.toggle_selected(1);
+        assert_eq!(s.selected_ids.len(), 1);
+    }
+    #[test]
+    fn failure_is_visible_and_preserves_rows() {
+        let mut s = shown();
+        let a = s.begin_load(false).unwrap();
+        s.finish_load(a, Ok(page(&[1])));
+        let b = s.begin_load(false).unwrap();
+        s.finish_load(b, Err("busy".into()));
+        assert_eq!(s.items.len(), 1);
+        assert!(s.error);
+        assert_eq!(s.status, "busy");
+    }
+    #[test]
+    fn large_history_has_bounded_windows_and_a_way_back() {
+        let mut s = shown();
+        s.items = (1..=500).map(item).collect();
+        s.next_cursor = Some(PageCursor::History {
+            pinned_at: None,
+            updated_at: 0,
+            id: 500,
+        });
+        let a = s.begin_load(true).unwrap();
+        assert!(!a.append);
+        s.finish_load(a, Ok(page(&[501])));
+        assert_eq!(s.items.len(), 1);
+        assert!(s.has_previous());
+        assert!(s.previous_window());
+        assert!(s.window_start.is_none());
+    }
+}

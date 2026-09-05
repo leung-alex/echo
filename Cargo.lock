@@ -934,6 +934,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "echo-presentation"
+version = "0.1.0"
+dependencies = [
+ "echo-engine",
+]
+
+[[package]]
 name = "echo-storage"
 version = "0.1.0"
 dependencies = [
@@ -952,7 +959,10 @@ name = "echo-windows"
 version = "0.1.0"
 dependencies = [
  "echo-engine",
+ "serde_json",
+ "sha2",
  "windows 0.62.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

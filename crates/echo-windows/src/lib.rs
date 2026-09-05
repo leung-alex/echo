@@ -1211,3 +1211,6 @@ impl Default for WindowsPlatform {
         Self::new()
     }
 }
+
+#[cfg(windows)]
+pub mod shell;
