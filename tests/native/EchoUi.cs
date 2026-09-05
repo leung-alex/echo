@@ -100,7 +100,7 @@ public static class EchoUi
     static AutomationElement FindEdit(int pid, string title, string name)
     {
         var element = Elements(pid, title).FirstOrDefault(e =>
-            e.Current.Name == name && e.Current.ControlType == ControlType.Edit);
+            e.Current.Name == name && (e.Current.ControlType == ControlType.Edit || e.Current.ControlType == ControlType.ComboBox));
         if (element == null) throw new InvalidOperationException("Editable control unavailable: " + name);
         return element;
     }

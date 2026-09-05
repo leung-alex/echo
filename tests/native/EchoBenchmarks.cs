@@ -48,7 +48,7 @@ public static class EchoBenchmarks
 
     static void Hide(int pid, string title)
     {
-        EchoUi.Close(pid, title);
+        if (EchoUi.Window(pid, title, true) != IntPtr.Zero) EchoUi.Close(pid, title);
         Until(() => EchoUi.Window(pid, title, true) == IntPtr.Zero && EchoUi.Window(pid, "Echo Favorites", true) == IntPtr.Zero,
             "Owned composition did not hide", 3000);
     }
