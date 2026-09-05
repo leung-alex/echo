@@ -96,6 +96,7 @@ try {
     $detail = Get-Content -Raw -LiteralPath (Join-Path $EvidenceRoot 'checks.json') | ConvertFrom-Json
     $summary.checks = @($detail)
     $summary.status = if (@($detail | Where-Object status -eq 'FAIL').Count -eq 0) { 'PASS' } else { 'FAIL' }
+    if($summary.status -ne 'PASS'){throw 'One or more native checks failed; see checks.json'}
 }
 catch {
     $summary.error = $_.ToString()

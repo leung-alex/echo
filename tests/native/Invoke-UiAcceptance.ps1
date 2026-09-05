@@ -106,7 +106,13 @@ function Target-Command($Target,[string]$Command,[string]$Payload='') {
     $Target.next++; $requestId="$($Target.runId)-$PID-$($Target.next)"; Remove-Item -LiteralPath $Target.paths.response -Force -ErrorAction SilentlyContinue
     $temporary=$Target.paths.command+'.tmp'; [ordered]@{run_id=$Target.runId;request_id=$requestId;command=$Command;payload=$Payload}|ConvertTo-Json -Compress|Set-Content -LiteralPath $temporary -Encoding utf8NoBOM
     Move-Item -LiteralPath $temporary -Destination $Target.paths.command
-    Wait-Until { Test-Path -LiteralPath $Target.paths.response } "target response for $Command" | Out-Null
+    $responseWait=[Diagnostics.Stopwatch]::StartNew()
+    while(!(Test-Path -LiteralPath $Target.paths.response)) {
+        if($targetProcess.HasExited -and $Command -eq 'shutdown'){return ''}
+        if($targetProcess.HasExited){throw "Owned target exited during $Command"}
+        if($responseWait.ElapsedMilliseconds -gt 10000){throw "Owned target response timeout: $Command"}
+        Start-Sleep -Milliseconds 20
+    }
     $response=Get-Content -Raw $Target.paths.response|ConvertFrom-Json
     if ($response.request_id -ne $requestId) { throw 'Target fixture response identity changed.' }
     $error=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($response.error)); if ($error) { throw "Target command $Command failed: $error" }
@@ -179,7 +185,7 @@ try {
 }
 finally {
     if ($targetProcess -and !$targetProcess.HasExited) {
-        try { if ($target) { Target-Command $target 'shutdown'|Out-Null; $targetProcess.WaitForExit(10000)|Out-Null } } catch { Add-Check 'target-cleanup' 'FAIL' $_.Exception.Message 'owned target graceful shutdown' $_.ToString() }
+        try { if ($target) { Target-Command $target 'shutdown'|Out-Null; if(!$targetProcess.WaitForExit(10000)){throw 'Owned target did not terminate'}; Add-Check 'target-cleanup' 'PASS' 'Owned target exited' 'owned target graceful shutdown' } } catch { Add-Check 'target-cleanup' 'FAIL' $_.Exception.Message 'owned target graceful shutdown' $_.ToString() }
     }
     if ($echoProcess -and !$echoProcess.HasExited) {
         try { Start-ScopedProcess @('--quit'); if (!$echoProcess.WaitForExit(10000)) { throw 'Owned Echo did not quit.' } } catch { Add-Check 'echo-cleanup' 'FAIL' $_.Exception.Message 'data-scoped graceful quit' $_.ToString() }
