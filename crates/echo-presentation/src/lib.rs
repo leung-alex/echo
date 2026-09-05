@@ -79,6 +79,7 @@ pub struct Surface {
     previous_windows: Vec<Option<PageCursor>>,
     epoch: u64,
     serial: u64,
+    operation_notice: bool,
 }
 impl Surface {
     pub fn new(view: QuickInsertView) -> Self {
@@ -99,6 +100,7 @@ impl Surface {
             previous_windows: Vec::new(),
             epoch: 0,
             serial: 0,
+            operation_notice: false,
         }
     }
     pub fn set_query(&mut self, query: String) {
@@ -118,6 +120,7 @@ impl Surface {
         self.set_batch(false);
     }
     fn reset_page(&mut self) {
+        self.clear_notice();
         self.epoch = self.epoch.wrapping_add(1);
         self.selection = None;
         self.next_cursor = None;
@@ -212,17 +215,13 @@ impl Surface {
                         .iter()
                         .any(|x| x.source == QuickInsertSource::History && x.id == *id)
                 });
-                if !self.error
-                    && (self.status.is_empty()
-                        || self
-                            .status
-                            .strip_suffix(" items")
-                            .is_some_and(|n| n.parse::<usize>().is_ok()))
-                {
+                if !self.operation_notice {
+                    self.error = false;
                     self.status = format!("{} items", self.items.len());
                 }
             }
             Err(error) => {
+                self.operation_notice = false;
                 self.error = true;
                 self.status = error;
             }
@@ -288,7 +287,14 @@ impl Surface {
     }
     pub fn report(&mut self, message: impl Into<String>, error: bool) {
         self.status = message.into();
+        self.operation_notice = !self.status.is_empty();
         self.error = error;
+    }
+
+    fn clear_notice(&mut self) {
+        self.operation_notice = false;
+        self.status.clear();
+        self.error = false;
     }
 }
 
@@ -432,5 +438,45 @@ mod tests {
         assert!(s.has_previous());
         assert!(s.previous_window());
         assert!(s.window_start.is_none());
+    }
+
+    #[test]
+    fn mutation_success_survives_the_result_refresh() {
+        let mut surface = shown();
+        surface.report("Favorite created", false);
+        let ticket = surface.begin_load(false).unwrap();
+        assert!(surface.finish_load(ticket, Ok(page(&[]))));
+        assert_eq!(surface.status, "Favorite created");
+        assert!(!surface.error);
+    }
+
+    #[test]
+    fn successful_retry_clears_a_previous_query_error() {
+        let mut surface = shown();
+        let first = surface.begin_load(false).unwrap();
+        assert!(surface.finish_load(first, Err("Temporary read failure".into())));
+        let retry = surface.begin_load(false).unwrap();
+        assert!(surface.finish_load(retry, Ok(page(&[]))));
+        assert!(!surface.error);
+        assert_eq!(surface.status, "0 items");
+    }
+
+    #[test]
+    fn a_new_query_starts_with_a_clean_notice() {
+        let mut surface = Surface::new(QuickInsertView::History);
+        surface.report("Previous operation failed", true);
+        surface.set_query("new query".into());
+        assert!(!surface.error);
+        assert!(surface.status.is_empty());
+    }
+
+    #[test]
+    fn empty_report_allows_the_result_count_to_return() {
+        let mut surface = shown();
+        surface.report("", false);
+        let ticket = surface.begin_load(false).unwrap();
+        assert!(surface.finish_load(ticket, Ok(page(&[1]))));
+        assert!(!surface.error);
+        assert_eq!(surface.status, "1 items");
     }
 }

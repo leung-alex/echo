@@ -33,6 +33,30 @@ impl Drop for Handle {
     }
 }
 
+pub(super) fn process_session(pid: u32) -> Result<u32, String> {
+    let mut session = 0;
+    unsafe {
+        if ProcessIdToSessionId(pid, &mut session) == 0 {
+            return Err(error());
+        }
+    }
+    Ok(session)
+}
+
+pub(super) fn same_session(pid: u32) -> bool {
+    sessions_match(
+        process_session(pid),
+        process_session(unsafe { GetCurrentProcessId() }),
+    )
+}
+
+fn sessions_match(peer: Result<u32, String>, own: Result<u32, String>) -> bool {
+    match (peer, own) {
+        (Ok(peer), Ok(own)) => peer == own,
+        _ => false,
+    }
+}
+
 pub(super) fn current_sid() -> Result<String, String> {
     unsafe { sid_for_process(GetCurrentProcess()) }
 }
@@ -153,5 +177,21 @@ mod tests {
             namespace(Path::new("C:/Echo/"), &sid).unwrap(),
             namespace(Path::new("c:\\echo"), &sid).unwrap()
         );
+    }
+
+    #[test]
+    fn own_process_matches_its_interactive_session() {
+        assert!(same_session(std::process::id()));
+        assert!(process_session(std::process::id()).is_ok());
+    }
+
+    #[test]
+    fn an_unqueryable_peer_is_rejected_instead_of_assuming_the_same_session() {
+        assert!(!same_session(u32::MAX));
+    }
+
+    #[test]
+    fn different_interactive_sessions_are_rejected() {
+        assert!(!sessions_match(Ok(7), Ok(8)));
     }
 }

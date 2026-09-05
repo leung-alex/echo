@@ -1,6 +1,6 @@
 //! Local, user-authenticated activation transport. No TCP listener or polling loop.
 use super::{
-    common::{error, process_sid, wide, Handle, Security},
+    common::{error, process_sid, same_session, wide, Handle, Security},
     EventHandler, ShellEvent,
 };
 use std::{
@@ -144,6 +144,7 @@ pub(super) fn serve(name: String, sid: String, stop: Arc<Handle>, handler: Event
             let mut client = 0;
             if GetNamedPipeClientProcessId(pipe.0, &mut client) == 0
                 || process_sid(client).ok().as_deref() != Some(sid.as_str())
+                || !same_session(client)
             {
                 DisconnectNamedPipe(pipe.0);
                 continue;
@@ -196,8 +197,9 @@ pub(super) fn forward(name: &str, args: &[String], sid: &str) -> Result<(), Stri
         let mut server = 0;
         if GetNamedPipeServerProcessId(pipe.0, &mut server) == 0
             || process_sid(server).ok().as_deref() != Some(sid)
+            || !same_session(server)
         {
-            return Err("activation server has a different user identity".into());
+            return Err("activation server has a different user or session identity".into());
         }
         AllowSetForegroundWindow(server);
         let mode = PIPE_READMODE_MESSAGE;
