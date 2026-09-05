@@ -1,4 +1,5 @@
 import { EchoTheme, EchoButton } from "theme.slint";
+import { FavoriteIconImages } from "favorite-icon-images.slint";
 export struct EntryRow {
     key: string, title: string, body: string, kind: string,
     source-label: string, time-label: string, section-label: string,
@@ -67,9 +68,13 @@ export component EntryView inherits Rectangle {
         if (root.entry.section-label != "" && !root.compact): Text {
             text: root.entry.section-label; color: EchoTheme.muted; font-size: 10px; font-weight: 600;
         }
-        if (root.favorites): Text {
-            text: root.entry.title; color: EchoTheme.text; font-size: 16px; font-weight: 600;
-            wrap: word-wrap; min-width: 0px;
+        if (root.favorites): HorizontalLayout {
+            spacing: 8px;
+            if (FavoriteIconImages.image-for(root.entry.icon-key).width > 0): Image {
+                source: FavoriteIconImages.image-for(root.entry.icon-key);
+                width: 20px; height: 20px; colorize: EchoTheme.text;
+            }
+            Text { text: root.entry.title; color: EchoTheme.text; font-size: 16px; font-weight: 600; wrap: word-wrap; min-width: 0px; }
         }
         if (root.entry.has-thumbnail): Rectangle {
             height: root.compact ? 128px : 160px;

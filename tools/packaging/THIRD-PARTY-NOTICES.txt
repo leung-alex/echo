@@ -1253,3 +1253,7 @@ zvariant_derive 5.15.0: MIT | https://github.com/z-galaxy/zbus/
   licenses/260e4ff3fc493695880c90774283eb1e3d018f898fabe655bbd52dd2cbd2fcad.txt
 zvariant_utils 4.2.0: MIT | https://github.com/z-galaxy/zbus/
   licenses/23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3.txt
+
+@openai/apps-sdk-ui 0.2.2 static SVG icon paths: MIT | https://github.com/openai/apps-sdk-ui
+  licenses/f26a46776c890b0d7b45d042cb8a78fdca9c4742a5c7fd97f0f53767411b1cc6.txt
+Only vector artwork is retained; no React, JavaScript, Node, CSS or font assets are shipped.

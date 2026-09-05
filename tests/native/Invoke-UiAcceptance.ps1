@@ -37,11 +37,20 @@ function Check([string]$Name,[scriptblock]$Body,[string]$Expected='assertions in
 function Not-Run([string]$Name,[string]$Reason) { Add-Check $Name 'NOT_RUN' $Reason 'explicit execution required' }
 function D([string]$Operation,[string]$Title=$mainTitle,[string[]]$Arguments=@()) {
     if (!$echoProcess -or $echoProcess.HasExited) { throw 'Owned Echo process is unavailable.' }
-    $output = & $Driver $Operation $echoProcess.Id $Title @Arguments 2>&1
-    if ($LASTEXITCODE -ne 0) { throw "Driver failed: $Operation $Title $($Arguments -join ', ')`n$($output -join "`n")" }
-    $parsed = ($output -join "`n") | ConvertFrom-Json
-    if ($parsed.status -ne 'PASS') { throw "Driver returned $($parsed.status): $Operation" }
-    return $parsed.value
+    $info=[Diagnostics.ProcessStartInfo]::new($Driver)
+    $info.UseShellExecute=$false; $info.CreateNoWindow=$true
+    $info.RedirectStandardOutput=$true; $info.RedirectStandardError=$true
+    foreach($argument in @($Operation,[string]$echoProcess.Id,$Title)+$Arguments){$info.ArgumentList.Add($argument)}
+    $child=[Diagnostics.Process]::Start($info)
+    try {
+        $stdout=$child.StandardOutput.ReadToEndAsync();$stderr=$child.StandardError.ReadToEndAsync()
+        if(!$child.WaitForExit(15000)){$child.Kill();$child.WaitForExit(2000)|Out-Null;throw "Owned UIA driver timed out: $Operation $Title"}
+        $output=$stdout.GetAwaiter().GetResult();$errorText=$stderr.GetAwaiter().GetResult()
+        if($child.ExitCode -ne 0){throw "Driver failed: $Operation $Title $($Arguments -join ', ')`n$errorText"}
+        $parsed=$output.TrimStart([char]0xfeff)|ConvertFrom-Json
+        if($parsed.status -ne 'PASS'){throw "Driver did not pass: $Operation"}
+        return $parsed.value
+    } finally {$child.Dispose()}
 }
 function Wait-Until([scriptblock]$Probe,[string]$Description,[int]$TimeoutMs=10000) {
     $watch = [Diagnostics.Stopwatch]::StartNew(); $last = $null
@@ -130,8 +139,8 @@ try {
         Check 'search' { Query '0013'; Wait-Text '1 captures loaded'; Wait-Text 'echo-perf-text-0013'; Shot 'search'; 'one exact result' }
         Check 'history-favorite-create-edit-delete' {
             Select-Row 'echo-perf-text-0013 — Reusable content, available when you need it.'; Click 'Add to Favorites'; Wait-Text 'Added to Favorites'
-            Click 'Favorites'; Click 'Create favorite'; Set-Value 'Favorite name' 'Native acceptance favorite'; Set-Value 'Favorite content' 'echo-native-test-content-20260906'; Set-Value 'Favorite tags' 'native,test'; Shot 'favorite-create'; Click 'Save favorite'; Wait-Text 'Favorite created'
-            Query 'echo-native-test-content-20260906'; Wait-Text 'Native acceptance favorite'; Select-Row 'Native acceptance favorite'; Click 'Edit favorite'; Set-Value 'Favorite name' 'Edited native favorite'; Set-Value 'Favorite content' 'echo-native-updated-content-20260906'; Shot 'favorite-edit'; Click 'Save favorite'; Wait-Text 'Favorite updated'; Query 'echo-native-updated-content-20260906'; Wait-Text 'Edited native favorite'; Click 'Delete item'; Wait-Text 'No matches'
+            Click 'Favorites'; Click 'Create favorite'; Set-Value 'Favorite name' 'Native acceptance favorite'; Set-Value 'Favorite content' 'echo-native-test-content-20260906'; Set-Value 'Favorite tags' 'native,test'; Click 'Choose icon'; Wait-Text 'Choose an icon'; Set-Value 'Search favorite icons' 'mAiL'; Wait-Text 'Icon Mail'; Shot 'icon-picker'; Click 'Icon Mail'; if((D read $mainTitle @('Favorite icon')) -ne 'Mail'){throw 'Picker did not preserve Mail key'}; Shot 'favorite-create'; Click 'Save favorite'; Wait-Text 'Favorite created'
+            Query 'echo-native-test-content-20260906'; Wait-Text 'Native acceptance favorite'; Select-Row 'Native acceptance favorite'; Click 'Edit favorite'; if((D read $mainTitle @('Favorite icon')) -ne 'Mail'){throw 'Saved favorite icon did not persist'}; Set-Value 'Favorite name' 'Edited native favorite'; Set-Value 'Favorite content' 'echo-native-updated-content-20260906'; Shot 'favorite-edit'; Click 'Save favorite'; Wait-Text 'Favorite updated'; Query 'echo-native-updated-content-20260906'; Wait-Text 'Edited native favorite'; Click 'Delete item'; Wait-Text 'No matches'
             'create/edit/delete observed through live UI; persistence checked after restart below'
         }
         Check 'batch-and-clear-cancel' { Click 'History'; Query ''; Click 'Select'; Click 'All loaded'; Wait-Text 'selected'; Click 'Cancel'; Click 'Clear all'; Wait-Text 'Clear clipboard history?'; Shot 'clear-confirmation'; Click 'Keep history'; 'batch selection and non-destructive clear cancellation observed' }

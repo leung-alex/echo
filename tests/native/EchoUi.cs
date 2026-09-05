@@ -162,7 +162,7 @@ public static class EchoUi
 
     public static void Invoke(int pid, string title, string name)
     {
-        Focus(pid, title);
+        // UIA actions are scoped to an owned control; no global input or foreground is required.
         AutomationElement element = Find(pid, title, name);
         if (!element.Current.IsEnabled) throw new InvalidOperationException("Control disabled: " + name);
         object pattern;
@@ -172,7 +172,7 @@ public static class EchoUi
 
     public static void Select(int pid, string title, string name)
     {
-        Focus(pid, title);
+        // UIA actions are scoped to an owned control; no global input or foreground is required.
         AutomationElement element = Find(pid, title, name);
         object pattern;
         if (element.TryGetCurrentPattern(SelectionItemPattern.Pattern, out pattern))
@@ -190,9 +190,8 @@ public static class EchoUi
 
     public static void SetValue(int pid, string title, string name, string value)
     {
-        Focus(pid, title);
+        // UIA actions are scoped to an owned control; no global input or foreground is required.
         AutomationElement element = FindEdit(pid, title, name);
-        element.SetFocus();
         object pattern;
         if (!element.TryGetCurrentPattern(ValuePattern.Pattern, out pattern)) throw new InvalidOperationException("No ValuePattern: " + name);
         ((ValuePattern)pattern).SetValue(value);

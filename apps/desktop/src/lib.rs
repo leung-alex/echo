@@ -1,4 +1,5 @@
 //! Native Slint shell for Echo. Engine, persistence and clipboard formats are unchanged.
+mod favorite_icons;
 slint::include_modules!();
 #[cfg(windows)]
 mod app;

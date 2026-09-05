@@ -5913,5 +5913,14 @@
     "license_files": [
       "licenses/23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3.txt"
     ]
+  },
+  {
+    "name": "@openai/apps-sdk-ui (static SVG icon artwork only)",
+    "version": "0.2.2",
+    "license": "MIT",
+    "source": "https://github.com/openai/apps-sdk-ui",
+    "license_files": [
+      "licenses/f26a46776c890b0d7b45d042cb8a78fdca9c4742a5c7fd97f0f53767411b1cc6.txt"
+    ]
   }
 ]

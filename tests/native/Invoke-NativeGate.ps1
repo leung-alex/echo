@@ -50,7 +50,7 @@ try {
     $compiler = Join-Path $framework 'csc.exe'
     if (!(Test-Path -LiteralPath $compiler)) { throw 'The .NET Framework C# compiler is required for UIAutomationClient/UIAutomationTypes.' }
     $driver = Join-Path $tools 'EchoDriver.exe'
-    & $compiler /nologo /target:exe /out:$driver "/reference:$framework/WPF/UIAutomationClient.dll" "/reference:$framework/WPF/UIAutomationTypes.dll" "/reference:$framework/WPF/WindowsBase.dll" /reference:System.Drawing.dll /reference:System.Web.Extensions.dll (Join-Path $native 'EchoUi.cs') (Join-Path $native 'EchoDriver.cs')
+    & $compiler /nologo /target:exe /out:$driver "/reference:$framework/WPF/UIAutomationClient.dll" "/reference:$framework/WPF/UIAutomationTypes.dll" "/reference:$framework/WPF/WindowsBase.dll" /reference:System.Drawing.dll /reference:System.Web.Extensions.dll (Join-Path $native 'EchoUi.cs') (Join-Path $native 'EchoDriver.cs') (Join-Path $native 'EchoBenchmarks.cs')
     if ($LASTEXITCODE -ne 0 -or !(Test-Path -LiteralPath $driver)) { throw 'EchoDriver compilation failed.' }
 
     $fixture = $env:ECHO_ACCEPTANCE_FIXTURE_EXE

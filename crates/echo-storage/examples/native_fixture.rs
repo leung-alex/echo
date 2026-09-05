@@ -101,7 +101,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )?;
         println!(
             "{}",
-            serde_json::json!({"dataset": name, "history": count, "favorites": favorites, "images": if mixed {count.div_ceil(4)} else {0}, "source_sha": "0dc699e42d8d667e502938d71e33216f92513e5a", "synthetic": true})
+            serde_json::json!({"dataset": name, "history": count, "favorites": favorites, "images": if mixed {count.div_ceil(4)} else {0}, "generator": "echo-storage/native_fixture", "synthetic": true})
         );
     }
     Ok(())

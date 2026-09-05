@@ -1,7 +1,9 @@
 import { ListView, ScrollView, LineEdit, TextEdit, CheckBox, ComboBox, AboutSlint, Palette } from "std-widgets.slint";
 import { EchoTheme, EchoButton, Hint } from "theme.slint";
 import { EntryRow, EntryView } from "entry-row.slint";
-export { EntryRow, EchoTheme }
+import { FavoriteIconChoice, FavoriteIconPicker } from "favorite-icon-picker.slint";
+import { FavoriteIconImages } from "favorite-icon-images.slint";
+export { EntryRow, EchoTheme, FavoriteIconChoice, FavoriteIconImages }
 
 export component AppWindow inherits Window {
     in property <bool> is-favorites-window;
@@ -36,6 +38,10 @@ export component AppWindow inherits Window {
     in-out property <string> draft-content;
     in-out property <string> draft-tags;
     in-out property <string> draft-icon;
+    in property <[FavoriteIconChoice]> favorite-icon-choices;
+    private property <bool> icon-picker-open;
+    callback filter-favorite-icons(string);
+    changed editor-open => { if (!root.editor-open) { root.icon-picker-open = false; } }
     in property <bool> content-editable;
     in-out property <bool> clear-confirm-open;
     callback query-edited(string);
@@ -249,10 +255,10 @@ export component AppWindow inherits Window {
                     if (event.modifiers.shift) {
                         if (name-edit.has-focus) { cancel-button.focus(); } else if (content-edit.has-focus) { name-edit.focus(); }
                         else if (tags-edit.has-focus) { content-edit.focus(); } else if (icon-edit.has-focus) { tags-edit.focus(); }
-                        else if (save-button.focused) { icon-edit.focus(); } else { save-button.focus(); }
+                        else if (choose-icon.focused) { icon-edit.focus(); } else if (save-button.focused) { choose-icon.focus(); } else { save-button.focus(); }
                     } else {
                         if (name-edit.has-focus) { content-edit.focus(); } else if (content-edit.has-focus) { tags-edit.focus(); }
-                        else if (tags-edit.has-focus) { icon-edit.focus(); } else if (icon-edit.has-focus) { save-button.focus(); }
+                        else if (tags-edit.has-focus) { icon-edit.focus(); } else if (icon-edit.has-focus) { choose-icon.focus(); } else if (choose-icon.focused) { save-button.focus(); }
                         else if (save-button.focused) { cancel-button.focus(); } else { name-edit.focus(); }
                     } return accept;
                 } return reject;
@@ -272,8 +278,18 @@ export component AppWindow inherits Window {
                     content-edit := TextEdit { accessible-action-set-value(value) => { if (root.content-editable && !root.busy) { root.draft-content = value; } } text <=> root.draft-content; read-only: !root.content-editable; accessible-label: "Favorite content"; enabled: !root.busy; min-height: 80px; }
                     Text { text: "Tags (comma separated)"; color: EchoTheme.muted; font-size: 12px; }
                     tags-edit := LineEdit { text <=> root.draft-tags; accessible-label: "Favorite tags"; enabled: !root.busy; }
-                    Text { text: "Icon key (optional)"; color: EchoTheme.muted; font-size: 12px; }
-                    icon-edit := LineEdit { text <=> root.draft-icon; accessible-label: "Favorite icon"; enabled: !root.busy; }
+                    Text { text: "Favorite icon"; color: EchoTheme.muted; font-size: 12px; }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        if (FavoriteIconImages.image-for(root.draft-icon).width > 0): Image {
+                            width: 24px; height: 24px; source: FavoriteIconImages.image-for(root.draft-icon); colorize: EchoTheme.text;
+                        }
+                        icon-edit := LineEdit { text <=> root.draft-icon; accessible-label: "Favorite icon"; enabled: !root.busy; min-width: 0px; }
+                        choose-icon := EchoButton {
+                            text: "Choose icon"; enabled: !root.busy;
+                            clicked => { root.filter-favorite-icons(""); root.icon-picker-open = true; }
+                        }
+                    }
                     if (root.status-error): Text { text: root.status; color: EchoTheme.danger; wrap: word-wrap; font-size: 12px; min-width: 0px; }
                     HorizontalLayout {
                         spacing: 10px; alignment: end;
@@ -283,6 +299,13 @@ export component AppWindow inherits Window {
                 }
             }
         }
+    }
+    if (root.icon-picker-open && root.editor-open): FavoriteIconPicker {
+        choices: root.favorite-icon-choices;
+        selected-key: root.draft-icon;
+        filter(query) => { root.filter-favorite-icons(query); }
+        chosen(key) => { root.draft-icon = key; root.icon-picker-open = false; }
+        dismissed => { root.icon-picker-open = false; }
     }
     if (root.clear-confirm-open): Rectangle {
         background: #00000080;
