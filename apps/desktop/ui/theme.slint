@@ -1,0 +1,83 @@
+export global EchoTheme {
+    in-out property <bool> dark;
+    out property <color> text: dark ? #f4f6f7 : #171b1e;
+    out property <color> muted: dark ? #aeb6bc : #667078;
+    out property <color> canvas: dark ? #0b1014 : #e9edeb;
+    out property <color> surface: dark ? #161d23 : #f7f6f2;
+    out property <color> elevated: dark ? #1d252c : #ffffff;
+    out property <color> line: dark ? #303940 : #dddad2;
+    out property <color> amber: #ffc400;
+    out property <color> danger: dark ? #ff8b8b : #be3030;
+}
+
+export component EchoButton inherits Rectangle {
+    in property <string> label;
+    in property <string> text;
+    in property <image> icon;
+    in property <bool> primary;
+    in property <bool> flat;
+    in property <bool> danger;
+    in property <bool> enabled: true;
+    in property <bool> checked;
+    callback clicked();
+    out property <bool> focused: focus.has-focus;
+    forward-focus: focus;
+    min-width: text == "" ? 32px : content.min-width + 24px;
+    height: 34px;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    border-radius: 7px;
+    background: primary ? EchoTheme.amber : checked || touch.has-hover ? EchoTheme.surface : flat ? transparent : EchoTheme.elevated;
+    border-width: focus.has-focus || !flat ? 1px : 0px;
+    border-color: focus.has-focus ? EchoTheme.amber : EchoTheme.line;
+    opacity: enabled ? 1 : 0.45;
+    accessible-role: button;
+    accessible-label: label == "" ? text : label;
+    accessible-enabled: enabled;
+    accessible-action-default => { if (enabled) { root.clicked(); } }
+    content := HorizontalLayout {
+        padding: 6px;
+        spacing: 6px;
+        alignment: center;
+        if (root.icon.width > 0): Image {
+            source: root.icon;
+            width: 18px;
+            height: 18px;
+            colorize: root.primary ? #171b1e : root.danger ? EchoTheme.danger : EchoTheme.muted;
+        }
+        if (root.text != ""): Text {
+            text: root.text;
+            color: root.primary ? #171b1e : root.danger ? EchoTheme.danger : EchoTheme.text;
+            font-size: 13px;
+            font-weight: 600;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+            accessible-role: none;
+        }
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { focus.focus(); root.clicked(); }
+    }
+    focus := FocusScope {
+        width: 0;
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == " ") { root.clicked(); return accept; }
+            return reject;
+        }
+    }
+}
+
+export component Hint inherits Rectangle {
+    in property <string> text;
+    background: EchoTheme.surface;
+    border-radius: 4px;
+    border-width: 1px;
+    border-color: EchoTheme.line;
+    min-width: label.preferred-width + 12px;
+    height: 27px;
+    horizontal-stretch: 0;
+    label := Text { text: root.text; color: EchoTheme.muted; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
+}

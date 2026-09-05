@@ -212,7 +212,13 @@ impl Surface {
                         .iter()
                         .any(|x| x.source == QuickInsertSource::History && x.id == *id)
                 });
-                if !self.error {
+                if !self.error
+                    && (self.status.is_empty()
+                        || self
+                            .status
+                            .strip_suffix(" items")
+                            .is_some_and(|n| n.parse::<usize>().is_ok()))
+                {
                     self.status = format!("{} items", self.items.len());
                 }
             }

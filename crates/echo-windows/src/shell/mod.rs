@@ -8,7 +8,7 @@ mod tray;
 mod window;
 use common::{wide, Handle, Security};
 pub use window::{
-    apply_theme, attach_window, center_window, focus_window, reposition_favorites, set_owner,
+    apply_theme, attach_window, center_composition, focus_window, reposition_favorites, set_owner,
     start_drag, system_dark, WindowHook,
 };
 

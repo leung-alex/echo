@@ -1,0 +1,140 @@
+import { EchoTheme, EchoButton } from "theme.slint";
+export struct EntryRow {
+    key: string, title: string, body: string, kind: string,
+    source-label: string, time-label: string, section-label: string,
+    thumbnail: image, has-thumbnail: bool, pinned: bool,
+    selected: bool, batch-selected: bool, icon-key: string, tags: string,
+}
+export component EntryView inherits Rectangle {
+    in property <EntryRow> entry;
+    in property <bool> favorites;
+    in property <bool> compact;
+    in property <bool> batch;
+    in property <bool> busy;
+    in property <bool> quick-insert;
+    in property <bool> reorder-enabled;
+    callback selected-geometry(length,length);
+    changed y => { if (entry.selected) { root.selected-geometry(self.y,self.height); } }
+    changed height => { if (entry.selected) { root.selected-geometry(self.y,self.height); } }
+    callback select(string);
+    callback action(string,string);
+    callback thumbnail-needed(string);
+    callback key-event(string,bool,bool,string) -> bool;
+    pure callback drag-data(string) -> data-transfer;
+    callback can-drop-data(data-transfer) -> bool;
+    callback drop-data(data-transfer,string) -> bool;
+    private property <bool> show-actions: row-touch.has-hover || entry.selected || actions-touch.has-hover;
+    private property <length> left-gutter: favorites ? 14px : 100px;
+    private property <length> content-width: root.width - left-gutter - 18px;
+    height: max(compact ? 105px : 96px, body-layout.min-height + 32px);
+    min-width: 0px;
+    background: drop.has-drag ? EchoTheme.amber.with-alpha(0.15) : entry.selected || entry.batch-selected ? EchoTheme.surface : transparent;
+    accessible-role: list-item;
+    accessible-label: entry.title == "" ? entry.body : entry.title;
+    accessible-item-selectable: true;
+    accessible-item-selected: entry.selected;
+    accessible-action-default => { root.select(entry.key); }
+    init => { if (entry.has-thumbnail) { root.thumbnail-needed(entry.key); } }
+    changed entry => { if (entry.selected) { root.selected-geometry(self.y,self.height); } if (entry.has-thumbnail) { root.thumbnail-needed(entry.key); } }
+    if (entry.selected || entry.batch-selected): Rectangle { x: 0px; y: 0px; width: 3px; background: EchoTheme.amber; border-radius: 2px; }
+    if (!favorites): Rectangle { x: 80px; y: 0px; width: 1px; background: EchoTheme.line; }
+    if (!favorites): Text {
+        x: 0; y: 21px; width: 66px; text: entry.time-label;
+        color: EchoTheme.muted; font-size: 10px; horizontal-alignment: right;
+    }
+    if (!favorites): Rectangle {
+        x: 74px; y: 21px; width: 13px; height: 13px; border-radius: 7px;
+        background: EchoTheme.canvas; border-color: EchoTheme.amber; border-width: 1px;
+        Rectangle { x: 3px; y: 3px; width: 7px; height: 7px; border-radius: 4px; background: EchoTheme.amber; }
+    }
+    drop := DropArea {
+        enabled: root.favorites && root.reorder-enabled && !root.busy;
+        can-drop(event) => { return root.can-drop-data(event.data) ? DragAction.move : DragAction.none; }
+        dropped(event) => { return root.drop-data(event.data,root.entry.key) ? DragAction.move : DragAction.none; }
+        DragArea {
+            enabled: root.favorites && root.reorder-enabled && !root.busy;
+            data: root.drag-data(root.entry.key);
+            allow-move: true;
+            row-touch := TouchArea {
+                enabled: !root.busy;
+                clicked => { row-focus.focus(); root.select(root.entry.key); if (root.quick-insert && !root.batch) { root.action("insert",root.entry.key); } }
+            }
+        }
+    }
+    body-layout := VerticalLayout {
+        x: root.left-gutter; y: 16px; width: root.content-width;
+        spacing: 8px; alignment: start;
+        if (root.entry.section-label != "" && !root.compact): Text {
+            text: root.entry.section-label; color: EchoTheme.muted; font-size: 10px; font-weight: 600;
+        }
+        if (root.favorites): Text {
+            text: root.entry.title; color: EchoTheme.text; font-size: 16px; font-weight: 600;
+            wrap: word-wrap; min-width: 0px;
+        }
+        if (root.entry.has-thumbnail): Rectangle {
+            height: root.compact ? 128px : 160px;
+            background: EchoTheme.elevated; border-radius: 6px;
+            Image { source: root.entry.thumbnail; image-fit: contain; }
+            if (root.entry.thumbnail.width == 0): Text { text: "Loading image…"; color: EchoTheme.muted; horizontal-alignment: center; vertical-alignment: center; }
+        }
+        if (root.entry.body != ""): Text {
+            text: root.entry.body; color: EchoTheme.text; font-size: root.compact ? 13px : 15px;
+            wrap: word-wrap; min-width: 0px;
+        }
+        Text {
+            text: root.entry.source-label + (root.entry.pinned ? "   ·   Pinned" : "") + (root.entry.kind == "text" ? "" : "   ·   " + root.entry.kind);
+            color: EchoTheme.muted; font-size: 11px; wrap: word-wrap; min-width: 0px;
+        }
+        if (root.entry.tags != ""): Text { text: root.entry.tags; color: EchoTheme.muted; font-size: 11px; wrap: word-wrap; min-width: 0px; }
+        // Reserve a stable action row: showing controls must not move text or images.
+        Rectangle {
+            height: 32px;
+            actions-touch := TouchArea { }
+            HorizontalLayout {
+                spacing: 4px; alignment: start;
+                if (root.batch): EchoButton {
+                    text: root.entry.batch-selected ? "✓ Selected" : "Select";
+                    label: "Toggle selection"; checked: root.entry.batch-selected;
+                    enabled: !root.busy; clicked => { root.action("toggle-batch",root.entry.key); }
+                }
+                if (root.show-actions && !root.batch): EchoButton {
+                    icon: @image-url("icons/copy.svg"); label: "Copy item"; flat: true;
+                    enabled: !root.busy; clicked => { root.action("copy",root.entry.key); }
+                }
+                if (root.show-actions && !root.batch && root.quick-insert): EchoButton {
+                    icon: @image-url("icons/insert.svg"); label: "Insert item"; flat: true;
+                    enabled: !root.busy; clicked => { root.action("insert",root.entry.key); }
+                }
+                if (root.show-actions && !root.batch && !root.favorites): EchoButton {
+                    icon: @image-url("icons/star.svg"); label: "Add to Favorites"; flat: true;
+                    enabled: !root.busy; clicked => { root.action("favorite",root.entry.key); }
+                }
+                if (root.show-actions && !root.batch && !root.favorites): EchoButton {
+                    icon: @image-url("icons/pin.svg"); label: root.entry.pinned ? "Unpin item" : "Pin item"; flat: true; checked: root.entry.pinned;
+                    enabled: !root.busy; clicked => { root.action("pin",root.entry.key); }
+                }
+                if (root.show-actions && !root.batch && root.favorites): EchoButton {
+                    icon: @image-url("icons/edit.svg"); label: "Edit favorite"; flat: true;
+                    enabled: !root.busy; clicked => { root.action("edit",root.entry.key); }
+                }
+                if (root.show-actions && !root.batch && root.favorites): EchoButton {
+                    icon: @image-url("icons/up.svg"); label: "Move favorite up"; flat: true;
+                    enabled: !root.busy && root.reorder-enabled; clicked => { root.action("up",root.entry.key); }
+                }
+                if (root.show-actions && !root.batch && root.favorites): EchoButton {
+                    icon: @image-url("icons/down.svg"); label: "Move favorite down"; flat: true;
+                    enabled: !root.busy && root.reorder-enabled; clicked => { root.action("down",root.entry.key); }
+                }
+                if (root.show-actions && !root.batch): EchoButton {
+                    icon: @image-url("icons/delete.svg"); label: "Delete item"; danger: true; flat: true;
+                    enabled: !root.busy; clicked => { root.action("delete",root.entry.key); }
+                }
+            }
+        }
+    }
+    Rectangle { y: root.height - 1px; height: 1px; background: EchoTheme.line; }
+    row-focus := FocusScope {
+        width: 0;
+        key-pressed(event) => { return root.key-event(event.text,event.modifiers.control,event.modifiers.shift,"row") ? accept : reject; }
+    }
+}

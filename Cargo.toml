@@ -12,7 +12,7 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.82"
+rust-version = "1.92"
 
 [workspace.dependencies]
 ammonia = "4.1.4"
@@ -23,14 +23,11 @@ echo-storage = { path = "crates/echo-storage" }
 echo-windows = { path = "crates/echo-windows" }
 echo-activation = { path = "crates/echo-activation" }
 echo-presentation = { path = "crates/echo-presentation" }
-rusqlite = { version = "0.40.1", features = ["bundled"] }
+rusqlite = { version = "=0.40.1", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10.9"
 thiserror = "2"
-tauri = { version = "2.11.5", features = ["tray-icon"] }
-tauri-build = "2"
-tauri-plugin-single-instance = "2.4.3"
 windows = { version = "0.62.2", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
@@ -45,3 +42,11 @@ windows = { version = "0.62.2", features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"
+
+[patch.crates-io]
+i-slint-backend-winit = { path = "vendor/i-slint-backend-winit" }

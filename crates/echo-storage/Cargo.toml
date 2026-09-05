@@ -20,4 +20,5 @@ thiserror.workspace = true
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
+image.workspace = true
 tempfile = "3"

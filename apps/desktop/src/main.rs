@@ -1,3 +1,7 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 fn main() {
-    echo_desktop_lib::run()
+    if let Err(error) = echo_desktop::run() {
+        eprintln!("Echo: {error}");
+        std::process::exit(1);
+    }
 }

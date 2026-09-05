@@ -1,0 +1,316 @@
+import { ListView, ScrollView, LineEdit, TextEdit, CheckBox, ComboBox, AboutSlint, Palette } from "std-widgets.slint";
+import { EchoTheme, EchoButton, Hint } from "theme.slint";
+import { EntryRow, EntryView } from "entry-row.slint";
+export { EntryRow, EchoTheme }
+
+export component AppWindow inherits Window {
+    in property <bool> is-favorites-window;
+    in property <[EntryRow]> rows;
+    in-out property <string> query;
+    in property <string> active-view: "history";
+    in property <string> route: "history";
+    in property <bool> dark;
+    in property <bool> native-mica;
+    in property <bool> loading;
+    in property <bool> has-more;
+    in property <bool> has-previous;
+    in property <bool> batch-mode;
+    in property <int> selected-count;
+    in property <int> selection-index: -1;
+    in property <string> status;
+    in property <bool> status-error;
+    in property <bool> busy;
+    in property <bool> quick-insert;
+    in-out property <bool> text-edit-mode;
+    in-out property <bool> history-enabled: true;
+    in-out property <bool> record-sensitive;
+    in-out property <bool> store-window-titles;
+    in-out property <string> max-entries-text;
+    in-out property <string> max-total-mib-text;
+    in-out property <string> max-item-mib-text;
+    in-out property <string> theme-mode: "system";
+    in-out property <bool> editor-open;
+    in property <bool> editor-new;
+    in property <string> editing-key;
+    in-out property <string> draft-name;
+    in-out property <string> draft-content;
+    in-out property <string> draft-tags;
+    in-out property <string> draft-icon;
+    in property <bool> content-editable;
+    in-out property <bool> clear-confirm-open;
+    callback query-edited(string);
+    callback row-selected(string);
+    callback row-action(string,string);
+    callback batch-action(string);
+    callback load-more();
+    callback previous-page();
+    callback panel-selected(string);
+    callback route-selected(string);
+    callback dismiss();
+    callback drag-requested();
+    callback key-event(string,bool,bool,string) -> bool;
+    callback thumbnail-requested(string);
+    callback save-settings();
+    callback save-favorite();
+    callback cancel-editor();
+    callback confirm-clear();
+    callback create-favorite();
+    callback quit();
+    pure callback drag-data(string) -> data-transfer;
+    callback can-drop-data(data-transfer) -> bool;
+    callback drop-data(data-transfer,string) -> bool;
+    public function focus-search(select-all: bool) {
+        search-input.focus();
+        if (select-all) { search-input.select-all(); }
+    }
+    public function reset-scroll() { list.viewport-y = 0px; }
+    public function reveal-selection() { list.viewport-y = -max(0px, (selection-index - 1) * list.viewport-height / max(1, rows.length)); }
+    private property <bool> modal: editor-open || clear-confirm-open;
+    private property <bool> favorites: active-view == "favorites" || is-favorites-window;
+    changed dark => { EchoTheme.dark = root.dark; Palette.color-scheme = root.dark ? ColorScheme.dark : ColorScheme.light; }
+    title: is-favorites-window ? "Echo Favorites" : "Echo Recall";
+    preferred-width: is-favorites-window ? 310px : 824px;
+    preferred-height: is-favorites-window ? 575px : 814px;
+    min-width: is-favorites-window ? 250px : 640px;
+    min-height: is-favorites-window ? 420px : 560px;
+    no-frame: true;
+    background: root.native-mica ? transparent : EchoTheme.canvas;
+    default-font-family: "Segoe UI";
+    default-font-size: 14px;
+    forward-focus: search-input;
+
+    FocusScope {
+        key-pressed(event) => { return root.key-event(event.text,event.modifiers.control,event.modifiers.shift,"control") ? accept : reject; }
+    Rectangle {
+        border-radius: root.is-favorites-window ? 18px : 23px;
+        background: root.native-mica ? EchoTheme.canvas.with-alpha(0.88) : EchoTheme.canvas;
+        border-width: 1px;
+        border-color: EchoTheme.line;
+        clip: true;
+        TouchArea {
+            height: 88px;
+            enabled: !root.modal;
+            pointer-event(event) => { if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) { root.drag-requested(); } }
+        }
+        Rectangle {
+            x: 16px; y: 15px; width: parent.width - (root.is-favorites-window ? 32px : 122px); height: 56px;
+            background: EchoTheme.surface; border-radius: 10px;
+            border-width: search-input.has-focus ? 1.5px : 1px;
+            border-color: search-input.has-focus ? EchoTheme.amber : EchoTheme.line;
+            Image { x: 15px; y: 17px; width: 21px; height: 21px; source: @image-url("icons/search.svg"); colorize: EchoTheme.muted; }
+            if (root.query == ""): Text {
+                x: 49px; y: 0px; width: parent.width - 60px; height: parent.height;
+                text: root.favorites ? "Search favorites…" : "Search clipboard history…";
+                color: EchoTheme.muted; font-size: 16px; vertical-alignment: center;
+            }
+            search-input := TextInput {
+                x: 49px; y: 12px; width: parent.width - 61px; height: 32px;
+                text <=> root.query; color: EchoTheme.text; font-size: 16px;
+                single-line: true; enabled: !root.modal;
+                selection-background-color: EchoTheme.amber; selection-foreground-color: #171b1e;
+                accessible-label: "Search clipboard history";
+                accessible-value <=> root.query;
+                accessible-action-set-value(value) => { if (!root.modal) { root.query = value; root.query-edited(value); } }
+                edited => { root.query-edited(self.text); }
+                key-pressed(event) => { return root.key-event(event.text,event.modifiers.control,event.modifiers.shift,"search") ? accept : reject; }
+            }
+        }
+        if (!root.is-favorites-window): EchoButton {
+            x: parent.width - 94px; y: 26px; width: 34px;
+            icon: @image-url("icons/settings.svg"); label: "Settings"; flat: true;
+            enabled: !root.modal; clicked => { root.route-selected("settings"); }
+        }
+        if (!root.is-favorites-window): EchoButton {
+            x: parent.width - 52px; y: 26px; width: 34px;
+            icon: @image-url("icons/close.svg"); label: "Hide Echo"; flat: true;
+            enabled: !root.modal; clicked => { root.dismiss(); }
+        }
+        Rectangle { y: 85px; height: 1px; background: EchoTheme.line; }
+        if (!root.is-favorites-window): HorizontalLayout {
+            x: 16px; y: 94px; height: 40px; spacing: 14px; alignment: start;
+            EchoButton { text: "History"; flat: true; checked: !root.favorites && root.route == "history"; enabled: !root.modal; clicked => { root.panel-selected("history"); } }
+            EchoButton { text: "Favorites"; flat: true; checked: root.favorites && root.route == "history"; enabled: !root.modal; clicked => { root.panel-selected("favorites"); } }
+            if (root.route != "history"): EchoButton { text: "Back"; icon: @image-url("icons/back.svg"); flat: true; enabled: !root.modal; clicked => { root.route-selected("history"); } }
+        }
+        if (!root.is-favorites-window): Rectangle { x: root.favorites ? 110px : 16px; y: 141px; width: root.favorites ? 80px : 68px; height: 2px; background: EchoTheme.amber; }
+        if (!root.is-favorites-window): Rectangle { y: 143px; height: 1px; background: EchoTheme.line; }
+        if (root.route == "history"): Rectangle {
+            x: 16px; y: root.is-favorites-window ? 101px : 159px;
+            width: parent.width - 32px; height: 80px;
+            VerticalLayout {
+                x: 0px; y: 0px; width: parent.width - (root.is-favorites-window ? 60px : 180px); spacing: 3px; alignment: start;
+                Text { text: root.favorites ? "DURABLE COLLECTION" : "TIMELINE"; color: EchoTheme.muted; font-size: 10px; font-weight: 600; letter-spacing: 1px; }
+                Text { text: root.favorites ? "Favorites" : "History"; color: EchoTheme.text; font-size: 23px; font-weight: 650; }
+                Text { text: root.favorites ? "Manual order · drag to rearrange" : root.batch-mode ? root.selected-count + " selected" : root.rows.length + " captures loaded"; color: EchoTheme.muted; font-size: 11px; wrap: word-wrap; }
+            }
+            HorizontalLayout {
+                x: parent.width - (root.favorites ? 44px : 168px); y: 24px;
+                width: root.favorites ? 44px : 168px; spacing: 8px;
+                if (root.favorites): EchoButton { icon: @image-url("icons/plus.svg"); label: "Create favorite"; primary: true; enabled: !root.busy && !root.modal; clicked => { root.create-favorite(); } }
+                if (!root.favorites): EchoButton { text: root.batch-mode ? "Cancel" : "Select"; enabled: !root.busy && !root.modal; clicked => { root.batch-action(root.batch-mode ? "cancel" : "begin"); } }
+                if (!root.favorites): EchoButton { text: "Clear all"; danger: true; enabled: !root.busy && !root.modal; clicked => { root.clear-confirm-open = true; } }
+            }
+        }
+        if (root.batch-mode && root.route == "history"): HorizontalLayout {
+            x: 16px; y: 239px; width: parent.width - 32px; height: 36px; spacing: 8px; alignment: start;
+            EchoButton { text: "All loaded"; enabled: !root.busy; clicked => { root.batch-action("all"); } }
+            EchoButton { text: "Favorite"; enabled: root.selected-count > 0 && !root.busy; clicked => { root.batch-action("favorite"); } }
+            EchoButton { text: "Pin"; enabled: root.selected-count > 0 && !root.busy; clicked => { root.batch-action("pin"); } }
+            EchoButton { text: "Delete"; danger: true; enabled: root.selected-count > 0 && !root.busy; clicked => { root.batch-action("delete"); } }
+        }
+        list := ListView {
+            x: 16px;
+            y: root.is-favorites-window ? 190px : root.batch-mode ? 286px : 248px;
+            width: parent.width - 32px; height: parent.height - self.y - 84px;
+            visible: root.route == "history";
+            for entry in root.rows: EntryView {
+                entry: entry;
+                favorites: root.favorites; compact: root.is-favorites-window;
+                batch: root.batch-mode; busy: root.busy || root.modal || root.loading;
+                quick-insert: root.quick-insert; reorder-enabled: root.query == "";
+                selected-geometry(y,height) => {
+                    if (y + list.viewport-y < 0px || height > list.visible-height) { list.viewport-y = -y; }
+                    else if (y + height + list.viewport-y > list.visible-height) { list.viewport-y = list.visible-height - y - height; }
+                }
+                select(key) => { root.row-selected(key); }
+                action(action,key) => { root.row-action(action,key); }
+                thumbnail-needed(key) => { root.thumbnail-requested(key); }
+                key-event(key,ctrl,shift,target) => { return root.key-event(key,ctrl,shift,target); }
+                drag-data(key) => { return root.drag-data(key); }
+                can-drop-data(data) => { return root.can-drop-data(data); }
+                drop-data(data,key) => { return root.drop-data(data,key); }
+            }
+        }
+        if (root.route == "history" && root.rows.length == 0): Text {
+            x: 24px; y: root.is-favorites-window ? 220px : 290px; width: parent.width - 48px;
+            text: root.loading ? "Loading…" : root.status-error ? "Unable to load results" : root.query == "" ? root.favorites ? "No favorites yet\nAdd reusable text with the + button." : "Your clipboard history appears here." : "No matches for “" + root.query + "”";
+            color: EchoTheme.muted; horizontal-alignment: center; wrap: word-wrap;
+        }
+        if (root.route == "history"): HorizontalLayout {
+            x: 16px; y: parent.height - 78px; height: 30px; width: parent.width - 32px; alignment: end; spacing: 8px;
+            if (root.has-previous): EchoButton { text: "Previous"; enabled: !root.loading && !root.busy; clicked => { root.previous-page(); } }
+            if (root.has-more): EchoButton { text: root.loading ? "Loading…" : "Load more"; enabled: !root.loading && !root.busy; clicked => { root.load-more(); } }
+        }
+        if (root.route == "settings"): ScrollView {
+            x: 28px; y: 164px; width: parent.width - 56px; height: parent.height - 225px;
+            VerticalLayout {
+                padding: 8px; spacing: 18px; alignment: start;
+                Text { text: "Settings"; color: EchoTheme.text; font-size: 25px; font-weight: 650; }
+                Text { text: "Capture and storage"; color: EchoTheme.muted; font-weight: 600; }
+                CheckBox { text: "Record clipboard history"; checked <=> root.history-enabled; }
+                CheckBox { text: "Allow sensitive clipboard content"; checked <=> root.record-sensitive; }
+                CheckBox { text: "Store source window titles"; checked <=> root.store-window-titles; }
+                Text { text: "Maximum history entries"; color: EchoTheme.text; }
+                LineEdit { text <=> root.max-entries-text; accessible-label: "Maximum history entries"; }
+                HorizontalLayout {
+                    spacing: 18px;
+                    VerticalLayout { spacing: 8px; Text { text: "Total storage (MiB)"; color: EchoTheme.text; } LineEdit { text <=> root.max-total-mib-text; accessible-label: "Total storage MiB"; } }
+                    VerticalLayout { spacing: 8px; Text { text: "Maximum item (MiB)"; color: EchoTheme.text; } LineEdit { text <=> root.max-item-mib-text; accessible-label: "Maximum item MiB"; } }
+                }
+                Text { text: "Appearance"; color: EchoTheme.text; font-weight: 600; }
+                ComboBox { model: ["system", "light", "dark"]; current-value <=> root.theme-mode; accessible-label: "Theme"; }
+                Text { text: "Mica requires a compatible GPU renderer and Windows settings.\nClosing Echo hides its windows. Use Quit to stop capture."; color: EchoTheme.muted; wrap: word-wrap; min-width: 0px; }
+                HorizontalLayout {
+                    alignment: start; spacing: 12px;
+                    EchoButton { text: "Save settings"; primary: true; enabled: !root.busy; clicked => { root.save-settings(); } }
+                    EchoButton { text: "About Echo"; clicked => { root.route-selected("about"); } }
+                    EchoButton { text: "Quit Echo"; danger: true; clicked => { root.quit(); } }
+                }
+            }
+        }
+        if (root.route == "about"): VerticalLayout {
+            x: 32px; y: 184px; width: parent.width - 64px; height: parent.height - 254px;
+            alignment: start; spacing: 24px;
+            Text { text: "Echo"; color: EchoTheme.text; font-size: 32px; font-weight: 650; }
+            Text { text: "Native clipboard history · Version 0.1.0\nRust + Slint · Windows"; color: EchoTheme.muted; wrap: word-wrap; }
+            AboutSlint { height: 120px; }
+            Text { text: "Third-party notices are included in THIRD-PARTY-NOTICES.txt\nin the application directory. Your clipboard data stays local."; color: EchoTheme.muted; wrap: word-wrap; min-width: 0px; }
+            EchoButton { text: "Back to settings"; clicked => { root.route-selected("settings"); } }
+        }
+        Rectangle {
+            x: 16px; y: parent.height - 43px; width: parent.width - 32px; height: 31px;
+            HorizontalLayout {
+                spacing: 7px; alignment: start;
+                if (!root.is-favorites-window): Hint { text: "Tab  Panel"; }
+                if (!root.is-favorites-window): Hint { text: "Ctrl + J/K  Navigate"; }
+                if (!root.is-favorites-window): Hint { text: root.quick-insert ? "Enter  Insert" : "Enter  Select"; }
+                Hint { text: "Esc  Hide"; }
+                Text { text: root.status; color: root.status-error ? EchoTheme.danger : EchoTheme.muted; font-size: 11px; wrap: word-wrap; min-width: 0px; vertical-alignment: center; }
+            }
+        }
+    }
+    if (root.editor-open): Rectangle {
+        background: #00000080;
+        TouchArea { }
+        FocusScope {
+            key-pressed(event) => {
+                if (event.text == Key.Escape) { return root.key-event(event.text,event.modifiers.control,event.modifiers.shift,"control") ? accept : reject; }
+                if (event.text == Key.Tab) {
+                    if (event.modifiers.shift) {
+                        if (name-edit.has-focus) { cancel-button.focus(); } else if (content-edit.has-focus) { name-edit.focus(); }
+                        else if (tags-edit.has-focus) { content-edit.focus(); } else if (icon-edit.has-focus) { tags-edit.focus(); }
+                        else if (save-button.focused) { icon-edit.focus(); } else { save-button.focus(); }
+                    } else {
+                        if (name-edit.has-focus) { content-edit.focus(); } else if (content-edit.has-focus) { tags-edit.focus(); }
+                        else if (tags-edit.has-focus) { icon-edit.focus(); } else if (icon-edit.has-focus) { save-button.focus(); }
+                        else if (save-button.focused) { cancel-button.focus(); } else { name-edit.focus(); }
+                    } return accept;
+                } return reject;
+            }
+            Rectangle {
+                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                width: min(520px,parent.width - 32px); height: min(620px,parent.height - 40px);
+                background: EchoTheme.elevated; border-radius: 15px; border-width: 1px; border-color: EchoTheme.line;
+                accessible-role: groupbox; accessible-label: root.editor-new ? "Create favorite" : "Edit favorite";
+                init => { name-edit.focus(); }
+                VerticalLayout {
+                    padding: 20px; spacing: 10px;
+                    Text { text: root.editor-new ? "New favorite" : "Edit favorite"; color: EchoTheme.text; font-size: 21px; font-weight: 650; }
+                    Text { text: "Name (optional)"; color: EchoTheme.muted; font-size: 12px; }
+                    name-edit := LineEdit { text <=> root.draft-name; accessible-label: "Favorite name"; enabled: !root.busy; }
+                    Text { text: root.content-editable ? "Content" : "Original non-text content is preserved"; color: EchoTheme.muted; font-size: 12px; wrap: word-wrap; }
+                    content-edit := TextEdit { accessible-action-set-value(value) => { if (root.content-editable && !root.busy) { root.draft-content = value; } } text <=> root.draft-content; read-only: !root.content-editable; accessible-label: "Favorite content"; enabled: !root.busy; min-height: 80px; }
+                    Text { text: "Tags (comma separated)"; color: EchoTheme.muted; font-size: 12px; }
+                    tags-edit := LineEdit { text <=> root.draft-tags; accessible-label: "Favorite tags"; enabled: !root.busy; }
+                    Text { text: "Icon key (optional)"; color: EchoTheme.muted; font-size: 12px; }
+                    icon-edit := LineEdit { text <=> root.draft-icon; accessible-label: "Favorite icon"; enabled: !root.busy; }
+                    if (root.status-error): Text { text: root.status; color: EchoTheme.danger; wrap: word-wrap; font-size: 12px; min-width: 0px; }
+                    HorizontalLayout {
+                        spacing: 10px; alignment: end;
+                        cancel-button := EchoButton { text: "Cancel"; enabled: !root.busy; clicked => { root.cancel-editor(); } }
+                        save-button := EchoButton { text: root.busy ? "Saving…" : "Save favorite"; primary: true; enabled: !root.busy; clicked => { root.save-favorite(); } }
+                    }
+                }
+            }
+        }
+    }
+    if (root.clear-confirm-open): Rectangle {
+        background: #00000080;
+        TouchArea { }
+        FocusScope {
+            key-pressed(event) => {
+                if (event.text == Key.Escape) { return root.key-event(event.text,event.modifiers.control,event.modifiers.shift,"control") ? accept : reject; }
+                if (event.text == Key.Tab) { if (keep-button.focused) { clear-button.focus(); } else { keep-button.focus(); } return accept; }
+                return reject;
+            }
+            Rectangle {
+                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                width: min(440px,parent.width - 32px); height: 235px;
+                background: EchoTheme.elevated; border-radius: 15px; border-width: 1px; border-color: EchoTheme.line;
+                accessible-role: groupbox; accessible-label: "Clear clipboard history";
+                init => { keep-button.focus(); }
+                VerticalLayout {
+                    padding: 24px; spacing: 16px;
+                    Text { text: "Clear clipboard history?"; color: EchoTheme.text; font-size: 22px; font-weight: 650; }
+                    Text { text: "This removes unpinned history.\nPinned items and Favorites are kept.\nThis cannot be undone."; color: EchoTheme.muted; wrap: word-wrap; }
+                    HorizontalLayout {
+                        alignment: end; spacing: 10px;
+                        keep-button := EchoButton { text: "Keep history"; enabled: !root.busy; clicked => { root.clear-confirm-open = false; root.focus-search(false); } }
+                        clear-button := EchoButton { text: "Clear unpinned"; danger: true; enabled: !root.busy; clicked => { root.confirm-clear(); } }
+                    }
+                }
+            }
+        }
+    }
+    }
+}

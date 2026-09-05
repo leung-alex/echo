@@ -3,31 +3,30 @@ name = "echo-desktop"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-build = "build.rs"
-default-run = "echo-desktop"
 
 [features]
-custom-protocol = ["tauri/custom-protocol"]
+default = []
+gpu = ["slint/renderer-femtovg"]
 
 [lib]
-name = "echo_desktop_lib"
 path = "src/lib.rs"
 
-[[bin]]
-name = "echo-desktop"
-path = "src/main.rs"
-
-[build-dependencies]
-tauri-build.workspace = true
-
 [dependencies]
-echo-activation.workspace = true
 echo-engine.workspace = true
 echo-storage.workspace = true
+echo-windows.workspace = true
+echo-activation.workspace = true
+echo-presentation.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tauri.workspace = true
-tauri-plugin-single-instance.workspace = true
+image.workspace = true
+sha2.workspace = true
+chrono = "0.4"
+raw-window-handle = "0.6"
+slint = { version = "=1.17.1", default-features = false, features = ["std", "backend-winit", "renderer-software", "accessibility", "compat-1-2", "raw-window-handle-06"] }
 
-[target.'cfg(windows)'.dependencies]
-echo-windows.workspace = true
+[build-dependencies]
+slint-build = "=1.17.1"
+embed-resource = "3.0.11"
+[dev-dependencies]
+accesskit = "=0.24.1"

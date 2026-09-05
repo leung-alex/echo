@@ -142,6 +142,40 @@ fn clamp_position(desired: (i32, i32), size: (i32, i32), work: RECT) -> (i32, i3
         desired.1.clamp(work.top, max_y),
     )
 }
+// Prefer the left attachment, but never overlap the main surface when the
+// other side has space. All arguments are physical screen coordinates.
+fn adjacent_position(
+    main: RECT,
+    size: (i32, i32),
+    work: RECT,
+    gap: i32,
+    offset: i32,
+) -> (i32, i32) {
+    let left = main.left - size.0 - gap;
+    let right = main.right + gap;
+    let x = if left >= work.left {
+        left
+    } else if right + size.0 <= work.right {
+        right
+    } else {
+        left
+    };
+    clamp_position((x, main.top + offset), size, work)
+}
+fn pair_main_position(main: (i32, i32), favorite: (i32, i32), work: RECT, gap: i32) -> (i32, i32) {
+    let total = main.0 + favorite.0 + gap;
+    let available = work.right - work.left;
+    let x = if total <= available {
+        work.left + (available - total) / 2 + favorite.0 + gap
+    } else {
+        work.left + (available - main.0) / 2
+    };
+    clamp_position(
+        (x, work.top + (work.bottom - work.top - main.1) / 2),
+        main,
+        work,
+    )
+}
 pub fn reposition_favorites(main: isize, favorites: isize) -> Result<(), String> {
     let main = owned(main)?;
     let favorites = owned(favorites)?;
@@ -158,11 +192,13 @@ pub fn reposition_favorites(main: isize, favorites: isize) -> Result<(), String>
             return Err(error());
         }
         let scale = f64::from(GetDpiForWindow(main).max(96)) / 96.0;
-        let desired = (
-            a.left + (-251.0 * scale).round() as i32,
-            a.top + (93.0 * scale).round() as i32,
+        let (x, y) = adjacent_position(
+            a,
+            (b.right - b.left, b.bottom - b.top),
+            info.rcWork,
+            (8.0 * scale).round() as i32,
+            (93.0 * scale).round() as i32,
         );
-        let (x, y) = clamp_position(desired, (b.right - b.left, b.bottom - b.top), info.rcWork);
         if x != b.left || y != b.top {
             if SetWindowPos(
                 favorites,
@@ -180,8 +216,9 @@ pub fn reposition_favorites(main: isize, favorites: isize) -> Result<(), String>
     }
     Ok(())
 }
-pub fn center_window(handle: isize) -> Result<(), String> {
+pub fn center_composition(handle: isize, favorite: isize) -> Result<(), String> {
     let hwnd = owned(handle)?;
+    let favorite = owned(favorite)?;
     unsafe {
         let mut r: RECT = std::mem::zeroed();
         GetWindowRect(hwnd, &mut r);
@@ -191,9 +228,17 @@ pub fn center_window(handle: isize) -> Result<(), String> {
         if GetMonitorInfoW(monitor, &mut info) == 0 {
             return Err(error());
         }
-        let w = info.rcWork;
-        let x = w.left + (w.right - w.left - (r.right - r.left)) / 2;
-        let y = w.top + (w.bottom - w.top - (r.bottom - r.top)) / 2;
+        let mut f: RECT = std::mem::zeroed();
+        if GetWindowRect(favorite, &mut f) == 0 {
+            return Err(error());
+        }
+        let gap = (8.0 * f64::from(GetDpiForWindow(hwnd).max(96)) / 96.0).round() as i32;
+        let (x, y) = pair_main_position(
+            (r.right - r.left, r.bottom - r.top),
+            (f.right - f.left, f.bottom - f.top),
+            info.rcWork,
+            gap,
+        );
         SetWindowPos(
             hwnd,
             null_mut(),
@@ -240,6 +285,22 @@ pub fn attach_window(
         if GetWindowThreadProcessId(hwnd, null_mut()) != GetCurrentThreadId() {
             return Err("window hook must be installed on its UI thread".into());
         }
+        // Custom chrome supplies its own controls; suppress phantom DWM caption buttons.
+        let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        SetWindowLongPtrW(
+            hwnd,
+            GWL_STYLE,
+            style & !((WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX) as isize),
+        );
+        SetWindowPos(
+            hwnd,
+            null_mut(),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        );
         let mut data = Box::new(HookData {
             handler,
             main: is_main,
@@ -271,6 +332,10 @@ unsafe extern "system" fn subclass(
 ) -> LRESULT {
     let state = &*(data as *const HookData);
     match msg {
+        WM_SYSKEYDOWN if w == 0x73 => {
+            PostMessageW(hwnd, WM_CLOSE, 0, 0);
+            return 0;
+        }
         WM_IME_STARTCOMPOSITION => {
             state.composing.store(true, Ordering::Release);
         }
@@ -334,6 +399,41 @@ mod tests {
             bottom: 100,
         };
         assert_eq!(clamp_position((9, 9), (310, 575), r), (0, 0));
+    }
+    #[test]
+    fn centered_pair_fits_without_overlap() {
+        let w = RECT {
+            left: 0,
+            top: 0,
+            right: 1366,
+            bottom: 1040,
+        };
+        let (x, y) = pair_main_position((824, 814), (310, 575), w, 8);
+        let a = RECT {
+            left: x,
+            top: y,
+            right: x + 824,
+            bottom: y + 814,
+        };
+        let (fx, _) = adjacent_position(a, (310, 575), w, 8, 93);
+        assert!(fx >= 0 && fx + 310 + 8 <= x && x + 824 <= w.right);
+    }
+    #[test]
+    fn attachment_switches_right_near_left_monitor_edge() {
+        let w = RECT {
+            left: -1920,
+            top: 0,
+            right: 0,
+            bottom: 1040,
+        };
+        let a = RECT {
+            left: -1900,
+            top: 100,
+            right: -1076,
+            bottom: 914,
+        };
+        let (x, y) = adjacent_position(a, (310, 575), w, 8, 93);
+        assert_eq!((x, y), (-1068, 193));
     }
     #[test]
     fn invalid_window_is_rejected() {

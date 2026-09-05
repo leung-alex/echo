@@ -1,114 +1,97 @@
-use echo_activation::decode_args;
-use tauri::{Manager, WindowEvent};
-
-use crate::activation::handle_activation;
-use crate::commands::{
-    activation_ack, activation_state, history_clear, quick_insert_activate_panel,
-    quick_insert_active_panel, quick_insert_begin_session, quick_insert_clear_session,
-    quick_insert_clear_unpinned_history, quick_insert_create_favorite,
-    quick_insert_delete_favorite, quick_insert_delete_history_many, quick_insert_execute,
-    quick_insert_list, quick_insert_move_history_many_to_favorites,
-    quick_insert_move_history_to_favorite, quick_insert_pin_history, quick_insert_pin_history_many,
-    quick_insert_reorder_favorites, quick_insert_unpin_history, quick_insert_update_favorite,
-    settings_get, settings_update,
-};
-use crate::composition::{
-    close_request_action, create_main_window, hide_composition, reposition_favorites,
-    CloseRequestAction, EchoState, FAVORITES_LABEL, MAIN_LABEL,
-};
-use crate::events::create_tray;
-
-mod activation;
-mod commands;
-mod composition;
+//! Native Slint shell for Echo. Engine, persistence and clipboard formats are unchanged.
+slint::include_modules!();
+#[cfg(windows)]
+mod app;
+#[cfg(windows)]
 mod events;
-mod preview_protocol;
-mod transport;
+mod formatting;
+#[cfg(windows)]
+mod service;
 
-pub fn run() {
-    let builder = tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
-            if let Some(Ok(envelope)) = decode_args(argv.iter().map(String::as_str)) {
-                let _ = handle_activation(app, envelope);
-            }
-        }))
-        .register_uri_scheme_protocol("echo-preview", |context, request| {
-            preview_protocol::serve(
-                &context.app_handle().state::<EchoState>().library,
-                request.uri().path(),
-            )
-        })
-        .invoke_handler(tauri::generate_handler![
-            quick_insert_list,
-            quick_insert_begin_session,
-            quick_insert_execute,
-            quick_insert_clear_session,
-            quick_insert_move_history_to_favorite,
-            quick_insert_move_history_many_to_favorites,
-            quick_insert_create_favorite,
-            quick_insert_update_favorite,
-            quick_insert_pin_history,
-            quick_insert_unpin_history,
-            quick_insert_pin_history_many,
-            quick_insert_delete_history_many,
-            quick_insert_clear_unpinned_history,
-            quick_insert_reorder_favorites,
-            quick_insert_delete_favorite,
-            quick_insert_activate_panel,
-            quick_insert_active_panel,
-            settings_get,
-            settings_update,
-            history_clear,
-            activation_state,
-            activation_ack,
-        ])
-        .setup(|app| {
-            let state = EchoState::build().map_err(std::io::Error::other)?;
-            state.start_history_event_bridge(app.handle());
-            app.manage(state);
-            create_tray(app.handle()).map_err(std::io::Error::other)?;
-            create_main_window(app.handle()).map_err(std::io::Error::other)?;
-            let args = std::env::args().collect::<Vec<_>>();
-            if let Some(Ok(envelope)) = decode_args(args.iter().map(String::as_str)) {
-                handle_activation(app.handle(), envelope).map_err(std::io::Error::other)?;
-            } else {
-                crate::composition::show_composition(app.handle())
-                    .map_err(std::io::Error::other)?;
-            }
-            Ok(())
-        })
-        .on_window_event(|window, event| match event {
-            WindowEvent::CloseRequested { api, .. } => {
-                api.prevent_close();
-                match close_request_action(window.label()) {
-                    CloseRequestAction::HideComposition => {
-                        hide_composition(window.app_handle());
-                    }
-                    CloseRequestAction::HideFavorites => {
-                        let _ = window.hide();
-                    }
-                    CloseRequestAction::Ignore => {}
-                }
-            }
-            WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
-                if window.label() == MAIN_LABEL {
-                    reposition_favorites(window.app_handle());
-                }
-            }
-            WindowEvent::ScaleFactorChanged { .. } => {
-                reposition_favorites(window.app_handle());
-            }
-            WindowEvent::Destroyed => {
-                if window.label() == MAIN_LABEL {
-                    if let Some(favorites) = window.app_handle().get_webview_window(FAVORITES_LABEL)
-                    {
-                        let _ = favorites.close();
-                    }
-                }
-            }
-            _ => {}
-        });
-    builder
-        .run(tauri::generate_context!())
-        .expect("error while running Echo Recall");
+pub fn run() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        run_windows()
+    }
+    #[cfg(not(windows))]
+    {
+        Err("Echo's clipboard runtime requires Windows".into())
+    }
 }
+#[cfg(windows)]
+fn run_windows() -> Result<(), String> {
+    use echo_windows::shell::{Instance, NativeShell};
+    use events::{Event, Hub};
+    use std::sync::Arc;
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    if args == ["--help"] || args == ["-h"] {
+        println!("Echo native clipboard history\n--background  --history  --favorites  --settings  --quit\n--echo-activate <base64url-envelope>");
+        return Ok(());
+    }
+    if args == ["--version"] {
+        println!("Echo {} (Slint)", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    validate_args(&args)?;
+    let data_dir = std::env::var_os("ECHO_DATA_DIR")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("LOCALAPPDATA").map(|p| std::path::PathBuf::from(p).join("Echo"))
+        })
+        .ok_or("LOCALAPPDATA is unavailable; specify ECHO_DATA_DIR")?;
+    let hub = Arc::new(Hub::default());
+    let callback_hub = hub.clone();
+    let shell = match NativeShell::start(
+        &data_dir,
+        &args,
+        Arc::new(move |e| callback_hub.post(Event::Shell(e))),
+    )? {
+        Instance::Forwarded => return Ok(()),
+        Instance::Primary(shell) => shell,
+    };
+    if args == ["--quit"] {
+        drop(shell);
+        return Ok(());
+    }
+    // Secondary invocations returned before any renderer or database initialization.
+    slint::BackendSelector::new()
+        .backend_name("winit".into())
+        .renderer_name(std::env::var("ECHO_RENDERER").unwrap_or_else(|_| "software".into()))
+        .select()
+        .map_err(|e| e.to_string())?;
+    let worker = service::Worker::start(data_dir, hub.clone())?;
+    let application = app::App::new(hub.clone(), worker, args)?;
+    app::install(application.clone());
+    hub.activate();
+    let result = slint::run_event_loop_until_quit().map_err(|e| e.to_string());
+    application.borrow_mut().shutdown();
+    app::uninstall();
+    drop(application);
+    drop(shell);
+    result
+}
+#[cfg(windows)]
+fn validate_args(args: &[String]) -> Result<(), String> {
+    match args {
+        [] => Ok(()),
+        [flag]
+            if matches!(
+                flag.as_str(),
+                "--background" | "--history" | "--favorites" | "--settings" | "--quit"
+            ) =>
+        {
+            Ok(())
+        }
+        [flag, value] if flag == echo_activation::ACTIVATION_FLAG && value.len() <= 60 * 1024 => {
+            echo_activation::decode(value)
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        }
+        _ => Err("Invalid Echo arguments; use --help".into()),
+    }
+}
+
+// Regression-test the exact patched accessibility mapping in ordinary CI.
+#[cfg(test)]
+#[path = "../../../vendor/i-slint-backend-winit/echo_accessibility_value.rs"]
+mod accessibility_value_regression;
