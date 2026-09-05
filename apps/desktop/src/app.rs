@@ -56,6 +56,21 @@ struct Images {
     bytes: usize,
     epoch: u64,
 }
+impl Images {
+    fn trim_to(&mut self, limit: usize) -> Vec<String> {
+        let mut evicted = Vec::new();
+        while self.bytes > limit {
+            let Some(key) = self.order.pop_front() else {
+                break;
+            };
+            if let Some((_, size)) = self.cache.remove(&key) {
+                self.bytes = self.bytes.saturating_sub(size);
+                evicted.push(key);
+            }
+        }
+        evicted
+    }
+}
 impl Default for Images {
     fn default() -> Self {
         Self {
@@ -278,6 +293,9 @@ impl App {
         }
         let epoch = self.session.activate(context);
         self.worker.epoch.store(epoch, Ordering::Release);
+        if self.surfaces[0].view != view || self.surfaces[0].query != query {
+            self.windows[0].set_stale_rows(true);
+        }
         self.surfaces[0].set_view(view);
         self.surfaces[0].set_query(query.clone());
         self.windows[0].set_active_view(
@@ -351,13 +369,23 @@ impl App {
         let i = role.index();
         self.timers[i].stop();
         self.surfaces[i].hide();
+        // Keep bounded native row slots and a small immutable thumbnail cache
+        // across hide/show. Avoid retiring/recreating the same UIA providers.
+        // Hidden decoding is cancelled; retained pixels are capped at 1 MiB.
+        let evicted = self.images[i].trim_to(1024 * 1024);
+        if !evicted.is_empty() {
+            for index in 0..self.models[i].row_count() {
+                if let Some(mut row) = self.models[i].row_data(index) {
+                    // Reset all row pixel references when trimming; the bounded
+                    // cache repopulates retained entries on the next real load.
+                    row.thumbnail = Default::default();
+                    self.models[i].set_row_data(index, row);
+                }
+            }
+        }
         let _ = self.windows[i].hide();
-        self.models[i].set_vec(Vec::new());
         self.images[i].epoch = self.images[i].epoch.wrapping_add(1);
-        self.images[i].cache.clear();
-        self.images[i].order.clear();
         self.images[i].pending.clear();
-        self.images[i].bytes = 0;
     }
     fn dismiss(&mut self, role: Role) {
         self.hide_surface(role);
@@ -427,7 +455,8 @@ impl App {
                 row
             })
             .collect::<Vec<_>>();
-        self.models[i].set_vec(rows);
+        crate::native_model::reconcile(self.models[i].as_ref(), rows);
+        window.set_stale_rows(false);
         window.set_loading(surface.loading);
         window.set_has_more(surface.next_cursor.is_some());
         window.set_has_previous(surface.has_previous());
@@ -550,7 +579,7 @@ impl App {
                 let i = role.index();
                 self.surfaces[i].set_query(query);
                 self.windows[i].invoke_reset_scroll();
-                self.models[i].set_vec(Vec::new());
+                self.windows[i].set_stale_rows(true);
                 self.windows[i].set_loading(true);
                 let hub = self.hub.clone();
                 self.timers[i].start(
@@ -585,6 +614,7 @@ impl App {
                     QuickInsertView::History
                 };
                 self.surfaces[0].set_view(view);
+                self.windows[0].set_stale_rows(true);
                 self.windows[0].set_active_view(panel.into());
                 self.windows[0].set_query("".into());
                 self.windows[0].set_route("history".into());
@@ -1096,5 +1126,28 @@ impl App {
         self.quitting = true;
         self.hub.close();
         self.worker.stop();
+    }
+}
+
+#[cfg(test)]
+mod resident_cache_tests {
+    use super::*;
+    #[test]
+    fn hidden_thumbnail_cache_is_bounded_and_keeps_recent_content() {
+        let mut cache = Images::default();
+        for (key, size) in [("old", 700_000), ("recent", 600_000), ("newest", 200_000)] {
+            cache
+                .cache
+                .insert(key.into(), (slint::Image::default(), size));
+            cache.order.push_back(key.into());
+            cache.bytes += size;
+        }
+        assert_eq!(cache.trim_to(1024 * 1024), vec!["old"]);
+        assert_eq!(cache.bytes, 800_000);
+        assert_eq!(cache.cache.len(), 2);
+        for _ in 0..550 {
+            assert!(cache.trim_to(1024 * 1024).is_empty());
+        }
+        assert!(cache.cache.contains_key("recent") && cache.cache.contains_key("newest"));
     }
 }

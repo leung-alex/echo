@@ -14,6 +14,7 @@ export component AppWindow inherits Window {
     in property <bool> dark;
     in property <bool> native-mica;
     in property <bool> loading;
+    in property <bool> stale-rows: true;
     in property <bool> has-more;
     in property <bool> has-previous;
     in property <bool> batch-mode;
@@ -168,7 +169,7 @@ export component AppWindow inherits Window {
             x: 16px;
             y: root.is-favorites-window ? 190px : root.batch-mode ? 286px : 248px;
             width: parent.width - 32px; height: parent.height - self.y - 84px;
-            visible: root.route == "history";
+            visible: root.route == "history" && !root.stale-rows;
             for entry in root.rows: EntryView {
                 entry: entry;
                 favorites: root.favorites; compact: root.is-favorites-window;
@@ -187,7 +188,7 @@ export component AppWindow inherits Window {
                 drop-data(data,key) => { return root.drop-data(data,key); }
             }
         }
-        if (root.route == "history" && root.rows.length == 0): Text {
+        if (root.route == "history" && (root.rows.length == 0 || root.stale-rows)): Text {
             x: 24px; y: root.is-favorites-window ? 220px : 290px; width: parent.width - 48px;
             text: root.loading ? "Loading…" : root.status-error ? "Unable to load results" : root.query == "" ? root.favorites ? "No favorites yet\nAdd reusable text with the + button." : "Your clipboard history appears here." : "No matches for “" + root.query + "”";
             color: EchoTheme.muted; horizontal-alignment: center; wrap: word-wrap;
