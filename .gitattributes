@@ -1,0 +1,4 @@
+
+# Preserve upstream license bytes, including original line endings and spaces.
+/tools/packaging/licenses/** -text -whitespace
+/vendor/**/LICENSES/** -text -whitespace

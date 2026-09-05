@@ -2,74 +2,79 @@
 
 ## Direction
 
-Echo has one business module and explicit adapters:
+Echo is a native Windows application with one business layer, explicit adapters, framework-independent presentation state, and a thin compiled Slint shell:
 
 ```text
-echo-activation                 (independent protocol)
-        ^
-apps/desktop  -> echo-engine <- echo-storage
-      |                ^
-      +-> echo-windows-+
-      |
-   apps/ui (desktop transport only)
+                       echo-activation
+                              ^
+                              |
+echo-storage -> echo-engine <- echo-windows
+                    ^               ^
+                    |               |
+          echo-presentation         |
+                    ^               |
+                    +-- apps/desktop+
+                           |
+                  apps/desktop/ui (Slint)
 ```
 
-`echo-engine` owns behavior and declares the interfaces it needs. Storage and
-Windows implement those interfaces. Desktop composes the objects and maps
-domain values to transport DTOs; it does not implement business policy.
+`echo-engine` owns behavior and declares the interfaces it needs. Storage and Windows implement those interfaces. `echo-presentation` owns UI-independent state and interaction policy. `apps/desktop` composes the services, owns the native worker boundary, and binds state to compiled Slint components. It does not implement business policy.
 
 ## Ownership
 
 ### Engine
 
-`ingest` normalizes clipboard snapshots and applies capture policy. `history`
-owns history queries and actions. `saved_items` owns the durable favorite
-concept. `quick_insert` owns retrieval, target session, copy, and insert
-orchestration. `settings` owns settings values. `preview` owns preview asset
-requirements without transport encoding.
+`ingest` normalizes clipboard snapshots and applies capture policy. `history` owns history queries and actions. `saved_items` owns the distinct durable Saved Item concept. `quick_insert` owns retrieval, target sessions, copy, and insert orchestration. `settings` owns settings values. `preview` owns preview asset requirements without UI encoding.
+
+A Clipboard Item can retain multiple original representations, including text, HTML, RTF, images, and file lists. Copy and insert retrieve those stored original formats. Preview text and thumbnails are display derivatives and are never substitutes for the original clipboard payload.
 
 ### Adapters
 
-`echo-storage` owns SQLite schema, FTS, blob files, migrations, and persistence
-mapping. `echo-windows` owns clipboard listeners, format access, target capture,
-focus validation, clipboard writes, and paste delivery. Unsafe Win32 code is
-local to that crate.
+`echo-storage` owns SQLite schema, FTS5 MATCH construction, blob files, migrations, persistence mapping, the writer actor, read connection, and maintenance runtime. `echo-windows` owns clipboard listeners and formats, target capture, focus validation, clipboard writes, paste delivery, HWND behavior, the native tray, and local named-pipe activation. Unsafe Win32 code is local to `echo-windows`.
 
-### Shell and presentation
+`echo-activation` owns the bounded, versioned activation envelope and canonical `--echo-activate` flag. It does not own process transport or UI routing.
 
-`apps/desktop` is the Tauri composition root with feature commands, events,
-activation, and transport DTOs. `apps/ui` owns presentation in separate
-`history`, `quick-insert`, `saved-items`, and `settings` areas. Raw invokes are
-wrapped by `apps/ui/src/shared/ipc`.
+### Presentation and desktop
 
-## Runtime Flow
+`echo-presentation` owns surface state, load generations, bounded result windows, selection, batch selection, keyboard/IME intent, session epochs, and opaque string row keys. Row-key encoding is private to that crate; desktop and Slint return keys without parsing them.
+
+`apps/desktop/src/service.rs` runs blocking engine, storage, and preview work off the UI thread. Work and completions cross the boundary as typed Rust enums. `apps/desktop/src/app.rs` owns UI-thread coordination, generated Slint models, activation routing, stale-result rejection, and orderly shutdown. Slint component handles never leave the UI thread.
+
+`apps/desktop/ui` contains the compiled Slint component tree. It renders History, Favorites, settings, About, dialogs, and the companion Favorites window. It does not call storage or native platform APIs directly.
+
+## Runtime Flows
+
+Clipboard ingestion is event-driven:
 
 ```text
 Windows clipboard event
   -> echo-windows ClipboardSource
-  -> echo-engine ingest
-  -> echo-storage persistence
-  -> desktop history invalidation/commands
-  -> apps/ui presentation
+  -> echo-engine ingestion and policy
+  -> echo-storage writer actor
+  -> engine invalidation event
+  -> desktop typed event
+  -> echo-presentation reload generation
+  -> Slint model update
 ```
 
-Quick Insert activation captures the paste target before Echo is shown. The UI
-must not capture it again after the native activation handoff.
+Quick Insert activation captures and records the paste target before either Echo window is shown. A worker completion is accepted only for the active session epoch. Copy or insert then retrieves the retained original representations, writes them through the Windows adapter, and revalidates the target before paste delivery.
 
-Storage runtime ownership, ordered schema migrations, instrumentation, and the
-deterministic storage diagnostic are documented in
-`docs/architecture/storage-runtime.md`.
+## Native Shell and Lifetime
 
-## Transport
+Echo permits one resident host per Windows user, logon session, and canonical data directory. `ECHO_DATA_DIR` selects the data root when present; otherwise the desktop uses the user's local application-data `Echo` directory. The canonical data path and current user identity participate in the instance namespace.
 
-Commands carry requests and responses, events carry small invalidation signals,
-and preview bytes use a dedicated binary resource seam. Checked-in TypeScript
-transport types are generated from the desktop transport and verified by the
-tooling drift check. History and Saved Item search use bounded FTS5 MATCH
-queries over stable cursors; no background polling is required.
+A secondary launch validates and forwards bounded arguments over a local named pipe. The pipe is restricted to the current user, rejects remote clients, validates the peer process SID, and uses bounded transfer deadlines. It is not a TCP or browser automation endpoint.
 
-Saved Items are the only durable reusable-item concept. A History save creates
-a linked snapshot; a user edit marks that
-snapshot independent, so unsaving History removes only an untouched snapshot
-and unlinks an edited item without destroying its content. Saved Item deletion
-is always explicit.
+The native tray can open Echo, Favorites, or Settings and can explicitly Quit. The tray icon is restored after Explorer recreates the taskbar. Closing or dismissing Echo hides its windows while clipboard capture remains resident. Explicit Quit closes the event hub, exits the Slint loop, shuts down worker and storage activity, and then stops the pipe and tray hosts.
+
+## Rendering and Windows Composition
+
+The desktop enables Slint's software renderer by default. The optional Cargo `gpu` feature enables femtovg, and `ECHO_RENDERER` can select an available renderer. Mica is applied only when the renderer and Windows composition settings support it; Echo uses an opaque Slint background otherwise. This fallback is supported runtime behavior, not a guarantee that every GPU, driver, or Windows configuration renders Mica.
+
+The UI About view embeds Slint's `AboutSlint` component. Distribution attribution and license notices must match the exact versions resolved by Cargo; the presence of the component alone does not establish notice completeness.
+
+## Storage and Search
+
+History and Saved Item search use bounded FTS5 MATCH queries and stable cursors. No background UI polling is required. Storage runtime ownership, ordered schema migrations, instrumentation, reconciliation, and the deterministic storage diagnostic are documented in `docs/architecture/storage-runtime.md`.
+
+Saved Items are the only durable reusable-item concept and remain distinct from History. Saving History creates a linked snapshot containing the original representations. Editing the Saved Item makes that snapshot independent; unsaving History removes only an untouched linked snapshot and otherwise unlinks without destroying user-edited content. Saved Item deletion is always explicit.

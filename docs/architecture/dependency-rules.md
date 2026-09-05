@@ -3,37 +3,33 @@
 Allowed high-level graph:
 
 ```text
-echo-activation
-       ^
-apps/desktop -> echo-engine <- echo-storage
-       |                ^
-       +-> echo-windows-+
-apps/ui -> desktop transport only
+                       echo-activation
+                              ^
+                              |
+echo-storage -> echo-engine <- echo-windows
+                    ^               ^
+                    |               |
+          echo-presentation         |
+                    ^               |
+                    +-- apps/desktop+
+                           |
+                  apps/desktop/ui (Slint)
 ```
 
-`echo-engine` may use only standard-library and domain-safe libraries. It must
-not depend on Tauri, `rusqlite`, the Windows crate, WebView/frontend types, or
-transport encoding.
+`echo-engine` may use only standard-library and domain-safe libraries. It must not depend on Slint, `rusqlite`, the Windows crate, desktop shell types, renderer APIs, or UI models.
 
-`echo-storage` may depend on `echo-engine`, but not Tauri, Windows, React, or
-frontend packages. `echo-windows` may depend on `echo-engine`, but not storage,
-SQLite, Tauri, or frontend packages.
+`echo-storage` may depend on `echo-engine`, but not on Windows, Slint, presentation, or desktop. `echo-windows` may depend on `echo-engine` and platform libraries, but not on storage, SQLite, Slint, presentation, or desktop.
 
-Desktop is a composition and transport shell. It must not own deduplication,
-FTS query construction, thumbnail generation, blob GC, or native paste target
-validation. Frontend feature code uses the typed wrappers under
-`apps/ui/src/shared/ipc` rather than raw Tauri invokes.
+`echo-presentation` may depend on `echo-engine`. It must remain independent of Slint, Win32, storage, filesystem layout, renderer choice, and desktop worker types.
 
-Interfaces live next to the engine behavior that needs them. Do not create
-repository-wide `common`, `helpers`, `utils`, `manager`, or `interfaces`
-dumping grounds.
+`apps/desktop` may depend on engine, storage, Windows, activation, presentation, and Slint. It is the composition root and UI-thread/worker boundary. It must not own deduplication, capture policy, FTS query construction, blob reconciliation, thumbnail policy, or native paste-target validation.
 
-The engine/storage/windows/activation public surfaces expose domain contracts,
-not adapter implementation modules. The desktop transport is the sole source
-for checked-in TypeScript bindings, and frontend feature code reaches it only
-through shared IPC wrappers. Preview resources are binary-safe and never use a
-Base64 or data-URL transport. History invalidation is event-driven rather than
-polling. Capture persistence does not reconcile the whole blob store; cleanup
-is owned by the maintenance runtime.
+Slint files may expose typed properties and callbacks, but must not reach storage, engine services, the named pipe, or Win32 directly. Slint component handles stay on the UI thread. Blocking work crosses `apps/desktop/src/service.rs` using typed Rust work and result messages; do not recreate command-name strings, JSON IPC, browser transports, or polling.
 
-The canonical activation flag is `--echo-activate`.
+Interfaces live next to the engine behavior that needs them. Do not create repository-wide `common`, `helpers`, `utils`, `manager`, or `interfaces` dumping grounds.
+
+Public engine, storage, Windows, activation, and presentation surfaces expose domain or adapter contracts rather than implementation modules. `echo_presentation::RowKey` is an opaque string at the desktop/Slint boundary; consumers must not parse it into a source or database ID.
+
+Preview assets are bounded, binary-safe display derivatives. Copy and insert must resolve the engine item and use all retained original clipboard representations. History invalidation is event-driven. Capture persistence does not reconcile the whole blob store; cleanup belongs to the storage maintenance runtime.
+
+The native instance transport is owned by `echo-windows`. It is scoped to the current user, logon session, and canonical data directory, and accepts only bounded validated activation arguments. The canonical activation flag is `--echo-activate`.

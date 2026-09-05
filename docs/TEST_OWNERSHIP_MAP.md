@@ -4,41 +4,39 @@
 
 | Layer | Location | Coverage |
 | --- | --- | --- |
-| Engine unit | `crates/echo-engine/src` | Ingestion races, normalization, fingerprinting, History/Saved Items contracts, Quick Insert actions, and target-session policy. |
-| Storage adapter | `crates/echo-storage/src` | SQLite schema, FTS/blob persistence, deduplication, migration, saved-item snapshots, and blob reconciliation. |
-| Windows adapter | `crates/echo-windows/src` | Clipboard formats, native listener, target capture, focus validation, clipboard writes, and paste delivery. |
+| Engine unit | `crates/echo-engine/src` | Ingestion races, normalization, fingerprints, retained representations, History/Saved Items contracts, Quick Insert actions, and target-session policy. |
+| Storage adapter | `crates/echo-storage/src` and `crates/echo-storage/tests` | SQLite schema, FTS5/blob persistence, deduplication, migrations, Saved Item snapshots, writer/read runtimes, shutdown, and blob reconciliation. |
+| Windows adapter | `crates/echo-windows/src` | Clipboard formats, native listener, target capture, focus validation, clipboard writes, paste delivery, named-pipe validation, tray, and window behavior where automation is safe. |
 | Activation | `crates/echo-activation/src` | Echo envelope encoding, validation, and `--echo-activate` parsing. |
-| Browser UI | `tests/ui/ui.spec.ts`, `tests/ui/visual.spec.ts`, `tests/ui/echo-fixture.ts` | History, Favorites, search, copy, insert recovery, settings, activation, responsive layout, and no-markup regressions. |
-| Native acceptance | `tests/e2e/*.spec.ts` | Actual Echo process over WebView2 CDP with isolated data, clipboard persistence, activation, and target-safe insertion. |
-| Tooling | `tools/echo/*_test.go` | Command dispatch, flags, root resolution, ownership planning, canonical storage leak-gate wiring, architecture boundaries, generated transport drift, bootstrap independence, and cleanup. |
+| Presentation | `crates/echo-presentation/src` | Query/load generations, bounded windows, opaque row keys, selection, keyboard/IME intent, activation epochs, and stale completion handling. |
+| Desktop | `apps/desktop/src` | Typed worker/event contracts, Slint binding behavior that can be tested without launching the UI, activation routing, lifecycle decisions, and renderer selection policy. |
+| Native UI acceptance | `tests/native` | Real native Echo executable and UI Automation against isolated synthetic data for the scenarios explicitly implemented by each gate. |
+| Tooling | `tools/echo/*_test.go` | Command dispatch, flags, ownership planning, canonical storage leak-gate wiring, architecture boundaries, browser-stack retirement, bootstrap independence, packaging orchestration, and cleanup. |
 
-Concrete native specs are `tests/e2e/clipboard.spec.ts` and
-`tests/e2e/quick-insert.spec.ts`; both are launched only through the authorized
-native acceptance gates below.
+Gate execution status and archived evidence are recorded in `docs/migration/slint/execution-status.md`; this map defines ongoing ownership, not an automatic passing status.
 
 ## Ownership Boundaries
 
-- `echo-engine` tests use the engine interfaces used by callers.
-- `echo-storage` tests may exercise SQLite and blob behavior directly.
-- `echo-windows` tests may exercise native behavior only under the authorized
-  Windows environment.
-- UI tests use the controlled IPC boundary and are not native acceptance.
-- Native tests use the real Echo executable and the Go-owned Windows fixtures.
-- The focused storage command, full verification, and changed-owner plans that
-  include `storage` share the canonical storage leak gate. Full verification
-  excludes `echo-storage` from its workspace test so the storage suite and
-  TEMP scanner run once; mixed owners likewise do not add a duplicate storage
-  package test.
+- Engine tests use the same engine interfaces as production callers.
+- Storage tests may exercise SQLite, blobs, FTS5, migrations, writer/read connections, maintenance, and shutdown directly.
+- Windows tests may exercise native behavior only under the authorized Windows environment.
+- Presentation tests remain UI-framework-independent and use opaque row keys at their public boundary.
+- Desktop tests verify typed Rust work/event flow and lifecycle policy without moving Slint handles off the UI thread.
+- Native UI tests use the real native executable, synthetic fixtures, an isolated `ECHO_DATA_DIR`, and Windows UI Automation where appropriate.
+- The focused storage command, full verification, and changed-owner plans containing `storage` share the canonical storage leak gate. Full verification excludes `echo-storage` from its workspace test so that suite and the TEMP scanner run once; mixed owners do not schedule a duplicate storage package test.
 
-## Acceptance Isolation
+## Smoke and Acceptance Isolation
 
-Native tests require `ECHO_WINDOWS_ACCEPTANCE=1` and are launched by
-`echo.cmd acceptance clipboard` or `echo.cmd acceptance quick-insert`. Each run
-gets isolated data, WebView2, CDP, process, and evidence roots. Local unit,
-browser, build, and smoke gates are not physical Windows acceptance.
+`echo.cmd smoke` is a read-only startup and graceful-shutdown check. It uses isolated synthetic fixtures and `ECHO_DATA_DIR`; it must not read or remove user clipboard history.
+
+Mutating native tests require separate authorization through `ECHO_WINDOWS_ACCEPTANCE=1` and are launched by `echo.cmd acceptance clipboard` or `echo.cmd acceptance quick-insert`. Each run must use an isolated evidence root, synthetic fixture state, and isolated `ECHO_DATA_DIR`. Tests must not uninstall a system WebView2 runtime and must not delete user clipboard data.
+
+Build, smoke, unit, accessibility-tree, and UI Automation results are not substitutes for physical environment evidence. In particular, text input or UIA tests cannot certify physical Chinese IME behavior, mixed-DPI multi-monitor behavior, or an eight-hour soak unless those exact scenarios were actually run and recorded.
+
+## Packaging Evidence
+
+Portable directory/ZIP and optional NSIS packaging are separate outputs. Successfully producing one output does not imply that installer behavior, upgrade/uninstall behavior, or a final release-candidate pass was tested. Report every gate as PASS, FAIL, or NOT RUN from observed evidence only.
 
 ## Product Boundary
 
-Echo tests start only Echo-owned processes and use isolated data directories.
-Favorites are backed by Saved Items; no removed reusable-content product,
-compatibility route, or external runtime is part of this repository.
+Echo tests start only Echo-owned processes and use isolated data directories. Favorites are backed by the distinct Saved Item model; no removed reusable-content product or compatibility route is part of the active architecture. Copy and insert assertions must verify retained original clipboard representations where the scenario depends on formats, rather than accepting preview text as equivalent.
