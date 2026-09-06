@@ -16,7 +16,6 @@ type fixedWorktree struct{ branch, path string }
 const mainWorktreePath = `D:\Project\echo`
 
 var fixedWorktrees = []fixedWorktree{
-	{"codex/foundation", `D:\Worktrees\echo\foundation`},
 	{"codex/ui", `D:\Worktrees\echo\ui`},
 }
 

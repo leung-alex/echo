@@ -12,7 +12,6 @@ import (
 
 func TestEchoFixedWorktreeTable(t *testing.T) {
 	want := []fixedWorktree{
-		{branch: "codex/foundation", path: `D:\Worktrees\echo\foundation`},
 		{branch: "codex/ui", path: `D:\Worktrees\echo\ui`},
 	}
 	if len(fixedWorktrees) != len(want) {
