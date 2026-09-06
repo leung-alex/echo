@@ -23,7 +23,7 @@ use windows_sys::Win32::{
         WindowsAndMessaging::*,
     },
 };
-fn owned(handle: isize) -> Result<HWND, String> {
+pub(super) fn owned(handle: isize) -> Result<HWND, String> {
     unsafe {
         let hwnd = handle as HWND;
         let mut pid = 0;
@@ -255,6 +255,7 @@ struct HookData {
     handler: EventHandler,
     main: bool,
     composing: Arc<AtomicBool>,
+    resize_bounds: std::cell::Cell<Option<[i32; 4]>>,
 }
 pub struct WindowHook {
     hwnd: isize,
@@ -262,6 +263,9 @@ pub struct WindowHook {
     _main_thread: Rc<()>,
 }
 impl WindowHook {
+    pub fn set_resize_bounds(&self, bounds: Option<[i32; 4]>) {
+        self.data.resize_bounds.set(bounds);
+    }
     pub fn is_composing(&self) -> bool {
         self.data.composing.load(Ordering::Acquire)
     }
@@ -305,6 +309,7 @@ pub fn attach_window(
             handler,
             main: is_main,
             composing: Arc::new(AtomicBool::new(false)),
+            resize_bounds: std::cell::Cell::new(None),
         });
         if SetWindowSubclass(
             hwnd,
@@ -342,7 +347,7 @@ unsafe extern "system" fn subclass(
         WM_IME_ENDCOMPOSITION => {
             state.composing.store(false, Ordering::Release);
         }
-        WM_SETTINGCHANGE | WM_THEMECHANGED => {
+        WM_SETTINGCHANGE | WM_THEMECHANGED | WM_POWERBROADCAST => {
             (state.handler)(ShellEvent::ThemeChanged);
         }
         WM_WINDOWPOSCHANGED | WM_DPICHANGED if state.main => {
@@ -354,21 +359,12 @@ unsafe extern "system" fn subclass(
             let x = (l as u32 & 0xffff) as i16 as i32;
             let y = ((l as u32 >> 16) & 0xffff) as i16 as i32;
             let edge = (6.0 * f64::from(GetDpiForWindow(hwnd).max(96)) / 96.0).round() as i32;
-            let left = x < r.left + edge;
-            let right = x >= r.right - edge;
-            let top = y < r.top + edge;
-            let bottom = y >= r.bottom - edge;
-            let code = match (left, right, top, bottom) {
-                (true, _, true, _) => HTTOPLEFT,
-                (_, true, true, _) => HTTOPRIGHT,
-                (true, _, _, true) => HTBOTTOMLEFT,
-                (_, true, _, true) => HTBOTTOMRIGHT,
-                (true, _, _, _) => HTLEFT,
-                (_, true, _, _) => HTRIGHT,
-                (_, _, true, _) => HTTOP,
-                (_, _, _, true) => HTBOTTOM,
-                _ => 0,
-            };
+            let bounds = state
+                .resize_bounds
+                .get()
+                .map(|b| [r.left + b[0], r.top + b[1], r.left + b[2], r.top + b[3]])
+                .unwrap_or([r.left, r.top, r.right, r.bottom]);
+            let code = super::card_window::resize_hit(bounds, [x, y], edge);
             if code != 0 {
                 return code as LRESULT;
             }

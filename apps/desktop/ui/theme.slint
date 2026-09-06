@@ -1,13 +1,23 @@
+import { CoverFlowTokens as T } from "echo-tokens.slint";
 export global EchoTheme {
-    in-out property <bool> dark;
-    out property <color> text: dark ? #f4f6f7 : #171b1e;
-    out property <color> muted: dark ? #aeb6bc : #667078;
-    out property <color> canvas: dark ? #0b1014 : #e9edeb;
-    out property <color> surface: dark ? #161d23 : #f7f6f2;
-    out property <color> elevated: dark ? #1d252c : #ffffff;
-    out property <color> line: dark ? #303940 : #dddad2;
-    out property <color> amber: #ffc400;
-    out property <color> danger: dark ? #ff8b8b : #be3030;
+    in-out property <bool> dark <=> T.dark;
+    in-out property <bool> high-contrast;
+    in-out property <color> hc-background: #000000;
+    in-out property <color> hc-text: #ffffff;
+    in-out property <color> hc-highlight: #ffff00;
+    in-out property <color> hc-highlight-text: #000000;
+    in-out property <color> hc-muted: #ffffff;
+    out property <color> text: high-contrast ? hc-text : T.color-text;
+    out property <color> muted: high-contrast ? hc-muted : T.color-muted;
+    out property <color> canvas: high-contrast ? hc-background : T.color-canvas;
+    out property <color> surface: high-contrast ? hc-background : T.color-panel;
+    out property <color> elevated: high-contrast ? hc-background : T.color-raised;
+    out property <color> line: high-contrast ? hc-text : T.color-line;
+    out property <color> amber: high-contrast ? hc-highlight : T.color-accent;
+    out property <color> on-accent: high-contrast ? hc-highlight-text : T.color-on-accent;
+    out property <color> danger: high-contrast ? hc-text : T.color-danger;
+    out property <color> selection: high-contrast ? hc-highlight : T.color-selection;
+    out property <color> selected-text: high-contrast ? hc-highlight-text : T.color-text;
 }
 
 export component EchoButton inherits Rectangle {
@@ -23,10 +33,10 @@ export component EchoButton inherits Rectangle {
     out property <bool> focused: focus.has-focus;
     forward-focus: focus;
     min-width: text == "" ? 32px : content.min-width + 24px;
-    height: 34px;
+    height: T.control-height;
     horizontal-stretch: 0;
     vertical-stretch: 0;
-    border-radius: 7px;
+    border-radius: T.control-radius;
     background: primary ? EchoTheme.amber : checked || touch.has-hover ? EchoTheme.surface : flat ? transparent : EchoTheme.elevated;
     border-width: focus.has-focus || !flat ? 1px : 0px;
     border-color: focus.has-focus ? EchoTheme.amber : EchoTheme.line;
@@ -43,11 +53,11 @@ export component EchoButton inherits Rectangle {
             source: root.icon;
             width: 18px;
             height: 18px;
-            colorize: root.primary ? #171b1e : root.danger ? EchoTheme.danger : EchoTheme.muted;
+            colorize: root.primary ? EchoTheme.on-accent : root.danger ? EchoTheme.danger : EchoTheme.muted;
         }
         if (root.text != ""): Text {
             text: root.text;
-            color: root.primary ? #171b1e : root.danger ? EchoTheme.danger : EchoTheme.text;
+            color: root.primary ? EchoTheme.on-accent : root.danger ? EchoTheme.danger : EchoTheme.text;
             font-size: 13px;
             font-weight: 600;
             vertical-alignment: center;

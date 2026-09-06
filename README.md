@@ -47,9 +47,11 @@ go -C tools/echo vet ./...
 .\echo.cmd build --release
 ```
 
-Echo selects Slint's software renderer by default. The optional Cargo feature `gpu` enables the femtovg renderer, and `ECHO_RENDERER` selects a supported renderer at runtime. Native Mica is used only when the selected renderer and Windows composition settings support it; otherwise Echo uses an opaque Slint background. This is runtime fallback behavior, not a guarantee that Mica works on every GPU or Windows configuration.
+The normal build includes `cover-flow`: Slint + FemtoVG-WGPU on one DX12 device, using a DirectComposition visual for transparent floating cards. Each card owns its search, content and navigation. History and Favorites are fixed spaces; users can create other spaces without duplicating the Saved Item payload model. Production card textures are rendered directly on the GPU, never read back through the CPU. Integrated GPUs and battery use a bounded economical raster policy; settled native text remains at the window's original DPI.
 
-Activation uses the canonical `--echo-activate` flag and the versioned Echo envelope. Only one resident Echo host is allowed per Windows user, logon session, and canonical data directory. Secondary launches forward bounded arguments over the local named pipe. Closing Echo hides its windows and keeps capture resident; use Quit in the UI or native tray to stop capture and shut down.
+`ECHO_RENDERER=software` selects the flat native compatibility path; `cargo build -p echo-desktop --no-default-features --locked` builds a software-only executable. The old `gpu` Cargo feature is an alias for `cover-flow`. `native-test` is an explicit test-only feature and is excluded from normal release/package builds. See `docs/architecture/cover-flow.md` for resource limits, fallback behavior and the offscreen adapter seam.
+
+Activation uses the canonical `--echo-activate` flag and the versioned Echo envelope. Only one resident Echo host is allowed per Windows user, logon session, and canonical data directory. Secondary launches forward bounded arguments over the local named pipe. Closing Echo hides its one window and keeps capture resident; use Quit in the UI or native tray to stop capture and shut down.
 
 ## Smoke and native acceptance
 

@@ -100,7 +100,7 @@ public static class EchoUi
     static AutomationElement FindEdit(int pid, string title, string name)
     {
         var element = Elements(pid, title).FirstOrDefault(e =>
-            e.Current.Name == name && (e.Current.ControlType == ControlType.Edit || e.Current.ControlType == ControlType.ComboBox));
+            { try { return e.Current.Name == name && (e.Current.ControlType == ControlType.Edit || e.Current.ControlType == ControlType.ComboBox); } catch(ElementNotAvailableException) { return false; } });
         if (element == null) throw new InvalidOperationException("Editable control unavailable: " + name);
         return element;
     }
@@ -160,6 +160,14 @@ public static class EchoUi
         throw new InvalidOperationException("Foreground was not granted to the owned Echo window; input cancelled");
     }
 
+    public static void InvokeInGroup(int pid,string title,string group,string name)
+    {
+        var parent=Find(pid,title,group);
+        var control=parent.FindFirst(TreeScope.Descendants,new PropertyCondition(AutomationElement.NameProperty,name));
+        if(control==null || !control.Current.IsEnabled)throw new InvalidOperationException("Owned group control unavailable: "+group+" / "+name);
+        object pattern;if(!control.TryGetCurrentPattern(InvokePattern.Pattern,out pattern))throw new InvalidOperationException("Missing InvokePattern");
+        ((InvokePattern)pattern).Invoke();
+    }
     public static void Invoke(int pid, string title, string name)
     {
         // UIA actions are scoped to an owned control; no global input or foreground is required.
@@ -227,17 +235,12 @@ public static class EchoUi
     public static void SetTheme(int pid, string title, string value)
     {
         if(value!="system" && value!="light" && value!="dark") throw new ArgumentException("Invalid theme");
-        var element = Elements(pid,title).FirstOrDefault(e=>e.Current.ControlType==ControlType.ComboBox && e.Current.Name=="Theme");
-        if(element==null)throw new InvalidOperationException("Theme combobox unavailable");
-        Focus(pid,title); element.SetFocus();
-        Key(pid,title,0x24,false,false);
-        int steps=value=="dark"?2:value=="light"?1:0;
-        for(int i=0;i<steps;i++) Key(pid,title,0x28,false,false);
-        Key(pid,title,0x0D,false,false);
+        Combo(pid,title,"Theme",value=="dark"?2:value=="light"?1:0);
     }
 
     public static void Key(int pid, string title, byte code, bool control, bool shift)
     {
+        if (EchoTestBridge.Enabled) { EchoTestBridge.Call(pid, "key", code, control, shift, ""); return; }
         Focus(pid, title);
         IntPtr hwnd = Require(pid, title, true);
         if (GetForegroundWindow() != hwnd) throw new InvalidOperationException("Foreground changed before keyboard input; input cancelled");
@@ -278,29 +281,84 @@ public static class EchoUi
 
     public static void Capture(int pid, string title, string path)
     {
-        if (System.IO.File.Exists(path)) throw new InvalidOperationException("Screenshot path already exists: " + path);
-        Focus(pid, title);
-        IntPtr hwnd = Require(pid, title, true);
-        IntPtr old = SetThreadDpiAwarenessContext(new IntPtr(-4));
-        try
-        {
-            Rect rect;
-            GetWindowRect(hwnd, out rect);
-            int width = rect.Right - rect.Left;
-            int height = rect.Bottom - rect.Top;
-            if (width < 1 || height < 1) throw new InvalidOperationException("Invalid owned-window geometry");
-            using (Bitmap bitmap = new Bitmap(width, height, PixelFormat.Format32bppArgb))
-            using (Graphics graphics = Graphics.FromImage(bitmap))
-            {
-                graphics.CopyFromScreen(rect.Left, rect.Top, 0, 0, bitmap.Size, CopyPixelOperation.SourceCopy);
-                bitmap.Save(path, ImageFormat.Png);
-            }
-        }
-        finally { SetThreadDpiAwarenessContext(old); }
+        if (!EchoTestBridge.Enabled)
+            throw new InvalidOperationException("Captures require the isolated native-test renderer bridge; desktop screenshots are disabled.");
+        EchoTestBridge.Capture(pid,path);
     }
 
     public static void Resize(int pid, string title, int width, int height)
     {
         SetWindowPos(Require(pid, title, true), IntPtr.Zero, 0, 0, width, height, 0x0002 | 0x0004 | 0x0010);
+    }
+    public static int WindowCount(int pid)
+    {
+        int count=0;
+        EnumWindows(delegate(IntPtr hwnd,IntPtr state) {
+            uint owner;GetWindowThreadProcessId(hwnd,out owner);
+            if(owner==(uint)pid && IsWindowVisible(hwnd)) {
+                var title=new StringBuilder(512);GetWindowText(hwnd,title,title.Capacity);
+                if(title.ToString().StartsWith("Echo",StringComparison.Ordinal)) count++;
+            }
+            return true;
+        },IntPtr.Zero);
+        return count;
+    }
+    public static void Combo(int pid,string title,string name,int index)
+    {
+        if(index<0 || index>12) throw new ArgumentException("Invalid combo index");
+        var element=FindEdit(pid,title,name);
+        if(element.Current.ControlType!=ControlType.ComboBox) throw new InvalidOperationException("Not a combobox");
+        if (!EchoTestBridge.Enabled) Focus(pid,title);
+        element.SetFocus();
+        // Slint 1.17 ComboBox supports arrows, not Home. Enter opens a popup;
+        // selection changes on arrows. Reset within the bounded index contract.
+        for(int i=0;i<12;i++) Key(pid,title,0x26,false,false);
+        for(int i=0;i<index;i++) Key(pid,title,0x28,false,false);
+    }
+    public static void Toggle(int pid,string title,string name,bool enabled)
+    {
+        var element=Find(pid,title,name);object pattern;
+        if(!element.TryGetCurrentPattern(TogglePattern.Pattern,out pattern)) throw new InvalidOperationException("No TogglePattern: "+name);
+        var toggle=(TogglePattern)pattern;
+        if((toggle.Current.ToggleState==ToggleState.On)!=enabled) toggle.Toggle();
+    }
+
+}
+
+// Explicit test builds only. Never sends OS keyboard events or captures the desktop.
+public static class EchoTestBridge {
+    public static bool Enabled { get { return !String.IsNullOrEmpty(Environment.GetEnvironmentVariable("ECHO_NATIVE_TEST_ROOT")); } }
+    public static void Capture(int pid,string path) {
+        var root=System.IO.Path.GetFullPath(Environment.GetEnvironmentVariable("ECHO_NATIVE_TEST_ROOT"));
+        path=System.IO.Path.GetFullPath(path);
+        if(!String.Equals(System.IO.Path.GetDirectoryName(path),root,StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("Capture must be inside the isolated evidence directory");
+        Call(pid,"capture",0,false,false,System.IO.Path.GetFileName(path));
+    }
+    public static object Call(int pid,string verb,int key,bool ctrl,bool shift,string file) {
+        if(Environment.GetEnvironmentVariable("ECHO_WINDOWS_ACCEPTANCE")!="1") throw new InvalidOperationException("Acceptance not authorized");
+        var root=System.IO.Path.GetFullPath(Environment.GetEnvironmentVariable("ECHO_NATIVE_TEST_ROOT"));
+        var dir=System.IO.Path.Combine(root,"native-control");
+        var json=new System.Web.Script.Serialization.JavaScriptSerializer {MaxJsonLength=8*1024*1024};
+        var id=Guid.NewGuid().ToString("N");
+        var request=System.IO.Path.Combine(dir,"request.json");
+        var temporary=System.IO.Path.Combine(dir,"request.pending");
+        System.IO.File.WriteAllText(temporary,json.Serialize(new {id=id,pid=pid,verb=verb,key=key,ctrl=ctrl,shift=shift,file=file}),new UTF8Encoding(false));
+        if(System.IO.File.Exists(request))System.IO.File.Delete(request);
+        System.IO.File.Move(temporary,request);
+        var response=System.IO.Path.Combine(dir,"response.json");
+        var watch=Stopwatch.StartNew();
+        while(watch.ElapsedMilliseconds<15000) {
+            try {
+                if(System.IO.File.Exists(response)) {
+                    var result=json.Deserialize<Dictionary<string,object>>(System.IO.File.ReadAllText(response));
+                    if((string)result["id"]==id) {
+                        if((string)result["status"]!="PASS")throw new InvalidOperationException("Owned-window test failed: "+result["error"]);
+                        return result.ContainsKey("value")?result["value"]:null;
+                    }
+                }
+            } catch(System.IO.IOException) { }
+            Thread.Sleep(10);
+        }
+        throw new TimeoutException("Native test bridge did not respond");
     }
 }

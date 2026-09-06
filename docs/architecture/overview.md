@@ -40,7 +40,7 @@ A Clipboard Item can retain multiple original representations, including text, H
 
 `apps/desktop/src/service.rs` runs blocking engine, storage, and preview work off the UI thread. Work and completions cross the boundary as typed Rust enums. `apps/desktop/src/app.rs` owns UI-thread coordination, generated Slint models, activation routing, stale-result rejection, and orderly shutdown. Slint component handles never leave the UI thread.
 
-`apps/desktop/ui` contains the compiled Slint component tree. It renders History, Favorites, settings, About, dialogs, and the companion Favorites window. It does not call storage or native platform APIs directly.
+`apps/desktop/ui` contains the compiled Slint component tree. It renders History, Favorites, custom spaces, settings, About and dialogs in one native window. Search and navigation belong inside each space card; there is no companion window. It does not call storage or native platform APIs directly.
 
 ## Runtime Flows
 
@@ -57,7 +57,7 @@ Windows clipboard event
   -> Slint model update
 ```
 
-Quick Insert activation captures and records the paste target before either Echo window is shown. A worker completion is accepted only for the active session epoch. Copy or insert then retrieves the retained original representations, writes them through the Windows adapter, and revalidates the target before paste delivery.
+Quick Insert activation captures and records the paste target before the Echo window is shown. A worker completion is accepted only for the active session epoch. Copy or insert then retrieves the retained original representations, writes them through the Windows adapter, and revalidates the target before paste delivery.
 
 ## Native Shell and Lifetime
 
@@ -65,11 +65,11 @@ Echo permits one resident host per Windows user, logon session, and canonical da
 
 A secondary launch validates and forwards bounded arguments over a local named pipe. The pipe is restricted to the current user, rejects remote clients, validates the peer process SID, and uses bounded transfer deadlines. It is not a TCP or browser automation endpoint.
 
-The native tray can open Echo, Favorites, or Settings and can explicitly Quit. The tray icon is restored after Explorer recreates the taskbar. Closing or dismissing Echo hides its windows while clipboard capture remains resident. Explicit Quit closes the event hub, exits the Slint loop, shuts down worker and storage activity, and then stops the pipe and tray hosts.
+The native tray can open Echo, Favorites, or Settings and can explicitly Quit. The tray icon is restored after Explorer recreates the taskbar. Closing or dismissing Echo hides its window while clipboard capture remains resident. Explicit Quit closes the event hub, exits the Slint loop, shuts down worker and storage activity, and then stops the pipe and tray hosts.
 
 ## Rendering and Windows Composition
 
-The desktop enables Slint's software renderer by default. The optional Cargo `gpu` feature enables femtovg, and `ECHO_RENDERER` can select an available renderer. Mica is applied only when the renderer and Windows composition settings support it; Echo uses an opaque Slint background otherwise. This fallback is supported runtime behavior, not a guarantee that every GPU, driver, or Windows configuration renders Mica.
+The desktop normally uses a shared DX12 device for Slint FemtoVG-WGPU and Cover Flow, with a transparent DirectComposition swapchain. A persistent offscreen Slint card renders directly into cached GPU textures. Input never performs a CPU screenshot/readback/upload round trip. The front card is native, full-DPI Slint when settled; moving/side cards use bounded GPU textures. Software mode uses a clipped, flat native card rather than a black outer rectangle. See `cover-flow.md` for the native clipping, caching and economical-device policy.
 
 The UI About view embeds Slint's `AboutSlint` component. Distribution attribution and license notices must match the exact versions resolved by Cargo; the presence of the component alone does not establish notice completeness.
 
@@ -77,4 +77,4 @@ The UI About view embeds Slint's `AboutSlint` component. Distribution attributio
 
 History and Saved Item search use bounded FTS5 MATCH queries and stable cursors. No background UI polling is required. Storage runtime ownership, ordered schema migrations, instrumentation, reconciliation, and the deterministic storage diagnostic are documented in `docs/architecture/storage-runtime.md`.
 
-Saved Items are the only durable reusable-item concept and remain distinct from History. Saving History creates a linked snapshot containing the original representations. Editing the Saved Item makes that snapshot independent; unsaving History removes only an untouched linked snapshot and otherwise unlinks without destroying user-edited content. Saved Item deletion is always explicit.
+Saved Items are the only durable reusable-item concept and remain distinct from History. Moving History into a space transactionally creates a Saved Item with its original representations and removes the source capture. Schema v6 adds spaces and membership/order relations; Favorites is a default collection, not an aggregate of every custom space. Sharing adds membership without copying payloads. Removing the last custom-space membership rehomes the item in Favorites. Deleting a custom space rehomes its exclusive items; deleting content everywhere remains a separate confirmed operation.

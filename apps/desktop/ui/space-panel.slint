@@ -1,0 +1,175 @@
+import { ListView } from "std-widgets.slint";
+import { EchoTheme, EchoButton } from "theme.slint";
+import { CoverFlowTokens as T } from "echo-tokens.slint";
+import { EntryRow, EntryView } from "entry-row.slint";
+import { FavoriteIconImages } from "favorite-icon-images.slint";
+import { CardSearch } from "card-search.slint";
+export component SpacePanel inherits Rectangle {
+    in property <string> title;
+    in property <string> subtitle;
+    in property <string> icon-key;
+    in property <color> accent: EchoTheme.amber;
+    in property <[EntryRow]> rows;
+    in property <bool> favorites;
+    in property <bool> capture-only;
+    in property <bool> capture-search-focused;
+    out property <bool> search-focused: search.focused;
+    in property <bool> titles-only;
+    in property <bool> loading;
+    in property <bool> stale;
+    in property <bool> error;
+    in property <bool> busy;
+    in property <bool> compact;
+    in property <bool> batch;
+    in property <bool> modal;
+    in property <bool> animating;
+    in property <int> selected-count;
+    in property <int> selection-index;
+    in property <bool> quick-insert;
+    in-out property <string> query;
+    in property <bool> has-more;
+    in property <bool> has-previous;
+    in-out property <length> scroll-y;
+    in property <string> navigation-label;
+    in property <string> navigation-hint: "Tab / Shift+Tab";
+    in property <string> status;
+    in property <bool> status-error;
+    in property <bool> previous-enabled;
+    in property <bool> next-enabled;
+    callback select(string);
+    callback action(string,string);
+    callback batch-action(string);
+    callback thumbnail-needed(string);
+    callback key-event(string,bool,bool,string) -> bool;
+    callback create-item();
+    callback more();
+    callback previous();
+    callback menu();
+    callback add-existing();
+    callback viewport-changed();
+    callback query-edited(string);
+    callback ime-composing() -> bool;
+    callback navigate(int);
+    callback choose-space();
+    callback new-space();
+    callback settings();
+    callback hide();
+    callback drag();
+    pure callback drag-data(string) -> data-transfer;
+    callback can-drop-data(data-transfer) -> bool;
+    callback drop-data(data-transfer,string) -> bool;
+    public function focus-search(select-all: bool) {search.focus-search(select-all);}
+    public function focus-controls() {settings-button.focus();}
+    public function reset-scroll() {list.viewport-y = 0px;}
+    public function reveal-selection() {list.viewport-y = -max(0px,(selection-index - 1)*list.viewport-height/max(1,rows.length));}
+    changed scroll-y => {if (!root.capture-only) {root.viewport-changed();}}
+    forward-focus: search;
+    background: EchoTheme.surface; border-radius: T.panel-radius;
+    border-width: T.line-width; border-color: EchoTheme.line; clip: true;
+    drop-shadow-blur: root.capture-only ? 0px : T.flow-shadow-softness;
+    drop-shadow-offset-y: root.capture-only ? 0px : T.flow-shadow-offset-y;
+    drop-shadow-color: #000000.with-alpha(T.flow-shadow-opacity);
+    accessible-role: groupbox; accessible-enabled: !root.capture-only && !root.animating;
+    accessible-label: root.capture-only ? "" : root.title + " space";
+    TouchArea {height:58px;enabled:!root.capture-only && !root.busy;
+        pointer-event(event) => {if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {root.drag();}}
+    }
+    Rectangle {x:T.panel-padding;y:20px;width:3px;height:30px;background:root.accent;border-radius:2px;}
+    if (FavoriteIconImages.image-for(root.icon-key).width > 0): Image {
+        x:T.panel-padding + 13px;y:24px;width:24px;height:24px;
+        source:FavoriteIconImages.image-for(root.icon-key);colorize:EchoTheme.text;
+    }
+    Text {
+        x:T.panel-padding + (root.icon-key == "" ? 14px : 48px);y:18px;
+        width:max(30px,parent.width - self.x - 158px);height:30px;text:root.title;
+        color:EchoTheme.text;font-size:T.font-panel-title;font-weight:T.font-weight-semibold;overflow:elide;
+    }
+    HorizontalLayout {
+        x:parent.width - 154px;y:16px;width:130px;height:36px;spacing:5px;alignment:end;
+        EchoButton {icon:@image-url("icons/plus.svg");label:"New space";width:36px;flat:true;
+            enabled:!root.busy;clicked => {if (!root.capture-only) {root.new-space();}}}
+        settings-button := EchoButton {icon:@image-url("icons/settings.svg");label:"Settings";width:36px;flat:true;
+            enabled:!root.modal && !root.animating;clicked => {if (!root.capture-only) {root.settings();}}}
+        EchoButton {icon:@image-url("icons/close.svg");label:"Hide Echo";width:36px;flat:true;
+            enabled:!root.modal && !root.animating;clicked => {if (!root.capture-only) {root.hide();}}}
+    }
+    search := CardSearch {
+        x:T.panel-padding;y:64px;width:parent.width - 2*T.panel-padding;
+        query <=> root.query;space-title:root.title;interactive:!root.capture-only && !root.modal;
+        focus-outline:root.capture-only && root.capture-search-focused;
+        edited(value) => {root.query-edited(value);}
+        ime-composing => {return root.ime-composing();}
+        key-event(key,ctrl,shift,target) => {return root.key-event(key,ctrl,shift,target);}
+    }
+    Text {
+        x:T.panel-padding;y:122px;width:max(0px,parent.width - 224px);height:18px;
+        text:root.titles-only ? "Content hidden in side panels" : root.subtitle;
+        color:EchoTheme.muted;font-size:T.font-secondary;overflow:elide;
+    }
+    HorizontalLayout {
+        x:parent.width - 196px;y:114px;width:172px;height:T.control-height;alignment:end;spacing:8px;
+        EchoButton {text:root.favorites ? "New content" : root.batch ? "Cancel" : "Select";
+            enabled:!root.busy;clicked => {if (root.favorites) {root.create-item();} else {root.batch-action(root.batch ? "cancel" : "begin");}}}
+        EchoButton {text:"···";label:"Space options";flat:true;width:36px;enabled:!root.busy;clicked => {root.menu();}}
+    }
+    Rectangle {x:T.panel-padding;y:T.panel-header-height;width:parent.width - 2*T.panel-padding;height:1px;background:EchoTheme.line;}
+    if (root.batch): HorizontalLayout {
+        x:T.panel-padding;y:T.panel-header-height + 8px;width:parent.width - 2*T.panel-padding;height:36px;spacing:8px;alignment:start;
+        EchoButton {text:"All loaded";enabled:!root.busy;clicked => {root.batch-action("all");}}
+        EchoButton {text:"Move to Favorites";enabled:root.selected-count > 0 && !root.busy;clicked => {root.batch-action("favorite");}}
+        EchoButton {text:"Pin";enabled:root.selected-count > 0 && !root.busy;clicked => {root.batch-action("pin");}}
+        EchoButton {text:"Delete";danger:true;enabled:root.selected-count > 0 && !root.busy;clicked => {root.batch-action("delete");}}
+    }
+    list := ListView {
+        x:T.panel-padding;y:T.panel-header-height + (root.batch ? 52px : 8px);
+        width:parent.width - 2*T.panel-padding;
+        height:max(0px,parent.height - self.y - T.panel-footer-height - 8px);
+        viewport-y <=> root.scroll-y;visible:!root.stale && !root.titles-only;
+        for entry in root.rows: EntryView {
+            entry:entry;favorites:root.favorites;compact:root.compact;capture-only:root.capture-only;batch:root.batch;
+            busy:root.busy || root.loading;quick-insert:root.quick-insert;reorder-enabled:root.query == "";
+            selected-geometry(y,height) => {
+                if (!root.capture-only && !root.animating) {
+                    if (y + list.viewport-y < 0px || height > list.visible-height) {list.viewport-y = -y;}
+                    else if (y + height + list.viewport-y > list.visible-height) {list.viewport-y = list.visible-height - y - height;}
+                }
+            }
+            select(key) => {root.select(key);}
+            action(action,key) => {root.action(action,key);}
+            thumbnail-needed(key) => {if (!root.capture-only && !root.animating) {root.thumbnail-needed(key);}}
+            key-event(key,ctrl,shift,target) => {return !root.capture-only && root.key-event(key,ctrl,shift,target);}
+            drag-data(key) => {return root.drag-data(key);}
+            can-drop-data(data) => {return !root.capture-only && root.can-drop-data(data);}
+            drop-data(data,key) => {return !root.capture-only && root.drop-data(data,key);}
+        }
+    }
+    if (root.rows.length == 0 || root.stale || root.titles-only): VerticalLayout {
+        x:T.panel-padding;y:max(T.panel-header-height + 24px,(parent.height - 150px)/2);
+        width:parent.width - 2*T.panel-padding;height:130px;alignment:start;spacing:16px;
+        Text {text:root.titles-only ? "Private space" : root.loading ? "Loading…" : root.error ? "Unable to load this space" : root.query != "" ? "No matches in this space" : root.favorites ? "A space for things you use often" : "Your clipboard history appears here";
+            color:EchoTheme.muted;font-size:15px;horizontal-alignment:center;wrap:word-wrap;}
+        if (!root.capture-only && root.favorites && !root.loading && !root.error && root.query == ""): HorizontalLayout {
+            alignment:center;spacing:10px;
+            EchoButton {text:"New content";primary:true;enabled:!root.busy;clicked => {root.create-item();}}
+            EchoButton {text:"Add existing";enabled:!root.busy;clicked => {root.add-existing();}}
+        }
+        if (!root.capture-only && root.error): EchoButton {text:"Retry";clicked => {root.action("retry","");}}
+    }
+    Rectangle {x:T.panel-padding;y:parent.height - T.panel-footer-height;width:parent.width - 2*T.panel-padding;height:1px;background:EchoTheme.line;}
+    HorizontalLayout {
+        x:T.panel-padding;y:parent.height - T.panel-footer-height + 8px;
+        width:parent.width - 2*T.panel-padding;height:30px;spacing:4px;alignment:start;
+        EchoButton {icon:@image-url("icons/back.svg");label:"Previous space";flat:true;
+            enabled:root.previous-enabled && !root.busy;clicked => {root.navigate(-1);}}
+        EchoButton {text:root.navigation-label;label:"Choose space";flat:true;
+            enabled:!root.modal && !root.animating;clicked => {if (!root.capture-only) {root.choose-space();}}}
+        EchoButton {text:"→";label:"Next space";flat:true;
+            enabled:root.next-enabled && !root.busy;clicked => {root.navigate(1);}}
+        Rectangle {horizontal-stretch:1;}
+        if (root.has-previous): EchoButton {text:"Previous";enabled:!root.loading && !root.busy;clicked => {root.previous();}}
+        if (root.has-more): EchoButton {text:root.loading ? "Loading…" : "Load more";enabled:!root.loading && !root.busy;clicked => {root.more();}}
+    }
+    Text {x:T.panel-padding;y:parent.height - 22px;width:parent.width - 2*T.panel-padding;height:16px;
+        text:root.status != "" ? root.status : root.navigation-hint + "  Space · ↑↓  Content · Enter  " + (root.quick-insert ? "Insert" : "Select");
+        color:root.status-error ? EchoTheme.danger : EchoTheme.muted;font-size:11px;overflow:elide;}
+}

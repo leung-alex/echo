@@ -10,6 +10,9 @@
 
 extern crate alloc;
 
+#[cfg(feature = "echo-offscreen")]
+pub mod echo_offscreen;
+
 use event_loop::{CustomEvent, EventLoopState};
 use i_slint_core::api::EventLoopError;
 use i_slint_core::graphics::RequestedGraphicsAPI;
@@ -761,6 +764,8 @@ impl i_slint_core::platform::Platform for Backend {
     }
 
     fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
+        #[cfg(feature = "echo-offscreen")]
+        if let Some(adapter)=echo_offscreen::take() {return Ok(adapter);}
         let mut attrs = WinitWindowAdapter::window_attributes()?;
 
         if let Some(hook) = &self.window_attributes_hook {

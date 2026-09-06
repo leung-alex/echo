@@ -72,6 +72,14 @@ pub trait LibraryStore: Send + Sync {
         limit: u32,
         cursor: Option<PageCursor>,
     ) -> std::result::Result<LibraryPage<SavedItem>, Self::Error>;
+    fn list_favorites(
+        &self,
+        query: &str,
+        limit: u32,
+        cursor: Option<PageCursor>,
+    ) -> std::result::Result<LibraryPage<SavedItem>, Self::Error> {
+        self.list_saved_items(query, limit, cursor)
+    }
     fn saved_item_payload(
         &self,
         id: i64,
@@ -84,6 +92,12 @@ pub const MAX_PAGE_SIZE: u32 = 100;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PageCursor {
+    Space {
+        space_id: i64,
+        revision: i64,
+        sort_key: i64,
+        id: i64,
+    },
     History {
         pinned_at: Option<i64>,
         updated_at: i64,
@@ -186,7 +200,7 @@ impl<S: LibraryStore> Library<S> {
             LibraryView::Favorites => {
                 let page = self
                     .store
-                    .list_saved_items(query, limit, cursor)
+                    .list_favorites(query, limit, cursor)
                     .map_err(storage_error)?;
                 Ok(LibraryPage {
                     items: page.items.into_iter().map(saved_item).collect(),
@@ -305,7 +319,7 @@ fn history_item(entry: HistoryEntry) -> LibraryItem {
     }
 }
 
-fn saved_item(item: SavedItem) -> LibraryItem {
+pub(crate) fn saved_item(item: SavedItem) -> LibraryItem {
     LibraryItem {
         id: item.id,
         kind: LibraryItemKind::SavedItem,

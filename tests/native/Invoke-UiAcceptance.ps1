@@ -25,9 +25,9 @@ function Add-Check([string]$Name,[string]$Status,[string]$Actual,[string]$Expect
     $checks | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $EvidenceRoot 'checks.json') -Encoding utf8NoBOM
 }
 function Save-Diagnostics([string]$Name) {
-    foreach ($title in @($mainTitle,$favoritesTitle)) {
+    foreach ($title in @($mainTitle)) {
         try { D dump $title | Set-Content -LiteralPath (Join-Path $EvidenceRoot ("failure-{0}-{1}.uia.txt" -f $Name,($title -replace ' ','-'))) -Encoding utf8NoBOM } catch {}
-        try { D capture $title @((Join-Path $EvidenceRoot ("failure-{0}-{1}.png" -f $Name,($title -replace ' ','-')))) | Out-Null } catch {}
+        # Screenshots are restricted to the explicit native-test suite; retain UIA diagnostics here.
     }
 }
 function Check([string]$Name,[scriptblock]$Body,[string]$Expected='assertions in check body') {
@@ -121,18 +121,18 @@ function Target-Command($Target,[string]$Command,[string]$Payload='') {
 
 try {
     Start-OwnedEcho
-    Check 'semantic-startup-two-windows' {
+    Check 'semantic-startup-one-window' {
         Wait-Until { D ready } 'owned main semantic readiness' 20000 | Out-Null
-        Wait-Until { D exists $favoritesTitle } 'owned Favorites window' | Out-Null
+        if ((D window-count) -ne 1) { throw 'Expected one owned native Echo window.' }
         if($Scope -eq 'ui'){Shot 'startup-main-light'; Shot 'startup-favorites-light' $favoritesTitle}
-        'main and Favorites belong to launched PID and expose fixture content'
+        'one owned window exposes native fixture content'
     }
 
     if ($Scope -eq 'smoke') {
         Check 'smoke-search' { Query '0013'; Wait-Text 'echo-perf-text-0013'; 'exact fixture result observed' }
-        Check 'escape-close-to-hide' { D key $mainTitle @('27')|Out-Null; Wait-Hidden; if ($echoProcess.HasExited) { throw 'Escape terminated resident.' }; 'window hidden; resident alive' }
+        Check 'close-to-hide' { D close $mainTitle | Out-Null; Wait-Hidden; if ($echoProcess.HasExited) { throw 'Closing terminated the resident.' }; 'owned WM_CLOSE hides the window and preserves the resident' }
         Start-ScopedProcess @('--history'); Wait-Until { D exists } 'activation reopen' | Out-Null
-        Check 'graceful-exit' { Start-ScopedProcess @('--quit'); if (!$echoProcess.WaitForExit(10000)) { throw 'Owned resident did not exit.' }; "exit=$($echoProcess.ExitCode)" }
+        Check 'graceful-exit' { Start-ScopedProcess @('--quit'); if (!$echoProcess.WaitForExit(10000) -or $echoProcess.ExitCode -ne 0) { throw 'Owned resident did not exit cleanly.' }; "exit=$($echoProcess.ExitCode)" }
         Not-Run 'clipboard-roundtrip' 'Smoke scope intentionally does not touch the clipboard.'
         return
     }
@@ -181,7 +181,7 @@ try {
         }
     }
 
-    Check 'graceful-exit' { Start-ScopedProcess @('--quit'); if (!$echoProcess.WaitForExit(10000)) { throw 'Owned resident did not exit.' }; "exit=$($echoProcess.ExitCode)" }
+    Check 'graceful-exit' { Start-ScopedProcess @('--quit'); if (!$echoProcess.WaitForExit(10000) -or $echoProcess.ExitCode -ne 0) { throw 'Owned resident did not exit cleanly.' }; "exit=$($echoProcess.ExitCode)" }
 }
 finally {
     if ($targetProcess -and !$targetProcess.HasExited) {

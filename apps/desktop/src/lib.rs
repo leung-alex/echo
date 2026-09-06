@@ -1,4 +1,6 @@
 //! Native Slint shell for Echo. Engine, persistence and clipboard formats are unchanged.
+#[cfg(feature = "cover-flow")]
+pub mod cover_flow;
 mod favorite_icons;
 mod native_model;
 slint::include_modules!();
@@ -7,6 +9,8 @@ mod app;
 #[cfg(windows)]
 mod events;
 mod formatting;
+#[cfg(windows)]
+mod graphics;
 #[cfg(windows)]
 mod service;
 
@@ -25,6 +29,11 @@ fn run_windows() -> Result<(), String> {
     use echo_windows::shell::{Instance, NativeShell};
     use events::{Event, Hub};
     use std::sync::Arc;
+    #[cfg(feature = "native-test")]
+    if std::env::var("ECHO_DEBUG_EXIT_BACKTRACE").as_deref() == Ok("1") {
+        // Preload the Windows symbolizer before any loader-lock/TLS teardown callback.
+        let _ = std::backtrace::Backtrace::force_capture().to_string();
+    }
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     if args == ["--help"] || args == ["-h"] {
         println!("Echo native clipboard history\n--background  --history  --favorites  --settings  --quit\n--echo-activate <base64url-envelope>");
@@ -55,21 +64,23 @@ fn run_windows() -> Result<(), String> {
         drop(shell);
         return Ok(());
     }
-    // Secondary invocations returned before any renderer or database initialization.
-    slint::BackendSelector::new()
-        .backend_name("winit".into())
-        .renderer_name(std::env::var("ECHO_RENDERER").unwrap_or_else(|_| "software".into()))
-        .select()
-        .map_err(|e| e.to_string())?;
+    // Secondary invocations return before the single storage owner or GPU is started.
     let worker = service::Worker::start(data_dir, hub.clone())?;
-    let application = app::App::new(hub.clone(), worker, args)?;
+    let graphics = graphics::select(worker.bootstrap.ui.graphics, hub.clone())?;
+    let application = app::App::new(hub.clone(), worker, args, graphics)?;
     app::install(application.clone());
     hub.activate();
+    #[cfg(feature = "native-test")]
+    let _native_test = app::native_test::Controller::start(&application)?;
     let result = slint::run_event_loop_until_quit().map_err(|e| e.to_string());
+    let restart = application.borrow_mut().take_restart();
     application.borrow_mut().shutdown();
     app::uninstall();
     drop(application);
     drop(shell);
+    if let Some(recovery) = restart {
+        restart_application(recovery)?;
+    }
     result
 }
 #[cfg(windows)]
@@ -97,3 +108,25 @@ fn validate_args(args: &[String]) -> Result<(), String> {
 #[cfg(test)]
 #[path = "../../../vendor/i-slint-backend-winit/echo_accessibility_value.rs"]
 mod accessibility_value_regression;
+
+#[cfg(windows)]
+fn restart_application(software_recovery: bool) -> Result<(), String> {
+    // Only restart this executable, after all old window/storage/instance owners were dropped.
+    // Never preserve an activation envelope or replay an insertion operation.
+    let executable = std::env::current_exe().map_err(|e| e.to_string())?;
+    let mut command = std::process::Command::new(executable);
+    command.arg("--history");
+    if software_recovery {
+        command
+            .env("ECHO_RENDERER", "software")
+            .env("ECHO_GRAPHICS_RECOVERY", "1");
+    } else {
+        command
+            .env_remove("ECHO_RENDERER")
+            .env_remove("ECHO_GRAPHICS_RECOVERY");
+    }
+    command
+        .spawn()
+        .map_err(|e| format!("Could not restart Echo: {e}"))?;
+    Ok(())
+}

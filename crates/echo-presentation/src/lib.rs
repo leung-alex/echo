@@ -4,8 +4,11 @@ use echo_engine::{
     PageCursor, QuickInsertItem, QuickInsertPage, QuickInsertSource, QuickInsertView,
 };
 use std::{collections::BTreeSet, fmt, str::FromStr};
+pub mod deck;
+pub mod echo_tokens;
 pub mod interaction;
 pub mod session;
+pub mod space_state;
 
 pub const PAGE_SIZE: u32 = 50;
 pub const MAX_RESIDENT_ROWS: usize = 500;
@@ -63,6 +66,11 @@ pub struct LoadTicket {
 }
 
 pub struct Surface {
+    pub space: echo_engine::SpaceId,
+    pub revision: i64,
+    pub total: u64,
+    pub ready: bool,
+    pub row_limit: usize,
     pub view: QuickInsertView,
     pub query: String,
     pub items: Vec<QuickInsertItem>,
@@ -84,6 +92,15 @@ pub struct Surface {
 impl Surface {
     pub fn new(view: QuickInsertView) -> Self {
         Self {
+            space: if view == QuickInsertView::History {
+                echo_engine::SpaceId::HISTORY
+            } else {
+                echo_engine::SpaceId::FAVORITES
+            },
+            revision: 0,
+            total: 0,
+            ready: false,
+            row_limit: MAX_RESIDENT_ROWS,
             view,
             query: String::new(),
             items: Vec::new(),
@@ -103,6 +120,28 @@ impl Surface {
             operation_notice: false,
         }
     }
+    pub fn set_space(&mut self, id: echo_engine::SpaceId) {
+        if self.space == id {
+            return;
+        }
+        self.space = id;
+        self.view = if id == echo_engine::SpaceId::HISTORY {
+            QuickInsertView::History
+        } else {
+            QuickInsertView::Favorites
+        };
+        self.items.clear();
+        self.revision = 0;
+        self.total = 0;
+        self.reset_page();
+        self.set_batch(false);
+    }
+    pub fn query_epoch(&self) -> u64 {
+        self.epoch
+    }
+    pub fn refresh_top(&mut self) {
+        self.reset_page();
+    }
     pub fn set_query(&mut self, query: String) {
         if self.query == query {
             return;
@@ -120,6 +159,7 @@ impl Surface {
         self.set_batch(false);
     }
     fn reset_page(&mut self) {
+        self.ready = false;
         self.clear_notice();
         self.epoch = self.epoch.wrapping_add(1);
         self.selection = None;
@@ -135,6 +175,7 @@ impl Surface {
     }
     pub fn hide(&mut self) {
         self.visible = false;
+        self.ready = false;
         self.epoch = self.epoch.wrapping_add(1);
         self.loading = false;
         self.dirty = true;
@@ -150,12 +191,13 @@ impl Surface {
         } else {
             self.window_start
         };
-        if more && self.items.len() >= MAX_RESIDENT_ROWS {
+        if more && self.items.len() >= self.row_limit {
             self.previous_windows.push(self.window_start);
             self.window_start = cursor;
             append = false;
         }
         self.loading = true;
+        self.ready = false;
         self.dirty = false;
         Some(LoadTicket {
             epoch: self.epoch,
@@ -189,6 +231,7 @@ impl Surface {
         self.loading = false;
         match result {
             Ok(page) => {
+                self.ready = true;
                 if ticket.append {
                     for item in page.items {
                         if !self
@@ -221,6 +264,7 @@ impl Surface {
                 }
             }
             Err(error) => {
+                self.ready = false;
                 self.operation_notice = false;
                 self.error = true;
                 self.status = error;

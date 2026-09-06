@@ -26,6 +26,8 @@ Usage:
       Show this public command reference.
   echo.cmd install
       Fetch the locked Rust dependencies (no Node or browser runtime).
+  echo.cmd tokens [--check]
+      Generate or validate native Slint/Rust and reference CSS design tokens.
   echo.cmd format [--check]
       Format or check Go and Rust source files.
   echo.cmd verify [--changed-from <sha>] [--profile <developer|ci>] [--explain]
@@ -122,6 +124,13 @@ func (a *app) dispatch(args []string) error {
 	switch args[0] {
 	case "install":
 		return noArgs(args[1:], a.install)
+	case "tokens":
+		fs := newFlags("tokens", a.errOut)
+		check := fs.Bool("check", false, "verify generated tokens without edits")
+		if err := parseFlags(fs, args[1:]); err != nil {
+			return err
+		}
+		return a.generateTokens(*check)
 	case "format":
 		fs := newFlags("format", a.errOut)
 		check := fs.Bool("check", false, "check formatting without edits")
@@ -639,6 +648,9 @@ func (a *app) selfCheck() error {
 	if err = a.checkNativeFixtureSources(); err != nil {
 		return err
 	}
+	if err := a.generateTokens(true); err != nil {
+		return err
+	}
 	return a.checkNoBrowserRuntime()
 }
 
@@ -827,14 +839,16 @@ func (a *app) install() error {
 }
 
 func (a *app) build(release bool) error {
-	args := []string{"build", "-p", "echo-desktop", "--locked"}
+	args := []string{"build", "-p", "echo-desktop", "--locked", "--features", "cover-flow"}
 	if release {
 		args = append(args, "--release")
 	}
 	return a.run("cargo", args...)
 }
 
-func (a *app) dev() error { return a.run("cargo", "run", "-p", "echo-desktop", "--locked") }
+func (a *app) dev() error {
+	return a.run("cargo", "run", "-p", "echo-desktop", "--locked", "--features", "cover-flow")
+}
 
 func (a *app) smoke() error {
 	if os.Getenv("ECHO_WINDOWS_ACCEPTANCE") != "1" {

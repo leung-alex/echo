@@ -872,3 +872,54 @@ mod tests {
         clipboard.shutdown();
     }
 }
+
+impl<S: crate::SpaceStore> QuickInsertService<S> {
+    /// This is a scoped metadata query. Execution still resolves original representations by ID.
+    pub fn list_space(
+        &self,
+        space: crate::SpaceId,
+        query: &str,
+        limit: u32,
+        cursor: Option<PageCursor>,
+    ) -> Result<(QuickInsertPage, i64, u64)> {
+        if space == crate::SpaceId::HISTORY {
+            let page = self.list(&QuickInsertRequest {
+                view: QuickInsertView::History,
+                query: query.into(),
+                limit,
+                cursor,
+            })?;
+            let metadata = self
+                .library
+                .store()
+                .list_spaces()
+                .map_err(|e| LibraryError::Storage(e.to_string()))?
+                .into_iter()
+                .find(|s| s.id == space)
+                .ok_or_else(|| LibraryError::Storage("History space is missing".into()))?;
+            return Ok((page, metadata.revision, metadata.item_count));
+        }
+        let result = self
+            .library
+            .store()
+            .list_space_items(space, query, limit, cursor)
+            .map_err(|e| LibraryError::Storage(e.to_string()))?;
+        let page = QuickInsertPage {
+            items: result
+                .page
+                .items
+                .into_iter()
+                .map(crate::history::saved_item)
+                .map(to_item)
+                .collect(),
+            next_cursor: result.page.next_cursor,
+        };
+        Ok((page, result.revision, result.total))
+    }
+}
+
+impl QuickInsertItem {
+    pub fn from_saved(item: crate::SavedItem) -> Self {
+        to_item(crate::history::saved_item(item))
+    }
+}

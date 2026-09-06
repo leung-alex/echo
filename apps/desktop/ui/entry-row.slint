@@ -1,4 +1,5 @@
 import { EchoTheme, EchoButton } from "theme.slint";
+import { CoverFlowTokens as T } from "echo-tokens.slint";
 import { FavoriteIconImages } from "favorite-icon-images.slint";
 export struct EntryRow {
     key: string, title: string, body: string, kind: string,
@@ -10,13 +11,14 @@ export component EntryView inherits Rectangle {
     in property <EntryRow> entry;
     in property <bool> favorites;
     in property <bool> compact;
+    in property <bool> capture-only;
     in property <bool> batch;
     in property <bool> busy;
     in property <bool> quick-insert;
     in property <bool> reorder-enabled;
     callback selected-geometry(length,length);
-    changed y => { if (entry.selected) { root.selected-geometry(self.y,self.height); } }
-    changed height => { if (entry.selected) { root.selected-geometry(self.y,self.height); } }
+    changed y => { if (entry.selected && !capture-only) { root.selected-geometry(self.y,self.height); } }
+    changed height => { if (entry.selected && !capture-only) { root.selected-geometry(self.y,self.height); } }
     callback select(string);
     callback action(string,string);
     callback thumbnail-needed(string);
@@ -24,122 +26,110 @@ export component EntryView inherits Rectangle {
     pure callback drag-data(string) -> data-transfer;
     callback can-drop-data(data-transfer) -> bool;
     callback drop-data(data-transfer,string) -> bool;
-    private property <bool> show-actions: row-touch.has-hover || entry.selected || actions-touch.has-hover;
-    private property <length> left-gutter: favorites ? 14px : 100px;
-    private property <length> content-width: root.width - left-gutter - 18px;
-    height: max(compact ? 105px : 96px, body-layout.min-height + 32px);
+    private property <image> favorite-icon: FavoriteIconImages.image-for(entry.icon-key);
+    private property <bool> active: entry.selected || entry.batch-selected;
+    private property <bool> show-actions: entry.selected || (!capture-only && (row-touch.has-hover || actions-touch.has-hover));
+    private property <length> left-gutter: favorites ? 44px : T.row-timeline-width + 14px;
+    private property <length> content-width: max(0px,root.width - left-gutter - 12px);
+    height: max(compact ? T.row-compact-height : favorites ? T.row-saved-min-height : T.row-history-min-height, body-layout.min-height + 46px);
     min-width: 0px;
-    background: drop.has-drag ? EchoTheme.amber.with-alpha(0.15) : entry.selected || entry.batch-selected ? EchoTheme.surface : transparent;
+    background: drop.has-drag ? EchoTheme.selection : active ? EchoTheme.selection : transparent;
     accessible-role: list-item;
-    accessible-label: entry.title == "" ? entry.body : entry.title;
-    accessible-item-selectable: true;
+    accessible-enabled: !capture-only;
+    accessible-label: entry.title == "" ? entry.body : entry.title + ": " + entry.body;
+    accessible-item-selectable: !capture-only;
     accessible-item-selected: entry.selected;
-    accessible-action-default => { root.select(entry.key); }
-    init => { if (entry.has-thumbnail) { root.thumbnail-needed(entry.key); } }
-    changed entry => { if (entry.selected) { root.selected-geometry(self.y,self.height); } if (entry.has-thumbnail) { root.thumbnail-needed(entry.key); } }
-    if (entry.selected || entry.batch-selected): Rectangle { x: 0px; y: 0px; width: 3px; background: EchoTheme.amber; border-radius: 2px; }
-    if (!favorites): Rectangle { x: 80px; y: 0px; width: 1px; background: EchoTheme.line; }
+    accessible-action-default => { if (!root.capture-only && !root.busy) { root.select(entry.key); } }
+    init => { if (entry.has-thumbnail && !capture-only) { root.thumbnail-needed(entry.key); } }
+    changed entry => {
+        if (!capture-only) {
+            if (entry.selected) { root.selected-geometry(self.y,self.height); }
+            if (entry.has-thumbnail) { root.thumbnail-needed(entry.key); }
+        }
+    }
+    if (active): Rectangle { x: 0px; y: 8px; width: 2px; height: parent.height - 16px; background: EchoTheme.amber; border-radius: 1px; }
+    if (!favorites): Rectangle { x: T.row-timeline-width; width: 1px; background: EchoTheme.line; }
     if (!favorites): Text {
-        x: 0; y: 21px; width: 66px; text: entry.time-label;
-        color: EchoTheme.muted; font-size: 10px; horizontal-alignment: right;
+        x: 3px; y: 15px; width: T.row-timeline-width - 14px; text: entry.time-label;
+        color: root.active ? EchoTheme.selected-text : EchoTheme.muted; font-size: 11px; horizontal-alignment: right;
+        accessible-role: none;
     }
     if (!favorites): Rectangle {
-        x: 74px; y: 21px; width: 13px; height: 13px; border-radius: 7px;
-        background: EchoTheme.canvas; border-color: EchoTheme.amber; border-width: 1px;
-        Rectangle { x: 3px; y: 3px; width: 7px; height: 7px; border-radius: 4px; background: EchoTheme.amber; }
+        x: T.row-timeline-width - 2px; y: 19px; width: 5px; height: 5px; border-radius: 3px;
+        background: entry.pinned ? EchoTheme.amber : EchoTheme.muted;
+    }
+    if (favorites): Image {
+        x: 9px; y: 15px; width: T.row-icon-size; height: T.row-icon-size;
+        source: root.favorite-icon.width > 0 ? root.favorite-icon : @image-url("icons/star.svg");
+        colorize: root.active ? EchoTheme.selected-text : EchoTheme.muted;
     }
     drop := DropArea {
-        enabled: root.favorites && root.reorder-enabled && !root.busy;
+        enabled: root.favorites && root.reorder-enabled && !root.busy && !root.capture-only;
         can-drop(event) => { return root.can-drop-data(event.data) ? DragAction.move : DragAction.none; }
         dropped(event) => { return root.drop-data(event.data,root.entry.key) ? DragAction.move : DragAction.none; }
         DragArea {
-            enabled: root.favorites && root.reorder-enabled && !root.busy;
-            data: root.drag-data(root.entry.key);
-            allow-move: true;
+            enabled: root.favorites && root.reorder-enabled && !root.busy && !root.capture-only;
+            data: root.drag-data(root.entry.key); allow-move: true;
             row-touch := TouchArea {
-                enabled: !root.busy;
+                enabled: !root.busy && !root.capture-only;
                 clicked => { row-focus.focus(); root.select(root.entry.key); if (root.quick-insert && !root.batch) { root.action("insert",root.entry.key); } }
             }
         }
     }
     body-layout := VerticalLayout {
-        x: root.left-gutter; y: 16px; width: root.content-width;
-        spacing: 8px; alignment: start;
-        if (root.entry.section-label != "" && !root.compact): Text {
-            text: root.entry.section-label; color: EchoTheme.muted; font-size: 10px; font-weight: 600;
+        x: root.left-gutter; y: 10px; width: root.content-width;
+        spacing: 4px; alignment: start;
+        if (root.entry.section-label != "" && !root.favorites && !root.compact): Text {
+            text: root.entry.section-label; color: root.active ? EchoTheme.selected-text : EchoTheme.muted;
+            font-size: T.font-caption; font-weight: 600; accessible-role: none;
         }
-        if (root.favorites): HorizontalLayout {
-            spacing: 8px;
-            if (FavoriteIconImages.image-for(root.entry.icon-key).width > 0): Image {
-                source: FavoriteIconImages.image-for(root.entry.icon-key);
-                width: 20px; height: 20px; colorize: EchoTheme.text;
-            }
-            Text { text: root.entry.title; color: EchoTheme.text; font-size: 16px; font-weight: 600; wrap: word-wrap; min-width: 0px; }
+        if (root.favorites): Text {
+            text: root.entry.title; color: root.active ? EchoTheme.selected-text : EchoTheme.muted;
+            font-size: T.font-secondary; font-weight: 600; overflow: elide; min-width: 0px; accessible-role: none;
         }
         if (root.entry.has-thumbnail): Rectangle {
-            height: root.compact ? 128px : 160px;
-            background: EchoTheme.elevated; border-radius: 6px;
-            Image { source: root.entry.thumbnail; image-fit: contain; }
-            if (root.entry.thumbnail.width == 0): Text { text: "Loading image…"; color: EchoTheme.muted; horizontal-alignment: center; vertical-alignment: center; }
+            height: T.row-image-height;
+            background: EchoTheme.elevated;
+            Image { x: 0px; y: 0px; width: parent.width; height: parent.height; source: root.entry.thumbnail; image-fit: contain; }
+            if (root.entry.thumbnail.width == 0): Text { text: "Image"; color: EchoTheme.muted; horizontal-alignment: center; vertical-alignment: center; accessible-role: none; }
         }
         if (root.entry.body != ""): Text {
-            text: root.entry.body; color: EchoTheme.text; font-size: root.compact ? 13px : 15px;
-            wrap: word-wrap; min-width: 0px;
+            text: root.entry.body; color: root.active ? EchoTheme.selected-text : EchoTheme.text; font-size: T.font-body;
+            wrap: word-wrap; overflow: elide; max-height: T.row-max-text-height; min-width: 0px; accessible-role: none;
         }
-        Text {
-            text: root.entry.source-label + (root.entry.pinned ? "   ·   Pinned" : "") + (root.entry.kind == "text" ? "" : "   ·   " + root.entry.kind);
-            color: EchoTheme.muted; font-size: 11px; wrap: word-wrap; min-width: 0px;
+        if (root.entry.tags != "" && !root.compact): Text {
+            text: root.entry.tags; color: root.active ? EchoTheme.selected-text : EchoTheme.muted;
+            font-size: T.font-caption; overflow: elide; min-width: 0px; accessible-role: none;
         }
-        if (root.entry.tags != ""): Text { text: root.entry.tags; color: EchoTheme.muted; font-size: 11px; wrap: word-wrap; min-width: 0px; }
-        // Reserve a stable action row: showing controls must not move text or images.
-        Rectangle {
-            height: 32px;
-            actions-touch := TouchArea { }
-            HorizontalLayout {
-                spacing: 4px; alignment: start;
-                if (root.batch): EchoButton {
-                    text: root.entry.batch-selected ? "✓ Selected" : "Select";
-                    label: "Toggle selection"; checked: root.entry.batch-selected;
-                    enabled: !root.busy; clicked => { root.action("toggle-batch",root.entry.key); }
-                }
-                if (root.show-actions && !root.batch): EchoButton {
-                    icon: @image-url("icons/copy.svg"); label: "Copy item"; flat: true;
-                    enabled: !root.busy; clicked => { root.action("copy",root.entry.key); }
-                }
-                if (root.show-actions && !root.batch && root.quick-insert): EchoButton {
-                    icon: @image-url("icons/insert.svg"); label: "Insert item"; flat: true;
-                    enabled: !root.busy; clicked => { root.action("insert",root.entry.key); }
-                }
-                if (root.show-actions && !root.batch && !root.favorites): EchoButton {
-                    icon: @image-url("icons/star.svg"); label: "Add to Favorites"; flat: true;
-                    enabled: !root.busy; clicked => { root.action("favorite",root.entry.key); }
-                }
-                if (root.show-actions && !root.batch && !root.favorites): EchoButton {
-                    icon: @image-url("icons/pin.svg"); label: root.entry.pinned ? "Unpin item" : "Pin item"; flat: true; checked: root.entry.pinned;
-                    enabled: !root.busy; clicked => { root.action("pin",root.entry.key); }
-                }
-                if (root.show-actions && !root.batch && root.favorites): EchoButton {
-                    icon: @image-url("icons/edit.svg"); label: "Edit favorite"; flat: true;
-                    enabled: !root.busy; clicked => { root.action("edit",root.entry.key); }
-                }
-                if (root.show-actions && !root.batch && root.favorites): EchoButton {
-                    icon: @image-url("icons/up.svg"); label: "Move favorite up"; flat: true;
-                    enabled: !root.busy && root.reorder-enabled; clicked => { root.action("up",root.entry.key); }
-                }
-                if (root.show-actions && !root.batch && root.favorites): EchoButton {
-                    icon: @image-url("icons/down.svg"); label: "Move favorite down"; flat: true;
-                    enabled: !root.busy && root.reorder-enabled; clicked => { root.action("down",root.entry.key); }
-                }
-                if (root.show-actions && !root.batch): EchoButton {
-                    icon: @image-url("icons/delete.svg"); label: "Delete item"; danger: true; flat: true;
-                    enabled: !root.busy; clicked => { root.action("delete",root.entry.key); }
-                }
+    }
+    Text {
+        x: root.left-gutter; y: root.height - 29px; height: 20px; width: max(0px,root.content-width - 244px);
+        text: root.entry.source-label + (root.entry.pinned ? " · Pinned" : "");
+        color: root.active ? EchoTheme.selected-text : EchoTheme.muted; font-size: T.font-caption; overflow: elide; accessible-role: none;
+    }
+    Rectangle {
+        x: max(root.left-gutter,root.width - 252px); y: root.height - 38px; width: min(244px,root.content-width); height: 36px;
+        actions-touch := TouchArea { }
+        HorizontalLayout {
+            spacing: 2px; alignment: end;
+            if (root.batch): EchoButton {
+                text: root.entry.batch-selected ? "✓ Selected" : "Select";
+                label: "Toggle selection"; checked: root.entry.batch-selected;
+                enabled: !root.busy; clicked => { root.action("toggle-batch",root.entry.key); }
             }
+            if (root.show-actions && !root.batch): EchoButton { icon: @image-url("icons/copy.svg"); label: "Copy item"; flat: true; enabled: !root.busy; clicked => { root.action("copy",root.entry.key); } }
+            if (root.show-actions && !root.batch && root.quick-insert): EchoButton { icon: @image-url("icons/insert.svg"); label: "Insert item"; flat: true; enabled: !root.busy; clicked => { root.action("insert",root.entry.key); } }
+            if (root.show-actions && !root.batch && !root.favorites): EchoButton { icon: @image-url("icons/star.svg"); label: "Move to Favorites"; flat: true; enabled: !root.busy; clicked => { root.action("favorite",root.entry.key); } }
+            if (root.show-actions && !root.batch && !root.favorites): EchoButton { icon: @image-url("icons/pin.svg"); label: root.entry.pinned ? "Unpin item" : "Pin item"; flat: true; checked: root.entry.pinned; enabled: !root.busy; clicked => { root.action("pin",root.entry.key); } }
+            if (root.show-actions && !root.batch && root.favorites): EchoButton { icon: @image-url("icons/edit.svg"); label: "Edit favorite"; flat: true; enabled: !root.busy; clicked => { root.action("edit",root.entry.key); } }
+            if (root.show-actions && !root.batch && root.favorites): EchoButton { icon: @image-url("icons/up.svg"); label: "Move favorite up"; flat: true; enabled: !root.busy && root.reorder-enabled; clicked => { root.action("up",root.entry.key); } }
+            if (root.show-actions && !root.batch && root.favorites): EchoButton { icon: @image-url("icons/down.svg"); label: "Move favorite down"; flat: true; enabled: !root.busy && root.reorder-enabled; clicked => { root.action("down",root.entry.key); } }
+            if (root.show-actions && !root.batch): EchoButton { text: "···"; label: "Item options"; flat: true; enabled: !root.busy; clicked => { root.action("options",root.entry.key); } }
         }
     }
     Rectangle { y: root.height - 1px; height: 1px; background: EchoTheme.line; }
     row-focus := FocusScope {
-        width: 0;
+        width: 0; enabled: !root.capture-only;
         key-pressed(event) => { return root.key-event(event.text,event.modifiers.control,event.modifiers.shift,"row") ? accept : reject; }
     }
 }

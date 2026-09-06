@@ -4,7 +4,7 @@ Desktop is Echo's native Rust composition root. Read `docs/architecture/overview
 
 ## Ownership
 
-- `src/app.rs` owns UI-thread orchestration for the two native Slint windows.
+- `src/app.rs` owns UI-thread orchestration for one floating native Slint window. `src/app/deck_controller.rs` owns latest-target navigation and bounded GPU card caching; `src/cover_flow` owns GPU composition, offscreen rendering and raster budgets.
 - `src/app/bindings.rs` connects generated Slint callbacks to Rust behavior.
 - `src/service.rs` owns the background worker and its typed Rust work/result messages.
 - `src/events.rs` owns typed events delivered back to the Slint event loop.
@@ -21,6 +21,6 @@ Business policy belongs to `echo-engine`. Framework-independent presentation sta
 - Preview models are display-only. Copy and insert actions must continue through engine services that retrieve the retained original clipboard representations.
 - Target capture for Quick Insert completes before Echo windows are shown.
 - Closing or dismissing a window hides it. Explicit Quit closes the hub/event loop and allows worker, clipboard, storage, pipe, and tray shutdown.
-- Renderer support must retain the default software path and the per-renderer Mica/opaque fallback. GPU rendering is optional.
+- The normal build includes the shared-device WGPU renderer. Preserve `--no-default-features` software-only builds and the explicit runtime software fallback. The card-only window has no global Mica/opaque outer frame. Do not enable the `native-test` feature in release packaging.
 
 The About view uses Slint's `AboutSlint` component. Packaging attribution and license notices must be checked against the exact Cargo-resolved Slint and other dependency versions; do not claim legal completeness from the UI string alone.

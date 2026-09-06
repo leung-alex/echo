@@ -99,6 +99,8 @@ func ownersForPath(path string) (bool, []string) {
 		return true, []string{"windows", "desktop"}
 	case strings.HasPrefix(path, "crates/echo-activation/"):
 		return true, []string{"desktop", "activation"}
+	case strings.HasPrefix(path, "design/tokens/"):
+		return true, []string{"desktop", "presentation", "tooling"}
 	case strings.HasPrefix(path, "apps/desktop/"):
 		return true, []string{"desktop", "activation", "quick-insert"}
 	case strings.HasPrefix(path, "tests/native/"):

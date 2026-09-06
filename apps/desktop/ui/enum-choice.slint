@@ -1,0 +1,10 @@
+import { ComboBox } from "std-widgets.slint";
+
+// Slint's current-value is an output of selection, not a selection setter.
+// Keep persisted enum values and lazy/recreated controls synchronized through
+// current-index, without emitting a user edit when loading or resetting a form.
+export component EnumChoice inherits ComboBox {
+    in property <int> selected-index;
+    init => { root.current-index = root.selected-index; }
+    changed selected-index => { root.current-index = root.selected-index; }
+}

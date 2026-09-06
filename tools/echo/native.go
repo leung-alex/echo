@@ -10,6 +10,9 @@ import (
 )
 
 func (a *app) runNativeGate(scope string) error {
+	if scope == "ui" {
+		return a.runCoverFlowGate()
+	}
 	if runtime.GOOS != "windows" {
 		return fmt.Errorf("native acceptance requires Windows")
 	}

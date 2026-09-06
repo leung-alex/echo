@@ -1,0 +1,31 @@
+import { EchoTheme } from "theme.slint";
+export component CardSearch inherits Rectangle {
+    in-out property <string> query;
+    in property <string> space-title;
+    in property <bool> interactive: true;
+    in property <bool> focus-outline;
+    out property <bool> focused: input.has-focus;
+    callback edited(string);
+    callback key-event(string,bool,bool,string) -> bool;
+    callback ime-composing() -> bool;
+    public function focus-search(select-all: bool) {input.focus(); if (select-all) {input.select-all();}}
+    forward-focus: input;
+    height: 44px; border-radius: 12px; background: EchoTheme.elevated;
+    border-width: 1px; border-color: input.has-focus || root.focus-outline ? EchoTheme.amber : EchoTheme.line;
+    Image {x:14px;y:13px;width:18px;height:18px;source:@image-url("icons/search.svg");colorize:EchoTheme.muted;}
+    if (root.query == "" || !root.interactive): Text {
+        x:43px;width:parent.width - 56px;height:parent.height;
+        text:root.query == "" ? "Search " + root.space-title + "…" : root.query;
+        color:root.query == "" ? EchoTheme.muted : EchoTheme.text;vertical-alignment:center;font-size:15px;overflow:elide;
+    }
+    input := TextInput {
+        x:43px;y:8px;width:parent.width - 56px;height:28px;
+        visible:root.interactive;enabled:root.interactive;single-line:true;
+        text <=> root.query;color:EchoTheme.text;font-size:15px;
+        selection-background-color:EchoTheme.amber;selection-foreground-color:EchoTheme.on-accent;
+        accessible-label:"Search clipboard history";accessible-value <=> root.query;
+        accessible-action-set-value(value) => {if (root.interactive) {root.query=value;root.edited(value);}}
+        edited => {root.edited(self.text);}
+        key-pressed(event) => {if (root.ime-composing()) {return reject;} return root.key-event(event.text,event.modifiers.control,event.modifiers.shift,"search") ? accept : reject;}
+    }
+}

@@ -20,6 +20,14 @@ public static class EchoDriver
             {
                 case "benchmark-search": Require(args,4); value=EchoBenchmarks.Search(pid,title,Int32.Parse(args[3])); break;
                 case "benchmark-cycles": Require(args,5); value=EchoBenchmarks.Cycles(pid,title,args[3],Int32.Parse(args[4])); break;
+                case "window-count": value=EchoUi.WindowCount(pid); break;
+                case "combo": Require(args,5); EchoUi.Combo(pid,title,args[3],Int32.Parse(args[4])); break;
+                case "toggle": Require(args,5); EchoUi.Toggle(pid,title,args[3],Boolean.Parse(args[4])); break;
+                case "group-invoke": Require(args,5); EchoUi.InvokeInGroup(pid,title,args[3],args[4]); break;
+                case "composition": Require(args,4); value=EchoComposition.Check(pid,title,args[3]); break;
+                case "scroll": Require(args,4); value=EchoTestBridge.Call(pid,"scroll",Int32.Parse(args[3]),false,args.Length>4 && args[4]=="up",""); break;
+                case "metrics": value = EchoTestBridge.Call(pid,"metrics",0,false,false,""); break;
+                case "reset-metrics": value = EchoTestBridge.Call(pid,"reset_metrics",0,false,false,""); break;
                 case "ready": value = EchoUi.Ready(pid, title); break;
                 case "dump": value = EchoUi.Dump(pid, title); break;
                 case "capture": Require(args, 4); EchoUi.Capture(pid, title, args[3]); break;

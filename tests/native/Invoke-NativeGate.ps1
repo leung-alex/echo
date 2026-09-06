@@ -3,7 +3,8 @@ param(
     [Parameter(Mandatory)][string]$Root,
     [Parameter(Mandatory)][string]$Executable,
     [Parameter(Mandatory)][ValidateSet('smoke','clipboard','quick-insert','ui')][string]$Scope,
-    [Parameter(Mandatory)][string]$EvidenceRoot
+    [Parameter(Mandatory)][string]$EvidenceRoot,
+    [ValidateSet('software','femtovg-wgpu')][string]$Renderer='software'
 )
 
 Set-StrictMode -Version Latest
@@ -50,7 +51,7 @@ try {
     $compiler = Join-Path $framework 'csc.exe'
     if (!(Test-Path -LiteralPath $compiler)) { throw 'The .NET Framework C# compiler is required for UIAutomationClient/UIAutomationTypes.' }
     $driver = Join-Path $tools 'EchoDriver.exe'
-    & $compiler /nologo /target:exe /out:$driver "/reference:$framework/WPF/UIAutomationClient.dll" "/reference:$framework/WPF/UIAutomationTypes.dll" "/reference:$framework/WPF/WindowsBase.dll" /reference:System.Drawing.dll /reference:System.Web.Extensions.dll (Join-Path $native 'EchoUi.cs') (Join-Path $native 'EchoDriver.cs') (Join-Path $native 'EchoBenchmarks.cs')
+    & $compiler /nologo /target:exe /out:$driver "/reference:$framework/WPF/UIAutomationClient.dll" "/reference:$framework/WPF/UIAutomationTypes.dll" "/reference:$framework/WPF/WindowsBase.dll" /reference:System.Drawing.dll /reference:System.Windows.Forms.dll /reference:System.Web.Extensions.dll (Join-Path $native 'EchoUi.cs') (Join-Path $native 'EchoDriver.cs') (Join-Path $native 'EchoBenchmarks.cs') (Join-Path $native 'EchoComposition.cs')
     if ($LASTEXITCODE -ne 0 -or !(Test-Path -LiteralPath $driver)) { throw 'EchoDriver compilation failed.' }
 
     $fixture = $env:ECHO_ACCEPTANCE_FIXTURE_EXE
@@ -89,7 +90,7 @@ try {
 
     [Environment]::SetEnvironmentVariable('ECHO_DATA_DIR', $data, 'Process')
     [Environment]::SetEnvironmentVariable('ECHO_ACCEPTANCE_RUN_ROOT', $EvidenceRoot, 'Process')
-    [Environment]::SetEnvironmentVariable('ECHO_RENDERER', 'software', 'Process')
+    [Environment]::SetEnvironmentVariable('ECHO_RENDERER', $Renderer, 'Process')
 
     & (Join-Path $native 'Invoke-UiAcceptance.ps1') -Root $Root -Executable $Executable -Driver $driver -Fixture $fixture -Scope $Scope -EvidenceRoot $EvidenceRoot
     if ($LASTEXITCODE -ne 0) { throw "Native $Scope acceptance failed." }

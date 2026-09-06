@@ -1,5 +1,5 @@
 //! A bounded worker owns domain calls. Database/image work never blocks the UI.
-use crate::events::{Event, Hub, MutationResult, PixelData, Role};
+use crate::events::{Event, Hub, MutationResult, PixelData};
 use echo_engine::*;
 use echo_presentation::{
     session::{Context, Operation},
@@ -17,46 +17,59 @@ use std::{
 };
 
 pub enum Mutation {
-    Favorite(i64),
+    Space(SpaceCommand),
+    SettingsPatch(SettingsPatch),
     Pin(i64, bool),
     Delete(RowKey),
-    BulkFavorite(Vec<i64>),
     BulkPin(Vec<i64>),
     BulkDelete(Vec<i64>),
     Clear,
-    Create(FavoriteDraft),
     Update(i64, FavoriteUpdate),
-    Settings(ClipboardSettings),
-    Reorder {
-        id: i64,
-        before: Option<i64>,
-        delta: i32,
-    },
 }
 pub enum Work {
-    List(Role, LoadTicket, QuickInsertView, String),
+    List(LoadTicket, SpaceId, String),
+    Preview(SpaceId, u64, String),
+    Spaces,
+    Inspect(u64, i64),
+    Catalog(u64, String, Option<PageCursor>),
+    Resume(SpaceId),
     Begin(u64, Context),
     Cancel,
-    Execute(Role, Operation, RowKey),
-    Mutate(Role, u64, Mutation),
-    Thumbnail(Role, u64, String),
+    Execute(Operation, RowKey),
+    Mutate(u64, Mutation),
+    Thumbnail(u64, String),
+    Diagnostics(crate::events::DiagnosticReport),
     Stop,
 }
 pub struct Worker {
     sender: SyncSender<Work>,
     thread: Option<JoinHandle<()>>,
     pub epoch: Arc<AtomicU64>,
+    pub bootstrap: SettingsSnapshot,
 }
 impl Worker {
     pub fn start(path: PathBuf, hub: Arc<Hub>) -> Result<Self, String> {
         let (sender, receiver) = mpsc::sync_channel(32);
         let epoch = Arc::new(AtomicU64::new(0));
         let worker_epoch = epoch.clone();
+        let (boot_tx, boot_rx) = mpsc::sync_channel(1);
         let thread = std::thread::Builder::new()
             .name("echo-domain-worker".into())
-            .spawn(move || run(path, hub, receiver, worker_epoch))
+            .spawn(move || run(path, hub, receiver, worker_epoch, boot_tx))
             .map_err(|e| e.to_string())?;
+        let bootstrap = match boot_rx.recv() {
+            Ok(Ok(snapshot)) => snapshot,
+            Ok(Err(error)) => {
+                let _ = thread.join();
+                return Err(error);
+            }
+            Err(error) => {
+                let _ = thread.join();
+                return Err(error.to_string());
+            }
+        };
         Ok(Self {
+            bootstrap,
             sender,
             thread: Some(thread),
             epoch,
@@ -102,14 +115,29 @@ impl Services {
         })
     }
 }
-fn run(path: PathBuf, hub: Arc<Hub>, receiver: mpsc::Receiver<Work>, epoch: Arc<AtomicU64>) {
+fn run(
+    path: PathBuf,
+    hub: Arc<Hub>,
+    receiver: mpsc::Receiver<Work>,
+    epoch: Arc<AtomicU64>,
+    bootstrap: SyncSender<Result<SettingsSnapshot, String>>,
+) {
     let services = match Services::open(&path) {
         Ok(service) => service,
         Err(error) => {
+            let _ = bootstrap.send(Err(error.clone()));
             hub.post(Event::Ready(Err(error)));
             return;
         }
     };
+    let settings = match services.library.store().settings_snapshot() {
+        Ok(settings) => settings,
+        Err(error) => {
+            let _ = bootstrap.send(Err(error.to_string()));
+            return;
+        }
+    };
+    let _ = bootstrap.send(Ok(settings.clone()));
     let events = services.clipboard.subscribe_events();
     let bridge_hub = hub.clone();
     let bridge = std::thread::Builder::new()
@@ -120,24 +148,70 @@ fn run(path: PathBuf, hub: Arc<Hub>, receiver: mpsc::Receiver<Work>, epoch: Arc<
             }
         })
         .ok();
-    hub.post(Event::Ready(
-        services.library.settings().map_err(|e| e.to_string()),
-    ));
+    hub.post(Event::Ready(Ok(settings)));
     while let Ok(work) = receiver.recv() {
         match work {
+            Work::Diagnostics(report) => {
+                hub.post(Event::DiagnosticExported(export_diagnostics(&path, report)))
+            }
             Work::Stop => break,
-            Work::List(role, ticket, view, query) => {
-                let request = QuickInsertRequest {
-                    view,
-                    query,
-                    limit: 50,
-                    cursor: ticket.cursor,
-                };
+            Work::List(ticket, space, query) => {
                 hub.post(Event::Loaded(
-                    role,
+                    space,
                     ticket,
-                    services.quick.list(&request).map_err(|e| e.to_string()),
+                    scope_page(&services, space, &query, ticket.cursor),
                 ));
+            }
+            Work::Preview(space, generation, query) => hub.post(Event::Preview(
+                space,
+                generation,
+                scope_page(&services, space, &query, None),
+            )),
+            Work::Spaces => hub.post(Event::Spaces(
+                services
+                    .library
+                    .store()
+                    .list_spaces()
+                    .map_err(|e| e.to_string()),
+            )),
+            Work::Inspect(generation, id) => {
+                let result = (|| {
+                    let stored = services
+                        .library
+                        .store()
+                        .saved_item(id)
+                        .map_err(|e| e.to_string())?
+                        .ok_or("Item no longer exists")?;
+                    let spaces = services
+                        .library
+                        .store()
+                        .spaces_for_item(id)
+                        .map_err(|e| e.to_string())?;
+                    Ok(crate::events::ItemDetails {
+                        item: QuickInsertItem::from_saved(stored.item),
+                        spaces,
+                    })
+                })();
+                hub.post(Event::Inspected(generation, result));
+            }
+            Work::Catalog(generation, query, cursor) => {
+                let result = services
+                    .library
+                    .store()
+                    .list_saved_items_page(&query, 50, cursor)
+                    .map(|page| QuickInsertPage {
+                        items: page
+                            .items
+                            .into_iter()
+                            .map(QuickInsertItem::from_saved)
+                            .collect(),
+                        next_cursor: page.next_cursor,
+                    })
+                    .map_err(|e| e.to_string());
+                hub.post(Event::Catalog(generation, result));
+            }
+            Work::Resume(id) => {
+                let _ = services.library.store().save_resume_space(id);
             }
             Work::Begin(generation, context) => {
                 if epoch.load(Ordering::Acquire) != generation {
@@ -152,7 +226,7 @@ fn run(path: PathBuf, hub: Arc<Hub>, receiver: mpsc::Receiver<Work>, epoch: Arc<
                 hub.post(Event::Activated(generation, context, result));
             }
             Work::Cancel => services.quick.clear_session(),
-            Work::Execute(role, operation, key) => {
+            Work::Execute(operation, key) => {
                 let result = if epoch.load(Ordering::Acquire) != operation.epoch {
                     Err("Insertion session was cancelled".into())
                 } else {
@@ -161,13 +235,12 @@ fn run(path: PathBuf, hub: Arc<Hub>, receiver: mpsc::Receiver<Work>, epoch: Arc<
                         .execute(key.source, key.id, operation.action)
                         .map_err(|e| e.to_string())
                 };
-                hub.post(Event::Executed(role, operation, result));
+                hub.post(Event::Executed(operation, result));
             }
-            Work::Mutate(role, serial, mutation) => {
-                hub.post(Event::Mutated(role, serial, mutate(&services, mutation)))
+            Work::Mutate(serial, mutation) => {
+                hub.post(Event::Mutated(serial, mutate(&services, mutation)))
             }
-            Work::Thumbnail(role, generation, hash) => hub.post(Event::Thumbnail(
-                role,
+            Work::Thumbnail(generation, hash) => hub.post(Event::Thumbnail(
                 generation,
                 hash.clone(),
                 thumbnail(&services, &hash),
@@ -184,13 +257,33 @@ fn run(path: PathBuf, hub: Arc<Hub>, receiver: mpsc::Receiver<Work>, epoch: Arc<
 fn mutate(services: &Services, mutation: Mutation) -> Result<MutationResult, String> {
     let mut settings = None;
     let mut editor_saved = false;
+    let mut snapshot = None;
+    let mut space_result = None;
     let quick = &services.quick;
     let message = match mutation {
-        Mutation::Favorite(id) => {
-            quick
-                .move_history_to_favorite(id)
+        Mutation::Space(command) => {
+            editor_saved = matches!(command.action, SpaceAction::CreateItem(_));
+            space_result = Some(
+                services
+                    .library
+                    .store()
+                    .apply_space_command(command)
+                    .map_err(|e| e.to_string())?,
+            );
+            "Space updated"
+        }
+        Mutation::SettingsPatch(patch) => {
+            let value = services
+                .library
+                .store()
+                .save_settings_patch(patch)
                 .map_err(|e| e.to_string())?;
-            "Added to Favorites"
+            settings = Some(value.clipboard.clone());
+            snapshot = Some(value);
+            quick
+                .refresh_capture_configuration()
+                .map_err(|e| e.to_string())?;
+            "Settings saved"
         }
         Mutation::Pin(id, was_pinned) => {
             if was_pinned {
@@ -211,12 +304,6 @@ fn mutate(services: &Services, mutation: Mutation) -> Result<MutationResult, Str
             }
             "Item deleted"
         }
-        Mutation::BulkFavorite(ids) => {
-            quick
-                .move_history_many_to_favorites(&ids)
-                .map_err(|e| e.to_string())?;
-            "Added to Favorites"
-        }
         Mutation::BulkPin(ids) => {
             quick.pin_history_many(&ids).map_err(|e| e.to_string())?;
             "History pinned"
@@ -229,11 +316,6 @@ fn mutate(services: &Services, mutation: Mutation) -> Result<MutationResult, Str
             quick.clear_unpinned_history().map_err(|e| e.to_string())?;
             "Unpinned history cleared"
         }
-        Mutation::Create(draft) => {
-            quick.create_favorite(draft).map_err(|e| e.to_string())?;
-            editor_saved = true;
-            "Favorite created"
-        }
         Mutation::Update(id, update) => {
             quick
                 .update_favorite(id, update)
@@ -241,50 +323,16 @@ fn mutate(services: &Services, mutation: Mutation) -> Result<MutationResult, Str
             editor_saved = true;
             "Favorite updated"
         }
-        Mutation::Settings(value) => {
-            services
-                .library
-                .update_settings(&value)
-                .map_err(|e| e.to_string())?;
-            settings = Some(value);
-            quick
-                .refresh_capture_configuration()
-                .map_err(|e| e.to_string())?;
-            "Settings saved"
-        }
-        Mutation::Reorder { id, before, delta } => {
-            let mut cursor = None;
-            let mut ids = Vec::new();
-            loop {
-                let page = quick
-                    .list(&QuickInsertRequest {
-                        view: QuickInsertView::Favorites,
-                        query: String::new(),
-                        limit: 100,
-                        cursor,
-                    })
-                    .map_err(|e| e.to_string())?;
-                ids.extend(page.items.iter().map(|item| item.id));
-                if ids.len() > 100_000 {
-                    return Err("Favorites reorder exceeded the safe operation limit".into());
-                }
-                match page.next_cursor {
-                    Some(next) if Some(next) != cursor => cursor = Some(next),
-                    None => break,
-                    _ => return Err("Favorites cursor did not advance".into()),
-                }
-            }
-            reorder(&mut ids, id, before, delta)?;
-            quick.reorder_favorites(&ids).map_err(|e| e.to_string())?;
-            "Favorites reordered"
-        }
     };
     Ok(MutationResult {
         message: message.into(),
         settings,
         editor_saved,
+        snapshot,
+        space_result,
     })
 }
+#[cfg(test)]
 fn reorder(ids: &mut Vec<i64>, id: i64, before: Option<i64>, delta: i32) -> Result<(), String> {
     let source = ids
         .iter()
@@ -362,4 +410,45 @@ mod tests {
         assert!(reorder(&mut ids, 9, None, 1).is_err());
         assert!(reorder(&mut ids, 2, Some(99), 0).is_err());
     }
+}
+
+fn scope_page(
+    services: &Services,
+    space: SpaceId,
+    query: &str,
+    cursor: Option<PageCursor>,
+) -> Result<crate::events::LoadedPage, String> {
+    services
+        .quick
+        .list_space(space, query, 50, cursor)
+        .map(|(page, revision, total)| crate::events::LoadedPage {
+            page,
+            revision,
+            total,
+        })
+        .map_err(|e| e.to_string())
+}
+
+fn export_diagnostics(
+    root: &std::path::Path,
+    report: crate::events::DiagnosticReport,
+) -> Result<String, String> {
+    use std::io::Write;
+    let directory = root.join("diagnostics");
+    std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_millis();
+    let path = directory.join(format!("cover-flow-{now}-{}.json", std::process::id()));
+    let bytes = serde_json::to_vec_pretty(&report).map_err(|e| e.to_string())?;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|e| e.to_string())?;
+    file.write_all(&bytes)
+        .and_then(|_| file.sync_all())
+        .map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().into_owned())
 }

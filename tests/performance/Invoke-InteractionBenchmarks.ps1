@@ -29,7 +29,7 @@ if($Scope -eq 'cycles'){
 }
 $framework=Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319'
 $driver=Join-Path $EvidenceRoot 'EchoDriver.exe'
-& "$framework/csc.exe" /nologo /target:exe /out:$driver "/reference:$framework/WPF/UIAutomationClient.dll" "/reference:$framework/WPF/UIAutomationTypes.dll" "/reference:$framework/WPF/WindowsBase.dll" /reference:System.Drawing.dll /reference:System.Web.Extensions.dll (Join-Path $Root 'tests/native/EchoUi.cs') (Join-Path $Root 'tests/native/EchoDriver.cs') (Join-Path $Root 'tests/native/EchoBenchmarks.cs') *> (Join-Path $EvidenceRoot 'driver-build.log')
+& "$framework/csc.exe" /nologo /target:exe /out:$driver "/reference:$framework/WPF/UIAutomationClient.dll" "/reference:$framework/WPF/UIAutomationTypes.dll" "/reference:$framework/WPF/WindowsBase.dll" /reference:System.Drawing.dll /reference:System.Windows.Forms.dll /reference:System.Web.Extensions.dll (Join-Path $Root 'tests/native/EchoUi.cs') (Join-Path $Root 'tests/native/EchoDriver.cs') (Join-Path $Root 'tests/native/EchoBenchmarks.cs') (Join-Path $Root 'tests/native/EchoComposition.cs') *> (Join-Path $EvidenceRoot 'driver-build.log')
 if($LASTEXITCODE){throw 'Benchmark driver compilation failed'}
 $previous=@{}
 foreach($name in @('ECHO_DATA_DIR','ECHO_ACCEPTANCE_RUN_ROOT','ECHO_RENDERER','WEBVIEW2_USER_DATA_FOLDER')){$previous[$name]=[Environment]::GetEnvironmentVariable($name,'Process')}

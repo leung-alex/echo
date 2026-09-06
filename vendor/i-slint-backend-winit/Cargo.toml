@@ -36,6 +36,7 @@ features = [
 rustdoc-args = ["--generate-link-to-definition"]
 
 [features]
+echo-offscreen = []
 accessibility = [
     "dep:accesskit",
     "dep:accesskit_winit",

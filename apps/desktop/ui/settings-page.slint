@@ -1,0 +1,216 @@
+import { ScrollView, LineEdit, CheckBox, ComboBox } from "std-widgets.slint";
+import { EchoTheme, EchoButton } from "theme.slint";
+import { CoverFlowTokens as T } from "echo-tokens.slint";
+import { SpaceVm } from "space-models.slint";
+import { EnumChoice } from "enum-choice.slint";
+export component SettingsPage inherits Rectangle {
+    in-out property <bool> history-enabled;
+    in-out property <bool> record-sensitive;
+    in-out property <bool> store-window-titles;
+    in-out property <string> max-entries-text;
+    in-out property <string> max-total-mib-text;
+    in-out property <string> max-item-mib-text;
+    in-out property <string> theme-mode;
+    in-out property <string> view-mode;
+    in-out property <string> motion;
+    in-out property <string> motion-speed;
+    in-out property <string> switch-shortcut;
+    in-out property <string> startup-space;
+    in-out property <string> query-on-switch;
+    in-out property <string> density;
+    in-out property <string> side-content;
+    in-out property <string> graphics-mode;
+    in-out property <string> frame-rate;
+    in-out property <bool> loop-spaces;
+    in-out property <bool> remember-position;
+    in-out property <bool> reflections;
+    in-out property <bool> trim-when-hidden;
+    in-out property <bool> reduce-on-battery;
+    in property <[SpaceVm]> spaces;
+    in property <bool> busy;
+    in property <bool> dirty;
+    in property <bool> valid: true;
+    in property <bool> restart-required;
+    in property <string> error;
+    in property <string> notice;
+    in property <string> actual-mode;
+    in property <string> diagnostics;
+    in property <string> cache-status;
+    in property <image> preview-image;
+    callback edited();
+    changed history-enabled => { root.edited(); }
+    changed record-sensitive => { root.edited(); }
+    changed store-window-titles => { root.edited(); }
+    changed max-entries-text => { root.edited(); }
+    changed max-total-mib-text => { root.edited(); }
+    changed max-item-mib-text => { root.edited(); }
+    changed theme-mode => { root.edited(); }
+    changed view-mode => { root.edited(); }
+    changed motion => { root.edited(); }
+    changed motion-speed => { root.edited(); }
+    changed switch-shortcut => { root.edited(); }
+    changed startup-space => { root.edited(); }
+    changed query-on-switch => { root.edited(); }
+    changed density => { root.edited(); }
+    changed side-content => { root.edited(); }
+    changed graphics-mode => { root.edited(); }
+    changed frame-rate => { root.edited(); }
+    changed loop-spaces => { root.edited(); }
+    changed remember-position => { root.edited(); }
+    changed reflections => { root.edited(); }
+    changed trim-when-hidden => { root.edited(); }
+    changed reduce-on-battery => { root.edited(); }
+
+    callback save();
+    callback cancel();
+    callback action(string);
+    callback space-action(string,string);
+    out property <length> scroll-center-x: settings-scroll.x + settings-scroll.width / 2;
+    out property <length> scroll-center-y: settings-scroll.y + settings-scroll.height / 2;
+    callback scroll-anchor-changed(length,length);
+    init => { root.scroll-anchor-changed(root.scroll-center-x,root.scroll-center-y); }
+    changed scroll-center-x => { root.scroll-anchor-changed(root.scroll-center-x,root.scroll-center-y); }
+    changed scroll-center-y => { root.scroll-anchor-changed(root.scroll-center-x,root.scroll-center-y); }
+    private property <int> section;
+    changed section => {settings-scroll.viewport-y=0px;}
+    private property <bool> narrow: root.width < 850px;
+    private property <[string]> categories: ["Appearance & motion", "Spaces & content", "Keyboard & insertion", "Capture & privacy", "Storage & diagnostics"];
+    background: EchoTheme.canvas;
+    Text { x: 28px; y: 15px; text: "Settings"; color: EchoTheme.text; font-size: T.font-setting-title; font-weight: 600; }
+    if (root.narrow): ComboBox { enabled: !root.busy;
+        x: 28px; y: 62px; width: parent.width - 56px; height: 36px;
+        model: root.categories; current-index <=> root.section; accessible-label: "Settings category";
+    }
+    if (!root.narrow): VerticalLayout {
+        x: 20px; y: 75px; width: T.settings-nav-width; spacing: 8px; alignment: start;
+        for label[index] in root.categories: EchoButton {
+            text: label; checked: root.section == index; flat: true; width: parent.width; height: 42px;
+            clicked => { root.section = index; }
+        }
+        Rectangle { height: 20px; }
+        EchoButton { text: "About Echo"; flat: true; clicked => { root.action("about"); } }
+        EchoButton { text: "Quit Echo"; flat: true; danger: true; clicked => { root.action("quit"); } }
+    }
+    settings-scroll := ScrollView {
+        x: root.narrow ? 28px : T.settings-nav-width + 46px;
+        y: root.narrow ? 113px : 73px;
+        width: min(T.settings-max-form-width,parent.width - self.x - 28px);
+        height: max(80px,parent.height - self.y - 95px);
+        VerticalLayout {
+            padding: 2px; spacing: 16px; alignment: start;
+            Text { text: root.categories[root.section]; color: EchoTheme.text; font-size: 20px; font-weight: 600; min-width: 0px; }
+            if (root.section == 0): VerticalLayout {
+                spacing: 12px; alignment: start;
+                Text { text: "The whole content panel comes forward, including its own search and navigation."; color: EchoTheme.muted; wrap: word-wrap; min-width: 0px; }
+                Rectangle {
+                    height: 166px; background: EchoTheme.surface; border-radius: 12px;
+                    Image { x: 0px; y: 0px; width: min(parent.width,320px); height: parent.height; source: root.preview-image; image-fit: contain; }
+                    EchoButton { x: parent.width - 136px; y: 115px; width: 122px; text: "Play once"; enabled: !root.busy; clicked => { root.action("preview"); } }
+                    if (root.preview-image.width == 0): Text { x: 18px; y: 22px; width: parent.width - 36px; text: "Motion preview uses synthetic content only."; color: EchoTheme.muted; wrap: word-wrap; min-width: 0px; }
+                }
+                Text { text: "Theme"; color: EchoTheme.text; }
+                EnumChoice { enabled: !root.busy; model: ["system","light","dark"]; selected-index: root.theme-mode == "light" ? 1 : root.theme-mode == "dark" ? 2 : 0; selected(value) => { root.theme-mode = value; } accessible-label: "Theme"; }
+                Text { text: "Space view"; color: EchoTheme.text; }
+                EnumChoice { enabled: !root.busy; model: ["cover_flow","flat"]; selected-index: root.view-mode == "flat" ? 1 : 0; selected(value) => { root.view-mode = value; } accessible-label: "Space view"; }
+                Text { text: root.actual-mode; color: EchoTheme.muted; wrap: word-wrap; min-width: 0px; }
+                Text { text: "Motion preference"; color: EchoTheme.text; }
+                EnumChoice { enabled: !root.busy; model: ["system","reduced","off"]; selected-index: root.motion == "reduced" ? 1 : root.motion == "off" ? 2 : 0; selected(value) => { root.motion = value; } accessible-label: "Motion preference"; }
+                Text { text: "Transition speed"; color: EchoTheme.text; }
+                EnumChoice { model: ["snappy","standard","relaxed"]; selected-index: root.motion-speed == "standard" ? 1 : root.motion-speed == "relaxed" ? 2 : 0; selected(value) => { root.motion-speed = value; } enabled: !root.busy && root.motion == "system"; accessible-label: "Transition speed"; }
+                Text { text: "Content density"; color: EchoTheme.text; }
+                EnumChoice { enabled: !root.busy; model: ["comfortable","compact"]; selected-index: root.density == "compact" ? 1 : 0; selected(value) => { root.density = value; } accessible-label: "Content density"; }
+                CheckBox { text: "Subtle lower-edge reflection"; checked <=> root.reflections; enabled: !root.busy && root.view-mode == "cover_flow" && root.motion == "system"; }
+                Text { text: "Side-panel content"; color: EchoTheme.text; }
+                EnumChoice { enabled: !root.busy; model: ["visible","titles_only"]; selected-index: root.side-content == "titles_only" ? 1 : 0; selected(value) => { root.side-content = value; } accessible-label: "Side-panel content"; }
+                Text { text: "Titles only prevents body snapshots from being retained for side panels."; color: EchoTheme.muted; wrap: word-wrap; min-width: 0px; }
+                EchoButton { text: "Restore appearance defaults"; clicked => { root.action("defaults"); } }
+            }
+            if (root.section == 1): VerticalLayout {
+                spacing: 12px; alignment: start;
+                Text { text: "History and Favorites stay fixed. Other spaces are yours to organize."; color: EchoTheme.muted; wrap: word-wrap; min-width: 0px; }
+                for space in root.spaces: Rectangle {
+                    accessible-role:groupbox;accessible-label:"Space " + space.title;
+                    height: 64px;
+                    Rectangle { x: 0px; y: 16px; width: 3px; height: 24px; background: space.accent; border-radius: 2px; }
+                    Text { x: 14px; y: 7px; width: parent.width - (space.system ? 100px : 184px); height: 24px; text: space.title; color: EchoTheme.text; font-size: 15px; overflow: elide; }
+                    Text { x: 14px; y: 33px; width: parent.width - 184px; text: space.count + " items"; color: EchoTheme.muted; font-size: 12px; overflow: elide; }
+                    if (space.system): Text { x: parent.width - 76px; y: 20px; width: 72px; text: "System"; color: EchoTheme.muted; font-size: 12px; }
+                    if (!space.system): HorizontalLayout {
+                        x: parent.width - 178px; y: 12px; width: 178px; height: 36px; spacing: 3px; alignment: end;
+                        EchoButton { icon: @image-url("icons/up.svg"); label: "Move space up"; flat: true; enabled: !root.busy; clicked => { root.space-action("up",space.key); } }
+                        EchoButton { icon: @image-url("icons/down.svg"); label: "Move space down"; flat: true; enabled: !root.busy; clicked => { root.space-action("down",space.key); } }
+                        EchoButton { icon: @image-url("icons/edit.svg"); label: "Edit space"; flat: true; enabled: !root.busy; clicked => { root.space-action("edit",space.key); } }
+                        EchoButton { icon: @image-url("icons/delete.svg"); label: "Delete space"; flat: true; danger: true; enabled: !root.busy; clicked => { root.space-action("delete",space.key); } }
+                    }
+                    Rectangle { y: parent.height - 1px; height: 1px; background: EchoTheme.line; }
+                }
+                EchoButton { text: "New space"; icon: @image-url("icons/plus.svg"); enabled: !root.busy; clicked => { root.space-action("new",""); } }
+                CheckBox { enabled: !root.busy; text: "Cycle from the last space back to the first"; checked <=> root.loop-spaces; }
+                CheckBox { enabled: !root.busy; text: "Remember selection and scroll position in this session"; checked <=> root.remember-position; }
+                Text { text: "Open Echo in"; color: EchoTheme.text; }
+                EnumChoice { enabled: !root.busy; model: ["history","last"]; selected-index: root.startup-space == "last" ? 1 : 0; selected(value) => { root.startup-space = value; } accessible-label: "Startup space"; }
+                Text { text: "Search text when switching spaces"; color: EchoTheme.text; }
+                EnumChoice { enabled: !root.busy; model: ["preserve","clear"]; selected-index: root.query-on-switch == "clear" ? 1 : 0; selected(value) => { root.query-on-switch = value; } accessible-label: "Query on space switch"; }
+            }
+            if (root.section == 2): VerticalLayout {
+                spacing: 16px; alignment: start;
+                Text { text: "Switch spaces with"; color: EchoTheme.text; }
+                EnumChoice { enabled: !root.busy; model: ["tab","ctrl_tab"]; selected-index: root.switch-shortcut == "ctrl_tab" ? 1 : 0; selected(value) => { root.switch-shortcut = value; } accessible-label: "Space switching shortcut"; }
+                Text { text: root.switch-shortcut == "tab" ? "Tab → next space     Shift+Tab → previous space" : "Ctrl+Tab → next space     Ctrl+Shift+Tab → previous space"; color: EchoTheme.text; wrap: word-wrap; min-width: 0px; }
+                Text { text: "↑ / ↓     Select content\nEnter     Insert into the captured target\nCtrl+F    Search the current space\nF6        Switch between navigation and control focus\nCtrl+N    New content in a writable space\nCtrl+Shift+N    New space\nEsc       Dismiss the current layer, then search, then Echo"; color: EchoTheme.muted; wrap: word-wrap; min-width: 0px; }
+                Text { text: "Text editors, dialogs, settings and IME composition retain normal keyboard behavior. A quick Tab → Enter never inserts the previous space's content."; color: EchoTheme.muted; wrap: word-wrap; min-width: 0px; }
+            }
+            if (root.section == 3): VerticalLayout {
+                spacing: 18px; alignment: start;
+                CheckBox { enabled: !root.busy; text: "Record clipboard history"; checked <=> root.history-enabled; }
+                Text { text: "Pausing capture does not remove existing History."; color: EchoTheme.muted; wrap: word-wrap; min-width: 0px; }
+                CheckBox { enabled: !root.busy; text: "Allow sensitive clipboard content"; checked <=> root.record-sensitive; }
+                Text { text: "This may retain private content. Leave it disabled unless needed."; color: EchoTheme.danger; wrap: word-wrap; min-width: 0px; }
+                CheckBox { enabled: !root.busy; text: "Store source window titles"; checked <=> root.store-window-titles; }
+                Text { text: "Panel snapshots are memory-only. They are not written to disk or included in diagnostics. Use Titles only under Appearance to hide side-panel content."; color: EchoTheme.muted; wrap: word-wrap; min-width: 0px; }
+                EchoButton { text: "Side-panel privacy settings"; clicked => { root.section = 0; } }
+            }
+            if (root.section == 4): VerticalLayout {
+                spacing: 12px; alignment: start;
+                Text { text: "Maximum history entries"; color: EchoTheme.text; }
+                LineEdit { enabled: !root.busy; text <=> root.max-entries-text; accessible-label: "Maximum history entries"; }
+                Text { text: "Total storage (MiB)"; color: EchoTheme.text; }
+                LineEdit { enabled: !root.busy; text <=> root.max-total-mib-text; accessible-label: "Total storage MiB"; }
+                Text { text: "Maximum item (MiB)"; color: EchoTheme.text; }
+                LineEdit { enabled: !root.busy; text <=> root.max-item-mib-text; accessible-label: "Maximum item MiB"; }
+                Text { text: "Graphics mode · takes effect after restart"; color: EchoTheme.text; }
+                EnumChoice { enabled: !root.busy; model: ["auto","software"]; selected-index: root.graphics-mode == "software" ? 1 : 0; selected(value) => { root.graphics-mode = value; } accessible-label: "Graphics mode"; }
+                Text { text: "Frame-rate limit"; color: EchoTheme.text; }
+                EnumChoice { enabled: !root.busy; model: ["auto","60"]; selected-index: root.frame-rate == "60" ? 1 : 0; selected(value) => { root.frame-rate = value; } accessible-label: "Frame-rate limit"; }
+                CheckBox { enabled: !root.busy; text: "Release panel textures after 30 seconds hidden"; checked <=> root.trim-when-hidden; }
+                CheckBox { enabled: !root.busy; text: "Simplify effects on battery power"; checked <=> root.reduce-on-battery; }
+                Text { text: root.diagnostics; color: EchoTheme.muted; wrap: word-wrap; min-width: 0px; }
+                Text { text: root.cache-status; color: EchoTheme.muted; wrap: word-wrap; min-width: 0px; }
+                HorizontalLayout {
+                    alignment: start; spacing: 10px;
+                    EchoButton { text: "Clear motion cache"; clicked => { root.action("clear-cache"); } }
+                    EchoButton { text: "Export diagnostics"; clicked => { root.action("diagnostics"); } }
+                }
+                if (root.restart-required): EchoButton { text: "Restart Echo"; enabled: !root.dirty && !root.busy; clicked => { root.action("restart"); } }
+                Text { text: "Restart never replays a pending insert. Software mode preserves spaces and all content actions, without perspective."; color: EchoTheme.muted; wrap: word-wrap; min-width: 0px; }
+            }
+            if (root.notice != ""): Text { text: root.notice; color: EchoTheme.muted; wrap: word-wrap; min-width: 0px; }
+            if (root.error != ""): Text { text: root.error; color: EchoTheme.danger; wrap: word-wrap; min-width: 0px; }
+            if (root.narrow): HorizontalLayout {
+                alignment: start; spacing: 10px;
+                EchoButton { text: "About Echo"; clicked => { root.action("about"); } }
+                EchoButton { text: "Quit Echo"; clicked => { root.action("quit"); } }
+            }
+        }
+    }
+    Rectangle {
+        y: parent.height - 78px; height: 78px; background: EchoTheme.canvas;
+        Rectangle { height: 1px; background: EchoTheme.line; }
+        Text { x: 28px; y: 23px; width: max(0px,parent.width - 340px); text: root.error != "" ? root.error : root.dirty ? "Unsaved changes" : root.notice != "" && root.notice != "Settings saved" ? root.notice : root.restart-required ? "Restart required for graphics changes" : "Your settings are saved"; color: root.error != "" ? EchoTheme.danger : EchoTheme.muted; overflow: elide; }
+        HorizontalLayout {
+            x: parent.width - 298px; y: 18px; width: 270px; height: 36px; spacing: 10px; alignment: end;
+            EchoButton { text: "Cancel"; enabled: !root.busy; clicked => { root.cancel(); } }
+            EchoButton { text: root.busy ? "Saving…" : "Save changes"; primary: true; enabled: root.dirty && root.valid && !root.busy; clicked => { root.save(); } }
+        }
+    }
+}

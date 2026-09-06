@@ -1,0 +1,276 @@
+//! Test-only bridge: input is dispatched to this Slint window, never SendInput.
+//! Captures read this window's renderer, never desktop pixels or other HWNDs.
+//! This module is absent from normal release/distribution builds.
+use super::*;
+use serde::Deserialize;
+use std::path::{Path, PathBuf};
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Request {
+    id: String,
+    pid: u32,
+    verb: String,
+    #[serde(default)]
+    key: u32,
+    #[serde(default)]
+    ctrl: bool,
+    #[serde(default)]
+    shift: bool,
+    #[serde(default)]
+    file: String,
+}
+pub(crate) struct Controller {
+    _timer: Timer,
+}
+impl Controller {
+    pub fn start(app: &Rc<RefCell<App>>) -> Result<Option<Self>, String> {
+        let Some(root) = std::env::var_os("ECHO_NATIVE_TEST_ROOT") else {
+            return Ok(None);
+        };
+        if std::env::var("ECHO_WINDOWS_ACCEPTANCE").as_deref() != Ok("1") {
+            return Err("Native test bridge requires explicit acceptance authorization".into());
+        }
+        let root = PathBuf::from(root)
+            .canonicalize()
+            .map_err(|e| e.to_string())?;
+        let data =
+            PathBuf::from(std::env::var_os("ECHO_DATA_DIR").ok_or("Missing isolated data path")?)
+                .canonicalize()
+                .map_err(|e| e.to_string())?;
+        if data
+            != root
+                .join("data")
+                .canonicalize()
+                .map_err(|e| e.to_string())?
+            || !data.starts_with(&root)
+        {
+            return Err("Native test data must be inside the evidence root".into());
+        }
+        let marker: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(data.join("synthetic-fixture.json")).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        if marker["synthetic"] != true
+            || marker["capture_enabled"] != false
+            || app.borrow().settings.history_enabled
+        {
+            return Err(
+                "Native test bridge only accepts capture-disabled synthetic fixtures".into(),
+            );
+        }
+        let control = root.join("native-control");
+        std::fs::create_dir_all(&control).map_err(|e| e.to_string())?;
+        let request = control.join("request.json");
+        let mut last = std::fs::read(&request)
+            .ok()
+            .and_then(|v| serde_json::from_slice::<Request>(&v).ok())
+            .map(|r| r.id)
+            .unwrap_or_default();
+        let weak = Rc::downgrade(app);
+        let timer = Timer::default();
+        timer.start(TimerMode::Repeated, Duration::from_millis(20), move || {
+            let Ok(meta) = std::fs::metadata(&request) else {
+                return;
+            };
+            if meta.len() > 16 * 1024 {
+                return;
+            }
+            let Ok(bytes) = std::fs::read(&request) else {
+                return;
+            };
+            let Ok(request) = serde_json::from_slice::<Request>(&bytes) else {
+                return;
+            };
+            if request.id == last || request.id.is_empty() || request.id.len() > 80 {
+                return;
+            }
+            last = request.id.clone();
+            let result = weak
+                .upgrade()
+                .ok_or_else(|| "Test application is closed".into())
+                .and_then(|app| execute(&app, &root, &request));
+            let response = match result {
+                Ok(value) => serde_json::json!({"id":request.id,"status":"PASS","value":value}),
+                Err(error) => serde_json::json!({"id":request.id,"status":"FAIL","error":error}),
+            };
+            let response = serde_json::to_vec(&response).unwrap_or_default();
+            let temporary = control.join("response.pending");
+            if std::fs::write(&temporary, response).is_ok() {
+                let destination = control.join("response.json");
+                let _ = std::fs::remove_file(&destination);
+                let _ = std::fs::rename(temporary, destination);
+            }
+        });
+        Ok(Some(Self { _timer: timer }))
+    }
+}
+fn execute(
+    app: &Rc<RefCell<App>>,
+    root: &Path,
+    request: &Request,
+) -> Result<serde_json::Value, String> {
+    if request.pid != std::process::id() {
+        return Err("Test command targets a different process".into());
+    }
+    let window = app
+        .borrow()
+        .window
+        .as_weak()
+        .upgrade()
+        .ok_or("Window is unavailable")?;
+    match request.verb.as_str() {
+        "ping" => Ok(serde_json::json!({"native_test":true,"pid":std::process::id()})),
+        "key" => {
+            if app.borrow().session.context != Context::Manager {
+                return Err(
+                    "Test input is restricted to manager mode; clipboard insertion is disabled"
+                        .into(),
+                );
+            }
+            use slint::platform::{Key, WindowEvent};
+            let key: slint::SharedString = match request.key {
+                9 => Key::Tab.into(),
+                13 => Key::Return.into(),
+                27 => Key::Escape.into(),
+                33 => Key::PageUp.into(),
+                34 => Key::PageDown.into(),
+                35 => Key::End.into(),
+                36 => Key::Home.into(),
+                37 => Key::LeftArrow.into(),
+                38 => Key::UpArrow.into(),
+                39 => Key::RightArrow.into(),
+                40 => Key::DownArrow.into(),
+                117 => Key::F6.into(),
+                70 if request.ctrl => "f".into(),
+                78 if request.ctrl => "n".into(),
+                _ => return Err("Key is not allowed by the no-clipboard native test bridge".into()),
+            };
+            // These are framework events delivered to the owned window, not OS keyboard events.
+            if request.ctrl {
+                window.window().dispatch_event(WindowEvent::KeyPressed {
+                    text: Key::Control.into(),
+                });
+            }
+            if request.shift {
+                window.window().dispatch_event(WindowEvent::KeyPressed {
+                    text: Key::Shift.into(),
+                });
+            }
+            window
+                .window()
+                .dispatch_event(WindowEvent::KeyPressed { text: key.clone() });
+            window
+                .window()
+                .dispatch_event(WindowEvent::KeyReleased { text: key });
+            if request.shift {
+                window.window().dispatch_event(WindowEvent::KeyReleased {
+                    text: Key::Shift.into(),
+                });
+            }
+            if request.ctrl {
+                window.window().dispatch_event(WindowEvent::KeyReleased {
+                    text: Key::Control.into(),
+                });
+            }
+            Ok(serde_json::json!({"owned_window_input":true,"global_input":false}))
+        }
+        "scroll" => {
+            if request.key == 0
+                || request.key > 4096
+                || !app.borrow().surface.visible
+                || app.borrow().window.get_modal()
+            {
+                return Err(
+                    "Scroll requires a visible non-modal owned window and a bounded distance"
+                        .into(),
+                );
+            }
+            use slint::platform::WindowEvent;
+            let position = if window.get_route().as_str() == "settings" {
+                slint::LogicalPosition::new(
+                    window.get_settings_scroll_x(),
+                    window.get_settings_scroll_y(),
+                )
+            } else {
+                slint::LogicalPosition::new(
+                    window.get_panel_left() + window.get_panel_width() / 2.0,
+                    window.get_panel_top() + window.get_panel_height() / 2.0,
+                )
+            };
+            window
+                .window()
+                .dispatch_event(WindowEvent::PointerScrolled {
+                    position,
+                    delta_x: 0.0,
+                    delta_y: request.key as f32 * if request.shift { 1.0 } else { -1.0 },
+                });
+            Ok(serde_json::json!({"owned_window_scroll":true,"global_input":false}))
+        }
+        "capture" => {
+            if request.file.is_empty()
+                || request.file.len() > 120
+                || !request.file.ends_with(".png")
+                || request.file.contains(['/', '\\', ':'])
+                || request.file.contains("..")
+            {
+                return Err("Capture name must be a PNG basename inside the evidence root".into());
+            }
+            let path = root.join(&request.file);
+            if path.exists() {
+                return Err("Evidence already exists".into());
+            }
+            let snapshot = window.window().take_snapshot().map_err(|e| e.to_string())?;
+            image::save_buffer_with_format(
+                &path,
+                snapshot.as_bytes(),
+                snapshot.width(),
+                snapshot.height(),
+                image::ColorType::Rgba8,
+                image::ImageFormat::Png,
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(
+                serde_json::json!({"width":snapshot.width(),"height":snapshot.height(),"source":"owned Slint Window::take_snapshot","desktop_pixels":false}),
+            )
+        }
+        "metrics" => {
+            let a = app.borrow();
+            #[cfg(feature = "cover-flow")]
+            let graphics = a.flow.as_ref().map(|f| f.metrics());
+            #[cfg(not(feature = "cover-flow"))]
+            let graphics: Option<serde_json::Value> = None;
+            Ok(
+                serde_json::json!({"space":a.surface.space.0,"phase":format!("{:?}",a.deck.phase),
+                "ready":a.surface.ready,"loading":a.surface.loading,"visible":a.surface.visible,
+                "spaces":a.spaces.iter().map(|s|serde_json::json!({"id":s.id.0,"title":s.title,"icon":s.icon_key,"accent":s.accent_key,"count":s.item_count})).collect::<Vec<_>>(),
+                "renderer":a.graphics.renderer,"adapter":a.graphics.adapter,"backend":a.graphics.backend,"actual":a.window.get_actual_mode().as_str(),
+                "graphics":graphics,"navigation_us":a.navigation_us,"snapshot_model_count":a.model.row_count(),"scroll_y":a.window.get_scroll_y(),"query":a.surface.query,"route":a.window.get_route().to_string(),
+                "requested":a.deck.requested.to_string(),"presented":a.deck.presented.to_string(),
+                "interaction":a.deck.interaction.map(|id|id.to_string()),
+                "selection":a.surface.selection.map(|key|key.to_string()),
+                "settings":{"dirty":a.window.get_settings_dirty(),"valid":a.window.get_settings_valid(),"error":a.window.get_settings_error().to_string(),"ui":a.ui},
+                "flow_timer":a.flow_timer.running(),"preview_timer":a.preview_timer.running(),
+                "thumbnails_bytes":a.images.bytes,"native_region":a.window_shapes.as_ref().is_some_and(|s|s.is_some()),
+                "panel":[a.window.get_panel_left(),a.window.get_panel_top(),a.window.get_panel_width(),a.window.get_panel_height()],
+                "stage":[a.window.get_stage_width(),a.window.get_stage_height()],"scale_factor":a.window.window().scale_factor()}),
+            )
+        }
+        "reset_metrics" => {
+            let mut a = app.borrow_mut();
+            a.navigation_us.clear();
+            #[cfg(feature = "cover-flow")]
+            if let Some(flow) = &a.flow {
+                flow.reset_metrics();
+            }
+            Ok(serde_json::Value::Null)
+        }
+        "step" => {
+            if app.borrow().session.context != Context::Manager {
+                return Err("Only manager-mode tests may navigate".into());
+            }
+            window.invoke_navigate_space(if request.shift { -1 } else { 1 });
+            Ok(serde_json::Value::Null)
+        }
+        _ => Err("Unknown native test operation".into()),
+    }
+}

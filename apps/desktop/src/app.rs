@@ -1,16 +1,16 @@
-//! Native two-window controller. Slint handles stay on this thread.
+//! One native window, one insertion session, and independently identified content spaces.
 use crate::{
-    events::{Command, Event, Hub, PixelData, Role},
+    events::{Command, Event, Hub, PixelData},
     formatting,
     service::{Mutation, Work, Worker},
     AppWindow, EntryRow,
 };
-use echo_engine::{
-    ClipboardSettings, QuickInsertAction, QuickInsertSource, QuickInsertView, ThemeMode,
-};
+use echo_engine::*;
 use echo_presentation::{
+    deck::{Deck, Phase},
     interaction::Intent,
     session::{Completion, Context, RecentActivations, Session},
+    space_state::SpacePositions,
     RowKey, Surface,
 };
 use echo_windows::shell::{self, ShellEvent, WindowHook};
@@ -21,9 +21,16 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     rc::Rc,
     sync::{atomic::Ordering, Arc},
-    time::Duration,
+    time::{Duration, Instant},
 };
 mod bindings;
+mod card_window;
+mod deck_controller;
+mod dialogs;
+#[cfg(feature = "native-test")]
+pub(crate) mod native_test;
+mod settings_controller;
+use dialogs::{Confirmation, Picker};
 thread_local! { static APP: RefCell<Option<Rc<RefCell<App>>>> = const { RefCell::new(None) }; }
 pub fn install(app: Rc<RefCell<App>>) {
     APP.with(|slot| *slot.borrow_mut() = Some(app));
@@ -34,21 +41,46 @@ pub fn uninstall() {
     });
 }
 pub fn deliver(event: Event) {
-    APP.with(|slot| {
+    let _ = APP.try_with(|slot| {
         if let Some(app) = slot.borrow().as_ref() {
             app.borrow_mut().handle(event);
         }
     });
 }
-pub fn key_intent(role: Role, key: &str, ctrl: bool, shift: bool, target: &str) -> Option<Intent> {
-    APP.with(|slot| {
+pub fn key_intent(key: &str, ctrl: bool, shift: bool, target: &str) -> Option<Intent> {
+    APP.try_with(|slot| {
         slot.borrow().as_ref().and_then(|app| {
             app.try_borrow()
                 .ok()
-                .map(|a| a.interpret_key(role, key, ctrl, shift, target))
+                .map(|a| a.interpret_key(key, ctrl, shift, target))
         })
     })
+    .ok()
+    .flatten()
 }
+pub fn resolve_key(key: &str) -> Option<RowKey> {
+    APP.try_with(|slot| {
+        slot.borrow().as_ref().and_then(|app| {
+            app.try_borrow()
+                .ok()
+                .and_then(|a| a.surface.resolve_key(key))
+        })
+    })
+    .ok()
+    .flatten()
+}
+pub fn is_composing() -> bool {
+    // Native focus/IME teardown can arrive after the app TLS owner was destroyed.
+    APP.try_with(|slot| {
+        slot.borrow().as_ref().is_some_and(|app| {
+            app.try_borrow().map_or(true, |a| {
+                a.hook.as_ref().is_some_and(WindowHook::is_composing)
+            })
+        })
+    })
+    .unwrap_or(true)
+}
+#[derive(Default)]
 struct Images {
     cache: HashMap<String, (slint::Image, usize)>,
     order: VecDeque<String>,
@@ -57,142 +89,253 @@ struct Images {
     epoch: u64,
 }
 impl Images {
-    fn trim_to(&mut self, limit: usize) -> Vec<String> {
-        let mut evicted = Vec::new();
+    fn trim_to(&mut self, limit: usize) -> bool {
+        let mut changed = false;
         while self.bytes > limit {
             let Some(key) = self.order.pop_front() else {
                 break;
             };
             if let Some((_, size)) = self.cache.remove(&key) {
                 self.bytes = self.bytes.saturating_sub(size);
-                evicted.push(key);
+                changed = true;
             }
         }
-        evicted
+        changed
     }
 }
-impl Default for Images {
-    fn default() -> Self {
-        Self {
-            cache: HashMap::new(),
-            order: VecDeque::new(),
-            pending: HashSet::new(),
-            bytes: 0,
-            epoch: 0,
-        }
-    }
+struct Preview {
+    items: Vec<QuickInsertItem>,
+    revision: i64,
+    total: u64,
 }
 pub struct App {
-    windows: [AppWindow; 2],
-    surfaces: [Surface; 2],
-    models: [Rc<VecModel<EntryRow>>; 2],
-    images: [Images; 2],
-    hooks: [Option<WindowHook>; 2],
-    hwnds: [Option<isize>; 2],
-    timers: [Timer; 2],
+    window: AppWindow,
+    surface: Surface,
+    model: Rc<VecModel<EntryRow>>,
+    images: Images,
+    hook: Option<WindowHook>,
+    hwnd: Option<isize>,
     hub: Arc<Hub>,
     worker: Worker,
     session: Session,
     recent: RecentActivations,
     settings: ClipboardSettings,
+    ui: UiSettings,
+    settings_revision: i64,
     ready: bool,
     pending_args: Option<Vec<String>>,
-    mutation: Option<(Role, u64)>,
+    mutation: Option<u64>,
     serial: u64,
-    restore_favorites: bool,
     quitting: bool,
+    restart: Option<bool>,
+    clock: Instant,
+    deck: Deck,
+    spaces: Vec<Space>,
+    positions: SpacePositions,
+    search_timer: Timer,
+    flow_timer: Timer,
+    prewarm_timer: Timer,
+    trim_timer: Timer,
+    preview_timer: Timer,
+    preview_started: Option<Instant>,
+    preview_epoch: u64,
+    previews: HashMap<SpaceId, Preview>,
+    pending_previews: HashSet<SpaceId>,
+    dirty_snapshots: HashSet<SpaceId>,
+    navigation_us: Vec<u64>,
+    window_shapes: Option<Option<Vec<shell::CardShape>>>,
+    last_scroll_bits: u32,
+    geometry: (u32, u32, u32),
+    pending_scroll: Option<f32>,
+    navigate_after_refresh: Option<SpaceId>,
+    graphics: crate::graphics::GraphicsInfo,
+    environment: shell::UiEnvironment,
+    graphics_error: Option<String>,
+    confirmation: Option<Confirmation>,
+    picker: Picker,
+    picker_generation: u64,
+    picker_cursor: Option<PageCursor>,
+    picker_items: Vec<QuickInsertItem>,
+    editor_key: Option<RowKey>,
+    editor_original: Option<(String, String, String, String)>,
+    space_edit_id: Option<(SpaceId, i64)>,
+    space_original: Option<(String, String, String, String)>,
+    inspect_intent: Option<(u64, String, RowKey)>,
+    edit_created_copy: bool,
+    wheel_delta: f32,
+    #[cfg(feature = "cover-flow")]
+    flow: Option<crate::cover_flow::bridge::FlowBridge>,
 }
 impl App {
     pub fn new(
         hub: Arc<Hub>,
         worker: Worker,
         args: Vec<String>,
+        graphics: crate::graphics::GraphicsInfo,
     ) -> Result<Rc<RefCell<Self>>, String> {
-        let main = AppWindow::new().map_err(|e| e.to_string())?;
-        let favorites = AppWindow::new().map_err(|e| e.to_string())?;
-        main.window()
-            .set_size(slint::LogicalSize::new(824.0, 814.0));
-        favorites
-            .window()
-            .set_size(slint::LogicalSize::new(310.0, 575.0));
-        favorites.set_is_favorites_window(true);
-        favorites.set_active_view("favorites".into());
-        let models = [Rc::new(VecModel::default()), Rc::new(VecModel::default())];
-        main.set_rows(ModelRc::from(models[0].clone()));
-        favorites.set_rows(ModelRc::from(models[1].clone()));
+        let window = AppWindow::new().map_err(|e| e.to_string())?;
+        window.window().set_size(slint::LogicalSize::new(
+            echo_presentation::echo_tokens::WINDOW_WIDTH,
+            echo_presentation::echo_tokens::WINDOW_HEIGHT,
+        ));
+        let model = Rc::new(VecModel::default());
+        window.set_rows(ModelRc::from(model.clone()));
+        let bootstrap = worker.bootstrap.clone();
+        let mut surface = Surface::new(QuickInsertView::History);
+        surface.row_limit = 400;
+        let environment = shell::ui_environment(None);
+        #[cfg(feature = "cover-flow")]
+        let flow = if graphics.perspective {
+            Some(crate::cover_flow::bridge::FlowBridge::install(
+                &window,
+                hub.clone(),
+                graphics.integrated || bootstrap.ui.reduce_on_battery && environment.on_battery,
+            )?)
+        } else {
+            None
+        };
         let app = Rc::new(RefCell::new(Self {
-            windows: [main, favorites],
-            surfaces: [
-                Surface::new(QuickInsertView::History),
-                Surface::new(QuickInsertView::Favorites),
-            ],
-            models,
-            images: Default::default(),
-            hooks: [None, None],
-            hwnds: [None, None],
-            timers: Default::default(),
+            window,
+            surface,
+            model,
+            images: Images::default(),
+            hook: None,
+            hwnd: None,
             hub,
             worker,
-            session: Default::default(),
-            recent: Default::default(),
-            settings: Default::default(),
+            session: Session::default(),
+            recent: RecentActivations::default(),
+            settings: bootstrap.clipboard,
+            ui: bootstrap.ui,
+            settings_revision: bootstrap.revision,
             ready: false,
             pending_args: Some(args),
             mutation: None,
             serial: 0,
-            restore_favorites: true,
             quitting: false,
+            restart: None,
+            clock: Instant::now(),
+            deck: Deck::default(),
+            spaces: Vec::new(),
+            positions: SpacePositions::default(),
+            search_timer: Timer::default(),
+            flow_timer: Timer::default(),
+            prewarm_timer: Timer::default(),
+            trim_timer: Timer::default(),
+            preview_timer: Timer::default(),
+            preview_started: None,
+            preview_epoch: 0,
+            previews: HashMap::new(),
+            pending_previews: HashSet::new(),
+            dirty_snapshots: HashSet::new(),
+            navigation_us: Vec::new(),
+            window_shapes: None,
+            last_scroll_bits: 0,
+            geometry: (0, 0, 0),
+            pending_scroll: None,
+            navigate_after_refresh: None,
+            graphics,
+            environment,
+            graphics_error: None,
+            confirmation: None,
+            picker: Picker::Closed,
+            picker_generation: 0,
+            picker_cursor: None,
+            picker_items: Vec::new(),
+            editor_key: None,
+            editor_original: None,
+            space_edit_id: None,
+            space_original: None,
+            inspect_intent: None,
+            edit_created_copy: false,
+            wheel_delta: 0.0,
+            #[cfg(feature = "cover-flow")]
+            flow,
         }));
         bindings::connect(&app.borrow());
+        app.borrow().render_settings();
+        app.borrow_mut().apply_theme();
         Ok(app)
     }
-    fn send(&mut self, role: Role, work: Work) -> bool {
-        if let Err(error) = self.worker.send(work) {
-            self.report(role, error, true);
+    fn now(&self) -> u64 {
+        self.clock.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
+    }
+    fn send(&mut self, work: Work) -> bool {
+        if let Err(e) = self.worker.send(work) {
+            self.report(e, true);
             false
         } else {
             true
         }
     }
-    fn report(&mut self, role: Role, text: impl Into<String>, error: bool) {
-        let i = role.index();
-        self.surfaces[i].report(text, error);
-        self.windows[i].set_status(self.surfaces[i].status.clone().into());
-        self.windows[i].set_status_error(error);
+    fn report(&mut self, text: impl Into<String>, error: bool) {
+        let text = text.into();
+        if self.window.get_route().as_str() == "settings" {
+            self.window.set_settings_notice(text.clone().into());
+        }
+        self.surface.report(text, error);
+        self.window.set_status(self.surface.status.clone().into());
+        self.window.set_status_error(error);
     }
     fn set_busy(&self) {
-        let busy = self.session.busy() || self.mutation.is_some();
-        for window in &self.windows {
-            window.set_busy(busy);
-        }
+        self.window
+            .set_busy(self.session.busy() || self.mutation.is_some());
     }
     fn handle(&mut self, event: Event) {
         if self.quitting {
             return;
         }
         match event {
-            Event::Shell(event) => self.shell_event(event),
             Event::Command(command) => self.command(command),
+            Event::Shell(event) => self.shell_event(event),
             Event::Ready(result) => match result {
-                Ok(settings) => {
-                    self.settings = settings;
+                Ok(value) => {
+                    self.settings = value.clipboard;
+                    self.ui = value.ui;
+                    self.settings_revision = value.revision;
                     self.ready = true;
                     self.render_settings();
                     self.apply_theme();
-                    if let Some(args) = self.pending_args.take() {
-                        self.activate_args(args);
-                    }
+                    self.send(Work::Spaces);
                 }
-                Err(error) => {
-                    self.report(Role::Main, format!("Startup failed: {error}"), true);
-                    let _ = self.show_windows();
+                Err(e) => {
+                    self.report(format!("Startup failed: {e}"), true);
+                    let _ = self.show_window();
                 }
             },
-            Event::Loaded(role, ticket, result) => {
-                if self.surfaces[role.index()].finish_load(ticket, result) {
-                    self.render(role);
+            Event::Spaces(result) => self.spaces_loaded(result),
+            Event::Loaded(space, ticket, result) => {
+                if space != self.surface.space {
+                    return;
+                }
+                let metadata = result.as_ref().ok().map(|p| (p.revision, p.total));
+                let retry = metadata.is_none()
+                    && ticket.cursor.is_some()
+                    && result
+                        .as_ref()
+                        .err()
+                        .is_some_and(|e| e.contains("outdated"));
+                if self.surface.finish_load(ticket, result.map(|p| p.page)) {
+                    if let Some((revision, total)) = metadata {
+                        self.surface.revision = revision;
+                        self.surface.total = total;
+                    }
+                    if retry {
+                        self.surface.refresh_top();
+                        self.pending_scroll = None;
+                        self.window.set_scroll_y(0.0);
+                        self.load(false);
+                    }
+                    if self.deck.phase != Phase::Animating {
+                        self.render();
+                    }
+                    self.content_ready();
+                    self.schedule_prewarm();
                 }
             }
+            Event::Preview(space, epoch, result) => self.preview_loaded(space, epoch, result),
+            Event::Inspected(generation, result) => self.inspected(generation, result),
+            Event::Catalog(generation, result) => self.catalog_loaded(generation, result),
             Event::Activated(epoch, context, result) => {
                 if epoch != self.session.epoch {
                     return;
@@ -201,71 +344,114 @@ impl App {
                     Ok(target) => {
                         self.session.capture_finished(epoch, target);
                     }
-                    Err(error) => {
+                    Err(e) => {
                         self.session.capture_finished(epoch, false);
-                        self.report(Role::Main, error, true);
+                        self.report(e, true);
                     }
                 }
-                for w in &self.windows {
-                    w.set_quick_insert(context == Context::QuickInsert);
+                self.window
+                    .set_quick_insert(context == Context::QuickInsert);
+                if let Err(e) = self.show_window() {
+                    self.report(e, true);
                 }
-                if let Err(error) = self.show_windows() {
-                    self.report(Role::Main, error, true);
+                self.load(false);
+            }
+            Event::Executed(operation, result) => self.executed(operation, result),
+            Event::Mutated(serial, result) => self.mutated(serial, result),
+            Event::Thumbnail(epoch, hash, result) => self.thumbnail_finished(epoch, hash, result),
+            Event::Invalidated => self.history_invalidated(),
+            Event::DiagnosticExported(result) => match result {
+                Ok(path) => self.report(format!("Diagnostics saved: {path}"), false),
+                Err(e) => {
+                    self.window.set_settings_error(e.clone().into());
+                    self.report(e, true);
                 }
-                self.load(Role::Main, false);
-                self.load(Role::Favorites, false);
+            },
+            Event::GraphicsError(error) => {
+                let lost = error.contains("device lost");
+                self.graphics_error = Some(error.clone());
+                self.flow_timer.stop();
+                self.preview_timer.stop();
+                self.deck.snap();
+                self.render();
+                self.content_ready();
+                self.clear_flow_cache();
+                self.window.set_navigation_busy(false);
+                self.report(error, true);
+                self.refresh_diagnostics();
+                if lost && std::env::var("ECHO_GRAPHICS_RECOVERY").as_deref() != Ok("1") {
+                    self.restart = Some(true);
+                    self.quit();
+                }
             }
-            Event::Executed(role, operation, result) => self.executed(role, operation, result),
-            Event::Mutated(role, serial, result) => self.mutated(role, serial, result),
-            Event::Thumbnail(role, epoch, hash, result) => {
-                self.thumbnail_finished(role, epoch, hash, result)
-            }
-            Event::Invalidated => self.invalidate(),
         }
+        self.update_card_region();
     }
     fn shell_event(&mut self, event: ShellEvent) {
         match event {
             ShellEvent::Open => self.activate_args(Vec::new()),
             ShellEvent::Favorites => self.activate_args(vec!["--favorites".into()]),
             ShellEvent::Settings => self.activate_args(vec!["--settings".into()]),
-            ShellEvent::Quit => self.quit(),
+            ShellEvent::Quit => self.request_quit(),
             ShellEvent::Activation(args) => self.activate_args(args),
-            ShellEvent::ThemeChanged => self.apply_theme(),
-            ShellEvent::GeometryChanged => {
-                if let [Some(main), Some(fav)] = self.hwnds {
-                    let _ = shell::reposition_favorites(main, fav);
-                }
+            ShellEvent::ThemeChanged => {
+                self.environment = shell::ui_environment(self.hwnd);
+                self.apply_theme();
+                self.viewport_changed();
             }
-            ShellEvent::Error(error) => self.report(Role::Main, error, true),
+            ShellEvent::GeometryChanged => {
+                if let Some(hwnd) = self.hwnd {
+                    let _ = shell::fit_window(hwnd, false, 16.0);
+                }
+                self.environment = shell::ui_environment(self.hwnd);
+                self.viewport_changed();
+            }
+            ShellEvent::Error(e) => self.report(e, true),
         }
     }
     fn activate_args(&mut self, args: Vec<String>) {
         if args.first().map(String::as_str) == Some("--quit") {
-            self.quit();
+            self.request_quit();
             return;
         }
-        if !self.ready {
+        if !self.ready || self.spaces.is_empty() {
             self.pending_args = Some(args);
             return;
         }
         if args.first().map(String::as_str) == Some("--background") {
             return;
         }
+        if self.window.get_modal() || self.window.get_settings_dirty() {
+            let _ = self.show_window();
+            self.report(
+                "Finish or cancel the current edit before opening another space",
+                false,
+            );
+            return;
+        }
         let mut context = Context::Manager;
         let mut query = String::new();
         let mut route = "history";
-        let mut view = QuickInsertView::History;
-        if args.first().map(String::as_str) == Some("--favorites") {
-            view = QuickInsertView::Favorites;
-        }
-        if args.first().map(String::as_str) == Some("--settings") {
-            route = "settings";
+        let mut id = if self.ui.startup_space == StartupSpace::Last {
+            self.ui
+                .resume_last_space_id
+                .as_deref()
+                .and_then(SpaceId::parse)
+                .unwrap_or(SpaceId::HISTORY)
+        } else {
+            SpaceId::HISTORY
+        };
+        match args.first().map(String::as_str) {
+            Some("--history") => id = SpaceId::HISTORY,
+            Some("--favorites") => id = SpaceId::FAVORITES,
+            Some("--settings") => route = "settings",
+            _ => {}
         }
         if let Some(decoded) = echo_activation::decode_args(args.iter().map(String::as_str)) {
             let envelope = match decoded {
-                Ok(e) => e,
+                Ok(v) => v,
                 Err(e) => {
-                    self.report(Role::Main, e.to_string(), true);
+                    self.report(e.to_string(), true);
                     return;
                 }
             };
@@ -279,7 +465,7 @@ impl App {
                     match echo_activation::quick_insert_payload(&envelope) {
                         Ok(p) => query = p.query.unwrap_or_default(),
                         Err(e) => {
-                            self.report(Role::Main, e.to_string(), true);
+                            self.report(e.to_string(), true);
                             return;
                         }
                     }
@@ -288,259 +474,288 @@ impl App {
             }
         }
         if query.len() > 16 * 1024 {
-            self.report(Role::Main, "Search text is too large", true);
+            self.report("Search text is too large", true);
             return;
         }
+        if !self.spaces.iter().any(|s| s.id == id) {
+            id = SpaceId::HISTORY;
+        }
+        self.remember_position();
+        self.surface.hide();
+        self.surface.set_space(id);
+        self.surface.set_query(query.clone());
+        self.pending_scroll = if self.ui.remember_position {
+            Some(self.positions.restore(&mut self.surface))
+        } else {
+            Some(0.0)
+        };
+        self.deck.show(id, self.now());
+        self.cancel_prewarm();
+        self.clear_flow_cache();
+        self.window.set_route(route.into());
+        self.window.set_query(query.into());
+        self.window.set_stale_rows(true);
+        self.window.set_navigation_busy(false);
+        self.window.set_control_focus_mode(false);
+        self.window.set_editor_open(false);
+        self.render_navigation();
+        self.render_settings();
         let epoch = self.session.activate(context);
         self.worker.epoch.store(epoch, Ordering::Release);
-        if self.surfaces[0].view != view || self.surfaces[0].query != query {
-            self.windows[0].set_stale_rows(true);
-        }
-        self.surfaces[0].set_view(view);
-        self.surfaces[0].set_query(query.clone());
-        self.windows[0].set_active_view(
-            if view == QuickInsertView::History {
-                "history"
-            } else {
-                "favorites"
-            }
-            .into(),
-        );
-        self.windows[0].set_route(route.into());
-        self.windows[0].set_query(query.into());
-        self.windows[0].set_text_edit_mode(false);
-        self.windows[0].invoke_reset_scroll();
-        for window in &self.windows {
-            window.set_editor_open(false);
-            window.set_clear_confirm_open(false);
-        }
         self.set_busy();
-        // Target capture completes on the native worker BEFORE any window is shown.
-        self.send(Role::Main, Work::Begin(epoch, context));
+        // Capturing the external insertion target completes before showing the window.
+        self.send(Work::Begin(epoch, context));
     }
-    fn initialize_windows(&mut self) -> Result<(), String> {
-        for i in 0..2 {
-            if self.hwnds[i].is_some() {
-                continue;
-            }
-            let handle = self.windows[i].window().window_handle();
-            let raw = handle.window_handle().map_err(|e| e.to_string())?.as_raw();
-            let hwnd = match raw {
+    fn show_window(&mut self) -> Result<(), String> {
+        let first = self.hwnd.is_none();
+        self.trim_timer.stop();
+        self.window.show().map_err(|e| e.to_string())?;
+        if first {
+            let handle = self.window.window().window_handle();
+            let hwnd = match handle.window_handle().map_err(|e| e.to_string())?.as_raw() {
                 RawWindowHandle::Win32(h) => h.hwnd.get(),
-                _ => return Err("Echo requires a Windows native window".into()),
+                _ => return Err("Echo requires a Windows window".into()),
             };
             let hub = self.hub.clone();
-            self.hooks[i] = Some(shell::attach_window(
+            self.hook = Some(shell::attach_window(
                 hwnd,
-                i == 0,
+                true,
                 Arc::new(move |e| hub.post(Event::Shell(e))),
             )?);
-            self.hwnds[i] = Some(hwnd);
+            self.hwnd = Some(hwnd);
         }
-        let [Some(main), Some(fav)] = self.hwnds else {
-            return Err("Native window handle is unavailable".into());
-        };
-        shell::set_owner(fav, main)?;
-        shell::reposition_favorites(main, fav)?;
+        if let Some(hwnd) = self.hwnd {
+            shell::fit_window(hwnd, first, 16.0)?;
+            let _ = shell::focus_window(hwnd);
+        }
+        self.environment = shell::ui_environment(self.hwnd);
+        self.surface.visible = true;
         self.apply_theme();
+        if self.deck.phase == Phase::Suspended {
+            self.deck.show(self.surface.space, self.now());
+        }
+        if self.window.get_route().as_str() == "history" {
+            self.window.invoke_focus_search(false);
+        } else {
+            self.window.invoke_focus_controls();
+        }
         Ok(())
     }
-    fn show_windows(&mut self) -> Result<(), String> {
-        let first = self.hwnds[0].is_none();
-        self.windows[0].show().map_err(|e| e.to_string())?;
-        self.windows[1].show().map_err(|e| e.to_string())?;
-        self.initialize_windows()?;
-        if first {
-            if let [Some(main), Some(favorite)] = self.hwnds {
-                shell::center_composition(main, favorite)?;
-            }
-        }
-        if let [Some(main), Some(fav)] = self.hwnds {
-            shell::reposition_favorites(main, fav)?;
-            let _ = shell::focus_window(main);
-        }
-        for surface in &mut self.surfaces {
-            surface.visible = true;
-        }
-        self.windows[0].invoke_focus_search(false);
-        Ok(())
-    }
-    fn hide_surface(&mut self, role: Role) {
-        let i = role.index();
-        self.timers[i].stop();
-        self.surfaces[i].hide();
-        // Keep bounded native row slots and a small immutable thumbnail cache
-        // across hide/show. Avoid retiring/recreating the same UIA providers.
-        // Hidden decoding is cancelled; retained pixels are capped at 1 MiB.
-        let evicted = self.images[i].trim_to(1024 * 1024);
-        if !evicted.is_empty() {
-            for index in 0..self.models[i].row_count() {
-                if let Some(mut row) = self.models[i].row_data(index) {
-                    // Reset all row pixel references when trimming; the bounded
-                    // cache repopulates retained entries on the next real load.
+    fn hide_window(&mut self) {
+        self.remember_position();
+        self.search_timer.stop();
+        self.flow_timer.stop();
+        self.preview_timer.stop();
+        self.preview_started = None;
+        self.cancel_prewarm();
+        self.deck.hide();
+        self.surface.hide();
+        self.inspect_intent = None;
+        self.images.epoch = self.images.epoch.wrapping_add(1);
+        self.images.pending.clear();
+        if self.images.trim_to(1024 * 1024) {
+            for index in 0..self.model.row_count() {
+                if let Some(mut row) = self.model.row_data(index) {
                     row.thumbnail = Default::default();
-                    self.models[i].set_row_data(index, row);
+                    self.model.set_row_data(index, row);
                 }
             }
         }
-        let _ = self.windows[i].hide();
-        self.images[i].epoch = self.images[i].epoch.wrapping_add(1);
-        self.images[i].pending.clear();
-    }
-    fn dismiss(&mut self, role: Role) {
-        self.hide_surface(role);
-        if role == Role::Main {
-            self.hide_surface(Role::Favorites);
-            self.session.dismiss();
-            self.worker
-                .epoch
-                .store(self.session.epoch, Ordering::Release);
-            self.send(role, Work::Cancel);
-            self.set_busy();
+        self.window.set_navigation_busy(false);
+        let _ = self.window.hide();
+        if self.ui.trim_when_hidden {
+            let hub = self.hub.clone();
+            self.trim_timer
+                .start(TimerMode::SingleShot, Duration::from_secs(30), move || {
+                    hub.post(Event::Command(Command::TrimHidden))
+                });
         }
+        self.send(Work::Resume(self.surface.space));
+    }
+    fn dismiss(&mut self) {
+        self.hide_window();
+        self.session.dismiss();
+        self.worker
+            .epoch
+            .store(self.session.epoch, Ordering::Release);
+        self.send(Work::Cancel);
+        self.set_busy();
     }
     fn quit(&mut self) {
         self.quitting = true;
-        for timer in &self.timers {
-            timer.stop();
-        }
-        for window in &self.windows {
-            let _ = window.hide();
-        }
+        self.search_timer.stop();
+        self.flow_timer.stop();
+        self.preview_timer.stop();
+        self.prewarm_timer.stop();
+        self.trim_timer.stop();
+        let _ = self.window.hide();
         self.hub.close();
         let _ = slint::quit_event_loop();
     }
-    fn load(&mut self, role: Role, more: bool) {
-        let i = role.index();
-        if !self.ready {
+    pub fn shutdown(&mut self) {
+        self.quitting = true;
+        self.hub.close();
+        self.window.set_stage_image(Default::default());
+        self.window.set_preview_image(Default::default());
+        #[cfg(feature = "cover-flow")]
+        if let Some(flow) = self.flow.take() {
+            flow.shutdown();
+        }
+        self.worker.stop();
+    }
+    pub fn take_restart(&mut self) -> Option<bool> {
+        self.restart.take()
+    }
+    fn load(&mut self, more: bool) {
+        if !self.ready || !self.surface.visible {
             return;
         }
-        let Some(ticket) = self.surfaces[i].begin_load(more) else {
+        let Some(ticket) = self.surface.begin_load(more) else {
             return;
         };
-        let view = self.surfaces[i].view;
-        let query = self.surfaces[i].query.clone();
-        self.windows[i].set_loading(true);
-        if !self.send(role, Work::List(role, ticket, view, query)) {
-            self.surfaces[i].loading = false;
-            self.windows[i].set_loading(false);
+        self.deck.block_content();
+        self.window.set_loading(true);
+        if !self.send(Work::List(
+            ticket,
+            self.surface.space,
+            self.surface.query.clone(),
+        )) {
+            self.surface.loading = false;
+            self.window.set_loading(false);
         }
     }
-    fn invalidate(&mut self) {
-        for role in [Role::Main, Role::Favorites] {
-            let i = role.index();
-            self.surfaces[i].invalidate();
-            if self.surfaces[i].visible && !self.surfaces[i].loading && self.mutation.is_none() {
-                self.load(role, false);
-            }
-        }
-    }
-    fn render(&mut self, role: Role) {
-        let i = role.index();
-        let surface = &self.surfaces[i];
-        let window = &self.windows[i];
+    fn render(&mut self) {
         let mut section = String::new();
-        let rows = surface
+        let rows = self
+            .surface
             .items
             .iter()
             .map(|item| {
                 let mut row = formatting::row(item, &mut section);
-                row.selected = surface.selection == Some(RowKey::of(item));
-                row.batch_selected = surface.selected_ids.contains(&item.id);
-                if let Some(thumb) = &item.thumbnail {
-                    if let Some((image, _)) = self.images[i].cache.get(&thumb.content_hash) {
-                        row.thumbnail = image.clone();
-                    }
+                row.selected = self.surface.selection == Some(RowKey::of(item));
+                row.batch_selected = self.surface.selected_ids.contains(&item.id);
+                if let Some(image) = item
+                    .thumbnail
+                    .as_ref()
+                    .and_then(|t| self.images.cache.get(&t.content_hash))
+                {
+                    row.thumbnail = image.0.clone();
                 }
                 row
             })
-            .collect::<Vec<_>>();
-        crate::native_model::reconcile(self.models[i].as_ref(), rows);
-        window.set_stale_rows(false);
-        window.set_loading(surface.loading);
-        window.set_has_more(surface.next_cursor.is_some());
-        window.set_has_previous(surface.has_previous());
-        window.set_batch_mode(surface.batch);
-        window.set_selected_count(surface.selected_ids.len() as i32);
-        window.set_selection_index(
-            surface
-                .items
-                .iter()
-                .position(|x| Some(RowKey::of(x)) == surface.selection)
-                .map(|n| n as i32)
-                .unwrap_or(-1),
-        );
-        window.set_status(surface.status.clone().into());
-        window.set_status_error(surface.error);
-        if surface.dirty && !surface.loading {
-            self.load(role, false);
+            .collect();
+        crate::native_model::reconcile(self.model.as_ref(), rows);
+        self.window
+            .set_stale_rows(!self.surface.ready && self.surface.items.is_empty());
+        self.window.set_loading(self.surface.loading);
+        self.window.set_has_more(self.surface.next_cursor.is_some());
+        self.window.set_has_previous(self.surface.has_previous());
+        self.window.set_batch_mode(self.surface.batch);
+        self.window
+            .set_selected_count(self.surface.selected_ids.len() as i32);
+        self.render_selection();
+        self.window.set_status(self.surface.status.clone().into());
+        self.window.set_status_error(self.surface.error);
+        self.render_navigation();
+        self.dirty_snapshots.insert(self.surface.space);
+        if self.surface.ready {
+            if let Some(scroll) = self.pending_scroll.take() {
+                self.window.set_scroll_y(scroll);
+            }
+        }
+        if self.surface.dirty && !self.surface.loading {
+            self.load(false);
         }
     }
-    fn thumbnail_request(&mut self, role: Role, key: String) {
-        let i = role.index();
-        if !self.surfaces[i].visible {
+    fn render_selection(&self) {
+        for (index, item) in self.surface.items.iter().enumerate() {
+            if let Some(mut row) = self.model.row_data(index) {
+                let selected = self.surface.selection == Some(RowKey::of(item));
+                let batch = self.surface.selected_ids.contains(&item.id);
+                if row.selected != selected || row.batch_selected != batch {
+                    row.selected = selected;
+                    row.batch_selected = batch;
+                    self.model.set_row_data(index, row);
+                }
+            }
+        }
+        self.window.set_batch_mode(self.surface.batch);
+        self.window
+            .set_selected_count(self.surface.selected_ids.len() as i32);
+        self.window.set_selection_index(
+            self.surface
+                .items
+                .iter()
+                .position(|x| Some(RowKey::of(x)) == self.surface.selection)
+                .map(|x| x as i32)
+                .unwrap_or(-1),
+        );
+    }
+    fn history_invalidated(&mut self) {
+        self.previews.remove(&SpaceId::HISTORY);
+        self.dirty_snapshots.insert(SpaceId::HISTORY);
+        if self.surface.space == SpaceId::HISTORY {
+            self.surface.invalidate();
+            if self.surface.visible
+                && self.window.get_route().as_str() == "history"
+                && !self.surface.loading
+                && self.mutation.is_none()
+            {
+                self.load(false);
+            }
+        }
+        if self.surface.visible {
+            self.send(Work::Spaces);
+            self.schedule_prewarm();
+        }
+    }
+    fn thumbnail_request(&mut self, key: String) {
+        if !self.surface.visible || self.window.get_route().as_str() != "history" {
             return;
         }
-        let Ok(key) = key.parse::<RowKey>() else {
+        let Some(key) = self.surface.resolve_key(&key) else {
             return;
         };
-        let Some(hash) = self.surfaces[i]
+        let Some(hash) = self
+            .surface
             .items
             .iter()
             .find(|x| RowKey::of(x) == key)
             .and_then(|x| x.thumbnail.as_ref())
-            .map(|x| x.content_hash.clone())
+            .map(|t| t.content_hash.clone())
         else {
             return;
         };
-        if self.images[i].cache.contains_key(&hash) || !self.images[i].pending.insert(hash.clone())
-        {
+        if self.images.cache.contains_key(&hash) || !self.images.pending.insert(hash.clone()) {
             return;
         }
-        let epoch = self.images[i].epoch;
-        if !self.send(role, Work::Thumbnail(role, epoch, hash.clone())) {
-            self.images[i].pending.remove(&hash);
+        if !self.send(Work::Thumbnail(self.images.epoch, hash.clone())) {
+            self.images.pending.remove(&hash);
         }
     }
-    fn thumbnail_finished(
-        &mut self,
-        role: Role,
-        epoch: u64,
-        hash: String,
-        result: Result<PixelData, String>,
-    ) {
-        let i = role.index();
-        if epoch != self.images[i].epoch || !self.surfaces[i].visible {
+    fn thumbnail_finished(&mut self, epoch: u64, hash: String, result: Result<PixelData, String>) {
+        if epoch != self.images.epoch || !self.surface.visible {
             return;
         }
-        self.images[i].pending.remove(&hash);
-        let pixels = match result {
-            Ok(p) => p,
-            Err(_) => return,
+        self.images.pending.remove(&hash);
+        let Ok(pixels) = result else {
+            return;
         };
         let bytes = pixels.rgba.len();
         if bytes > 8 * 1024 * 1024 {
             return;
         }
-        while self.images[i].bytes + bytes > 8 * 1024 * 1024 {
-            let Some(old) = self.images[i].order.pop_front() else {
-                break;
-            };
-            if let Some((_, size)) = self.images[i].cache.remove(&old) {
-                self.images[i].bytes = self.images[i].bytes.saturating_sub(size);
-            }
-            for (index, item) in self.surfaces[i].items.iter().enumerate() {
-                if item
-                    .thumbnail
-                    .as_ref()
-                    .is_some_and(|t| t.content_hash == old)
-                {
-                    if let Some(mut row) = self.models[i].row_data(index) {
-                        row.thumbnail = Default::default();
-                        self.models[i].set_row_data(index, row);
-                    }
+        if self.images.cache.contains_key(&hash) {
+            return;
+        }
+        if self.images.trim_to(8 * 1024 * 1024 - bytes) {
+            for index in 0..self.model.row_count() {
+                if let Some(mut row) = self.model.row_data(index) {
+                    row.thumbnail = Default::default();
+                    self.model.set_row_data(index, row);
                 }
             }
+            self.dirty_snapshots.extend(self.previews.keys().copied());
         }
         let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
             &pixels.rgba,
@@ -548,109 +763,119 @@ impl App {
             pixels.height,
         );
         let image = slint::Image::from_rgba8(buffer);
-        self.images[i].bytes += bytes;
-        self.images[i].order.push_back(hash.clone());
-        self.images[i]
-            .cache
-            .insert(hash.clone(), (image.clone(), bytes));
-        for (index, item) in self.surfaces[i].items.iter().enumerate() {
-            if item
-                .thumbnail
-                .as_ref()
-                .is_some_and(|t| t.content_hash == hash)
-            {
-                if let Some(mut row) = self.models[i].row_data(index) {
-                    row.thumbnail = image.clone();
-                    self.models[i].set_row_data(index, row);
-                }
-            }
+        self.images.bytes += bytes;
+        self.images.order.push_back(hash.clone());
+        self.dirty_snapshots.extend(
+            self.previews
+                .iter()
+                .filter(|(_, p)| {
+                    p.items
+                        .iter()
+                        .any(|i| i.thumbnail.as_ref().is_some_and(|t| t.content_hash == hash))
+                })
+                .map(|(id, _)| *id),
+        );
+        self.images.cache.insert(hash, (image, bytes));
+        if self.deck.phase != Phase::Animating {
+            self.render();
         }
+        self.schedule_prewarm();
     }
     fn command(&mut self, command: Command) {
         match command {
-            Command::Quit => self.quit(),
-            Command::Dismiss(role) => self.dismiss(role),
-            Command::Drag(role) => {
-                if let Some(hwnd) = self.hwnds[role.index()] {
+            Command::Quit => self.request_quit(),
+            Command::Dismiss => self.request_hide(),
+            Command::Drag => {
+                if let Some(hwnd) = self.hwnd {
                     let _ = shell::start_drag(hwnd);
                 }
             }
-            Command::Query(role, query) => {
-                let i = role.index();
-                self.surfaces[i].set_query(query);
-                self.windows[i].invoke_reset_scroll();
-                self.windows[i].set_stale_rows(true);
-                self.windows[i].set_loading(true);
-                let hub = self.hub.clone();
-                self.timers[i].start(
-                    TimerMode::SingleShot,
-                    Duration::from_millis(75),
-                    move || hub.post(Event::Command(Command::Refresh(role))),
-                );
-            }
-            Command::Refresh(role) => self.load(role, false),
-            Command::More(role) => self.load(role, true),
-            Command::Previous(role) => {
-                if self.surfaces[role.index()].previous_window() {
-                    self.windows[role.index()].invoke_reset_scroll();
-                    self.load(role, false);
+            Command::Query(query) => {
+                if self.deck.phase == Phase::Animating {
+                    self.finish_motion();
                 }
-            }
-            Command::Select(role, key) => {
-                if let Ok(key) = key.parse() {
-                    self.surfaces[role.index()].select(key);
-                    self.render_selection(role);
-                }
-            }
-            Command::Action(role, action, key) => self.action(role, &action, &key),
-            Command::Batch(role, action) => self.batch(role, &action),
-            Command::Panel(role, panel) => {
-                if role == Role::Favorites {
+                if query.len() > 16 * 1024 {
+                    self.report("Search text is too large", true);
                     return;
                 }
-                let view = if panel == "favorites" {
-                    QuickInsertView::Favorites
-                } else {
-                    QuickInsertView::History
-                };
-                self.surfaces[0].set_view(view);
-                self.windows[0].set_stale_rows(true);
-                self.windows[0].set_active_view(panel.into());
-                self.windows[0].set_query("".into());
-                self.windows[0].set_route("history".into());
-                self.windows[0].invoke_reset_scroll();
-                self.load(role, false);
-                self.windows[0].invoke_focus_search(false);
+                self.surface.set_query(query);
+                self.window.set_scroll_y(0.0);
+                self.pending_scroll = None;
+                self.deck.block_content();
+                self.cancel_prewarm();
+                self.previews.clear();
+                self.dirty_snapshots.insert(self.surface.space);
+                self.window.set_stale_rows(true);
+                self.window.set_loading(true);
+                let hub = self.hub.clone();
+                self.search_timer.start(
+                    TimerMode::SingleShot,
+                    Duration::from_millis(75),
+                    move || hub.post(Event::Command(Command::Refresh)),
+                );
             }
-            Command::Route(route) => {
-                if route != "history" {
-                    self.session.dismiss();
-                    self.worker
-                        .epoch
-                        .store(self.session.epoch, Ordering::Release);
-                    self.send(Role::Main, Work::Cancel);
+            Command::Refresh => self.load(false),
+            Command::More => self.load(true),
+            Command::Previous => {
+                if self.surface.previous_window() {
+                    self.window.set_scroll_y(0.0);
+                    self.load(false);
                 }
-                self.windows[0].set_route(route.into());
-                self.render_settings();
             }
-            Command::Thumbnail(role, key) => self.thumbnail_request(role, key),
-            Command::Keyboard(role, intent) => self.keyboard(role, intent),
+            Command::Select(key) => {
+                if self.deck.can_insert(self.surface.space) && self.surface.ready {
+                    if let Some(key) = self.surface.resolve_key(&key) {
+                        self.surface.select(key);
+                        self.render_selection();
+                        self.dirty_snapshots.insert(self.surface.space);
+                        self.schedule_prewarm();
+                    }
+                }
+            }
+            Command::Action(action, key) => self.action(&action, &key),
+            Command::Batch(action) => self.batch(&action),
+            Command::Panel(panel) => self.navigate_to(if panel == "favorites" {
+                SpaceId::FAVORITES
+            } else {
+                SpaceId::HISTORY
+            }),
+            Command::Route(route) => self.request_route(&route),
+            Command::Keyboard(intent) => self.keyboard(intent),
+            Command::Thumbnail(key) => self.thumbnail_request(key),
             Command::SaveSettings => self.save_settings(),
-            Command::Create(role) => self.open_editor(role, None),
-            Command::SaveFavorite(role) => self.save_favorite(role),
-            Command::CancelEditor(role) => {
-                self.windows[role.index()].set_editor_open(false);
-                self.windows[role.index()].invoke_focus_search(false);
+            Command::SettingsEdited => self.settings_edited(),
+            Command::SettingsAction(action) => self.settings_action(&action),
+            Command::SpaceAction(action, key) => self.space_action(&action, &key),
+            Command::PickerQuery(query) => self.picker_query(query),
+            Command::PickerMore => self.picker_more(),
+            Command::PickerSelect(key) => self.picker_select(&key),
+            Command::Confirm(answer) => self.confirm(&answer),
+            Command::FlowTick => self.flow_tick(),
+            Command::Prewarm => self.prewarm(),
+            Command::TrimHidden => {
+                if !self.surface.visible {
+                    self.clear_flow_cache();
+                    self.previews.clear();
+                    self.images.trim_to(0);
+                }
             }
-            Command::Clear(role) => self.mutate(role, Mutation::Clear),
-            Command::Reorder(role, source, target) => {
-                if source.source == QuickInsertSource::Favorite
+            Command::ViewportChanged => self.viewport_changed(),
+            Command::StageClick(x, y) => self.stage_click(x, y),
+            Command::StageScroll(delta) => self.stage_scroll(delta),
+            Command::SaveFavorite => self.save_favorite(),
+            Command::CancelEditor => self.cancel_editor(),
+            Command::Clear => self.mutate(Mutation::Clear),
+            Command::Create => self.new_item(),
+            Command::Reorder(source, target) => {
+                if self.surface.query.is_empty()
+                    && self.surface.ready
+                    && !self.window.get_modal()
+                    && source.source == QuickInsertSource::Favorite
                     && target.source == QuickInsertSource::Favorite
-                    && self.surfaces[role.index()].query.is_empty()
                 {
-                    self.mutate(
-                        role,
-                        Mutation::Reorder {
+                    self.space_mutation(
+                        self.surface.space,
+                        SpaceAction::ReorderItem {
                             id: source.id,
                             before: Some(target.id),
                             delta: 0,
@@ -660,50 +885,51 @@ impl App {
             }
         }
     }
-    fn action(&mut self, role: Role, action: &str, key: &str) {
-        let i = role.index();
-        if !self.surfaces[i].visible
-            || self.surfaces[i].loading
+    fn action(&mut self, action: &str, value: &str) {
+        if action == "retry" {
+            self.load(false);
+            return;
+        }
+        if !self.surface.visible
+            || !self.surface.ready
+            || self.surface.loading
             || self.session.busy()
             || self.mutation.is_some()
+            || !self.deck.can_insert(self.surface.space)
+            || self.window.get_modal()
         {
             return;
         }
-        let Ok(key) = key.parse::<RowKey>() else {
-            return;
-        };
-        let Some(item) = self.surfaces[i]
-            .items
-            .iter()
-            .find(|x| RowKey::of(x) == key)
-            .cloned()
-        else {
+        let Some(key) = self.surface.resolve_key(value) else {
             return;
         };
         match action {
-            "copy" => self.execute(role, key, QuickInsertAction::Copy),
-            "insert" => self.execute(role, key, QuickInsertAction::Insert),
+            "copy" => self.execute(key, QuickInsertAction::Copy),
+            "insert" => self.execute(key, QuickInsertAction::Insert),
             "favorite" if key.source == QuickInsertSource::History => {
-                self.mutate(role, Mutation::Favorite(key.id))
+                self.space_mutation(SpaceId::FAVORITES, SpaceAction::MoveHistory(vec![key.id]))
             }
             "pin" if key.source == QuickInsertSource::History => {
-                self.mutate(role, Mutation::Pin(key.id, item.pinned_at.is_some()))
+                let pinned = self
+                    .surface
+                    .items
+                    .iter()
+                    .find(|x| RowKey::of(x) == key)
+                    .is_some_and(|x| x.pinned_at.is_some());
+                self.mutate(Mutation::Pin(key.id, pinned));
             }
-            "delete" => self.mutate(role, Mutation::Delete(key)),
-            "edit" if key.source == QuickInsertSource::Favorite => {
-                self.open_editor(role, Some(item))
-            }
+            "edit" if key.source == QuickInsertSource::Favorite => self.inspect_item("edit", key),
+            "options" => self.item_options(key),
             "toggle-batch" => {
-                self.surfaces[i].toggle_selected(key.id);
-                self.render_selection(role);
+                self.surface.toggle_selected(key.id);
+                self.render_selection();
             }
             "up" | "down"
-                if key.source == QuickInsertSource::Favorite
-                    && self.surfaces[i].query.is_empty() =>
+                if key.source == QuickInsertSource::Favorite && self.surface.query.is_empty() =>
             {
-                self.mutate(
-                    role,
-                    Mutation::Reorder {
+                self.space_mutation(
+                    self.surface.space,
+                    SpaceAction::ReorderItem {
                         id: key.id,
                         before: None,
                         delta: if action == "up" { -1 } else { 1 },
@@ -713,30 +939,15 @@ impl App {
             _ => {}
         }
     }
-    fn render_selection(&self, role: Role) {
-        let i = role.index();
-        let surface = &self.surfaces[i];
-        for (index, item) in surface.items.iter().enumerate() {
-            if let Some(mut row) = self.models[i].row_data(index) {
-                row.selected = surface.selection == Some(RowKey::of(item));
-                row.batch_selected = surface.selected_ids.contains(&item.id);
-                self.models[i].set_row_data(index, row);
-            }
+    fn execute(&mut self, key: RowKey, action: QuickInsertAction) {
+        if !self.deck.can_insert(self.surface.space)
+            || !self.surface.ready
+            || self.mutation.is_some()
+        {
+            return;
         }
-        self.windows[i].set_batch_mode(surface.batch);
-        self.windows[i].set_selected_count(surface.selected_ids.len() as i32);
-        self.windows[i].set_selection_index(
-            surface
-                .items
-                .iter()
-                .position(|x| Some(RowKey::of(x)) == surface.selection)
-                .map(|n| n as i32)
-                .unwrap_or(-1),
-        );
-    }
-    fn execute(&mut self, role: Role, key: RowKey, action: QuickInsertAction) {
         if action == QuickInsertAction::Insert && self.session.context == Context::Manager {
-            self.report(role, "Selected", false);
+            self.report("Selected · use Copy to copy this content", false);
             return;
         }
         let Some(operation) = self.session.begin(action) else {
@@ -744,7 +955,6 @@ impl App {
         };
         self.set_busy();
         self.report(
-            role,
             if action == QuickInsertAction::Copy {
                 "Copying…"
             } else {
@@ -753,26 +963,21 @@ impl App {
             false,
         );
         if action == QuickInsertAction::Insert {
-            self.restore_favorites = self.surfaces[1].visible;
-            // A temporary hide for insertion must NOT clear the engine's captured target.
-            self.hide_surface(Role::Favorites);
-            self.hide_surface(Role::Main);
+            self.hide_window();
         }
-        if !self.send(role, Work::Execute(role, operation, key)) {
+        if !self.send(Work::Execute(operation, key)) {
             self.session.finish(operation, Err(()));
             self.set_busy();
             if action == QuickInsertAction::Insert {
-                let _ = self.show_windows();
-                self.load(Role::Main, false);
-                self.load(Role::Favorites, false);
+                let _ = self.show_window();
+                self.load(false);
             }
         }
     }
     fn executed(
         &mut self,
-        role: Role,
         operation: echo_presentation::session::Operation,
-        result: Result<echo_engine::QuickInsertOutcome, String>,
+        result: Result<QuickInsertOutcome, String>,
     ) {
         let completion = self
             .session
@@ -780,243 +985,167 @@ impl App {
         self.set_busy();
         match completion {
             Completion::Stale => {}
-            Completion::Inserted => self.report(role, "Inserted", false),
-            Completion::Copied => self.report(role, "Copied", false),
-            Completion::Staged => self.report(role, "Copied to clipboard; no active target", false),
+            Completion::Inserted => self.report("Inserted", false),
+            Completion::Copied => self.report("Copied", false),
+            Completion::Staged => self.report("Copied to clipboard; no active target", false),
             Completion::Restore => {
                 if operation.action == QuickInsertAction::Insert {
-                    let _ = self.show_windows();
-                    self.load(Role::Main, false);
-                    if self.restore_favorites {
-                        self.load(Role::Favorites, false);
-                    } else {
-                        self.hide_surface(Role::Favorites);
-                    }
-                    self.windows[role.index()].invoke_focus_search(false);
+                    let _ = self.show_window();
+                    self.load(false);
                 }
                 self.report(
-                    role,
                     result.err().unwrap_or_else(|| "Operation failed".into()),
                     true,
                 );
             }
         }
     }
-    fn mutate(&mut self, role: Role, mutation: Mutation) {
+    fn mutate(&mut self, mutation: Mutation) {
         if self.mutation.is_some() || self.session.busy() {
             return;
         }
         self.serial = self.serial.wrapping_add(1);
         let serial = self.serial;
-        self.mutation = Some((role, serial));
+        self.mutation = Some(serial);
         self.set_busy();
-        self.report(role, "Saving…", false);
-        if !self.send(role, Work::Mutate(role, serial, mutation)) {
+        self.report("Saving…", false);
+        if !self.send(Work::Mutate(serial, mutation)) {
             self.mutation = None;
             self.set_busy();
         }
     }
-    fn mutated(
-        &mut self,
-        role: Role,
-        serial: u64,
-        result: Result<crate::events::MutationResult, String>,
-    ) {
-        if self.mutation != Some((role, serial)) {
+    fn mutated(&mut self, serial: u64, result: Result<crate::events::MutationResult, String>) {
+        if self.mutation != Some(serial) {
             return;
         }
         self.mutation = None;
         self.set_busy();
         match result {
             Ok(result) => {
-                if let Some(settings) = result.settings {
+                if let Some(snapshot) = result.snapshot {
+                    self.cancel_prewarm();
+                    self.previews.clear();
+                    self.positions.clear();
+                    self.settings = snapshot.clipboard;
+                    self.ui = snapshot.ui;
+                    self.settings_revision = snapshot.revision;
+                    self.render_settings();
+                    self.apply_theme();
+                    self.clear_flow_cache();
+                    self.schedule_prewarm();
+                } else if let Some(settings) = result.settings {
                     self.settings = settings;
                     self.render_settings();
                     self.apply_theme();
                 }
                 if result.editor_saved {
-                    self.windows[role.index()].set_editor_open(false);
-                    self.windows[role.index()].invoke_focus_search(false);
+                    self.window.set_editor_open(false);
+                    self.editor_key = None;
+                    self.editor_original = None;
                 }
-                self.windows[role.index()].set_clear_confirm_open(false);
-                self.surfaces[role.index()].set_batch(false);
-                self.report(role, result.message, false);
-                self.invalidate();
+                self.window.set_clear_confirm_open(false);
+                self.window.set_space_dialog_open(false);
+                self.space_edit_id = None;
+                self.space_original = None;
+                self.close_picker();
+                if let Some(change) = result.space_result {
+                    for id in &change.affected_spaces {
+                        self.previews.remove(id);
+                        self.positions.remove(*id);
+                        self.dirty_snapshots.insert(*id);
+                    }
+                    if let Some(id) = change.created_space {
+                        self.navigate_after_refresh = Some(id);
+                    }
+                    if self.edit_created_copy {
+                        self.edit_created_copy = false;
+                        if let Some(id) = change.created_item {
+                            self.inspect_item(
+                                "edit",
+                                RowKey {
+                                    source: QuickInsertSource::Favorite,
+                                    id,
+                                },
+                            );
+                        }
+                    }
+                    if change.migrated_count > 0 {
+                        self.report(
+                            format!(
+                                "Space updated · {} exclusive items moved to Favorites",
+                                change.migrated_count
+                            ),
+                            false,
+                        );
+                    } else {
+                        self.report(result.message, false);
+                    }
+                } else {
+                    self.previews.clear();
+                    self.clear_flow_cache();
+                    self.report(result.message, false);
+                }
+                self.surface.set_batch(false);
+                self.surface.refresh_top();
+                self.send(Work::Spaces);
+                if self.surface.visible {
+                    self.load(false);
+                }
+                self.schedule_prewarm();
+                if !self.window.get_modal() && self.window.get_route().as_str() == "history" {
+                    self.window.invoke_focus_search(false);
+                }
             }
-            Err(error) => self.report(role, error, true),
+            Err(error) => {
+                self.edit_created_copy = false;
+                self.report(error.clone(), true);
+                if self.window.get_route().as_str() == "settings" {
+                    self.window.set_settings_error(error.into());
+                }
+                self.send(Work::Spaces);
+            }
         }
     }
-    fn batch(&mut self, role: Role, action: &str) {
-        let i = role.index();
+    fn batch(&mut self, action: &str) {
         if self.mutation.is_some()
             || self.session.busy()
-            || self.surfaces[i].view != QuickInsertView::History
+            || self.surface.space != SpaceId::HISTORY
+            || !self.surface.ready
         {
             return;
         }
-        let ids = self.surfaces[i]
+        let ids = self
+            .surface
             .selected_ids
             .iter()
             .copied()
             .collect::<Vec<_>>();
         match action {
-            "begin" => self.surfaces[i].set_batch(true),
-            "cancel" => self.surfaces[i].set_batch(false),
-            "all" => self.surfaces[i].select_all(),
-            "favorite" if !ids.is_empty() => self.mutate(role, Mutation::BulkFavorite(ids)),
-            "pin" if !ids.is_empty() => self.mutate(role, Mutation::BulkPin(ids)),
-            "delete" if !ids.is_empty() => self.mutate(role, Mutation::BulkDelete(ids)),
+            "begin" => self.surface.set_batch(true),
+            "cancel" => self.surface.set_batch(false),
+            "all" => self.surface.select_all(),
+            "favorite" if !ids.is_empty() => {
+                self.space_mutation(SpaceId::FAVORITES, SpaceAction::MoveHistory(ids))
+            }
+            "pin" if !ids.is_empty() => self.mutate(Mutation::BulkPin(ids)),
+            "delete" if !ids.is_empty() => self.ask_confirmation(
+                "Delete selected history?",
+                "This removes the selected captures. Saved content is not affected.",
+                "Delete",
+                true,
+                Confirmation::DeleteHistory(ids),
+            ),
             _ => {}
         }
-        self.render_selection(role);
+        self.render_selection();
+        self.dirty_snapshots.insert(self.surface.space);
+        self.schedule_prewarm();
     }
-    fn open_editor(&mut self, role: Role, item: Option<echo_engine::QuickInsertItem>) {
-        // Use the full-size host for editing; the compact Favorites surface cannot contain an accessible form.
-        if role == Role::Favorites {
-            if let Some(hwnd) = self.hwnds[0] {
-                let _ = shell::focus_window(hwnd);
-            }
-            self.open_editor(Role::Main, item);
-            return;
-        }
-        let i = role.index();
-        if self.mutation.is_some() || self.session.busy() {
-            return;
-        }
-        let window = &self.windows[i];
-        window.set_editor_new(item.is_none());
-        window.set_editing_key(
-            item.as_ref()
-                .map(|x| RowKey::of(x).to_string())
-                .unwrap_or_default()
-                .into(),
-        );
-        window.set_draft_name(
-            item.as_ref()
-                .and_then(|x| x.name.clone())
-                .unwrap_or_default()
-                .into(),
-        );
-        window.set_draft_content(
-            item.as_ref()
-                .and_then(|x| x.editable_text.clone().or_else(|| x.preview_text.clone()))
-                .unwrap_or_default()
-                .into(),
-        );
-        window.set_draft_tags(
-            item.as_ref()
-                .map(|x| x.tags.join(", "))
-                .unwrap_or_default()
-                .into(),
-        );
-        window.set_draft_icon(
-            item.as_ref()
-                .and_then(|x| x.icon_key.clone())
-                .unwrap_or_default()
-                .into(),
-        );
-        window.set_content_editable(item.as_ref().is_none_or(|x| x.editable_text.is_some()));
-        self.report(role, "", false);
-        self.windows[i].set_editor_open(true);
-    }
-    fn save_favorite(&mut self, role: Role) {
-        let window = &self.windows[role.index()];
-        let name = formatting::optional(window.get_draft_name().as_str());
-        let icon_key = formatting::optional(window.get_draft_icon().as_str());
-        let tags = formatting::tags(window.get_draft_tags().as_str());
-        let content = window.get_draft_content().to_string();
-        if window.get_editor_new() {
-            self.mutate(
-                role,
-                Mutation::Create(echo_engine::FavoriteDraft {
-                    content,
-                    name,
-                    icon_key,
-                    tags,
-                }),
-            );
-        } else if let Ok(key) = window.get_editing_key().as_str().parse::<RowKey>() {
-            if key.source != QuickInsertSource::Favorite {
-                return;
-            }
-            let editable_text = window.get_content_editable().then_some(content);
-            self.mutate(
-                role,
-                Mutation::Update(
-                    key.id,
-                    echo_engine::FavoriteUpdate {
-                        name,
-                        icon_key,
-                        tags,
-                        editable_text,
-                    },
-                ),
-            );
-        }
-    }
-    fn save_settings(&mut self) {
-        let w = &self.windows[0];
-        match formatting::settings(
-            w.get_max_entries_text().as_str(),
-            w.get_max_total_mib_text().as_str(),
-            w.get_max_item_mib_text().as_str(),
-            w.get_theme_mode().as_str(),
-            w.get_history_enabled(),
-            w.get_record_sensitive(),
-            w.get_store_window_titles(),
-        ) {
-            Ok(settings) => self.mutate(Role::Main, Mutation::Settings(settings)),
-            Err(e) => self.report(Role::Main, e, true),
-        }
-    }
-    fn render_settings(&self) {
-        let settings = &self.settings;
-        let window = &self.windows[0];
-        window.set_history_enabled(settings.history_enabled);
-        window.set_record_sensitive(settings.record_sensitive);
-        window.set_store_window_titles(settings.store_window_titles);
-        window.set_max_entries_text(settings.max_entries.to_string().into());
-        window.set_max_total_mib_text(
-            (settings.max_total_bytes / (1024 * 1024))
-                .to_string()
-                .into(),
-        );
-        window.set_max_item_mib_text((settings.max_item_bytes / (1024 * 1024)).to_string().into());
-        window.set_theme_mode(settings.theme.as_str().into());
-    }
-    fn apply_theme(&self) {
-        let dark = match self.settings.theme {
-            ThemeMode::Dark => true,
-            ThemeMode::Light => false,
-            ThemeMode::System => shell::system_dark(),
-        };
-        let opaque_renderer = std::env::var("ECHO_RENDERER")
-            .as_deref()
-            .unwrap_or("software")
-            == "software";
-        let fallback = std::env::var("ECHO_WINDOWS_ACCEPTANCE").as_deref() == Ok("1")
-            && std::env::var("ECHO_ACCEPTANCE_FORCE_MICA_FALLBACK").as_deref() == Ok("1");
-        for i in 0..2 {
-            self.windows[i].set_dark(dark);
-            self.windows[i].set_native_mica(
-                self.hwnds[i]
-                    .is_some_and(|h| shell::apply_theme(h, dark, !fallback && !opaque_renderer)),
-            );
-        }
-    }
-    fn interpret_key(
-        &self,
-        role: Role,
-        text: &str,
-        ctrl: bool,
-        shift: bool,
-        target: &str,
-    ) -> Intent {
+    fn interpret_key(&self, text: &str, ctrl: bool, shift: bool, target: &str) -> Intent {
         use echo_presentation::interaction::{self, Key, Target};
         use slint::platform::Key as NativeKey;
-        let i = role.index();
         let mut key = text;
-        let keys = [
+        for (native, name) in [
             (NativeKey::Return, "Enter"),
             (NativeKey::Escape, "Escape"),
             (NativeKey::Tab, "Tab"),
@@ -1026,12 +1155,15 @@ impl App {
             (NativeKey::RightArrow, "ArrowRight"),
             (NativeKey::Home, "Home"),
             (NativeKey::End, "End"),
-        ];
-        for (native, name) in keys {
+            (NativeKey::F6, "F6"),
+        ] {
             if slint::SharedString::from(native).as_str() == text {
                 key = name;
                 break;
             }
+        }
+        if key == "F6" && self.window.get_route().as_str() != "history" {
+            return Intent::None;
         }
         let target = match target {
             "search" => Target::Search,
@@ -1039,115 +1171,98 @@ impl App {
             "control" => Target::Control,
             _ => Target::Surface,
         };
-        let modal = self.windows[i].get_editor_open() || self.windows[i].get_clear_confirm_open();
-        if modal && key != "Escape" {
-            return Intent::None;
+        let intent = interaction::interpret_space(
+            Key {
+                text: key,
+                ctrl,
+                shift,
+                composing: self.hook.as_ref().is_some_and(WindowHook::is_composing),
+                target,
+                text_edit: true,
+                batch: self.surface.batch,
+            },
+            self.ui.switch_shortcut,
+            !self.window.get_control_focus_mode(),
+            self.window.get_modal(),
+            self.window.get_route().as_str() != "history",
+        );
+        if (self.session.busy() || self.mutation.is_some())
+            && !matches!(intent, Intent::Escape | Intent::None)
+        {
+            Intent::PreventDefault
+        } else {
+            intent
         }
-        interaction::interpret(Key {
-            text: key,
-            ctrl,
-            shift,
-            composing: self.hooks[i].as_ref().is_some_and(WindowHook::is_composing),
-            target,
-            text_edit: self.windows[i].get_text_edit_mode(),
-            batch: self.surfaces[i].batch,
-        })
     }
-    fn keyboard(&mut self, role: Role, intent: Intent) {
-        let i = role.index();
+    fn keyboard(&mut self, intent: Intent) {
         match intent {
             Intent::None | Intent::PreventDefault => {}
-            Intent::Escape => {
-                if self.windows[i].get_editor_open() {
-                    if self.mutation.is_none() {
-                        self.windows[i].set_editor_open(false);
-                        self.windows[i].invoke_focus_search(false);
-                    }
-                } else if self.windows[i].get_clear_confirm_open() {
-                    if self.mutation.is_none() {
-                        self.windows[i].set_clear_confirm_open(false);
-                        self.windows[i].invoke_focus_search(false);
-                    }
-                } else {
-                    self.surfaces[i].set_batch(false);
-                    self.dismiss(role);
-                }
-            }
+            Intent::Escape => self.escape(),
             Intent::FocusSearch(select) => {
-                self.windows[i].set_text_edit_mode(select);
-                self.windows[i].invoke_focus_search(select);
+                self.window.set_control_focus_mode(false);
+                self.window.invoke_focus_search(select);
             }
-            Intent::SwitchPanel => {
-                if role == Role::Main {
-                    let panel = if self.surfaces[i].view == QuickInsertView::History {
-                        "favorites"
-                    } else {
-                        "history"
-                    };
-                    self.command(Command::Panel(role, panel.into()));
+            Intent::FocusMode => {
+                let value = !self.window.get_control_focus_mode();
+                self.window.set_control_focus_mode(value);
+                if value {
+                    self.window.invoke_focus_controls();
+                } else {
+                    self.window.invoke_focus_search(false);
                 }
             }
+            Intent::SwitchSpace(delta) => self.navigate(delta),
+            Intent::SwitchPanel => self.navigate(1),
+            Intent::NewSpace => self.space_action("new", ""),
+            Intent::NewItem => self.new_item(),
             Intent::Move(delta) => {
-                self.surfaces[i].move_selection(delta);
-                self.render_selection(role);
-                self.windows[i].invoke_reveal_selection();
+                if self.surface.ready {
+                    self.surface.move_selection(delta);
+                    self.render_selection();
+                    self.window.invoke_reveal_selection();
+                    self.dirty_snapshots.insert(self.surface.space);
+                    self.schedule_prewarm();
+                }
             }
             Intent::Select(index) => {
-                self.surfaces[i].select_index(index);
-                self.render_selection(role);
-                self.windows[i].invoke_reveal_selection();
+                if self.surface.ready {
+                    self.surface.select_index(index);
+                    self.render_selection();
+                    self.window.invoke_reveal_selection();
+                    self.dirty_snapshots.insert(self.surface.space);
+                    self.schedule_prewarm();
+                }
             }
             Intent::ToggleBatch => {
-                if let Some(key) = self.surfaces[i].selection {
-                    self.surfaces[i].toggle_selected(key.id);
-                    self.render_selection(role);
+                if let Some(key) = self.surface.selection {
+                    self.surface.toggle_selected(key.id);
+                    self.render_selection();
                 }
             }
             Intent::SelectAllBatch => {
-                self.surfaces[i].select_all();
-                self.render_selection(role);
+                self.surface.select_all();
+                self.render_selection();
             }
             Intent::Primary | Intent::Copy => {
-                if let Some(key) = self.surfaces[i].selection {
-                    self.action(
-                        role,
-                        if intent == Intent::Copy {
-                            "copy"
-                        } else {
-                            "insert"
-                        },
-                        &key.to_string(),
+                self.finish_motion();
+                if self.surface.ready && self.deck.can_insert(self.surface.space) {
+                    if let Some(key) = self.surface.selection {
+                        self.execute(
+                            key,
+                            if intent == Intent::Copy {
+                                QuickInsertAction::Copy
+                            } else {
+                                QuickInsertAction::Insert
+                            },
+                        );
+                    }
+                } else {
+                    self.report(
+                        "Content is still loading; press Enter again when ready",
+                        false,
                     );
                 }
             }
         }
-    }
-    pub fn shutdown(&mut self) {
-        self.quitting = true;
-        self.hub.close();
-        self.worker.stop();
-    }
-}
-
-#[cfg(test)]
-mod resident_cache_tests {
-    use super::*;
-    #[test]
-    fn hidden_thumbnail_cache_is_bounded_and_keeps_recent_content() {
-        let mut cache = Images::default();
-        for (key, size) in [("old", 700_000), ("recent", 600_000), ("newest", 200_000)] {
-            cache
-                .cache
-                .insert(key.into(), (slint::Image::default(), size));
-            cache.order.push_back(key.into());
-            cache.bytes += size;
-        }
-        assert_eq!(cache.trim_to(1024 * 1024), vec!["old"]);
-        assert_eq!(cache.bytes, 800_000);
-        assert_eq!(cache.cache.len(), 2);
-        for _ in 0..550 {
-            assert!(cache.trim_to(1024 * 1024).is_empty());
-        }
-        assert!(cache.cache.contains_key("recent") && cache.cache.contains_key("newest"));
     }
 }

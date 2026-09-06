@@ -7,6 +7,16 @@ mod preview;
 mod quick_insert;
 mod saved_items;
 mod settings;
+mod spaces;
+mod ui_settings;
+pub use spaces::{
+    Space, SpaceAction, SpaceCommand, SpaceDraft, SpaceError, SpaceId, SpaceKind,
+    SpaceMutationResult, SpacePage, SpaceStore,
+};
+pub use ui_settings::{
+    Density, FrameRate, GraphicsMode, Motion, MotionSpeed, QueryOnSwitch, SettingsPatch,
+    SettingsSnapshot, SideContent, SpaceViewMode, StartupSpace, SwitchShortcut, UiSettings,
+};
 
 pub use domain::{
     ClipboardPlatform, ClipboardRepresentation, ClipboardSnapshot, FocusSafety, FocusedTarget,

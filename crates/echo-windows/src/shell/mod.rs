@@ -2,11 +2,15 @@
 //! All HWND and HANDLE access is kept inside this adapter.
 use std::{path::Path, sync::Arc, thread::JoinHandle};
 use windows_sys::Win32::{Foundation::*, System::Threading::*, UI::WindowsAndMessaging::*};
+mod card_window;
 mod common;
 mod pipe;
 mod tray;
 mod window;
+pub use card_window::{apply_card_chrome, set_card_region, CardShape};
+mod environment;
 use common::{wide, Handle, Security};
+pub use environment::{fit_window, ui_environment, UiEnvironment};
 pub use window::{
     apply_theme, attach_window, center_composition, focus_window, reposition_favorites, set_owner,
     start_drag, system_dark, WindowHook,

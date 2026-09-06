@@ -1,5 +1,11 @@
 use std::any::Any;
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
+
+mod spaces;
+#[cfg(test)]
+mod spaces_tests;
+mod ui_settings;
+use echo_engine::{SpaceId, SpaceMutationResult};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -28,12 +34,14 @@ const DEFAULT_MAX_ENTRIES: u32 = 5_000;
 const DEFAULT_MAX_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
 const DEFAULT_MAX_ITEM_BYTES: u64 = 32 * 1024 * 1024;
 const SEARCH_FTS_SCHEMA_KEY: &str = "search_fts_schema";
-const CURRENT_SCHEMA_VERSION: i32 = 5;
+const CURRENT_SCHEMA_VERSION: i32 = 6;
 const THEME_COLUMN_DEFINITION: &str =
     "TEXT NOT NULL DEFAULT 'system' CHECK (theme IN ('system', 'light', 'dark'))";
 
 #[derive(Debug, Error)]
 pub enum StorageError {
+    #[error(transparent)]
+    Space(#[from] echo_engine::SpaceError),
     #[error("sqlite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
     #[error("filesystem error: {0}")]
@@ -95,6 +103,7 @@ pub struct ClipboardStore {
     blobs_dir: PathBuf,
     thumbnails_dir: PathBuf,
     metrics: Arc<OperationMetrics>,
+    space_replays: VecDeque<(String, [u8; 32], SpaceMutationResult)>,
 }
 
 impl ClipboardStore {
@@ -110,6 +119,7 @@ impl ClipboardStore {
             blobs_dir: data_dir.join("blobs"),
             thumbnails_dir: data_dir.join("thumbnails"),
             metrics: Arc::new(OperationMetrics::default()),
+            space_replays: Default::default(),
         };
         store.configure()?;
         store.ensure_schema()?;
@@ -130,6 +140,7 @@ impl ClipboardStore {
             blobs_dir,
             thumbnails_dir,
             metrics,
+            space_replays: Default::default(),
         };
         store.configure()?;
         store.ensure_schema()?;
@@ -147,6 +158,7 @@ impl ClipboardStore {
             blobs_dir: data_dir.join("blobs"),
             thumbnails_dir: data_dir.join("thumbnails"),
             metrics,
+            space_replays: Default::default(),
         };
         store.configure_read_only()?;
         Ok(store)
@@ -202,6 +214,7 @@ impl ClipboardStore {
                 3 => self.migrate_schema_v3()?,
                 4 => self.ensure_search_schema()?,
                 5 => self.migrate_schema_v5()?,
+                6 => self.migrate_schema_v6()?,
                 _ => unreachable!("schema version is bounded above"),
             }
             self.connection
@@ -857,7 +870,7 @@ impl ClipboardStore {
         self.connection.execute(
             "UPDATE clipboard_settings SET history_enabled = ?, record_sensitive = ?,
              store_window_titles = ?, max_entries = ?, max_total_bytes = ?, max_item_bytes = ?,
-             theme = ?
+             theme = ?, settings_revision = settings_revision + 1
              WHERE id = 1",
             params![
                 settings.history_enabled as i64,
@@ -1663,6 +1676,15 @@ impl ClipboardStore {
         &mut self,
         history_ids: &[i64],
     ) -> Result<Vec<SavedItem>> {
+        self.move_history_many_to_space(history_ids, SpaceId::FAVORITES, None)
+    }
+
+    pub fn move_history_many_to_space(
+        &mut self,
+        history_ids: &[i64],
+        destination: SpaceId,
+        expected_revision: Option<i64>,
+    ) -> Result<Vec<SavedItem>> {
         let mut ids = Vec::with_capacity(history_ids.len());
         for id in history_ids.iter().copied().filter(|id| *id > 0) {
             if !ids.contains(&id) {
@@ -1700,6 +1722,7 @@ impl ClipboardStore {
         }
 
         let tx = self.connection.transaction()?;
+        spaces::validate_space_tx(&tx, destination, expected_revision)?;
         let mut saved_ids = Vec::with_capacity(sources.len());
         for entry in &sources {
             let existing: Option<i64> = tx
@@ -1766,8 +1789,11 @@ impl ClipboardStore {
                 "UPDATE saved_items SET source_history_id = NULL WHERE id = ?",
                 [saved_id],
             )?;
+            spaces::add_membership_tx(&tx, destination, saved_id, true)?;
             saved_ids.push(saved_id);
         }
+        spaces::bump_space_tx(&tx, destination)?;
+        spaces::bump_space_tx(&tx, SpaceId::HISTORY)?;
         tx.commit()?;
         self.schedule_blob_gc()?;
         saved_ids
@@ -1781,6 +1807,15 @@ impl ClipboardStore {
     }
 
     pub fn create_favorite(&mut self, draft: FavoriteDraft) -> Result<SavedItem> {
+        self.create_favorite_in_space(draft, SpaceId::FAVORITES, None)
+    }
+
+    pub fn create_favorite_in_space(
+        &mut self,
+        draft: FavoriteDraft,
+        destination: SpaceId,
+        expected_revision: Option<i64>,
+    ) -> Result<SavedItem> {
         let draft = draft
             .normalize()
             .map_err(|error| StorageError::Invalid(error.to_string()))?;
@@ -1798,6 +1833,7 @@ impl ClipboardStore {
         };
         let prepared = self.prepare_representation(&representation, None)?;
         let tx = self.connection.transaction()?;
+        spaces::validate_space_tx(&tx, destination, expected_revision)?;
         tx.execute(
             "UPDATE saved_items SET favorite_order = favorite_order + 1",
             [],
@@ -1822,6 +1858,8 @@ impl ClipboardStore {
         Self::insert_saved_representation_tx(&tx, id, &prepared)?;
         replace_tags_tx(&tx, id, &tags)?;
         refresh_saved_search_tx(&tx, id)?;
+        spaces::add_membership_tx(&tx, destination, id, true)?;
+        spaces::bump_space_tx(&tx, destination)?;
         tx.commit()?;
         self.schedule_blob_gc()?;
         self.saved_item(id)?
@@ -1897,6 +1935,7 @@ impl ClipboardStore {
         }
         replace_tags_tx(&tx, id, &tags)?;
         refresh_saved_search_tx(&tx, id)?;
+        spaces::bump_saved_spaces_tx(&tx, id)?;
         tx.commit()?;
         self.schedule_blob_gc()?;
         self.saved_item(id)?
@@ -2004,9 +2043,11 @@ impl ClipboardStore {
             ));
         }
         let tx = self.connection.transaction()?;
-        let expected = tx.query_row("SELECT COUNT(*) FROM saved_items", [], |row| {
-            row.get::<_, i64>(0)
-        })?;
+        let expected = tx.query_row(
+            "SELECT COUNT(*) FROM space_memberships WHERE space_id=2",
+            [],
+            |row| row.get::<_, i64>(0),
+        )?;
         if expected != ids.len() as i64 {
             return Err(StorageError::Invalid(
                 "favorite order must include every favorite exactly once".to_owned(),
@@ -2014,7 +2055,7 @@ impl ClipboardStore {
         }
         for id in &ids {
             let exists: bool = tx.query_row(
-                "SELECT EXISTS (SELECT 1 FROM saved_items WHERE id = ?)",
+                "SELECT EXISTS (SELECT 1 FROM space_memberships WHERE space_id=2 AND saved_item_id = ?)",
                 [id],
                 |row| row.get::<_, i64>(0),
             )? != 0;
@@ -2027,7 +2068,7 @@ impl ClipboardStore {
         // Use a temporary offset to avoid unique/order collisions if a future
         // schema adds a uniqueness constraint to favorite_order.
         tx.execute(
-            "UPDATE saved_items SET favorite_order = favorite_order + ?",
+            "UPDATE saved_items SET favorite_order = favorite_order + ? WHERE id IN (SELECT saved_item_id FROM space_memberships WHERE space_id=2)",
             [expected + 1],
         )?;
         for (order, id) in ids.drain(..).enumerate() {
@@ -2036,6 +2077,8 @@ impl ClipboardStore {
                 params![i64::try_from(order).unwrap_or(i64::MAX), id],
             )?;
         }
+        tx.execute("UPDATE space_memberships SET sort_key=(SELECT favorite_order*1024 FROM saved_items WHERE id=saved_item_id) WHERE space_id=2", [])?;
+        spaces::bump_space_tx(&tx, SpaceId::FAVORITES)?;
         tx.commit()?;
         Ok(())
     }
@@ -2288,6 +2331,9 @@ impl ClipboardStore {
         let fts_sql =
             format!("DELETE FROM saved_items_fts WHERE saved_item_id IN ({placeholders})");
         tx.execute(&fts_sql, rusqlite::params_from_iter(ids.iter()))?;
+        for id in &ids {
+            spaces::bump_saved_spaces_tx(&tx, *id)?;
+        }
         let deleted = tx.execute(&sql, rusqlite::params_from_iter(ids.iter()))?;
         tx.commit()?;
         self.schedule_blob_gc()?;
@@ -3195,6 +3241,16 @@ impl ClipboardSink for SharedClipboardStore {
 }
 
 impl LibraryStore for SharedClipboardStore {
+    fn list_favorites(
+        &self,
+        query: &str,
+        limit: u32,
+        cursor: Option<PageCursor>,
+    ) -> Result<LibraryPage<SavedItem>> {
+        Ok(self
+            .list_space_items(SpaceId::FAVORITES, query, limit, cursor)?
+            .page)
+    }
     type Error = StorageError;
 
     fn list_entries(
@@ -4342,7 +4398,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_v5_settings_backfill_adds_theme_without_bumping_version() {
+    fn schema_v5_settings_backfill_adds_theme_and_migrates_to_current_version() {
         let root = disk_tempdir();
         let database = root.path().join("echo.sqlite3");
         {
@@ -4377,6 +4433,8 @@ mod tests {
                         max_entries, max_total_bytes, max_item_bytes
                  FROM clipboard_settings_with_theme;
                  DROP TABLE clipboard_settings_with_theme;
+                 DROP TABLE space_memberships;
+                 DROP TABLE spaces;
                  PRAGMA user_version = 5;
                  PRAGMA foreign_keys = ON;",
             )

@@ -59,10 +59,11 @@ Activation envelope parsing belongs to `echo-activation`. User/session/data-dire
 
 Window close and Escape dismiss/hide surfaces. They do not stop clipboard capture. Only explicit Quit closes the event loop and initiates full worker, storage, clipboard, pipe, and tray shutdown.
 
-## Renderer and Mica
+## Renderer and floating-card composition
 
-- Renderer feature/selection: `apps/desktop/Cargo.toml` and `apps/desktop/src/lib.rs`
-- Native composition effects: `crates/echo-windows/src/shell/window.rs`
-- Visual fallback: `apps/desktop/ui/app-window.slint`
+- Renderer feature/selection: `apps/desktop/Cargo.toml` and `apps/desktop/src/graphics.rs`
+- Shared-device offscreen rendering, texture budgets and perspective: `apps/desktop/src/cover_flow`
+- Native alpha composition, hit-test clipping and chrome: `crates/echo-windows/src/shell/card_window.rs`
+- Visual tree and flat fallback: `apps/desktop/ui/app-window.slint` and `space-panel.slint`
 
-Software rendering is the default. GPU rendering is optional. Native Mica is conditional on renderer and Windows support; the Slint UI must retain an opaque fallback.
+The normal build uses FemtoVG-WGPU on a shared DX12 device. The outside of the cards is transparent, not a Mica frame. Software-only builds and runtime fallback retain one native, region-clipped flat card. Moving textures are budgeted independently of full-DPI settled text. No production navigation path performs CPU screenshots or GPU readbacks; snapshots are restricted to isolated native acceptance and the diagnostic probe. See `cover-flow.md` for exact ownership and test boundaries.
