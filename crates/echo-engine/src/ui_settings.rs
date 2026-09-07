@@ -34,6 +34,10 @@ pub struct UiSettings {
     pub motion_speed: MotionSpeed,
     pub loop_spaces: bool,
     pub switch_shortcut: SwitchShortcut,
+    pub global_hotkey_enabled: bool,
+    pub global_hotkey: String,
+    pub caret_anchor: bool,
+    pub inline_completion: bool,
     pub startup_space: StartupSpace,
     pub remember_position: bool,
     pub query_on_switch: QueryOnSwitch,
@@ -55,6 +59,10 @@ impl Default for UiSettings {
             motion_speed: Default::default(),
             loop_spaces: true,
             switch_shortcut: Default::default(),
+            global_hotkey_enabled: true,
+            global_hotkey: "Alt+V".into(),
+            caret_anchor: true,
+            inline_completion: true,
             startup_space: Default::default(),
             remember_position: true,
             query_on_switch: Default::default(),
@@ -71,6 +79,7 @@ impl Default for UiSettings {
 }
 impl UiSettings {
     pub fn validate(&self) -> Result<(), String> {
+        crate::GlobalShortcut::parse(&self.global_hotkey)?;
         if self.version != 1 {
             return Err("Unsupported UI settings version".into());
         }
@@ -144,6 +153,22 @@ mod tests {
         let mut settings = UiSettings::default();
         settings.version = 2;
         assert!(settings.validate().is_err());
+    }
+    #[test]
+    fn hotkey_and_anchor_settings_round_trip_and_survive_appearance_reset() {
+        let mut s = UiSettings::default();
+        assert_eq!(s.global_hotkey, "Alt+V");
+        assert!(s.global_hotkey_enabled && s.caret_anchor);
+        s.global_hotkey = "Ctrl+Alt+J".into();
+        s.global_hotkey_enabled = false;
+        s.caret_anchor = false;
+        s.restore_appearance_defaults();
+        let decoded: UiSettings =
+            serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(s, decoded);
+        decoded.validate().unwrap();
+        s.global_hotkey = "V".into();
+        assert!(s.validate().is_err());
     }
     #[test]
     fn appearance_reset_does_not_reset_other_policy() {

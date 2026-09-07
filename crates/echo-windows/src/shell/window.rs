@@ -256,6 +256,8 @@ struct HookData {
     main: bool,
     composing: Arc<AtomicBool>,
     resize_bounds: std::cell::Cell<Option<[i32; 4]>>,
+    inline: std::cell::Cell<bool>,
+    prior_popup_style: std::cell::Cell<Option<isize>>,
 }
 pub struct WindowHook {
     hwnd: isize,
@@ -263,8 +265,55 @@ pub struct WindowHook {
     _main_thread: Rc<()>,
 }
 impl WindowHook {
+    /// Inline suggestions are interactive with the pointer, but never own the
+    /// external text input's activation/IME. Normal manager behavior is restored.
+    pub fn set_inline_popup(&self, enabled: bool) -> Result<(), String> {
+        if self.data.inline.get() == enabled {
+            return Ok(());
+        }
+        let hwnd = owned(self.hwnd)?;
+        unsafe {
+            let current = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+            let mask = (WS_EX_NOACTIVATE | WS_EX_TOPMOST) as isize;
+            let desired = if enabled {
+                self.data.prior_popup_style.set(Some(current & mask));
+                current | WS_EX_NOACTIVATE as isize
+            } else {
+                (current & !mask) | self.data.prior_popup_style.take().unwrap_or(0)
+            };
+            SetLastError(0);
+            if SetWindowLongPtrW(hwnd, GWL_EXSTYLE, desired) == 0 && GetLastError() != 0 {
+                return Err(error());
+            }
+            self.data.inline.set(enabled);
+            let top = enabled || desired & WS_EX_TOPMOST as isize != 0;
+            if SetWindowPos(
+                hwnd,
+                if top { HWND_TOPMOST } else { HWND_NOTOPMOST },
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            ) == 0
+            {
+                return Err(error());
+            }
+        }
+        Ok(())
+    }
+
     pub fn set_resize_bounds(&self, bounds: Option<[i32; 4]>) {
         self.data.resize_bounds.set(bounds);
+    }
+    /// Recheck at event delivery; ignore obsolete deactivation notifications.
+    pub fn foreground_is_external(&self) -> bool {
+        unsafe {
+            let foreground = GetForegroundWindow();
+            let mut pid = 0;
+            GetWindowThreadProcessId(foreground, &mut pid);
+            !foreground.is_null() && pid != 0 && pid != GetCurrentProcessId()
+        }
     }
     pub fn is_composing(&self) -> bool {
         self.data.composing.load(Ordering::Acquire)
@@ -310,6 +359,8 @@ pub fn attach_window(
             main: is_main,
             composing: Arc::new(AtomicBool::new(false)),
             resize_bounds: std::cell::Cell::new(None),
+            inline: std::cell::Cell::new(false),
+            prior_popup_style: std::cell::Cell::new(None),
         });
         if SetWindowSubclass(
             hwnd,
@@ -337,9 +388,14 @@ unsafe extern "system" fn subclass(
 ) -> LRESULT {
     let state = &*(data as *const HookData);
     match msg {
+        WM_MOUSEACTIVATE if state.inline.get() => return MA_NOACTIVATE as LRESULT,
+        WM_NCHITTEST if state.inline.get() => return HTCLIENT as LRESULT,
         WM_SYSKEYDOWN if w == 0x73 => {
             PostMessageW(hwnd, WM_CLOSE, 0, 0);
             return 0;
+        }
+        WM_ACTIVATEAPP if w == 0 && state.main => {
+            (state.handler)(ShellEvent::FocusLost);
         }
         WM_IME_STARTCOMPOSITION => {
             state.composing.store(true, Ordering::Release);

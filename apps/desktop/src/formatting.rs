@@ -55,6 +55,13 @@ pub fn row(item: &QuickInsertItem, previous_section: &mut String) -> EntryRow {
         batch_selected: false,
         icon_key: item.icon_key.clone().unwrap_or_default().into(),
         tags: item.tags.join(" · ").into(),
+        body_rich: slint::StyledText::from_plain_text(item.preview_text.as_deref().unwrap_or("")),
+        title_rich: slint::StyledText::from_plain_text(item.name.as_deref().unwrap_or("")),
+        tags_rich: slint::StyledText::from_plain_text(&item.tags.join(" · ")),
+        source_rich: slint::StyledText::from_plain_text(
+            item.source_app.as_deref().unwrap_or("Clipboard"),
+        ),
+        match_count: 0,
     }
 }
 pub fn optional(value: &str) -> Option<String> {

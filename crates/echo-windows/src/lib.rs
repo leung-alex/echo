@@ -1,6 +1,11 @@
 #![cfg_attr(windows, allow(unsafe_op_in_unsafe_fn))]
 
 #[cfg(windows)]
+pub mod focus;
+#[cfg(windows)]
+pub mod inline;
+
+#[cfg(windows)]
 mod windows_impl {
     use std::ffi::c_void;
     use std::mem::size_of;
@@ -13,19 +18,15 @@ mod windows_impl {
 
     use echo_engine::{
         CapturePolicy, ClipboardPlatform, ClipboardRepresentation, ClipboardSnapshot,
-        InputTargetGeometry, PasteControlIdentity, PasteDelivery, PasteDeliveryFailure,
-        PasteTarget, PhysicalRect, PlatformChange, PlatformChangePublisher,
-        PlatformChangeSubscription, PlatformError, SourceContext,
+        PasteControlIdentity, PasteDelivery, PasteDeliveryFailure, PasteTarget, PhysicalRect,
+        PlatformChange, PlatformChangePublisher, PlatformChangeSubscription, PlatformError,
+        SourceContext,
     };
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::{CloseHandle, HANDLE, HGLOBAL, HWND, LPARAM, RECT, WPARAM};
     use windows::Win32::Security::{
         GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, TokenIntegrityLevel,
         TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
-    };
-    use windows::Win32::System::Com::{
-        CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
-        COINIT_APARTMENTTHREADED,
     };
     use windows::Win32::System::DataExchange::{
         AddClipboardFormatListener, CloseClipboard, EmptyClipboard, GetClipboardData,
@@ -44,8 +45,8 @@ mod windows_impl {
         QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
     };
     use windows::Win32::UI::Accessibility::{
-        CUIAutomation, IUIAutomation, IUIAutomationElement, UIA_ComboBoxControlTypeId,
-        UIA_DocumentControlTypeId, UIA_EditControlTypeId,
+        IUIAutomation, IUIAutomationElement, UIA_ComboBoxControlTypeId, UIA_DocumentControlTypeId,
+        UIA_EditControlTypeId,
     };
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         IsWindowEnabled, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
@@ -55,10 +56,9 @@ mod windows_impl {
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DestroyWindow, GetAncestor, GetClassNameW, GetForegroundWindow,
         GetGUIThreadInfo, GetWindowLongW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
-        GetWindowThreadProcessId, IsWindow, PostMessageW, RegisterClassW, SendMessageW,
-        SetForegroundWindow, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, ES_PASSWORD, ES_READONLY,
-        GA_ROOT, GWL_STYLE, HWND_MESSAGE, WM_CLIPBOARDUPDATE, WM_CLOSE, WM_PASTE, WNDCLASSW,
-        WS_OVERLAPPED,
+        GetWindowThreadProcessId, IsWindow, PostMessageW, RegisterClassW, SetForegroundWindow,
+        CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, ES_PASSWORD, ES_READONLY, GA_ROOT, GWL_STYLE,
+        HWND_MESSAGE, WM_CLIPBOARDUPDATE, WM_CLOSE, WM_PASTE, WNDCLASSW, WS_OVERLAPPED,
     };
 
     const OPEN_ATTEMPTS: usize = 5;
@@ -69,6 +69,7 @@ mod windows_impl {
         clipboard_worker: Mutex<Option<JoinHandle<()>>>,
         source: Arc<Mutex<SourceContext>>,
         captured_paste_target: Mutex<Option<PasteTarget>>,
+        inline: Mutex<Option<crate::inline::InlineController>>,
     }
 
     impl WindowsPlatform {
@@ -97,7 +98,32 @@ mod windows_impl {
                 clipboard_worker: Mutex::new(worker),
                 source,
                 captured_paste_target: Mutex::new(None),
+                inline: Mutex::new(None),
             }
+        }
+
+        /// Adopt only a current epoch on the domain worker, before any paste.
+        pub fn set_inline_controller(&self, controller: crate::inline::InlineController) {
+            *self.inline.lock().unwrap_or_else(|e| e.into_inner()) = Some(controller);
+        }
+
+        pub fn adopt_captured_target(&self, target: Option<PasteTarget>) {
+            *self
+                .captured_paste_target
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = target;
+        }
+
+        pub fn capture_activation(
+            &self,
+            snapshot: &crate::focus::FocusSnapshot,
+        ) -> crate::focus::CapturedActivation {
+            let result = snapshot.capture_target();
+            *self
+                .captured_paste_target
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = result.target.clone();
+            result
         }
 
         fn validate_captured_target_before_clipboard(&self) -> Result<(), PlatformError> {
@@ -289,6 +315,9 @@ mod windows_impl {
                     _ => {}
                 }
             }
+            // Publish/close before recording the token used for a later paste.
+            // Windows may synthesize companion text formats when the writer closes.
+            drop(_clipboard);
             Ok(self.clipboard_sequence())
         }
 
@@ -302,11 +331,54 @@ mod windows_impl {
             target
         }
 
+        fn inline_preflight(
+            &self,
+            ticket: echo_engine::InlineTicket,
+            representations: &[ClipboardRepresentation],
+        ) -> Result<(), PlatformError> {
+            let controller = self
+                .inline
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+                .ok_or_else(|| PlatformError("Inline completion is not running".into()))?;
+            controller
+                .preflight(ticket, representations)
+                .map_err(PlatformError)
+        }
+
+        fn replace_inline(
+            &self,
+            ticket: echo_engine::InlineTicket,
+            clipboard_sequence: u64,
+        ) -> Result<PasteDelivery, PlatformError> {
+            let controller = self
+                .inline
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+                .ok_or_else(|| PlatformError("Inline completion is not running".into()))?;
+            controller
+                .paste(ticket, clipboard_sequence)
+                .map_err(PlatformError)
+        }
+
         fn reset_paste_window_session(&self) {
             *self
                 .captured_paste_target
                 .lock()
                 .unwrap_or_else(|error| error.into_inner()) = None;
+        }
+
+        fn paste_preflight(
+            &self,
+            target: &PasteTarget,
+        ) -> Result<Option<PasteDeliveryFailure>, PlatformError> {
+            Ok(validate_target_identity(target)
+                .and_then(|hwnd| foreground_allows_restore(hwnd))
+                .and_then(|_| validate_target_integrity(target.process_id))
+                .and_then(|_| modifiers_released())
+                .err())
         }
 
         fn paste_to_target(&self, target: &PasteTarget) -> Result<PasteDelivery, PlatformError> {
@@ -315,6 +387,9 @@ mod windows_impl {
                 Err(reason) => return Ok(PasteDelivery::Failed(reason)),
             };
             if let Err(reason) = validate_target_integrity(target.process_id) {
+                return Ok(PasteDelivery::Failed(reason));
+            }
+            if let Err(reason) = foreground_allows_restore(hwnd) {
                 return Ok(PasteDelivery::Failed(reason));
             }
             if unsafe { GetForegroundWindow() } != hwnd {
@@ -326,9 +401,13 @@ mod windows_impl {
                     PasteDeliveryFailure::OriginalWindowUnavailable,
                 ));
             }
-            let Some(current_control) = focused_input_identity(hwnd, target.process_id)
-                .or_else(|| focused_native_control_from_gui(hwnd, target.process_id))
-            else {
+            let current_control = match &target.focused_control {
+                Some(PasteControlIdentity::NativeWindow { .. }) => {
+                    focused_native_control_from_gui(hwnd, target.process_id)
+                }
+                _ => focused_input_identity(hwnd, target.process_id),
+            };
+            let Some(current_control) = current_control else {
                 return Ok(PasteDelivery::Failed(
                     PasteDeliveryFailure::InputUnavailable,
                 ));
@@ -338,24 +417,99 @@ mod windows_impl {
                     PasteDeliveryFailure::InputUnavailable,
                 ));
             }
+            if let Err(reason) = modifiers_released() {
+                return Ok(PasteDelivery::Failed(reason));
+            }
+            if unsafe { GetForegroundWindow() } != hwnd {
+                return Ok(PasteDelivery::Failed(
+                    PasteDeliveryFailure::OriginalWindowUnavailable,
+                ));
+            }
             match current_control {
                 PasteControlIdentity::NativeWindow { handle, .. } => {
                     let control = HWND(handle as *mut c_void);
-                    unsafe {
-                        SendMessageW(control, WM_PASTE, Some(WPARAM(0)), Some(LPARAM(0)));
-                    }
-                    Ok(PasteDelivery::Pasted)
+                    let mut result = 0;
+                    let ok = unsafe {
+                        windows_sys::Win32::UI::WindowsAndMessaging::SendMessageTimeoutW(
+                            control.0,
+                            WM_PASTE,
+                            0,
+                            0,
+                            windows_sys::Win32::UI::WindowsAndMessaging::SMTO_ABORTIFHUNG,
+                            250,
+                            &mut result,
+                        )
+                    };
+                    Ok(if ok != 0 {
+                        PasteDelivery::Pasted
+                    } else {
+                        PasteDelivery::Failed(PasteDeliveryFailure::NativePasteFailed)
+                    })
                 }
-                PasteControlIdentity::AutomationRuntimeId(_) => send_paste_shortcut()
-                    .map(|_| PasteDelivery::Pasted)
-                    .map_err(|_| {
-                        PlatformError("Windows did not accept the paste shortcut".to_owned())
-                    }),
+                PasteControlIdentity::AutomationRuntimeId(_) => Ok(match send_paste_shortcut() {
+                    Ok(()) => PasteDelivery::Pasted,
+                    Err(reason) => PasteDelivery::Failed(reason),
+                }),
             }
         }
     }
 
-    fn send_paste_shortcut() -> Result<(), PasteDeliveryFailure> {
+    fn foreground_allows_restore(target: HWND) -> Result<(), PasteDeliveryFailure> {
+        let foreground = unsafe { GetForegroundWindow() };
+        if foreground.0.is_null() || foreground == target {
+            return Ok(());
+        }
+        let mut pid = 0;
+        unsafe {
+            GetWindowThreadProcessId(foreground, Some(&mut pid));
+        }
+        if pid == std::process::id() {
+            Ok(())
+        } else {
+            Err(PasteDeliveryFailure::OriginalWindowUnavailable)
+        }
+    }
+
+    pub(crate) fn modifiers_released() -> Result<(), PasteDeliveryFailure> {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+            GetAsyncKeyState, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
+        };
+        let busy = [VK_MENU, VK_CONTROL, VK_SHIFT, VK_LWIN, VK_RWIN]
+            .into_iter()
+            .any(|key| unsafe { GetAsyncKeyState(i32::from(key)) } < 0);
+        if busy {
+            Err(PasteDeliveryFailure::ModifierKeysBusy)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Verify the retained plain-text representation under the clipboard lock as
+    /// well as its generation. This closes the writer-close/token-read race; a
+    /// generation from an unrelated writer must never authorize its payload.
+    pub(crate) fn validate_inline_clipboard(sequence: u64, expected: &str) -> bool {
+        let Ok(_guard) = ClipboardGuard::open() else {
+            return false;
+        };
+        if u64::from(unsafe { GetClipboardSequenceNumber() }) != sequence {
+            return false;
+        }
+        let maximum = (echo_engine::MAX_COMPOSER_UNITS + 1) * 2;
+        let Ok(size) = ClipboardGuard::global_size(13) else {
+            return false;
+        };
+        if size == 0 || size > maximum {
+            return false;
+        }
+        let Ok(bytes) = ClipboardGuard::read_global(13) else {
+            return false;
+        };
+        utf16_clipboard_text(&bytes) == expected
+            && u64::from(unsafe { GetClipboardSequenceNumber() }) == sequence
+    }
+
+    pub(crate) fn send_paste_shortcut() -> Result<(), PasteDeliveryFailure> {
+        modifiers_released()?;
         let inputs = [
             key_input(VK_CONTROL, false),
             key_input(VK_V, false),
@@ -385,7 +539,7 @@ mod windows_impl {
                         Default::default()
                     },
                     time: 0,
-                    dwExtraInfo: 0,
+                    dwExtraInfo: crate::inline::INJECTED_TAG,
                 },
             },
         }
@@ -626,110 +780,16 @@ mod windows_impl {
     }
 
     fn capture_native_target() -> Result<Option<PasteTarget>, PlatformError> {
-        let window = unsafe { GetForegroundWindow() };
-        if window.0.is_null() || !unsafe { IsWindow(Some(window)) }.as_bool() {
-            return Ok(None);
-        }
-        let mut process_id = 0;
-        unsafe { GetWindowThreadProcessId(window, Some(&mut process_id)) };
-        if process_id == 0 || process_id == std::process::id() {
-            return Ok(None);
-        }
-        let focused_control = focused_input_identity(window, process_id)
-            .or_else(|| focused_native_control_from_gui(window, process_id));
-        let Some(focused_control) = focused_control else {
-            return Ok(None);
-        };
-        let focused_rect = match &focused_control {
-            PasteControlIdentity::NativeWindow { handle, class_name } => {
-                let focused = HWND(*handle as *mut c_void);
-                let style = unsafe { GetWindowLongW(focused, GWL_STYLE) } as u32;
-                if !is_native_input_class(class_name)
-                    || !unsafe { IsWindowEnabled(focused) }.as_bool()
-                    || style & ES_READONLY as u32 != 0
-                    || style & ES_PASSWORD as u32 != 0
-                {
-                    return Ok(None);
-                }
-                window_rect(focused)
-            }
-            PasteControlIdentity::AutomationRuntimeId(_) => None,
-        };
-        let process_started_at = process_started_at(process_id).unwrap_or(0);
-        if process_started_at == 0 {
-            return Ok(None);
-        }
-        let rect = focused_rect
-            .or_else(|| window_rect(window))
-            .unwrap_or(PhysicalRect {
-                x: 0,
-                y: 0,
-                width: 1,
-                height: 1,
-            });
-        Ok(Some(PasteTarget {
-            window_id: window.0 as isize,
-            window_class: window_class_name(window).unwrap_or_default(),
-            process_id,
-            process_started_at,
-            focused_control: Some(focused_control),
-            app_name: None,
-            selected_text: None,
-            is_single_line: None,
-            geometry: InputTargetGeometry {
-                target: rect,
-                work_area: rect,
-                dpi: 96,
-            },
-        }))
+        Ok(crate::focus::FocusSnapshot::capture()
+            .capture_target()
+            .target)
     }
 
     fn focused_input_identity(window: HWND, process_id: u32) -> Option<PasteControlIdentity> {
-        unsafe {
-            let initialization = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-            let initialized = initialization.is_ok();
-            let result = (|| {
-                let automation: IUIAutomation =
-                    match CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER).ok() {
-                        Some(value) => value,
-                        None => return None,
-                    };
-                let focused = match automation.GetFocusedElement().ok() {
-                    Some(value) => value,
-                    None => return None,
-                };
-                let focused_process = focused.CurrentProcessId().ok().map(|value| value as u32);
-                let belongs = automation_element_belongs_to(&automation, &focused, window);
-                let editable = automation_element_is_editable(&focused);
-                if focused_process != Some(process_id) || !belongs || !editable {
-                    return None;
-                }
-                focused
-                    .CurrentNativeWindowHandle()
-                    .ok()
-                    .filter(|control| native_control_belongs_to(*control, window, process_id))
-                    .and_then(|control| {
-                        let class_name = window_class_name(control)?;
-                        is_native_input_class(&class_name).then_some(
-                            PasteControlIdentity::NativeWindow {
-                                handle: control.0 as isize,
-                                class_name,
-                            },
-                        )
-                    })
-                    .or_else(|| {
-                        automation_runtime_id(&focused)
-                            .map(PasteControlIdentity::AutomationRuntimeId)
-                    })
-            })();
-            if initialized {
-                CoUninitialize();
-            }
-            result
-        }
+        crate::focus::focused_identity(window, process_id)
     }
 
-    fn focused_native_control_from_gui(
+    pub(crate) fn focused_native_control_from_gui(
         window: HWND,
         process_id: u32,
     ) -> Option<PasteControlIdentity> {
@@ -758,7 +818,7 @@ mod windows_impl {
         })
     }
 
-    fn native_control_belongs_to(control: HWND, window: HWND, process_id: u32) -> bool {
+    pub(crate) fn native_control_belongs_to(control: HWND, window: HWND, process_id: u32) -> bool {
         if control.0.is_null() || window.0.is_null() {
             return false;
         }
@@ -768,7 +828,7 @@ mod windows_impl {
             && unsafe { GetAncestor(control, GA_ROOT) } == window
     }
 
-    fn automation_element_is_editable(element: &IUIAutomationElement) -> bool {
+    pub(crate) fn automation_element_is_editable(element: &IUIAutomationElement) -> bool {
         unsafe {
             element
                 .CurrentIsEnabled()
@@ -790,7 +850,7 @@ mod windows_impl {
         }
     }
 
-    fn automation_element_belongs_to(
+    pub(crate) fn automation_element_belongs_to(
         automation: &IUIAutomation,
         element: &IUIAutomationElement,
         window: HWND,
@@ -819,7 +879,7 @@ mod windows_impl {
         }
     }
 
-    fn automation_runtime_id(element: &IUIAutomationElement) -> Option<Vec<i32>> {
+    pub(crate) fn automation_runtime_id(element: &IUIAutomationElement) -> Option<Vec<i32>> {
         let array = unsafe { element.GetRuntimeId() }.ok()?;
         if array.is_null() {
             return None;
@@ -828,7 +888,7 @@ mod windows_impl {
             let lower = unsafe { SafeArrayGetLBound(array, 1) }.ok()?;
             let upper = unsafe { SafeArrayGetUBound(array, 1) }.ok()?;
             let length = usize::try_from(upper.checked_sub(lower)?.checked_add(1)?).ok()?;
-            if length == 0 {
+            if length == 0 || length > 128 {
                 return None;
             }
             let mut data = null_mut();
@@ -922,7 +982,7 @@ mod windows_impl {
         (copied > 0).then(|| String::from_utf16_lossy(&buffer[..copied as usize]))
     }
 
-    fn process_started_at(process_id: u32) -> Option<u64> {
+    pub(crate) fn process_started_at(process_id: u32) -> Option<u64> {
         let process =
             unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id) }.ok()?;
         let mut creation = windows::Win32::Foundation::FILETIME::default();
@@ -941,7 +1001,9 @@ mod windows_impl {
         result
     }
 
-    fn validate_target_identity(target: &PasteTarget) -> Result<HWND, PasteDeliveryFailure> {
+    pub(crate) fn validate_target_identity(
+        target: &PasteTarget,
+    ) -> Result<HWND, PasteDeliveryFailure> {
         let hwnd = HWND(target.window_id as *mut c_void);
         if hwnd.0.is_null() || !unsafe { IsWindow(Some(hwnd)) }.as_bool() {
             return Err(PasteDeliveryFailure::OriginalWindowUnavailable);
@@ -963,7 +1025,7 @@ mod windows_impl {
         ))
     }
 
-    fn validate_target_integrity(process_id: u32) -> Result<(), PasteDeliveryFailure> {
+    pub(crate) fn validate_target_integrity(process_id: u32) -> Result<(), PasteDeliveryFailure> {
         validate_integrity_levels(
             current_process_integrity_level(),
             process_integrity_level(process_id),
@@ -1034,13 +1096,13 @@ mod windows_impl {
         unsafe { GetSidSubAuthority(sid, count - 1).as_ref() }.copied()
     }
 
-    fn window_class_name(window: HWND) -> Option<String> {
+    pub(crate) fn window_class_name(window: HWND) -> Option<String> {
         let mut buffer = [0_u16; 256];
         let length = unsafe { GetClassNameW(window, &mut buffer) };
         (length > 0).then(|| String::from_utf16_lossy(&buffer[..length as usize]))
     }
 
-    fn window_rect(window: HWND) -> Option<PhysicalRect> {
+    pub(crate) fn window_rect(window: HWND) -> Option<PhysicalRect> {
         let mut rect = RECT::default();
         unsafe { GetWindowRect(window, &mut rect) }.ok()?;
         let width = rect.right.checked_sub(rect.left)?;
@@ -1053,7 +1115,7 @@ mod windows_impl {
         })
     }
 
-    fn is_native_input_class(class_name: &str) -> bool {
+    pub(crate) fn is_native_input_class(class_name: &str) -> bool {
         let class_name = class_name.to_ascii_lowercase();
         class_name == "edit" || class_name.starts_with("richedit") || class_name.contains(".edit.")
     }

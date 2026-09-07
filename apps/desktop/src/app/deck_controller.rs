@@ -109,9 +109,19 @@ impl App {
                     }
                 )
             } else {
-                format!("{} results in this space", self.surface.total)
+                format!(
+                    "{} {}",
+                    self.surface.total,
+                    if self.surface.total == 1 {
+                        "match"
+                    } else {
+                        "matches"
+                    }
+                )
             };
-            self.window.set_space_subtitle(subtitle.into());
+            if (self.surface.ready && !self.surface.loading) || self.model.row_count() == 0 {
+                self.window.set_space_subtitle(subtitle.into());
+            }
         }
         self.window.set_active_view(
             if selected == SpaceId::HISTORY {
@@ -142,6 +152,9 @@ impl App {
         self.navigate_to(self.deck.order()[next as usize]);
     }
     pub(super) fn navigate_to(&mut self, id: SpaceId) {
+        if self.inline_active() {
+            self.worker.inline.invalidate_results();
+        }
         if self.mutation.is_some()
             || self.session.busy()
             || self.window.get_modal()
@@ -178,7 +191,7 @@ impl App {
         self.surface.hide();
         self.surface.set_space(id);
         self.surface.visible = true;
-        let query = if self.ui.query_on_switch == QueryOnSwitch::Clear {
+        let query = if !self.inline_active() && self.ui.query_on_switch == QueryOnSwitch::Clear {
             String::new()
         } else {
             self.window.get_query().to_string()
@@ -212,7 +225,9 @@ impl App {
             self.content_ready();
             self.schedule_prewarm();
         }
-        self.window.invoke_focus_search(false);
+        if !self.inline_active() {
+            self.window.invoke_focus_search(false);
+        }
         self.update_card_region();
         if self.navigation_us.len() < 256 {
             self.navigation_us
@@ -277,6 +292,11 @@ impl App {
         self.pending_previews.clear();
     }
     pub(super) fn schedule_prewarm(&mut self) {
+        if self.inline_active()
+            && (!self.surface.ready || self.surface.loading || self.surface.dirty)
+        {
+            return;
+        }
         if !self.surface.visible
             || !self.flow_allowed()
             || self.window.get_route().as_str() != "history"
@@ -300,8 +320,33 @@ impl App {
             dpi.to_bits(),
         );
         if geometry != self.geometry {
+            let height_only_inline = self.surface.visible
+                && geometry.0 == self.geometry.0
+                && geometry.2 == self.geometry.2;
             self.geometry = geometry;
-            self.clear_flow_cache();
+            if height_only_inline {
+                // A narrower query resizes the output, not the whole UI lifetime.
+                // Retain the last side textures until their replacements are ready.
+                self.dirty_snapshots
+                    .extend(self.deck.order().iter().copied());
+                // Reflow retained side content at the new size before presenting.
+                // Scaling a tall cached bitmap into a short card distorts its text.
+                let sides = self
+                    .deck
+                    .poses(self.window.get_panel_width())
+                    .into_iter()
+                    .filter(|p| {
+                        p.space != self.surface.space && self.previews.contains_key(&p.space)
+                    })
+                    .map(|p| p.space)
+                    .collect::<Vec<_>>();
+                for id in sides {
+                    let _ = self.capture_space(id, false);
+                }
+                self.prepare_scene();
+            } else {
+                self.clear_flow_cache();
+            }
             self.deck.snap();
             self.render();
             self.content_ready();
@@ -356,7 +401,10 @@ impl App {
             self.previews.retain(|id, _| ids.contains(&id.0));
             for pose in &poses {
                 if pose.space != self.surface.space
-                    && !self.previews.contains_key(&pose.space)
+                    && !self
+                        .previews
+                        .get(&pose.space)
+                        .is_some_and(|p| p.query == self.surface.query)
                     && (self.dirty_snapshots.contains(&pose.space)
                         || !self.flow.as_ref().unwrap().contains(pose.space.0))
                     && self.ui.side_content == SideContent::Visible
@@ -373,6 +421,12 @@ impl App {
             }
             let candidate = poses
                 .iter()
+                .filter(|p| {
+                    !self.inline_active()
+                        || p.space == self.surface.space
+                        || self.ui.side_content == SideContent::TitlesOnly
+                        || self.previews.contains_key(&p.space)
+                })
                 .filter(|p| {
                     p.space != self.surface.space || self.full_motion() && self.surface.ready
                 })
@@ -439,6 +493,7 @@ impl App {
             self.previews.insert(
                 id,
                 Preview {
+                    query: self.surface.query.clone(),
                     items: data.page.items,
                     revision: data.revision,
                     total: data.total,
@@ -497,10 +552,18 @@ impl App {
                         .map_or(&[][..], |p| p.items.as_slice())
                 };
                 let mut section = String::new();
+                let mut matcher = FuzzyMatcher::new(&self.surface.query);
                 let rows = items
                     .iter()
                     .map(|item| {
                         let mut row = formatting::row(item, &mut section);
+                        if !self.surface.query.trim().is_empty() {
+                            crate::match_highlight::apply(
+                                &mut row,
+                                &mut matcher,
+                                self.window.get_dark(),
+                            );
+                        }
                         if id == self.surface.space {
                             row.selected = self.surface.selection == Some(RowKey::of(item));
                         }

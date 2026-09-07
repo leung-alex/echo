@@ -27,8 +27,10 @@ mod bindings;
 mod card_window;
 mod deck_controller;
 mod dialogs;
+mod inline_completion;
 #[cfg(feature = "native-test")]
 pub(crate) mod native_test;
+mod quick_insert_window;
 mod settings_controller;
 use dialogs::{Confirmation, Picker};
 thread_local! { static APP: RefCell<Option<Rc<RefCell<App>>>> = const { RefCell::new(None) }; }
@@ -104,6 +106,7 @@ impl Images {
     }
 }
 struct Preview {
+    query: String,
     items: Vec<QuickInsertItem>,
     revision: i64,
     total: u64,
@@ -124,6 +127,16 @@ pub struct App {
     settings_revision: i64,
     ready: bool,
     pending_args: Option<Vec<String>>,
+    pending_focus: Option<echo_windows::focus::FocusSnapshot>,
+    activation_focus: Option<echo_windows::focus::FocusSnapshot>,
+    popup_anchor: Option<echo_windows::focus::PopupAnchor>,
+    popup_placement: Option<echo_windows::focus::PopupPlacement>,
+    manager_geometry: Option<(slint::PhysicalPosition, slint::PhysicalSize)>,
+    quick_geometry_active: bool,
+    capture_pending: bool,
+    inline_ui: inline_completion::InlineUi,
+    inline_timer: Timer,
+    compatibility_notice: Option<String>,
     mutation: Option<u64>,
     serial: u64,
     quitting: bool,
@@ -210,6 +223,16 @@ impl App {
             settings_revision: bootstrap.revision,
             ready: false,
             pending_args: Some(args),
+            pending_focus: None,
+            activation_focus: None,
+            popup_anchor: None,
+            popup_placement: None,
+            manager_geometry: None,
+            quick_geometry_active: false,
+            capture_pending: false,
+            inline_ui: Default::default(),
+            inline_timer: Timer::default(),
+            compatibility_notice: None,
             mutation: None,
             serial: 0,
             quitting: false,
@@ -279,13 +302,14 @@ impl App {
     }
     fn set_busy(&self) {
         self.window
-            .set_busy(self.session.busy() || self.mutation.is_some());
+            .set_busy(self.capture_pending || self.session.busy() || self.mutation.is_some());
     }
     fn handle(&mut self, event: Event) {
         if self.quitting {
             return;
         }
         match event {
+            Event::Inline(event) => self.inline_event(event),
             Event::Command(command) => self.command(command),
             Event::Shell(event) => self.shell_event(event),
             Event::Ready(result) => match result {
@@ -330,6 +354,7 @@ impl App {
                         self.render();
                     }
                     self.content_ready();
+                    self.inline_results_ready();
                     self.schedule_prewarm();
                 }
             }
@@ -341,20 +366,46 @@ impl App {
                     return;
                 }
                 match result {
-                    Ok(target) => {
-                        self.session.capture_finished(epoch, target);
+                    Ok(result) => {
+                        self.popup_anchor = result.anchor;
+                        if context == Context::QuickInsert
+                            && self.activation_focus.as_ref().is_some_and(|snapshot| {
+                                !snapshot.is_echo() && !snapshot.still_current()
+                            })
+                        {
+                            self.activation_focus = None;
+                            self.dismiss();
+                            return;
+                        }
+                        let has_target = result.target.is_some();
+                        if !self.send(Work::Adopt(epoch, result.target)) {
+                            self.capture_pending = false;
+                            self.dismiss();
+                            return;
+                        }
+                        self.session.capture_finished(epoch, has_target);
                     }
                     Err(e) => {
                         self.session.capture_finished(epoch, false);
                         self.report(e, true);
                     }
                 }
+                self.capture_pending = false;
+                self.window
+                    .set_paste_target_available(self.session.has_target);
+                self.set_busy();
                 self.window
                     .set_quick_insert(context == Context::QuickInsert);
+                if context == Context::QuickInsert && !self.session.has_target {
+                    self.report("Copy only: no safe paste target was captured", false);
+                }
                 if let Err(e) = self.show_window() {
                     self.report(e, true);
                 }
                 self.load(false);
+                if let Some(notice) = self.compatibility_notice.take() {
+                    self.report(notice, false);
+                }
             }
             Event::Executed(operation, result) => self.executed(operation, result),
             Event::Mutated(serial, result) => self.mutated(serial, result),
@@ -385,10 +436,14 @@ impl App {
                 }
             }
         }
+        self.inline_results_ready();
         self.update_card_region();
     }
     fn shell_event(&mut self, event: ShellEvent) {
         match event {
+            ShellEvent::QuickInsert(snapshot) => self.hotkey_activate(snapshot),
+            ShellEvent::HotkeyStatus(status) => self.window.set_hotkey_status(status.into()),
+            ShellEvent::FocusLost => self.external_focus_lost(),
             ShellEvent::Open => self.activate_args(Vec::new()),
             ShellEvent::Favorites => self.activate_args(vec!["--favorites".into()]),
             ShellEvent::Settings => self.activate_args(vec!["--settings".into()]),
@@ -400,7 +455,7 @@ impl App {
                 self.viewport_changed();
             }
             ShellEvent::GeometryChanged => {
-                if let Some(hwnd) = self.hwnd {
+                if let Some(hwnd) = self.hwnd.filter(|_| !self.quick_geometry_active) {
                     let _ = shell::fit_window(hwnd, false, 16.0);
                 }
                 self.environment = shell::ui_environment(self.hwnd);
@@ -410,12 +465,20 @@ impl App {
         }
     }
     fn activate_args(&mut self, args: Vec<String>) {
+        let snapshot = self
+            .pending_focus
+            .take()
+            .unwrap_or_else(echo_windows::focus::FocusSnapshot::capture);
+        self.activate_from(args, snapshot);
+    }
+    fn activate_from(&mut self, args: Vec<String>, snapshot: echo_windows::focus::FocusSnapshot) {
         if args.first().map(String::as_str) == Some("--quit") {
             self.request_quit();
             return;
         }
         if !self.ready || self.spaces.is_empty() {
             self.pending_args = Some(args);
+            self.pending_focus = Some(snapshot);
             return;
         }
         if args.first().map(String::as_str) == Some("--background") {
@@ -429,7 +492,11 @@ impl App {
             );
             return;
         }
-        let mut context = Context::Manager;
+        let mut context = if args.first().map(String::as_str) == Some("--quick-insert") {
+            Context::QuickInsert
+        } else {
+            Context::Manager
+        };
         let mut query = String::new();
         let mut route = "history";
         let mut id = if self.ui.startup_space == StartupSpace::Last {
@@ -480,6 +547,8 @@ impl App {
         if !self.spaces.iter().any(|s| s.id == id) {
             id = SpaceId::HISTORY;
         }
+        self.stop_inline();
+        self.compatibility_notice = None;
         self.remember_position();
         self.surface.hide();
         self.surface.set_space(id);
@@ -493,21 +562,46 @@ impl App {
         self.cancel_prewarm();
         self.clear_flow_cache();
         self.window.set_route(route.into());
-        self.window.set_query(query.into());
+        self.window.set_query(query.clone().into());
         self.window.set_stale_rows(true);
         self.window.set_navigation_busy(false);
         self.window.set_control_focus_mode(false);
         self.window.set_editor_open(false);
         self.render_navigation();
         self.render_settings();
+        if context == Context::QuickInsert {
+            let _ = self.window.hide();
+        }
+        self.activation_focus = (context == Context::QuickInsert).then_some(snapshot);
+        self.popup_anchor = None;
+        self.popup_placement = None;
+        self.capture_pending = true;
         let epoch = self.session.activate(context);
         self.worker.epoch.store(epoch, Ordering::Release);
         self.set_busy();
+        // An explicit activation query remains an independent-search request.
+        if context == Context::QuickInsert && self.ui.inline_completion && query.is_empty() {
+            if let Some(snapshot) = self.activation_focus.clone() {
+                self.begin_inline(epoch, snapshot);
+                return;
+            }
+        }
         // Capturing the external insertion target completes before showing the window.
-        self.send(Work::Begin(epoch, context));
+        if !self.send(Work::Begin(epoch, context, self.activation_focus.clone())) {
+            self.capture_pending = false;
+            self.session.dismiss();
+            self.worker
+                .epoch
+                .store(self.session.epoch, Ordering::Release);
+            self.set_busy();
+        }
     }
     fn show_window(&mut self) -> Result<(), String> {
         let first = self.hwnd.is_none();
+        let center = self.prepare_window_geometry();
+        if let Some(hook) = &self.hook {
+            hook.set_inline_popup(self.inline_active())?;
+        }
         self.trim_timer.stop();
         self.window.show().map_err(|e| e.to_string())?;
         if first {
@@ -525,8 +619,15 @@ impl App {
             self.hwnd = Some(hwnd);
         }
         if let Some(hwnd) = self.hwnd {
-            shell::fit_window(hwnd, first, 16.0)?;
-            let _ = shell::focus_window(hwnd);
+            if !self.quick_geometry_active {
+                shell::fit_window(hwnd, first || center, 16.0)?;
+            }
+            if let Some(hook) = &self.hook {
+                hook.set_inline_popup(self.inline_active())?;
+            }
+            if !self.inline_active() {
+                let _ = shell::focus_window(hwnd);
+            }
         }
         self.environment = shell::ui_environment(self.hwnd);
         self.surface.visible = true;
@@ -534,7 +635,9 @@ impl App {
         if self.deck.phase == Phase::Suspended {
             self.deck.show(self.surface.space, self.now());
         }
-        if self.window.get_route().as_str() == "history" {
+        if self.inline_active() {
+            // Keyboard focus remains in the original input.
+        } else if self.window.get_route().as_str() == "history" {
             self.window.invoke_focus_search(false);
         } else {
             self.window.invoke_focus_controls();
@@ -573,8 +676,14 @@ impl App {
         self.send(Work::Resume(self.surface.space));
     }
     fn dismiss(&mut self) {
+        self.stop_inline();
+        self.capture_pending = false;
         self.hide_window();
+        if let Some(snapshot) = self.activation_focus.take() {
+            echo_windows::focus::restore_after_dismiss(&snapshot);
+        }
         self.session.dismiss();
+        self.window.set_paste_target_available(false);
         self.worker
             .epoch
             .store(self.session.epoch, Ordering::Release);
@@ -582,6 +691,7 @@ impl App {
         self.set_busy();
     }
     fn quit(&mut self) {
+        self.stop_inline();
         self.quitting = true;
         self.search_timer.stop();
         self.flow_timer.stop();
@@ -593,6 +703,7 @@ impl App {
         let _ = slint::quit_event_loop();
     }
     pub fn shutdown(&mut self) {
+        self.stop_inline();
         self.quitting = true;
         self.hub.close();
         self.window.set_stage_image(Default::default());
@@ -625,14 +736,32 @@ impl App {
         }
     }
     fn render(&mut self) {
+        if (self.surface.loading || self.surface.dirty) && self.model.row_count() > 0 {
+            // Preserve complete visual rows, including highlight spans and action
+            // strips, until the next query is ready. Safety is a separate gate.
+            self.window.set_loading(true);
+            return;
+        }
         let mut section = String::new();
+        let mut matcher = FuzzyMatcher::new(&self.surface.query);
+        let selected = if self.surface.loading || self.surface.dirty {
+            self.model
+                .iter()
+                .find(|r| r.selected)
+                .map(|r| r.key.to_string())
+        } else {
+            self.surface.selection.map(|key| key.to_string())
+        };
         let rows = self
             .surface
             .items
             .iter()
             .map(|item| {
                 let mut row = formatting::row(item, &mut section);
-                row.selected = self.surface.selection == Some(RowKey::of(item));
+                if self.surface.ready && !self.surface.query.trim().is_empty() {
+                    crate::match_highlight::apply(&mut row, &mut matcher, self.window.get_dark());
+                }
+                row.selected = selected.as_deref() == Some(RowKey::of(item).to_string().as_str());
                 row.batch_selected = self.surface.selected_ids.contains(&item.id);
                 if let Some(image) = item
                     .thumbnail
@@ -644,7 +773,9 @@ impl App {
                 row
             })
             .collect();
-        crate::native_model::reconcile(self.model.as_ref(), rows);
+        crate::native_model::reconcile_keyed(self.model.as_ref(), rows, |row: &EntryRow| {
+            row.key.clone()
+        });
         self.window
             .set_stale_rows(!self.surface.ready && self.surface.items.is_empty());
         self.window.set_loading(self.surface.loading);
@@ -668,6 +799,9 @@ impl App {
         }
     }
     fn render_selection(&self) {
+        if self.surface.loading || self.surface.dirty {
+            return;
+        }
         for (index, item) in self.surface.items.iter().enumerate() {
             if let Some(mut row) = self.model.row_data(index) {
                 let selected = self.surface.selection == Some(RowKey::of(item));
@@ -783,14 +917,25 @@ impl App {
     }
     fn command(&mut self, command: Command) {
         match command {
+            Command::InlineTimeout(epoch) => {
+                if self.session.epoch == epoch && self.inline_ui.pending {
+                    self.dismiss();
+                    self.report("Input inspection timed out; focus remains in your input. Invoke again to retry.", false);
+                }
+            }
             Command::Quit => self.request_quit(),
             Command::Dismiss => self.request_hide(),
             Command::Drag => {
+                self.popup_anchor = None;
+                self.popup_placement = None;
                 if let Some(hwnd) = self.hwnd {
                     let _ = shell::start_drag(hwnd);
                 }
             }
             Command::Query(query) => {
+                if self.inline_active() {
+                    self.worker.inline.invalidate_results();
+                }
                 if self.deck.phase == Phase::Animating {
                     self.finish_motion();
                 }
@@ -799,18 +944,23 @@ impl App {
                     return;
                 }
                 self.surface.set_query(query);
-                self.window.set_scroll_y(0.0);
-                self.pending_scroll = None;
+                // Keep the last complete result set painted while the next query
+                // is in flight. Stale results are not executable (epoch/readiness).
+                let keep_rows = self.model.row_count() > 0;
+                if !keep_rows {
+                    self.window.set_scroll_y(0.0);
+                }
+                self.pending_scroll = Some(0.0);
                 self.deck.block_content();
                 self.cancel_prewarm();
-                self.previews.clear();
+                // Keep side-card content until the new query snapshot is ready.
                 self.dirty_snapshots.insert(self.surface.space);
-                self.window.set_stale_rows(true);
+                self.window.set_stale_rows(!keep_rows);
                 self.window.set_loading(true);
                 let hub = self.hub.clone();
                 self.search_timer.start(
                     TimerMode::SingleShot,
-                    Duration::from_millis(75),
+                    Duration::from_millis(if self.inline_active() { 25 } else { 75 }),
                     move || hub.post(Event::Command(Command::Refresh)),
                 );
             }
@@ -859,7 +1009,12 @@ impl App {
                     self.images.trim_to(0);
                 }
             }
-            Command::ViewportChanged => self.viewport_changed(),
+            Command::ViewportChanged => {
+                self.viewport_changed();
+                if self.inline_active() {
+                    self.prepare_window_geometry();
+                }
+            }
             Command::StageClick(x, y) => self.stage_click(x, y),
             Command::StageScroll(delta) => self.stage_scroll(delta),
             Command::SaveFavorite => self.save_favorite(),
@@ -940,6 +1095,10 @@ impl App {
         }
     }
     fn execute(&mut self, key: RowKey, action: QuickInsertAction) {
+        if self.inline_active() && action == QuickInsertAction::Insert {
+            self.execute_inline_item(key);
+            return;
+        }
         if !self.deck.can_insert(self.surface.space)
             || !self.surface.ready
             || self.mutation.is_some()
@@ -950,6 +1109,11 @@ impl App {
             self.report("Selected · use Copy to copy this content", false);
             return;
         }
+        let action = if action == QuickInsertAction::Insert && !self.session.has_target {
+            QuickInsertAction::Copy
+        } else {
+            action
+        };
         let Some(operation) = self.session.begin(action) else {
             return;
         };
@@ -985,10 +1149,48 @@ impl App {
         self.set_busy();
         match completion {
             Completion::Stale => {}
-            Completion::Inserted => self.report("Inserted", false),
-            Completion::Copied => self.report("Copied", false),
+            Completion::Inserted => {
+                if self.inline_active() {
+                    self.stop_inline();
+                    self.activation_focus = None;
+                    self.hide_window();
+                }
+                self.report("Inserted", false);
+            }
+            Completion::Copied => self.report(
+                if self.session.context == Context::QuickInsert && !self.session.has_target {
+                    "Copied to clipboard; no safe paste target"
+                } else {
+                    "Copied"
+                },
+                false,
+            ),
             Completion::Staged => self.report("Copied to clipboard; no active target", false),
             Completion::Restore => {
+                if self.inline_active() && operation.action == QuickInsertAction::Insert {
+                    let error = result
+                        .as_ref()
+                        .err()
+                        .cloned()
+                        .unwrap_or_else(|| "Replacement failed".into());
+                    if error.contains("ReplacementUnconfirmed") || error.contains("RangeChanged") {
+                        self.stop_inline();
+                        self.activation_focus = None;
+                        self.session.dismiss();
+                        self.worker
+                            .epoch
+                            .store(self.session.epoch, Ordering::Release);
+                        self.send(Work::Cancel);
+                        self.window.set_quick_insert(false);
+                        self.window.set_paste_target_available(false);
+                        let _ = self.show_window();
+                        self.report(format!("{error}. Check your input before retrying; Echo will not replay this operation."), true);
+                    } else {
+                        self.report(error, true);
+                        self.inline_results_ready();
+                    }
+                    return;
+                }
                 if operation.action == QuickInsertAction::Insert {
                     let _ = self.show_window();
                     self.load(false);
@@ -1084,6 +1286,10 @@ impl App {
                     self.previews.clear();
                     self.clear_flow_cache();
                     self.report(result.message, false);
+                }
+                if let Some(warning) = result.settings_warning {
+                    self.window.set_settings_error(warning.clone().into());
+                    self.report(warning, true);
                 }
                 self.surface.set_batch(false);
                 self.surface.refresh_top();

@@ -95,7 +95,7 @@ impl App {
             None => {}
         }
     }
-    fn unsaved(&self) -> bool {
+    pub(super) fn unsaved(&self) -> bool {
         self.window.get_settings_dirty() || self.editor_dirty() || self.space_dirty()
     }
     pub(super) fn request_hide(&mut self) {
@@ -152,6 +152,21 @@ impl App {
         }
     }
     pub(super) fn set_route(&mut self, route: &str) {
+        if self.inline_active() && route != "history" {
+            self.stop_inline();
+            self.activation_focus = None;
+            self.popup_anchor = None;
+            self.session.dismiss();
+            self.worker
+                .epoch
+                .store(self.session.epoch, Ordering::Release);
+            self.send(Work::Cancel);
+            self.window.set_quick_insert(false);
+            self.window.set_paste_target_available(false);
+            if let Some(hwnd) = self.hwnd {
+                let _ = shell::focus_window(hwnd);
+            }
+        }
         self.remember_position();
         self.finish_motion();
         self.preview_timer.stop();
@@ -173,6 +188,10 @@ impl App {
                 self.load(false);
             }
             self.schedule_prewarm();
+        }
+        let center = self.prepare_window_geometry();
+        if let Some(hwnd) = self.hwnd.filter(|_| !self.quick_geometry_active) {
+            let _ = shell::fit_window(hwnd, center, 16.0);
         }
         // Settings does not recapture or discard the external Quick Insert session.
     }

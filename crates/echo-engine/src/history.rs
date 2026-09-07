@@ -92,6 +92,13 @@ pub const MAX_PAGE_SIZE: u32 = 100;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PageCursor {
+    Fuzzy {
+        space_id: i64,
+        revision: i64,
+        query_hash: u64,
+        score: u32,
+        order: u64,
+    },
     Space {
         space_id: i64,
         revision: i64,
@@ -301,7 +308,7 @@ fn storage_error<E: Display>(error: E) -> LibraryError {
     LibraryError::Storage(error.to_string())
 }
 
-fn history_item(entry: HistoryEntry) -> LibraryItem {
+pub(crate) fn history_item(entry: HistoryEntry) -> LibraryItem {
     LibraryItem {
         id: entry.id,
         kind: LibraryItemKind::History,

@@ -28,6 +28,8 @@ export component AppWindow inherits Window {
     in property <bool> status-error;
     in property <bool> busy;
     in property <bool> quick-insert;
+    in property <bool> inline-mode;
+    in property <bool> paste-target-available;
     in-out property <bool> text-edit-mode;
     in-out property <bool> history-enabled: true;
     in-out property <bool> record-sensitive;
@@ -74,6 +76,11 @@ export component AppWindow inherits Window {
     in-out property <string> motion;
     in-out property <string> motion-speed;
     in-out property <string> switch-shortcut;
+    in-out property <bool> global-hotkey-enabled;
+    in-out property <string> global-hotkey;
+    in-out property <bool> caret-anchor;
+    in-out property <bool> inline-completion;
+    in property <string> hotkey-status;
     in-out property <string> startup-space;
     in-out property <string> query-on-switch;
     in-out property <string> density;
@@ -149,9 +156,11 @@ export component AppWindow inherits Window {
     in property <[ActionVm]> picker-actions;
     in property <string> editor-sharing;
     private property <bool> picking-space-icon;
+    out property <length> inline-content-height: live-panel.natural-height;
     out property <length> stage-width: root.width;
     out property <length> stage-height: root.height;
-    out property <length> panel-width: max(120px,min(root.stage-width - 32px,min(T.panel-max-width,max(T.panel-min-width,root.stage-width * T.panel-width-ratio))));
+    in property <length> popup-card-width;
+    out property <length> panel-width: max(120px,min(root.stage-width - 32px,root.popup-card-width > 0px ? root.popup-card-width : min(T.panel-max-width,max(T.panel-min-width,root.stage-width * T.panel-width-ratio))));
     out property <length> panel-height: max(120px,root.stage-height - 2 * T.stage-padding-y);
     out property <length> panel-left: (root.width - root.panel-width) / 2;
     out property <length> panel-top: T.stage-padding-y;
@@ -183,7 +192,7 @@ export component AppWindow inherits Window {
     changed dark => { EchoTheme.dark = root.dark; Palette.color-scheme = root.dark ? ColorScheme.dark : ColorScheme.light; }
     title: "Echo Recall";
     preferred-width: T.window-width; preferred-height: T.window-height;
-    min-width: 320px; min-height: 300px;
+    min-width: root.quick-insert ? 120px : 320px; min-height: root.quick-insert ? 120px : 300px;
     no-frame: true;
     background: transparent;
     default-font-family: "Segoe UI"; default-font-size: T.font-body;
@@ -217,12 +226,14 @@ export component AppWindow inherits Window {
                 x: root.panel-left; y: root.panel-top; width: root.panel-width; height: root.panel-height;
                 visible: root.route == "history";
                 opacity: root.navigation-busy && root.flow-enabled ? 0 : 1;
+                inline-mode: root.inline-mode;
                 title: root.space-title; subtitle: root.space-subtitle; icon-key: root.space-icon; accent: root.space-accent;
                 rows: root.rows; favorites: root.active-view != "history"; capture-only: false;
                 loading: root.loading; stale: root.stale-rows; error: root.status-error;
                 busy: root.busy || root.modal || root.navigation-busy;
                 compact: root.density == "compact"; batch: root.batch-mode; selected-count: root.selected-count;
-                selection-index: root.selection-index; query <=> root.query; quick-insert: root.quick-insert;
+                selection-index: root.selection-index; query <=> root.query; quick-insert: root.quick-insert && root.paste-target-available;
+                copy-only: root.quick-insert && !root.paste-target-available;
                 has-more: root.has-more; has-previous: root.has-previous; scroll-y <=> root.scroll-y;
                 modal: root.modal; animating: root.navigation-busy;
                 navigation-label: root.navigation-label; status: root.status; status-error: root.status-error;
@@ -274,6 +285,11 @@ export component AppWindow inherits Window {
                 motion <=> root.motion;
                 motion-speed <=> root.motion-speed;
                 switch-shortcut <=> root.switch-shortcut;
+                global-hotkey-enabled <=> root.global-hotkey-enabled;
+                global-hotkey <=> root.global-hotkey;
+                caret-anchor <=> root.caret-anchor;
+                inline-completion <=> root.inline-completion;
+                hotkey-status: root.hotkey-status;
                 startup-space <=> root.startup-space;
                 query-on-switch <=> root.query-on-switch;
                 density <=> root.density;
@@ -307,6 +323,7 @@ export component AppWindow inherits Window {
         }
         if (root.capture-mode): SpacePanel {
             x: root.panel-left; y: root.panel-top; width: root.panel-width; height: root.panel-height;
+            inline-mode: root.inline-mode;
             title: root.capture-title; subtitle: root.capture-subtitle; icon-key: root.capture-icon; accent: root.capture-accent;
             rows: root.capture-rows; favorites: root.capture-favorites; capture-only: true;
             titles-only: root.capture-titles-only; loading: root.capture-loading;
@@ -517,6 +534,7 @@ export component CardSnapshot inherits Window {
     in property <bool> batch;
     in property <int> selected-count;
     in property <bool> quick-insert;
+    in property <bool> inline-mode;
     in property <string> panel-title;
     in property <string> subtitle;
     in property <string> icon-key;
@@ -533,6 +551,7 @@ export component CardSnapshot inherits Window {
     changed dark => {EchoTheme.dark = root.dark; Palette.color-scheme = root.dark ? ColorScheme.dark : ColorScheme.light;}
     background:transparent;default-font-family:"Segoe UI";default-font-size:T.font-body;
     SpacePanel {
+        inline-mode:root.inline-mode;
         title:root.panel-title;subtitle:root.subtitle;icon-key:root.icon-key;accent:root.accent;
         rows:root.rows;favorites:root.favorites;loading:root.loading;titles-only:root.titles-only;
         compact:root.compact;capture-only:true;query <=> root.query;

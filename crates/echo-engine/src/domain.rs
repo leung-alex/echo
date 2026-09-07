@@ -184,6 +184,11 @@ pub enum PasteDeliveryFailure {
     KeyInjectionFailed,
     KeyReleaseFailed,
     NativePasteFailed,
+    RangeUnavailable,
+    RangeChanged,
+    CompositionBusy,
+    ClipboardChanged,
+    ReplacementUnconfirmed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -204,6 +209,32 @@ pub trait ClipboardPlatform: Send + Sync {
         representations: &[ClipboardRepresentation],
     ) -> Result<u64, PlatformError>;
     fn capture_target(&self) -> Result<Option<PasteTarget>, PlatformError>;
+    /// Runs before changing the clipboard for an Insert, never for an explicit Copy.
+    fn paste_preflight(
+        &self,
+        _target: &PasteTarget,
+    ) -> Result<Option<PasteDeliveryFailure>, PlatformError> {
+        Ok(None)
+    }
     fn paste_to_target(&self, target: &PasteTarget) -> Result<PasteDelivery, PlatformError>;
+    /// Validates a session-owned query range and retained formats before staging.
+    fn inline_preflight(
+        &self,
+        _ticket: crate::InlineTicket,
+        _representations: &[ClipboardRepresentation],
+    ) -> Result<(), PlatformError> {
+        Err(PlatformError(
+            "This platform does not support inline range replacement".into(),
+        ))
+    }
+    fn replace_inline(
+        &self,
+        _ticket: crate::InlineTicket,
+        _clipboard_sequence: u64,
+    ) -> Result<PasteDelivery, PlatformError> {
+        Ok(PasteDelivery::Failed(
+            PasteDeliveryFailure::RangeUnavailable,
+        ))
+    }
     fn reset_paste_window_session(&self) {}
 }

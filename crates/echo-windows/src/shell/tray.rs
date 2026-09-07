@@ -17,6 +17,7 @@ struct Host {
     icon: HICON,
     owned_icon: bool,
     taskbar: u32,
+    hotkeys: super::hotkey::Host,
 }
 unsafe fn notify(hwnd: HWND, host: &Host, operation: u32) {
     let mut data: NOTIFYICONDATAW = std::mem::zeroed();
@@ -42,12 +43,24 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
     }
     let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Host;
     if !state.is_null() {
-        let host = &*state;
+        let host = &mut *state;
         if msg == host.taskbar {
             notify(hwnd, host, NIM_ADD);
             return 0;
         }
         match msg {
+            super::hotkey::MESSAGE => {
+                host.hotkeys.drain(hwnd, &host.handler);
+                return 0;
+            }
+            WM_HOTKEY => {
+                if host.hotkeys.matches(w, l) {
+                    (host.handler)(ShellEvent::QuickInsert(
+                        crate::focus::FocusSnapshot::capture(),
+                    ));
+                }
+                return 0;
+            }
             TRAY_MESSAGE => {
                 let event = (l as u32) & 0xffff;
                 if event == WM_LBUTTONDBLCLK || event == NIN_SELECT || event == (NIN_SELECT | 1) {
@@ -98,6 +111,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
                 return 0;
             }
             WM_DESTROY => {
+                host.hotkeys.stop(hwnd);
                 notify(hwnd, host, NIM_DELETE);
                 PostQuitMessage(0);
                 return 0;
@@ -107,7 +121,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
     }
     DefWindowProcW(hwnd, msg, w, l)
 }
-pub(super) fn run(handler: EventHandler, ready: SyncSender<Result<isize, String>>) {
+pub(super) fn run(
+    handler: EventHandler,
+    ready: SyncSender<Result<isize, String>>,
+    hotkey_rx: std::sync::mpsc::Receiver<super::hotkey::Request>,
+) {
     unsafe {
         let instance = GetModuleHandleW(null());
         let class = wide("EchoNativeTrayHost");
@@ -136,6 +154,7 @@ pub(super) fn run(handler: EventHandler, ready: SyncSender<Result<isize, String>
             icon,
             owned_icon,
             taskbar: RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()),
+            hotkeys: super::hotkey::Host::new(hotkey_rx),
         });
         // A hidden top-level host, not HWND_MESSAGE: Explorer restart broadcasts must reach it.
         let hwnd = CreateWindowExW(

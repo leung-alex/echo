@@ -100,6 +100,7 @@ impl PanelRenderer {
         c.set_batch(source.get_capture_batch());
         c.set_selected_count(source.get_capture_selected_count());
         c.set_quick_insert(source.get_capture_quick_insert());
+        c.set_inline_mode(source.get_inline_mode());
         let result = self
             .adapter
             .renderer

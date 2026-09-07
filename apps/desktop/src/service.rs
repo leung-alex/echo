@@ -16,6 +16,9 @@ use std::{
     thread::JoinHandle,
 };
 
+mod capture_lane;
+mod settings_commit;
+
 pub enum Mutation {
     Space(SpaceCommand),
     SettingsPatch(SettingsPatch),
@@ -33,29 +36,59 @@ pub enum Work {
     Inspect(u64, i64),
     Catalog(u64, String, Option<PageCursor>),
     Resume(SpaceId),
-    Begin(u64, Context),
+    Begin(u64, Context, Option<echo_windows::focus::FocusSnapshot>),
+    BeginInline(u64, echo_windows::focus::FocusSnapshot),
+    Adopt(u64, Option<PasteTarget>),
     Cancel,
+    RetryHotkey,
     Execute(Operation, RowKey),
+    ExecuteInline(Operation, RowKey, echo_engine::InlineTicket),
     Mutate(u64, Mutation),
     Thumbnail(u64, String),
     Diagnostics(crate::events::DiagnosticReport),
+    Wake,
     Stop,
 }
 pub struct Worker {
     sender: SyncSender<Work>,
+    control: SyncSender<Work>,
+    capture: capture_lane::CaptureLane,
     thread: Option<JoinHandle<()>>,
     pub epoch: Arc<AtomicU64>,
     pub bootstrap: SettingsSnapshot,
+    pub inline: echo_windows::inline::InlineController,
 }
 impl Worker {
-    pub fn start(path: PathBuf, hub: Arc<Hub>) -> Result<Self, String> {
+    pub fn start(
+        path: PathBuf,
+        hub: Arc<Hub>,
+        hotkeys: echo_windows::shell::HotkeyController,
+    ) -> Result<Self, String> {
+        let inline_hub = hub.clone();
+        let inline = echo_windows::inline::InlineController::start(Arc::new(move |event| {
+            inline_hub.post_inline(event)
+        }))?;
+        let worker_inline = inline.clone();
         let (sender, receiver) = mpsc::sync_channel(32);
+        let (control, control_rx) = mpsc::sync_channel(8);
         let epoch = Arc::new(AtomicU64::new(0));
+        let capture = capture_lane::CaptureLane::start(hub.clone(), epoch.clone())?;
         let worker_epoch = epoch.clone();
         let (boot_tx, boot_rx) = mpsc::sync_channel(1);
         let thread = std::thread::Builder::new()
             .name("echo-domain-worker".into())
-            .spawn(move || run(path, hub, receiver, worker_epoch, boot_tx))
+            .spawn(move || {
+                run(
+                    path,
+                    hub,
+                    receiver,
+                    control_rx,
+                    worker_epoch,
+                    boot_tx,
+                    hotkeys,
+                    worker_inline,
+                )
+            })
             .map_err(|e| e.to_string())?;
         let bootstrap = match boot_rx.recv() {
             Ok(Ok(snapshot)) => snapshot,
@@ -69,19 +102,42 @@ impl Worker {
             }
         };
         Ok(Self {
+            inline,
             bootstrap,
             sender,
+            control,
+            capture,
             thread: Some(thread),
             epoch,
         })
     }
     pub fn send(&self, work: Work) -> Result<(), String> {
+        let work = match work {
+            Work::BeginInline(epoch, snapshot) => return self.inline.begin(epoch, snapshot),
+            Work::Begin(epoch, context, snapshot) => {
+                return self.capture.submit(epoch, context, snapshot)
+            }
+            work => work,
+        };
+        if matches!(
+            work,
+            Work::Adopt(..) | Work::Cancel | Work::Execute(..) | Work::ExecuteInline(..)
+        ) {
+            self.control
+                .try_send(work)
+                .map_err(|_| "Echo activation queue is busy".to_string())?;
+            // Wake an idle worker; a full ordinary queue already guarantees a wake.
+            let _ = self.sender.try_send(Work::Wake);
+            return Ok(());
+        }
         self.sender
             .try_send(work)
             .map_err(|_| "Echo is busy; retry the operation".into())
     }
     pub fn stop(&mut self) {
-        self.epoch.fetch_add(1, Ordering::AcqRel);
+        let epoch = self.epoch.fetch_add(1, Ordering::AcqRel);
+        self.inline.cancel(epoch);
+        self.capture.stop();
         let _ = self.sender.send(Work::Stop);
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
@@ -99,19 +155,28 @@ struct Services {
     library: Library<SharedClipboardStore>,
     quick: QuickInsertService<SharedClipboardStore>,
     clipboard: Arc<ClipboardService>,
+    platform: Arc<echo_windows::WindowsPlatform>,
+    hotkeys: echo_windows::shell::HotkeyController,
 }
 impl Services {
-    fn open(path: &std::path::Path) -> Result<Self, String> {
+    fn open(
+        path: &std::path::Path,
+        hotkeys: echo_windows::shell::HotkeyController,
+        inline: echo_windows::inline::InlineController,
+    ) -> Result<Self, String> {
         let store = Arc::new(SharedClipboardStore::open(path).map_err(|e| e.to_string())?);
-        let platform: Arc<dyn ClipboardPlatform> = Arc::new(echo_windows::WindowsPlatform::new());
+        let platform = Arc::new(echo_windows::WindowsPlatform::new());
+        platform.set_inline_controller(inline);
         let sink: Arc<dyn ClipboardSink> = store.clone();
         let clipboard = Arc::new(ClipboardService::new(platform.clone(), sink));
         let library = Library::new(store);
-        let quick = QuickInsertService::new(library.clone(), clipboard.clone(), platform);
+        let quick = QuickInsertService::new(library.clone(), clipboard.clone(), platform.clone());
         Ok(Self {
             library,
             quick,
             clipboard,
+            platform,
+            hotkeys,
         })
     }
 }
@@ -119,10 +184,13 @@ fn run(
     path: PathBuf,
     hub: Arc<Hub>,
     receiver: mpsc::Receiver<Work>,
+    control: mpsc::Receiver<Work>,
     epoch: Arc<AtomicU64>,
     bootstrap: SyncSender<Result<SettingsSnapshot, String>>,
+    hotkeys: echo_windows::shell::HotkeyController,
+    inline: echo_windows::inline::InlineController,
 ) {
-    let services = match Services::open(&path) {
+    let services = match Services::open(&path, hotkeys, inline) {
         Ok(service) => service,
         Err(error) => {
             let _ = bootstrap.send(Err(error.clone()));
@@ -137,6 +205,12 @@ fn run(
             return;
         }
     };
+    if let Err(error) = services.hotkeys.apply(&settings.ui) {
+        hub.post(Event::Shell(echo_windows::shell::ShellEvent::HotkeyStatus(
+            error,
+        )));
+    }
+    echo_windows::focus::warm_accessibility();
     let _ = bootstrap.send(Ok(settings.clone()));
     let events = services.clipboard.subscribe_events();
     let bridge_hub = hub.clone();
@@ -149,11 +223,12 @@ fn run(
         })
         .ok();
     hub.post(Event::Ready(Ok(settings)));
-    while let Ok(work) = receiver.recv() {
+    while let Ok(work) = control.try_recv().or_else(|_| receiver.recv()) {
         match work {
             Work::Diagnostics(report) => {
                 hub.post(Event::DiagnosticExported(export_diagnostics(&path, report)))
             }
+            Work::Wake => {}
             Work::Stop => break,
             Work::List(ticket, space, query) => {
                 hub.post(Event::Loaded(
@@ -213,19 +288,47 @@ fn run(
             Work::Resume(id) => {
                 let _ = services.library.store().save_resume_space(id);
             }
-            Work::Begin(generation, context) => {
+            Work::BeginInline(..) | Work::Begin(..) => {
+                unreachable!("Begin is intercepted by the capture lane")
+            }
+            Work::Adopt(generation, target) => {
                 if epoch.load(Ordering::Acquire) != generation {
                     continue;
                 }
                 services.quick.clear_session();
-                let result = if context == Context::QuickInsert {
-                    services.quick.begin_session().map_err(|e| e.to_string())
-                } else {
-                    Ok(false)
-                };
-                hub.post(Event::Activated(generation, context, result));
+                services.platform.adopt_captured_target(target.clone());
+                services.quick.begin_captured_session(target);
             }
-            Work::Cancel => services.quick.clear_session(),
+            Work::Cancel => {
+                services.quick.clear_session();
+                services.quick.release_search_cache();
+            }
+            Work::RetryHotkey => {
+                let result = services
+                    .library
+                    .store()
+                    .settings_snapshot()
+                    .map_err(|e| e.to_string())
+                    .and_then(|s| services.hotkeys.apply(&s.ui));
+                if let Err(error) = result {
+                    hub.post(Event::Shell(echo_windows::shell::ShellEvent::HotkeyStatus(
+                        error,
+                    )));
+                }
+            }
+            Work::ExecuteInline(operation, key, ticket) => {
+                let result = if epoch.load(Ordering::Acquire) != operation.epoch
+                    || operation.epoch != ticket.session
+                {
+                    Err("Inline session was cancelled".into())
+                } else {
+                    services
+                        .quick
+                        .execute_inline(key.source, key.id, ticket)
+                        .map_err(|e| e.to_string())
+                };
+                hub.post(Event::Executed(operation, result));
+            }
             Work::Execute(operation, key) => {
                 let result = if epoch.load(Ordering::Acquire) != operation.epoch {
                     Err("Insertion session was cancelled".into())
@@ -256,6 +359,7 @@ fn run(
 }
 fn mutate(services: &Services, mutation: Mutation) -> Result<MutationResult, String> {
     let mut settings = None;
+    let mut settings_warning = None;
     let mut editor_saved = false;
     let mut snapshot = None;
     let mut space_result = None;
@@ -273,16 +377,48 @@ fn mutate(services: &Services, mutation: Mutation) -> Result<MutationResult, Str
             "Space updated"
         }
         Mutation::SettingsPatch(patch) => {
-            let value = services
+            let previous = services
+                .library
+                .store()
+                .settings_snapshot()
+                .map_err(|e| e.to_string())?;
+            let reservation = services.hotkeys.prepare(&patch.ui)?;
+            let mut value = services
                 .library
                 .store()
                 .save_settings_patch(patch)
                 .map_err(|e| e.to_string())?;
+            if let Err(error) = reservation.commit() {
+                let (reconciled, warning) = settings_commit::reconcile(
+                    &previous,
+                    value,
+                    &error,
+                    |patch| {
+                        services
+                            .library
+                            .store()
+                            .save_settings_patch(patch)
+                            .map_err(|e| e.to_string())
+                    },
+                    || {
+                        services
+                            .library
+                            .store()
+                            .settings_snapshot()
+                            .map_err(|e| e.to_string())
+                    },
+                );
+                value = reconciled;
+                settings_warning = Some(warning);
+            }
             settings = Some(value.clipboard.clone());
             snapshot = Some(value);
-            quick
-                .refresh_capture_configuration()
-                .map_err(|e| e.to_string())?;
+            if let Err(error) = quick.refresh_capture_configuration() {
+                let warning = settings_warning.get_or_insert_with(String::new);
+                warning.push_str(&format!(
+                    " Settings were stored, but capture could not be refreshed: {error}"
+                ));
+            }
             "Settings saved"
         }
         Mutation::Pin(id, was_pinned) => {
@@ -326,6 +462,7 @@ fn mutate(services: &Services, mutation: Mutation) -> Result<MutationResult, Str
     };
     Ok(MutationResult {
         message: message.into(),
+        settings_warning,
         settings,
         editor_saved,
         snapshot,
@@ -420,7 +557,7 @@ fn scope_page(
 ) -> Result<crate::events::LoadedPage, String> {
     services
         .quick
-        .list_space(space, query, 50, cursor)
+        .fuzzy_list_space(space, query, 50, cursor)
         .map(|(page, revision, total)| crate::events::LoadedPage {
             page,
             revision,

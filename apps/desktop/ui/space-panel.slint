@@ -26,6 +26,11 @@ export component SpacePanel inherits Rectangle {
     in property <int> selected-count;
     in property <int> selection-index;
     in property <bool> quick-insert;
+    in property <bool> inline-mode;
+    private property <length> header-height: root.inline-mode ? 102px : T.panel-header-height;
+    out property <length> natural-height: root.header-height + T.panel-footer-height + 16px + (root.rows.length == 0 ? 78px : list.viewport-height);
+    changed natural-height => { if (root.inline-mode && !root.capture-only) {root.viewport-changed();} }
+    in property <bool> copy-only;
     in-out property <string> query;
     in property <bool> has-more;
     in property <bool> has-previous;
@@ -58,7 +63,7 @@ export component SpacePanel inherits Rectangle {
     pure callback drag-data(string) -> data-transfer;
     callback can-drop-data(data-transfer) -> bool;
     callback drop-data(data-transfer,string) -> bool;
-    public function focus-search(select-all: bool) {search.focus-search(select-all);}
+    public function focus-search(select-all: bool) {if (!root.inline-mode) {search.focus-search(select-all);}}
     public function focus-controls() {settings-button.focus();}
     public function reset-scroll() {list.viewport-y = 0px;}
     public function reveal-selection() {list.viewport-y = -max(0px,(selection-index - 1)*list.viewport-height/max(1,rows.length));}
@@ -71,7 +76,7 @@ export component SpacePanel inherits Rectangle {
     drop-shadow-color: #000000.with-alpha(T.flow-shadow-opacity);
     accessible-role: groupbox; accessible-enabled: !root.capture-only && !root.animating;
     accessible-label: root.capture-only ? "" : root.title + " space";
-    TouchArea {height:58px;enabled:!root.capture-only && !root.busy;
+    TouchArea {height:58px;enabled:!root.inline-mode && !root.capture-only && !root.busy;
         pointer-event(event) => {if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {root.drag();}}
     }
     Rectangle {x:T.panel-padding;y:20px;width:3px;height:30px;background:root.accent;border-radius:2px;}
@@ -87,47 +92,48 @@ export component SpacePanel inherits Rectangle {
     HorizontalLayout {
         x:parent.width - 154px;y:16px;width:130px;height:36px;spacing:5px;alignment:end;
         EchoButton {icon:@image-url("icons/plus.svg");label:"New space";width:36px;flat:true;
-            enabled:!root.busy;clicked => {if (!root.capture-only) {root.new-space();}}}
+            enabled:!root.busy && !root.inline-mode;clicked => {if (!root.capture-only) {root.new-space();}}}
         settings-button := EchoButton {icon:@image-url("icons/settings.svg");label:"Settings";width:36px;flat:true;
             enabled:!root.modal && !root.animating;clicked => {if (!root.capture-only) {root.settings();}}}
         EchoButton {icon:@image-url("icons/close.svg");label:"Hide Echo";width:36px;flat:true;
             enabled:!root.modal && !root.animating;clicked => {if (!root.capture-only) {root.hide();}}}
     }
     search := CardSearch {
+        visible: !root.inline-mode;
         x:T.panel-padding;y:64px;width:parent.width - 2*T.panel-padding;
-        query <=> root.query;space-title:root.title;interactive:!root.capture-only && !root.modal;
+        query <=> root.query;space-title:root.title;interactive:!root.inline-mode && !root.capture-only && !root.modal;
         focus-outline:root.capture-only && root.capture-search-focused;
         edited(value) => {root.query-edited(value);}
         ime-composing => {return root.ime-composing();}
         key-event(key,ctrl,shift,target) => {return root.key-event(key,ctrl,shift,target);}
     }
     Text {
-        x:T.panel-padding;y:122px;width:max(0px,parent.width - 224px);height:18px;
+        x:T.panel-padding;y:root.inline-mode ? 68px : 122px;width:max(0px,parent.width - 224px);height:18px;
         text:root.titles-only ? "Content hidden in side panels" : root.subtitle;
         color:EchoTheme.muted;font-size:T.font-secondary;overflow:elide;
     }
     HorizontalLayout {
-        x:parent.width - 196px;y:114px;width:172px;height:T.control-height;alignment:end;spacing:8px;
+        x:parent.width - 196px;y:root.inline-mode ? 60px : 114px;width:172px;height:T.control-height;alignment:end;spacing:8px;
         EchoButton {text:root.favorites ? "New content" : root.batch ? "Cancel" : "Select";
-            enabled:!root.busy;clicked => {if (root.favorites) {root.create-item();} else {root.batch-action(root.batch ? "cancel" : "begin");}}}
+            enabled:!root.busy && !root.inline-mode;clicked => {if (root.favorites) {root.create-item();} else {root.batch-action(root.batch ? "cancel" : "begin");}}}
         EchoButton {text:"···";label:"Space options";flat:true;width:36px;enabled:!root.busy;clicked => {root.menu();}}
     }
-    Rectangle {x:T.panel-padding;y:T.panel-header-height;width:parent.width - 2*T.panel-padding;height:1px;background:EchoTheme.line;}
+    Rectangle {x:T.panel-padding;y:root.header-height;width:parent.width - 2*T.panel-padding;height:1px;background:EchoTheme.line;}
     if (root.batch): HorizontalLayout {
-        x:T.panel-padding;y:T.panel-header-height + 8px;width:parent.width - 2*T.panel-padding;height:36px;spacing:8px;alignment:start;
+        x:T.panel-padding;y:root.header-height + 8px;width:parent.width - 2*T.panel-padding;height:36px;spacing:8px;alignment:start;
         EchoButton {text:"All loaded";enabled:!root.busy;clicked => {root.batch-action("all");}}
         EchoButton {text:"Move to Favorites";enabled:root.selected-count > 0 && !root.busy;clicked => {root.batch-action("favorite");}}
         EchoButton {text:"Pin";enabled:root.selected-count > 0 && !root.busy;clicked => {root.batch-action("pin");}}
         EchoButton {text:"Delete";danger:true;enabled:root.selected-count > 0 && !root.busy;clicked => {root.batch-action("delete");}}
     }
     list := ListView {
-        x:T.panel-padding;y:T.panel-header-height + (root.batch ? 52px : 8px);
+        x:T.panel-padding;y:root.header-height + (root.batch ? 52px : 8px);
         width:parent.width - 2*T.panel-padding;
         height:max(0px,parent.height - self.y - T.panel-footer-height - 8px);
         viewport-y <=> root.scroll-y;visible:!root.stale && !root.titles-only;
         for entry in root.rows: EntryView {
             entry:entry;favorites:root.favorites;compact:root.compact;capture-only:root.capture-only;batch:root.batch;
-            busy:root.busy || root.loading;quick-insert:root.quick-insert;reorder-enabled:root.query == "";
+            busy:root.busy;input-blocked:root.loading || root.stale;quick-insert:root.quick-insert;copy-only:root.copy-only;reorder-enabled:root.query == "";
             selected-geometry(y,height) => {
                 if (!root.capture-only && !root.animating) {
                     if (y + list.viewport-y < 0px || height > list.visible-height) {list.viewport-y = -y;}
@@ -144,8 +150,8 @@ export component SpacePanel inherits Rectangle {
         }
     }
     if (root.rows.length == 0 || root.stale || root.titles-only): VerticalLayout {
-        x:T.panel-padding;y:max(T.panel-header-height + 24px,(parent.height - 150px)/2);
-        width:parent.width - 2*T.panel-padding;height:130px;alignment:start;spacing:16px;
+        x:T.panel-padding;y:root.inline-mode ? root.header-height + 16px : max(root.header-height + 24px,(parent.height - 150px)/2);
+        width:parent.width - 2*T.panel-padding;height:root.inline-mode ? 70px : 130px;alignment:start;spacing:16px;
         Text {text:root.titles-only ? "Private space" : root.loading ? "Loading…" : root.error ? "Unable to load this space" : root.query != "" ? "No matches in this space" : root.favorites ? "A space for things you use often" : "Your clipboard history appears here";
             color:EchoTheme.muted;font-size:15px;horizontal-alignment:center;wrap:word-wrap;}
         if (!root.capture-only && root.favorites && !root.loading && !root.error && root.query == ""): HorizontalLayout {
@@ -170,6 +176,6 @@ export component SpacePanel inherits Rectangle {
         if (root.has-more): EchoButton {text:root.loading ? "Loading…" : "Load more";enabled:!root.loading && !root.busy;clicked => {root.more();}}
     }
     Text {x:T.panel-padding;y:parent.height - 22px;width:parent.width - 2*T.panel-padding;height:16px;
-        text:root.status != "" ? root.status : root.navigation-hint + "  Space · ↑↓  Content · Enter  " + (root.quick-insert ? "Insert" : "Select");
+        text:root.status != "" ? root.status : root.navigation-hint + "  Space · ↑↓  Content · Enter  " + (root.copy-only ? "Copy" : root.quick-insert ? "Insert" : "Select");
         color:root.status-error ? EchoTheme.danger : EchoTheme.muted;font-size:11px;overflow:elide;}
 }

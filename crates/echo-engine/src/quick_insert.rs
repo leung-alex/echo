@@ -101,6 +101,7 @@ pub struct QuickInsertService<S: LibraryStore> {
     platform: Arc<dyn ClipboardPlatform>,
     target: Mutex<Option<PasteTarget>>,
     metrics: OperationMetrics,
+    fuzzy: Mutex<crate::fuzzy_search::FuzzySearchCache>,
 }
 
 impl<S: LibraryStore> QuickInsertService<S> {
@@ -115,6 +116,7 @@ impl<S: LibraryStore> QuickInsertService<S> {
             platform,
             target: Mutex::new(None),
             metrics: OperationMetrics::default(),
+            fuzzy: Mutex::new(Default::default()),
         }
     }
 
@@ -161,6 +163,16 @@ impl<S: LibraryStore> QuickInsertService<S> {
             .lock()
             .unwrap_or_else(|error| error.into_inner()) = target.clone();
         Ok(target.is_some())
+    }
+
+    /// Adopt an adapter result captured before showing Echo; never recapture it here.
+    pub fn begin_captured_session(&self, target: Option<PasteTarget>) -> bool {
+        let available = target.is_some();
+        *self
+            .target
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = target;
+        available
     }
 
     pub fn clear_session(&self) {
@@ -210,6 +222,13 @@ impl<S: LibraryStore> QuickInsertService<S> {
                     .unwrap_or_else(|error| error.into_inner())
                     .clone()
                     .ok_or(QuickInsertError::NoTarget)?;
+                if let Some(reason) = self
+                    .platform
+                    .paste_preflight(&target)
+                    .map_err(ClipboardError::from)?
+                {
+                    return Err(QuickInsertError::DeliveryFailed(reason));
+                }
                 self.clipboard.copy_representations(&payload)?;
                 match self
                     .platform
@@ -223,6 +242,32 @@ impl<S: LibraryStore> QuickInsertService<S> {
                     PasteDelivery::Failed(reason) => Err(QuickInsertError::DeliveryFailed(reason)),
                 }
             }
+        }
+    }
+
+    /// A distinct use case: replace only the adapter-verified query span. Retrieval
+    /// still uses retained original representations; no preview text is submitted.
+    pub fn execute_inline(
+        &self,
+        source: QuickInsertSource,
+        id: i64,
+        ticket: crate::InlineTicket,
+    ) -> Result<QuickInsertOutcome> {
+        let payload = self.library.payload(source.kind(), id)?;
+        self.platform
+            .inline_preflight(ticket, &payload)
+            .map_err(ClipboardError::from)?;
+        let sequence = self.clipboard.copy_representations(&payload)?;
+        match self
+            .platform
+            .replace_inline(ticket, sequence)
+            .map_err(ClipboardError::from)?
+        {
+            PasteDelivery::Pasted => {
+                self.clear_session();
+                Ok(QuickInsertOutcome::Inserted)
+            }
+            PasteDelivery::Failed(reason) => Err(QuickInsertError::DeliveryFailed(reason)),
         }
     }
 
@@ -357,7 +402,7 @@ fn target_preflight_error(error: &ClipboardError) -> Option<&str> {
     })
 }
 
-fn to_item(item: LibraryItem) -> QuickInsertItem {
+pub(crate) fn to_item(item: LibraryItem) -> QuickInsertItem {
     QuickInsertItem {
         id: item.id,
         source: match item.kind {
@@ -874,6 +919,28 @@ mod tests {
 }
 
 impl<S: crate::SpaceStore> QuickInsertService<S> {
+    /// Multi-token fuzzy search over the complete scoped corpus. Empty queries
+    /// retain the normal chronological/manual ordering and storage cursors.
+    pub fn fuzzy_list_space(
+        &self,
+        space: crate::SpaceId,
+        query: &str,
+        limit: u32,
+        cursor: Option<PageCursor>,
+    ) -> Result<(QuickInsertPage, i64, u64)> {
+        if query.trim().is_empty() {
+            return self.list_space(space, "", limit, cursor);
+        }
+        self.fuzzy
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .search(self.library.store().as_ref(), space, query, limit, cursor)
+            .map_err(|e| LibraryError::Storage(e).into())
+    }
+    pub fn release_search_cache(&self) {
+        self.fuzzy.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    }
+
     /// This is a scoped metadata query. Execution still resolves original representations by ID.
     pub fn list_space(
         &self,

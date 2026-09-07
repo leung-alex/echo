@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>Echo Focus Browser Fixture</title>
+<style>body{font:16px Segoe UI,sans-serif;margin:48px;background:#f5f5f5;color:#222}label{display:block;margin:20px 0 6px}textarea,input{font:16px/24px Consolas,monospace;padding:12px;border:1px solid #666;box-sizing:border-box;width:600px;max-width:80vw}textarea{height:180px}#caret-ruler{position:absolute;width:1px;height:24px;background:#c33;opacity:.04;pointer-events:none}</style>
+<h1>Echo isolated browser input fixture</h1>
+<p>Only synthetic text. No network, storage, or clipboard JavaScript.</p>
+<label for="input">Editable input</label><textarea id="input" aria-label="Echo browser input" spellcheck="false" autofocus>ac</textarea>
+<label for="readonly">Read-only input</label><textarea id="readonly" aria-label="Echo browser read only" readonly>readonly</textarea>
+<label for="password">Password input</label><input id="password" aria-label="Echo browser password" type="password" value="">
+<div id="caret-ruler" role="img" aria-label="Expected browser caret"></div>
+<script>
+const input=document.getElementById('input'), ruler=document.getElementById('caret-ruler');
+function updateRuler(){const s=getComputedStyle(input), b=input.getBoundingClientRect(),c=document.createElement('canvas').getContext('2d');c.font=s.font;
+ruler.style.left=(scrollX+b.left+parseFloat(s.borderLeftWidth)+parseFloat(s.paddingLeft)+c.measureText('a').width)+'px';
+ruler.style.top=(scrollY+b.top+parseFloat(s.borderTopWidth)+parseFloat(s.paddingTop))+'px';ruler.style.height=s.lineHeight;}
+input.addEventListener('focus',()=>{input.setSelectionRange(1,1);updateRuler()});
+window.addEventListener('resize',updateRuler);window.addEventListener('scroll',updateRuler);
+document.fonts.ready.then(()=>{input.focus();input.setSelectionRange(1,1);updateRuler()});
+</script></html>

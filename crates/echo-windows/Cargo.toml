@@ -4,12 +4,16 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
+[features]
+native-test = []
+
 [lib]
 path = "src/lib.rs"
 
 [dependencies]
 echo-engine.workspace = true
 windows.workspace = true
+windows-core = "0.62.2"
 sha2.workspace = true
 serde_json.workspace = true
 
@@ -21,5 +25,5 @@ windows-sys = { version = "0.61.2", features = [
  "Win32_System_IO", "Win32_System_Threading", "Win32_System_RemoteDesktop",
  "Win32_System_Power", "Win32_System_Registry", "Win32_UI_Controls", "Win32_UI_Shell",
  "Win32_UI_WindowsAndMessaging", "Win32_UI_HiDpi",
- "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Accessibility"
+ "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Input_Ime", "Win32_UI_Accessibility"
 ] }

@@ -1,14 +1,22 @@
 mod domain;
 mod instrumentation;
 
+mod fuzzy_search;
+mod global_shortcut;
 mod history;
+pub use fuzzy_search::FuzzyMatcher;
 mod ingest;
+mod inline_completion;
+pub use inline_completion::{
+    ComposerSnapshot, InlineTicket, QueryRange, MAX_COMPOSER_UNITS, MAX_QUERY_UNITS,
+};
 mod preview;
 mod quick_insert;
 mod saved_items;
 mod settings;
 mod spaces;
 mod ui_settings;
+pub use global_shortcut::{GlobalShortcut, ShortcutKey};
 pub use spaces::{
     Space, SpaceAction, SpaceCommand, SpaceDraft, SpaceError, SpaceId, SpaceKind,
     SpaceMutationResult, SpacePage, SpaceStore,

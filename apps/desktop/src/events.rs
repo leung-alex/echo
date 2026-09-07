@@ -18,6 +18,7 @@ use std::{
 };
 
 pub enum Command {
+    InlineTimeout(u64),
     Query(String),
     Select(String),
     Action(String, String),
@@ -53,6 +54,7 @@ pub enum Command {
     Quit,
 }
 pub enum Event {
+    Inline(echo_windows::inline::InlineEvent),
     Shell(ShellEvent),
     Command(Command),
     Ready(Result<SettingsSnapshot, String>),
@@ -63,11 +65,15 @@ pub enum Event {
     Catalog(u64, Result<QuickInsertPage, String>),
     GraphicsError(String),
     DiagnosticExported(Result<String, String>),
-    Activated(u64, Context, Result<bool, String>),
+    Activated(u64, Context, Result<ActivationResult, String>),
     Executed(Operation, Result<QuickInsertOutcome, String>),
     Mutated(u64, Result<MutationResult, String>),
     Thumbnail(u64, String, Result<PixelData, String>),
     Invalidated,
+}
+pub struct ActivationResult {
+    pub target: Option<echo_engine::PasteTarget>,
+    pub anchor: Option<echo_windows::focus::PopupAnchor>,
 }
 pub struct LoadedPage {
     pub page: QuickInsertPage,
@@ -85,6 +91,7 @@ pub struct PixelData {
 }
 pub struct MutationResult {
     pub message: String,
+    pub settings_warning: Option<String>,
     pub settings: Option<ClipboardSettings>,
     pub editor_saved: bool,
     pub snapshot: Option<SettingsSnapshot>,
@@ -98,6 +105,32 @@ pub struct Hub {
     closed: AtomicBool,
 }
 impl Hub {
+    #[cfg(test)]
+    pub(crate) fn take_test_events(&self) -> Vec<Event> {
+        self.queue
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .drain(..)
+            .collect()
+    }
+    /// Hook callbacks never wait for a UI-owned lock. A contended enqueue is
+    /// handed to the event-loop proxy; no COM/storage/rendering runs here.
+    pub fn post_inline(self: &Arc<Self>, event: echo_windows::inline::InlineEvent) {
+        if self.closed.load(Ordering::Acquire) {
+            return;
+        }
+        if let Ok(mut queue) = self.queue.try_lock() {
+            if let echo_windows::inline::InlineEvent::Changed { ticket, .. } = &event {
+                queue.retain(|e| !matches!(e, Event::Inline(echo_windows::inline::InlineEvent::Changed { ticket: older, .. }) if older.session == ticket.session));
+            }
+            queue.push_back(Event::Inline(event));
+            drop(queue);
+            self.kick();
+        } else {
+            let hub = self.clone();
+            let _ = slint::invoke_from_event_loop(move || hub.post(Event::Inline(event)));
+        }
+    }
     pub fn post(self: &Arc<Self>, event: Event) {
         if self.closed.load(Ordering::Acquire) {
             return;
@@ -128,7 +161,8 @@ impl Hub {
                 && matches!(
                     &event,
                     Event::Shell(
-                        ShellEvent::Activation(_)
+                        ShellEvent::QuickInsert(_)
+                            | ShellEvent::Activation(_)
                             | ShellEvent::Open
                             | ShellEvent::Favorites
                             | ShellEvent::Settings

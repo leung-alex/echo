@@ -15,6 +15,11 @@ export component SettingsPage inherits Rectangle {
     in-out property <string> motion;
     in-out property <string> motion-speed;
     in-out property <string> switch-shortcut;
+    in-out property <bool> global-hotkey-enabled;
+    in-out property <string> global-hotkey;
+    in-out property <bool> caret-anchor;
+    in-out property <bool> inline-completion;
+    in property <string> hotkey-status;
     in-out property <string> startup-space;
     in-out property <string> query-on-switch;
     in-out property <string> density;
@@ -49,6 +54,10 @@ export component SettingsPage inherits Rectangle {
     changed motion => { root.edited(); }
     changed motion-speed => { root.edited(); }
     changed switch-shortcut => { root.edited(); }
+    changed global-hotkey-enabled => { root.edited(); }
+    changed global-hotkey => { root.edited(); }
+    changed caret-anchor => { root.edited(); }
+    changed inline-completion => { root.edited(); }
     changed startup-space => { root.edited(); }
     changed query-on-switch => { root.edited(); }
     changed density => { root.edited(); }
@@ -154,6 +163,20 @@ export component SettingsPage inherits Rectangle {
             }
             if (root.section == 2): VerticalLayout {
                 spacing: 16px; alignment: start;
+                CheckBox { text: "Enable global quick insert shortcut"; checked <=> root.global-hotkey-enabled; enabled: !root.busy; }
+                Text { text: "Global quick insert shortcut"; color: EchoTheme.text; }
+                LineEdit { text <=> root.global-hotkey; accessible-label: "Global quick insert shortcut"; enabled: !root.busy && root.global-hotkey-enabled; }
+                Text { text: "Examples: Alt+V, Ctrl+Shift+V, Ctrl+Alt+J. Save to apply immediately. Conflicts keep the previous binding active."; color: EchoTheme.muted; wrap: word-wrap; min-width: 0px; }
+                Text { text: root.hotkey-status; accessible-label: "Global shortcut status: " + root.hotkey-status; color: EchoTheme.muted; wrap: word-wrap; min-width: 0px; }
+                HorizontalLayout { spacing: 8px; alignment: start;
+                    EchoButton { text: "Reset to Alt+V"; enabled: !root.busy; clicked => { root.global-hotkey = "Alt+V"; root.global-hotkey-enabled = true; } }
+                    EchoButton { text: "Retry saved shortcut"; enabled: !root.busy && !root.dirty; clicked => { root.action("retry-hotkey"); } }
+                }
+                CheckBox { text: "Open Quick Insert near the text cursor"; checked <=> root.caret-anchor; enabled: !root.busy; }
+                Text { text: "Uses the text cursor when available, then the input control. An unverified target is Copy only. Press the shortcut again to dismiss Echo."; color: EchoTheme.muted; wrap: word-wrap; min-width: 0px; }
+                Rectangle { height: 1px; background: EchoTheme.line; }
+                CheckBox { text: "Filter suggestions in the original input"; checked <=> root.inline-completion; enabled: !root.busy; }
+                Text { text: "Alt+V keeps focus in your input. Type to filter; Enter replaces only this query, not the whole message. Esc keeps typed text. Unsupported text ranges or IME states use independent search. F6 switches to independent search."; color: EchoTheme.muted; wrap: word-wrap; min-width: 0px; }
                 Text { text: "Switch spaces with"; color: EchoTheme.text; }
                 EnumChoice { enabled: !root.busy; model: ["tab","ctrl_tab"]; selected-index: root.switch-shortcut == "ctrl_tab" ? 1 : 0; selected(value) => { root.switch-shortcut = value; } accessible-label: "Space switching shortcut"; }
                 Text { text: root.switch-shortcut == "tab" ? "Tab → next space     Shift+Tab → previous space" : "Ctrl+Tab → next space     Ctrl+Shift+Tab → previous space"; color: EchoTheme.text; wrap: word-wrap; min-width: 0px; }

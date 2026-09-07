@@ -662,6 +662,14 @@ impl WinitWindowAdapter {
         let mut attrs = WindowAttributes::default().with_transparent(true).with_visible(false);
 
         attrs = attrs.with_title("Slint Window".to_string());
+        #[cfg(target_os = "windows")]
+        {
+            // Echo explicitly grants foreground focus for its manager/settings.
+            // Mapping a native window must not transiently steal a composer's IME
+            // or selection before the non-activating inline-popup policy is applied.
+            // With the pinned Winit 0.30 backend this uses SW_SHOWNOACTIVATE.
+            attrs = attrs.with_active(false);
+        }
 
         #[cfg(target_arch = "wasm32")]
         {

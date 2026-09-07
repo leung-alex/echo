@@ -4,8 +4,10 @@ use std::{path::Path, sync::Arc, thread::JoinHandle};
 use windows_sys::Win32::{Foundation::*, System::Threading::*, UI::WindowsAndMessaging::*};
 mod card_window;
 mod common;
+mod hotkey;
 mod pipe;
 mod tray;
+pub use hotkey::{HotkeyController, HotkeyReservation};
 mod window;
 pub use card_window::{apply_card_chrome, set_card_region, CardShape};
 mod environment;
@@ -19,10 +21,13 @@ pub use window::{
 #[derive(Debug, Clone)]
 pub enum ShellEvent {
     Open,
+    QuickInsert(crate::focus::FocusSnapshot),
+    HotkeyStatus(String),
     Favorites,
     Settings,
     Quit,
     Activation(Vec<String>),
+    FocusLost,
     ThemeChanged,
     GeometryChanged,
     Error(String),
@@ -37,10 +42,14 @@ pub struct NativeShell {
     _mutex: Handle,
     stop: Arc<Handle>,
     hwnd: isize,
+    hotkeys: HotkeyController,
     pipe: Option<JoinHandle<()>>,
     tray: Option<JoinHandle<()>>,
 }
 impl NativeShell {
+    pub fn hotkeys(&self) -> HotkeyController {
+        self.hotkeys.clone()
+    }
     /// Starts one resident host per user, logon session and canonical data directory.
     /// A secondary process forwards bounded arguments over a user-only local pipe.
     pub fn start(
@@ -65,9 +74,10 @@ impl NativeShell {
         });
         let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
         let tray_callback = handler.clone();
+        let (hotkey_tx, hotkey_rx) = std::sync::mpsc::sync_channel(8);
         let tray = std::thread::Builder::new()
             .name("echo-native-tray".into())
-            .spawn(move || tray::run(tray_callback, ready_tx))
+            .spawn(move || tray::run(tray_callback, ready_tx, hotkey_rx))
             .map_err(|e| e.to_string())?;
         let hwnd = match ready_rx.recv_timeout(std::time::Duration::from_secs(5)) {
             Ok(Ok(hwnd)) => hwnd,
@@ -95,6 +105,7 @@ impl NativeShell {
             _mutex: mutex,
             stop,
             hwnd,
+            hotkeys: HotkeyController::new(hwnd, hotkey_tx),
             pipe: Some(pipe),
             tray: Some(tray),
         }))

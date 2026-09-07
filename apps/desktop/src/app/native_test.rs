@@ -69,6 +69,9 @@ impl Controller {
         let weak = Rc::downgrade(app);
         let timer = Timer::default();
         timer.start(TimerMode::Repeated, Duration::from_millis(20), move || {
+            if let Some(app) = weak.upgrade() {
+                trace_tick(&app);
+            }
             let Ok(meta) = std::fs::metadata(&request) else {
                 return;
             };
@@ -206,6 +209,28 @@ fn execute(
                 });
             Ok(serde_json::json!({"owned_window_scroll":true,"global_input":false}))
         }
+        "trace_begin" => {
+            if request.file.is_empty()
+                || request.file.len() > 64
+                || !request
+                    .file
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            {
+                return Err("Trace requires an evidence-directory basename".into());
+            }
+            let directory = root.join(&request.file);
+            std::fs::create_dir(&directory).map_err(|e| e.to_string())?;
+            TRACE.with(|t| {
+                *t.borrow_mut() = Some(FrameTrace {
+                    directory,
+                    started: Instant::now(),
+                    frames: Vec::new(),
+                })
+            });
+            Ok(serde_json::json!({"started":true,"source":"owned Slint renderer only"}))
+        }
+        "trace_end" => finish_trace(),
         "capture" => {
             if request.file.is_empty()
                 || request.file.len() > 120
@@ -244,10 +269,12 @@ fn execute(
                 "ready":a.surface.ready,"loading":a.surface.loading,"visible":a.surface.visible,
                 "spaces":a.spaces.iter().map(|s|serde_json::json!({"id":s.id.0,"title":s.title,"icon":s.icon_key,"accent":s.accent_key,"count":s.item_count})).collect::<Vec<_>>(),
                 "renderer":a.graphics.renderer,"adapter":a.graphics.adapter,"backend":a.graphics.backend,"actual":a.window.get_actual_mode().as_str(),
-                "graphics":graphics,"navigation_us":a.navigation_us,"snapshot_model_count":a.model.row_count(),"scroll_y":a.window.get_scroll_y(),"query":a.surface.query,"route":a.window.get_route().to_string(),
+                "graphics":graphics,"navigation_us":a.navigation_us,"snapshot_model_count":a.model.row_count(),"highlighted_rows":a.model.iter().filter(|r|r.match_count>0).count(),"match_spans":a.model.iter().map(|r|r.match_count).collect::<Vec<_>>(),"scroll_y":a.window.get_scroll_y(),"query":a.surface.query,"route":a.window.get_route().to_string(),
                 "requested":a.deck.requested.to_string(),"presented":a.deck.presented.to_string(),
                 "interaction":a.deck.interaction.map(|id|id.to_string()),
                 "selection":a.surface.selection.map(|key|key.to_string()),
+                "inline":{"active":a.inline_ui.ticket.is_some(),"popup":a.inline_active(),"unavailable":a.inline_ui.unavailable,"pending":a.inline_ui.pending,"composing":a.inline_ui.composing,"suspended":a.inline_ui.suspended,"provider":a.inline_ui.backend,"readiness":a.worker.inline.readiness(),"ticket":a.inline_ui.ticket.map(|t|[t.session,t.revision,t.input_serial]),"natural_height":a.window.get_inline_content_height(),"status":a.surface.status},
+                "quick_insert":{"active":a.session.context == Context::QuickInsert,"has_target":a.session.has_target,"capture_pending":a.capture_pending,"anchor_source":a.popup_anchor.map(|anchor|anchor.source.label()),"hotkey_status":a.window.get_hotkey_status().to_string()},
                 "settings":{"dirty":a.window.get_settings_dirty(),"valid":a.window.get_settings_valid(),"error":a.window.get_settings_error().to_string(),"ui":a.ui},
                 "flow_timer":a.flow_timer.running(),"preview_timer":a.preview_timer.running(),
                 "thumbnails_bytes":a.images.bytes,"native_region":a.window_shapes.as_ref().is_some_and(|s|s.is_some()),
@@ -273,4 +300,51 @@ fn execute(
         }
         _ => Err("Unknown native test operation".into()),
     }
+}
+
+struct FrameTrace {
+    directory: PathBuf,
+    started: Instant,
+    frames: Vec<serde_json::Value>,
+}
+thread_local! { static TRACE: RefCell<Option<FrameTrace>> = const { RefCell::new(None) }; }
+fn trace_tick(app: &Rc<RefCell<App>>) {
+    TRACE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let Some(trace) = slot.as_mut() else { return; };
+        // Bounded diagnostics, not a benchmark or a production rendering path.
+        if trace.frames.len() >= 180 || trace.started.elapsed() > Duration::from_secs(12) { return; }
+        let a = app.borrow();
+        let i = trace.frames.len();
+        let mut frame = serde_json::json!({"ms":trace.started.elapsed().as_millis(),
+            "visible":a.surface.visible,"rows":a.model.row_count(),"stale":a.window.get_stale_rows(),
+            "loading":a.surface.loading,"flow_enabled":a.window.get_flow_enabled(),
+            "navigation_busy":a.window.get_navigation_busy(),"query_units":a.surface.query.chars().count(),
+            "height":a.window.get_panel_height(),"width":a.window.get_panel_width(),"selected_rows":a.model.iter().filter(|r|r.selected).count(),"highlighted_rows":a.model.iter().filter(|r|r.match_count>0).count(),"busy":a.window.get_busy()});
+        if i % 2 == 0 && a.surface.visible {
+            match a.window.window().take_snapshot() {
+                Ok(image) => {
+                    let name = format!("frame-{i:03}.png");
+                    if let Err(error) = image::save_buffer_with_format(trace.directory.join(&name),image.as_bytes(),image.width(),image.height(),image::ColorType::Rgba8,image::ImageFormat::Png) {
+                        frame["capture_error"] = error.to_string().into();
+                    } else { frame["png"] = name.into(); }
+                }
+                Err(error) => frame["capture_error"] = error.to_string().into(),
+            }
+        }
+        trace.frames.push(frame);
+    });
+}
+fn finish_trace() -> Result<serde_json::Value, String> {
+    let trace = TRACE
+        .with(|t| t.borrow_mut().take())
+        .ok_or("No active frame trace")?;
+    std::fs::write(
+        trace.directory.join("frames.json"),
+        serde_json::to_vec_pretty(&trace.frames).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(
+        serde_json::json!({"frames":trace.frames.len(),"directory":trace.directory.file_name().unwrap().to_string_lossy()}),
+    )
 }

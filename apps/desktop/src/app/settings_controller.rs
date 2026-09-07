@@ -21,6 +21,10 @@ impl App {
         enum_field!(side_content, get_side_content, SideContent);
         enum_field!(graphics, get_graphics_mode, GraphicsMode);
         enum_field!(frame_rate, get_frame_rate, FrameRate);
+        value.global_hotkey_enabled = w.get_global_hotkey_enabled();
+        value.global_hotkey = GlobalShortcut::parse(w.get_global_hotkey().as_str())?.canonical();
+        value.caret_anchor = w.get_caret_anchor();
+        value.inline_completion = w.get_inline_completion();
         value.loop_spaces = w.get_loop_spaces();
         value.remember_position = w.get_remember_position();
         value.reflections = w.get_reflections();
@@ -61,6 +65,10 @@ impl App {
         w.set_motion(u.motion.as_str().into());
         w.set_motion_speed(u.motion_speed.as_str().into());
         w.set_switch_shortcut(u.switch_shortcut.as_str().into());
+        w.set_global_hotkey_enabled(u.global_hotkey_enabled);
+        w.set_global_hotkey(u.global_hotkey.clone().into());
+        w.set_caret_anchor(u.caret_anchor);
+        w.set_inline_completion(u.inline_completion);
         w.set_startup_space(u.startup_space.as_str().into());
         w.set_query_on_switch(u.query_on_switch.as_str().into());
         w.set_density(u.density.as_str().into());
@@ -109,6 +117,9 @@ impl App {
     }
     pub(super) fn settings_action(&mut self, action: &str) {
         match action {
+            "retry-hotkey" => {
+                self.send(Work::RetryHotkey);
+            }
             "cancel" => self.request_route("history"),
             "about" => self.request_route("about"),
             "quit" => self.request_quit(),
