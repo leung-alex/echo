@@ -50,6 +50,25 @@ impl Drop for Region {
 /// Shapes are physical client coordinates. `None` clears the clip for a moving deck.
 /// SetWindowRgn transfers ownership only on success; temporary regions always use RAII.
 pub fn set_card_region(handle: isize, shapes: Option<&[CardShape]>) -> Result<(), String> {
+    set_region(handle, shapes, false)
+}
+/// Preserve the old painted area until the UI has presented its next frame.
+pub fn expand_card_region(handle: isize, shapes: Option<&[CardShape]>) -> Result<(), String> {
+    set_region(handle, shapes, true)
+}
+pub fn finish_card_frame(handle: isize) -> Result<(), String> {
+    owned(handle)?;
+    let result = unsafe { DwmFlush() };
+    if result >= 0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "DWM frame synchronization failed: 0x{:08x}",
+            result as u32
+        ))
+    }
+}
+fn set_region(handle: isize, shapes: Option<&[CardShape]>, expand: bool) -> Result<(), String> {
     let hwnd = owned(handle)?;
     if let Some(shapes) = shapes {
         if shapes.is_empty() || shapes.len() > 8 {
@@ -96,6 +115,24 @@ pub fn set_card_region(handle: isize, shapes: Option<&[CardShape]>) -> Result<()
         }
         if OffsetRgn(combined.0, origin.x - rect.left, origin.y - rect.top) == RGN_ERROR {
             return Err(error());
+        }
+        if expand {
+            let previous = Region(CreateRectRgn(0, 0, 0, 0));
+            if previous.0.is_null() {
+                return Err(error());
+            }
+            SetLastError(0);
+            if GetWindowRgn(hwnd, previous.0) == RGN_ERROR {
+                // A window without a region already contains every new shape.
+                return if GetLastError() == 0 {
+                    Ok(())
+                } else {
+                    Err(error())
+                };
+            }
+            if CombineRgn(combined.0, combined.0, previous.0, RGN_OR) == RGN_ERROR {
+                return Err(error());
+            }
         }
         if SetWindowRgn(hwnd, combined.0, 1) == 0 {
             return Err(error());

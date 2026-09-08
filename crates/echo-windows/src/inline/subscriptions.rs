@@ -46,13 +46,24 @@ impl IUIAutomationTextEditTextChangedEventHandler_Impl for Listener_Impl {
         if self.shared.active.load(Ordering::Acquire) == self.session
             && !self.shared.committing.load(Ordering::Acquire)
         {
-            if change == TextEditChangeType_Composition {
-                self.shared.ime.store(IME_ACTIVE, Ordering::Release);
-            }
-            if change == TextEditChangeType_CompositionFinalized {
-                self.shared.ime.store(IME_CLEAR, Ordering::Release);
-            }
             self.shared.dirty(&self.sender, self.session);
+            // Finalized is an invalidation; only a fresh target read may prove
+            // Clear and authorize the final committed query.
+            let state = if change == TextEditChangeType_Composition {
+                IME_ACTIVE
+            } else {
+                IME_UNKNOWN
+            };
+            if let Ok(mut evidence) = self.shared.composition_evidence.try_lock() {
+                *evidence = Some(composition::CompositionEvidence {
+                    state,
+                    source: composition::CompositionSource::TextEditEvent,
+                    session: self.session,
+                    input_serial: self.shared.input_serial.load(Ordering::Acquire),
+                    observed_at: Instant::now(),
+                });
+            }
+            self.shared.ime.store(state, Ordering::Release);
         }
         Ok(())
     }

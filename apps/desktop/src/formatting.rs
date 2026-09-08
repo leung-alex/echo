@@ -93,8 +93,8 @@ pub fn settings(
             .filter(|n| *n > 0)
             .ok_or_else(|| "Storage limit is invalid or too large".into())
     };
-    if max_entries == 0 {
-        return Err("Maximum entries must be greater than zero".into());
+    if max_entries == 0 || max_entries > echo_engine::MAX_HISTORY_ENTRIES {
+        return Err("Maximum entries must be between 1 and 2000".into());
     }
     let max_total_bytes = parse_mib(total_mib)?;
     let max_item_bytes = parse_mib(item_mib)?;
@@ -119,6 +119,7 @@ mod tests {
     fn limits_reject_overflow_and_zero() {
         for (entries, total, item) in [
             ("0", "10", "1"),
+            ("2001", "10", "1"),
             ("1", "0", "1"),
             ("1", "1", "2"),
             ("1", "18446744073709551615", "1"),
@@ -129,7 +130,7 @@ mod tests {
     }
     #[test]
     fn settings_preserve_all_fields() {
-        let s = settings("5000", "512", "32", "dark", false, true, true).unwrap();
+        let s = settings("2000", "512", "32", "dark", false, true, true).unwrap();
         assert_eq!(s.max_total_bytes, 512 * 1024 * 1024);
         assert_eq!(s.theme, ThemeMode::Dark);
         assert!(!s.history_enabled);

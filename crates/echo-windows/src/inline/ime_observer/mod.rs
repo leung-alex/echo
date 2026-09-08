@@ -1,0 +1,293 @@
+//! Same-bitness, session-owned IMM observation for verified standard Edit controls.
+//! The embedded module has no keyboard hook and no edit/IME mutation operation.
+mod protocol;
+use protocol::*;
+use sha2::{Digest, Sha256};
+use std::{
+    fs::{File, OpenOptions},
+    io::{Read, Write},
+    os::windows::fs::OpenOptionsExt,
+    ptr::{null, null_mut},
+    sync::{atomic::Ordering, OnceLock},
+    time::Instant,
+};
+use windows_sys::Win32::{
+    Foundation::*,
+    System::{DataExchange::*, LibraryLoader::*, Memory::*, Threading::*},
+    UI::WindowsAndMessaging::*,
+};
+
+const DLL: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/echo_ime_observer.dll"));
+// Keep the verified artifact open without write/delete sharing and its module
+// loaded for the process lifetime, including any retiring hook callbacks.
+static MODULE: OnceLock<Result<(isize, File), String>> = OnceLock::new();
+fn wide(text: &str) -> Vec<u16> {
+    text.encode_utf16().chain(Some(0)).collect()
+}
+fn module() -> Result<isize, String> {
+    MODULE
+        .get_or_init(|| {
+            let hash = format!("{:x}", Sha256::digest(DLL));
+            let directory = std::path::PathBuf::from(
+                std::env::var_os("LOCALAPPDATA").ok_or("Local app cache unavailable")?,
+            )
+            .join("Echo")
+            .join("ime-observer")
+            .join(hash);
+            std::fs::create_dir_all(&directory).map_err(|_| "IME observer cache unavailable")?;
+            let path = directory.join("echo_ime_observer.dll");
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .share_mode(0)
+                .open(&path)
+            {
+                Ok(mut file) => file
+                    .write_all(DLL)
+                    .map_err(|_| "IME observer cache write failed")?,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(_) => return Err("IME observer cache create failed".into()),
+            }
+            let mut file = OpenOptions::new()
+                .read(true)
+                .share_mode(1)
+                .open(&path)
+                .map_err(|_| "IME observer cache lock failed")?;
+            let mut bytes = Vec::new();
+            (&mut file)
+                .take(DLL.len() as u64 + 1)
+                .read_to_end(&mut bytes)
+                .map_err(|_| "IME observer verification failed")?;
+            if bytes != DLL {
+                return Err("IME observer artifact identity differs".into());
+            }
+            let path = wide(path.to_str().ok_or("IME observer path unavailable")?);
+            let handle = unsafe {
+                LoadLibraryExW(
+                    path.as_ptr(),
+                    null_mut(),
+                    LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32,
+                )
+            };
+            if handle.is_null() {
+                return Err("Windows refused the IME observer module".into());
+            }
+            Ok((handle as isize, file))
+        })
+        .as_ref()
+        .map(|(handle, _)| *handle)
+        .map_err(Clone::clone)
+}
+
+pub(super) struct Observer {
+    hook: HHOOK,
+    mapping: HANDLE,
+    view: MEMORY_MAPPED_VIEW_ADDRESS,
+    atom: u16,
+    window: HWND,
+    pid: u32,
+    thread: u32,
+    message: u32,
+}
+pub(super) struct Observation {
+    pub active: bool,
+    pub preedit: String,
+}
+fn decode(sample: Sample, pid: u32, thread: u32, window: u64) -> Option<Observation> {
+    if sample.pid != pid
+        || sample.thread != thread
+        || sample.window != window
+        || sample.units as usize > MAX_UNITS
+    {
+        return None;
+    }
+    match sample.status {
+        1 if sample.units == 0 => Some(Observation {
+            active: false,
+            preedit: String::new(),
+        }),
+        2 if sample.units > 0 => Some(Observation {
+            active: true,
+            preedit: String::from_utf16(&sample.text[..sample.units as usize]).ok()?,
+        }),
+        _ => None,
+    }
+}
+impl Observer {
+    pub fn new(window: isize, pid: u32, started: u64) -> Result<Self, String> {
+        unsafe {
+            let window = window as HWND;
+            let mut owner = 0;
+            let thread = GetWindowThreadProcessId(window, &mut owner);
+            if thread == 0 || owner != pid || started == 0 {
+                return Err("IME observer target identity unavailable".into());
+            }
+            let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if process.is_null() {
+                return Err("IME observer process unavailable".into());
+            }
+            let (mut target_wow64, mut own_wow64) = (0, 0);
+            let compatible = IsWow64Process(process, &mut target_wow64) != 0
+                && IsWow64Process(GetCurrentProcess(), &mut own_wow64) != 0
+                && target_wow64 == own_wow64;
+            CloseHandle(process);
+            if !compatible {
+                return Err("IME observer requires a matching process architecture".into());
+            }
+            let module = module()? as HMODULE;
+            let callback = GetProcAddress(module, c"EchoCompositionObserver".as_ptr().cast())
+                .ok_or("IME observer entry point unavailable")?;
+            let guid = windows::Win32::System::Com::CoCreateGuid()
+                .map_err(|_| "IME observer session identity unavailable")?;
+            let name = wide(&format!("{PREFIX}{guid:?}"));
+            let mut observer = Self {
+                hook: null_mut(),
+                mapping: null_mut(),
+                view: MEMORY_MAPPED_VIEW_ADDRESS { Value: null_mut() },
+                atom: 0,
+                window,
+                pid,
+                thread,
+                message: RegisterWindowMessageW(wide(MESSAGE).as_ptr()),
+            };
+            observer.mapping = CreateFileMappingW(
+                INVALID_HANDLE_VALUE,
+                null(),
+                PAGE_READWRITE,
+                0,
+                std::mem::size_of::<Channel>() as u32,
+                name.as_ptr(),
+            );
+            if observer.mapping.is_null()
+                || GetLastError() == ERROR_ALREADY_EXISTS
+                || observer.message == 0
+            {
+                return Err("IME observer channel unavailable".into());
+            }
+            observer.view = MapViewOfFile(
+                observer.mapping,
+                FILE_MAP_READ | FILE_MAP_WRITE,
+                0,
+                0,
+                std::mem::size_of::<Channel>(),
+            );
+            if observer.view.Value.is_null() {
+                return Err("IME observer channel mapping failed".into());
+            }
+            std::ptr::write(
+                observer.view.Value.cast::<Channel>(),
+                Channel::new(pid, thread, window as u64, started),
+            );
+            observer.atom = GlobalAddAtomW(name.as_ptr());
+            if observer.atom == 0 {
+                return Err("IME observer channel registration failed".into());
+            }
+            observer.hook = SetWindowsHookExW(
+                WH_CALLWNDPROC,
+                Some(std::mem::transmute::<
+                    unsafe extern "system" fn() -> isize,
+                    unsafe extern "system" fn(i32, usize, isize) -> isize,
+                >(callback)),
+                module,
+                thread,
+            );
+            if observer.hook.is_null() {
+                return Err("Windows refused target-thread composition observation".into());
+            }
+            // Installation alone is not capability evidence. Require the target's
+            // synchronous identity-bound response before exposing this observer.
+            observer
+                .read()
+                .ok_or("IME observer target did not acknowledge a composition read")?;
+            Ok(observer)
+        }
+    }
+    pub fn read(&self) -> Option<Observation> {
+        unsafe {
+            let mut pid = 0;
+            if GetWindowThreadProcessId(self.window, &mut pid) != self.thread
+                || pid != self.pid
+                || GetAncestor(self.window, GA_ROOT) != GetForegroundWindow()
+            {
+                return None;
+            }
+            let channel = &*self.view.Value.cast::<Channel>();
+            let request = channel.next_request();
+            let started = Instant::now();
+            let mut result = 0;
+            if SendMessageTimeoutW(
+                self.window,
+                self.message,
+                self.atom as usize,
+                0,
+                SMTO_ABORTIFHUNG | SMTO_BLOCK | SMTO_ERRORONEXIT,
+                40,
+                &mut result,
+            ) == 0
+                || started.elapsed().as_millis() > 40
+                || channel.response.load(Ordering::Acquire) != request
+            {
+                return None;
+            }
+            let sample = std::ptr::read_volatile(&channel.sample);
+            if channel.response.load(Ordering::Acquire) != request {
+                return None;
+            }
+            decode(sample, self.pid, self.thread, self.window as u64)
+        }
+    }
+}
+impl Drop for Observer {
+    fn drop(&mut self) {
+        unsafe {
+            if !self.hook.is_null() && UnhookWindowsHookEx(self.hook) == 0 {
+                eprintln!(
+                    "Echo IME observer retirement failed: pid={} thread={} error={}",
+                    self.pid,
+                    self.thread,
+                    GetLastError()
+                );
+            }
+            // Each remote callback opens its own mapping handle/view. Retirement
+            // cannot invalidate a callback that was already executing there.
+            if self.atom != 0 {
+                GlobalDeleteAtom(self.atom);
+            }
+            if !self.view.Value.is_null() {
+                UnmapViewOfFile(self.view);
+            }
+            if !self.mapping.is_null() {
+                CloseHandle(self.mapping);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn target_thread_samples_require_identity_valid_utf16_and_explicit_state() {
+        let mut sample = Sample::unknown();
+        sample.pid = 1;
+        sample.thread = 2;
+        sample.window = 3;
+        assert!(decode(sample, 1, 2, 3).is_none());
+        sample.status = 1;
+        assert!(!decode(sample, 1, 2, 3).unwrap().active);
+        sample.status = 2;
+        sample.units = 5;
+        sample.text[..5].copy_from_slice(&"nihao".encode_utf16().collect::<Vec<_>>());
+        assert_eq!(decode(sample, 1, 2, 3).unwrap().preedit, "nihao");
+        assert!(decode(sample, 9, 2, 3).is_none());
+        assert!(decode(sample, 1, 9, 3).is_none());
+        assert!(decode(sample, 1, 2, 9).is_none());
+        sample.units = MAX_UNITS as u32 + 1;
+        assert!(decode(sample, 1, 2, 3).is_none());
+        sample.units = 1;
+        sample.text[0] = 0xd800;
+        assert!(decode(sample, 1, 2, 3).is_none());
+        sample.status = 1;
+        assert!(decode(sample, 1, 2, 3).is_none());
+    }
+}

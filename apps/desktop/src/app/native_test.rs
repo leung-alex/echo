@@ -17,6 +17,8 @@ struct Request {
     #[serde(default)]
     shift: bool,
     #[serde(default)]
+    paused: bool,
+    #[serde(default)]
     file: String,
 }
 pub(crate) struct Controller {
@@ -67,10 +69,18 @@ impl Controller {
             .map(|r| r.id)
             .unwrap_or_default();
         let weak = Rc::downgrade(app);
+        let mut pending_response: Option<Vec<u8>> = None;
         let timer = Timer::default();
         timer.start(TimerMode::Repeated, Duration::from_millis(20), move || {
             if let Some(app) = weak.upgrade() {
                 trace_tick(&app);
+            }
+            if let Some(bytes) = pending_response.as_ref() {
+                if publish_response(&control, bytes) {
+                    pending_response = None;
+                } else {
+                    return;
+                }
             }
             let Ok(meta) = std::fs::metadata(&request) else {
                 return;
@@ -97,16 +107,54 @@ impl Controller {
                 Err(error) => serde_json::json!({"id":request.id,"status":"FAIL","error":error}),
             };
             let response = serde_json::to_vec(&response).unwrap_or_default();
-            let temporary = control.join("response.pending");
-            if std::fs::write(&temporary, response).is_ok() {
-                let destination = control.join("response.json");
-                let _ = std::fs::remove_file(&destination);
-                let _ = std::fs::rename(temporary, destination);
+            if !publish_response(&control, &response) {
+                // A Windows reader can temporarily deny replacement. Retry
+                // publication on the next tick, never execute the request twice.
+                pending_response = Some(response);
             }
         });
         Ok(Some(Self { _timer: timer }))
     }
 }
+fn publish_response(control: &Path, response: &[u8]) -> bool {
+    let temporary = control.join("response.pending");
+    std::fs::write(&temporary, response).is_ok()
+        && std::fs::rename(&temporary, control.join("response.json")).is_ok()
+}
+
+#[cfg(test)]
+mod bridge_tests {
+    use super::*;
+    #[test]
+    fn response_replacement_preserves_last_good_data_while_reader_holds_it() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/test-tmp/echo-desktop")
+            .join(format!(
+                "bridge-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+        std::fs::create_dir_all(&root).unwrap();
+        assert!(publish_response(&root, b"old"));
+        let reader = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .open(root.join("response.json"))
+            .unwrap();
+        assert!(!publish_response(&root, b"new"));
+        assert_eq!(std::fs::read(root.join("response.json")).unwrap(), b"old");
+        drop(reader);
+        assert!(publish_response(&root, b"new"));
+        assert_eq!(std::fs::read(root.join("response.json")).unwrap(), b"new");
+        std::fs::remove_file(root.join("response.json")).unwrap();
+        std::fs::remove_dir(root).unwrap();
+    }
+}
+
 fn execute(
     app: &Rc<RefCell<App>>,
     root: &Path,
@@ -123,6 +171,36 @@ fn execute(
         .ok_or("Window is unavailable")?;
     match request.verb.as_str() {
         "ping" => Ok(serde_json::json!({"native_test":true,"pid":std::process::id()})),
+        "pause_inline_window_events" => {
+            echo_windows::inline::diagnostics::pause_window_events(request.paused)?;
+            Ok(
+                serde_json::json!({"window_events_paused":request.paused,"keyboard_hook_unchanged":true}),
+            )
+        }
+        "search_fault" => {
+            crate::service::native_faults::configure(request.key, request.shift, request.ctrl)?;
+            Ok(crate::service::native_faults::metrics())
+        }
+        "provider_fault" => {
+            echo_windows::inline::diagnostics::configure_provider_fault(
+                request.key,
+                request.paused,
+                if request.ctrl {
+                    3
+                } else if request.shift {
+                    2
+                } else if request.file == "refuse-selection" {
+                    1
+                } else {
+                    0
+                },
+            )?;
+            Ok(echo_windows::inline::diagnostics::provider_fault_metrics())
+        }
+        "thumbnail_fault" => {
+            crate::service::native_faults::configure_thumbnail(&app.borrow().hub, request.paused)?;
+            Ok(crate::service::native_faults::metrics())
+        }
         "key" => {
             if app.borrow().session.context != Context::Manager {
                 return Err(
@@ -264,23 +342,31 @@ fn execute(
             let graphics = a.flow.as_ref().map(|f| f.metrics());
             #[cfg(not(feature = "cover-flow"))]
             let graphics: Option<serde_json::Value> = None;
-            Ok(
-                serde_json::json!({"space":a.surface.space.0,"phase":format!("{:?}",a.deck.phase),
+            let mut metrics = serde_json::json!({"space":a.surface.space.0,"phase":format!("{:?}",a.deck.phase),
                 "ready":a.surface.ready,"loading":a.surface.loading,"visible":a.surface.visible,
                 "spaces":a.spaces.iter().map(|s|serde_json::json!({"id":s.id.0,"title":s.title,"icon":s.icon_key,"accent":s.accent_key,"count":s.item_count})).collect::<Vec<_>>(),
                 "renderer":a.graphics.renderer,"adapter":a.graphics.adapter,"backend":a.graphics.backend,"actual":a.window.get_actual_mode().as_str(),
                 "graphics":graphics,"navigation_us":a.navigation_us,"snapshot_model_count":a.model.row_count(),"highlighted_rows":a.model.iter().filter(|r|r.match_count>0).count(),"match_spans":a.model.iter().map(|r|r.match_count).collect::<Vec<_>>(),"scroll_y":a.window.get_scroll_y(),"query":a.surface.query,"route":a.window.get_route().to_string(),
                 "requested":a.deck.requested.to_string(),"presented":a.deck.presented.to_string(),
                 "interaction":a.deck.interaction.map(|id|id.to_string()),
+                "inline_safety":a.worker.inline.safety_status(),
+                "search_faults":crate::service::native_faults::metrics(),
                 "selection":a.surface.selection.map(|key|key.to_string()),
+                "target_capabilities":a.worker.inline.capabilities().map(|c| serde_json::json!({"backend":c.backend,"can_read_query":c.can_read_query,"can_observe_selection":c.can_observe_selection,"advertises_exact_selection":c.advertises_exact_selection,"has_text_edit_pattern":c.has_text_edit_pattern,"exact_selection_verified":c.exact_selection_verified})),
+                "inline_trace":a.worker.inline.diagnostics().iter().map(|e| serde_json::json!({"us":e.elapsed_us,"kind":e.kind,"detail":e.detail,"session":e.session,"input_serial":e.input_serial,"observed_serial":e.observed_serial})).collect::<Vec<_>>(),
                 "inline":{"active":a.inline_ui.ticket.is_some(),"popup":a.inline_active(),"unavailable":a.inline_ui.unavailable,"pending":a.inline_ui.pending,"composing":a.inline_ui.composing,"suspended":a.inline_ui.suspended,"provider":a.inline_ui.backend,"readiness":a.worker.inline.readiness(),"ticket":a.inline_ui.ticket.map(|t|[t.session,t.revision,t.input_serial]),"natural_height":a.window.get_inline_content_height(),"status":a.surface.status},
                 "quick_insert":{"active":a.session.context == Context::QuickInsert,"has_target":a.session.has_target,"capture_pending":a.capture_pending,"anchor_source":a.popup_anchor.map(|anchor|anchor.source.label()),"hotkey_status":a.window.get_hotkey_status().to_string()},
                 "settings":{"dirty":a.window.get_settings_dirty(),"valid":a.window.get_settings_valid(),"error":a.window.get_settings_error().to_string(),"ui":a.ui},
                 "flow_timer":a.flow_timer.running(),"preview_timer":a.preview_timer.running(),
                 "thumbnails_bytes":a.images.bytes,"native_region":a.window_shapes.as_ref().is_some_and(|s|s.is_some()),
                 "panel":[a.window.get_panel_left(),a.window.get_panel_top(),a.window.get_panel_width(),a.window.get_panel_height()],
-                "stage":[a.window.get_stage_width(),a.window.get_stage_height()],"scale_factor":a.window.window().scale_factor()}),
-            )
+                "stage":[a.window.get_stage_width(),a.window.get_stage_height()],"scale_factor":a.window.window().scale_factor()});
+            metrics["error"] = a.surface.error.into();
+            metrics["status"] = a.surface.status.clone().into();
+            metrics["query_epoch"] = a.surface.query_epoch().into();
+            metrics["provider_faults"] =
+                echo_windows::inline::diagnostics::provider_fault_metrics();
+            Ok(metrics)
         }
         "reset_metrics" => {
             let mut a = app.borrow_mut();
@@ -321,6 +407,13 @@ fn trace_tick(app: &Rc<RefCell<App>>) {
             "loading":a.surface.loading,"flow_enabled":a.window.get_flow_enabled(),
             "navigation_busy":a.window.get_navigation_busy(),"query_units":a.surface.query.chars().count(),
             "height":a.window.get_panel_height(),"width":a.window.get_panel_width(),"selected_rows":a.model.iter().filter(|r|r.selected).count(),"highlighted_rows":a.model.iter().filter(|r|r.match_count>0).count(),"busy":a.window.get_busy()});
+        frame["query_epoch"] = a.surface.query_epoch().into();
+        frame["selection"] = serde_json::json!(a.surface.selection.map(|key|key.to_string()));
+        frame["row_keys"] = serde_json::json!(a.model.iter().map(|row|row.key.to_string()).collect::<Vec<_>>());
+        frame["panel_origin"] = serde_json::json!([a.window.get_panel_left(),a.window.get_panel_top()]);
+        frame["stage_size"] = serde_json::json!([a.window.get_stage_width(),a.window.get_stage_height()]);
+        frame["error"] = a.surface.error.into();
+        frame["thumbnails_bytes"] = a.images.bytes.into();
         if i % 2 == 0 && a.surface.visible {
             match a.window.window().take_snapshot() {
                 Ok(image) => {

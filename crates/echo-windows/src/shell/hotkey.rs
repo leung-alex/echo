@@ -22,6 +22,51 @@ const CLAIMED: u8 = 1;
 const COMPLETED: u8 = 2;
 const CANCELLED: u8 = 3;
 
+/// RegisterHotKey removes the chord key from the foreground input stream.
+/// Electron can consequently see only Alt-down/Alt-up and focus its menu.
+/// Deliver a non-text Control key pair while that registered Alt chord is
+/// still held. Never consume the user's modifier release or send a text key.
+pub(super) unsafe fn finish_alt_chord(data: isize, foreground: HWND) -> Result<(), String> {
+    if data as u32 & MOD_ALT == 0 || GetAsyncKeyState(VK_MENU as i32) >= 0 {
+        return Ok(());
+    }
+    if foreground.is_null() || GetForegroundWindow() != foreground {
+        return Err("Shortcut target changed before Alt release".into());
+    }
+    // Do not release a physical Control, or form Ctrl+Shift (which can change
+    // the keyboard layout). Those chords already include another modifier.
+    if [VK_CONTROL, VK_SHIFT, VK_LWIN, VK_RWIN]
+        .into_iter()
+        .any(|key| GetAsyncKeyState(key as i32) < 0)
+    {
+        return Ok(());
+    }
+    let input = |flags| INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: VK_CONTROL,
+                wScan: 0,
+                dwFlags: flags,
+                time: 0,
+                dwExtraInfo: crate::inline::INJECTED_TAG,
+            },
+        },
+    };
+    let pair = [input(0), input(KEYEVENTF_KEYUP)];
+    let sent = SendInput(2, pair.as_ptr(), std::mem::size_of::<INPUT>() as i32);
+    if sent == 2 {
+        return Ok(());
+    }
+    let error = GetLastError();
+    if sent == 1 {
+        SendInput(1, &pair[1], std::mem::size_of::<INPUT>() as i32);
+    }
+    Err(format!(
+        "Windows refused shortcut menu suppression ({error})"
+    ))
+}
+
 struct Lease {
     cancelled: AtomicBool,
     expires: Instant,

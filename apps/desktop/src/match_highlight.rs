@@ -82,4 +82,16 @@ mod tests {
         assert!(value.contains("**W**"));
         assert!(StyledText::from_markdown(&value).is_ok());
     }
+    #[test]
+    fn unicode_highlights_keep_graphemes_and_escape_neighboring_markup() {
+        let text = "中文 👨‍👩‍👧‍👦 Cafe\u{301} <script> ** [x](url) & \\";
+        let ranges = FuzzyMatcher::new("👨‍👩‍👧‍👦 cafe 中文").highlights(text);
+        let value = markup(text, &ranges, "#855400");
+        assert!(value.contains("**👨‍👩‍👧‍👦**"));
+        assert!(value.contains("**Cafe\u{301}**"));
+        assert!(value.contains("**中文**"));
+        assert!(!value.contains("<script>"));
+        assert!(value.contains("\\<script\\>"));
+        assert!(StyledText::from_markdown(&value).is_ok());
+    }
 }

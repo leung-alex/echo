@@ -268,24 +268,30 @@ impl WindowHook {
     /// Inline suggestions are interactive with the pointer, but never own the
     /// external text input's activation/IME. Normal manager behavior is restored.
     pub fn set_inline_popup(&self, enabled: bool) -> Result<(), String> {
-        if self.data.inline.get() == enabled {
+        let changed = self.data.inline.get() != enabled;
+        if !changed && !enabled {
             return Ok(());
         }
         let hwnd = owned(self.hwnd)?;
         unsafe {
             let current = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
             let mask = (WS_EX_NOACTIVATE | WS_EX_TOPMOST) as isize;
+            let previous_popup_style = self.data.prior_popup_style.get();
             let desired = if enabled {
-                self.data.prior_popup_style.set(Some(current & mask));
+                if changed {
+                    self.data.prior_popup_style.set(Some(current & mask));
+                }
                 current | WS_EX_NOACTIVATE as isize
             } else {
                 (current & !mask) | self.data.prior_popup_style.take().unwrap_or(0)
             };
+            let previous_inline = self.data.inline.replace(enabled);
             SetLastError(0);
             if SetWindowLongPtrW(hwnd, GWL_EXSTYLE, desired) == 0 && GetLastError() != 0 {
+                self.data.inline.set(previous_inline);
+                self.data.prior_popup_style.set(previous_popup_style);
                 return Err(error());
             }
-            self.data.inline.set(enabled);
             let top = enabled || desired & WS_EX_TOPMOST as isize != 0;
             if SetWindowPos(
                 hwnd,
@@ -297,7 +303,24 @@ impl WindowHook {
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
             ) == 0
             {
-                return Err(error());
+                let failure = error();
+                self.data.inline.set(previous_inline);
+                self.data.prior_popup_style.set(previous_popup_style);
+                SetWindowLongPtrW(hwnd, GWL_EXSTYLE, current);
+                SetWindowPos(
+                    hwnd,
+                    if current & WS_EX_TOPMOST as isize != 0 {
+                        HWND_TOPMOST
+                    } else {
+                        HWND_NOTOPMOST
+                    },
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+                );
+                return Err(failure);
             }
         }
         Ok(())
@@ -388,6 +411,11 @@ unsafe extern "system" fn subclass(
 ) -> LRESULT {
     let state = &*(data as *const HookData);
     match msg {
+        // Winit reapplies its cached extended style on visibility/flag changes.
+        // Preserve the native inline contract across those framework updates.
+        WM_STYLECHANGING if state.inline.get() && w as i32 == GWL_EXSTYLE && l != 0 => {
+            (*(l as *mut STYLESTRUCT)).styleNew |= WS_EX_NOACTIVATE;
+        }
         WM_MOUSEACTIVATE if state.inline.get() => return MA_NOACTIVATE as LRESULT,
         WM_NCHITTEST if state.inline.get() => return HTCLIENT as LRESULT,
         WM_SYSKEYDOWN if w == 0x73 => {

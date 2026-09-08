@@ -93,13 +93,21 @@ impl App {
             self.window.set_popup_card_width(card);
             let placement = if self.inline_active() {
                 let height = if self.surface.ready && !self.surface.loading {
+                    // Slint 1.17.1 materializes repeaters before its normal draw.
+                    // Geometry is needed before that draw, so run the same bounded
+                    // UI-thread pass here. No rendering or GPU readback is involved.
+                    // Keep this pinned-runtime seam local to native composition.
+                    slint::private_unstable_api::re_exports::WindowInner::from_pub(
+                        self.window.window(),
+                    )
+                    .ensure_tree_instantiated();
                     self.window.get_inline_content_height().clamp(180.0, 520.0)
                 } else if let Some(previous) = self.popup_placement {
                     (previous.card.height as f32 / scale).clamp(180.0, 520.0)
                 } else {
                     300.0
                 };
-                let placement = echo_windows::focus::place_inline(
+                let placement = echo_windows::focus::place_inline_stage(
                     anchor,
                     width,
                     card,
@@ -112,20 +120,35 @@ impl App {
             } else {
                 place_card(anchor, width, card, 560.0, t::STAGE_PADDING_Y)
             };
+            let card_changed = self.popup_placement.map(|p| p.card) != Some(placement.card);
+            if self.inline_active() {
+                self.window
+                    .set_popup_card_height(placement.card.height as f32 / scale);
+                self.window
+                    .set_popup_card_top((placement.card.y - placement.window.y) as f32 / scale);
+            }
             if self.popup_placement != Some(placement) {
                 let bounds = placement.window;
-                self.window
-                    .window()
-                    .set_position(slint::PhysicalPosition::new(bounds.x, bounds.y));
-                self.window.window().set_size(slint::PhysicalSize::new(
-                    bounds.width as u32,
-                    bounds.height as u32,
-                ));
+                if self.popup_placement.map(|p| p.window) != Some(bounds) {
+                    self.window
+                        .window()
+                        .set_position(slint::PhysicalPosition::new(bounds.x, bounds.y));
+                    self.window.window().set_size(slint::PhysicalSize::new(
+                        bounds.width as u32,
+                        bounds.height as u32,
+                    ));
+                }
                 self.popup_placement = Some(placement);
+            }
+            if card_changed && self.surface.visible {
+                // Reflow side textures before returning to Slint's next paint.
+                self.viewport_changed();
             }
             false
         } else if self.quick_geometry_active {
             self.window.set_popup_card_width(0.0);
+            self.window.set_popup_card_height(0.0);
+            self.window.set_popup_card_top(0.0);
             self.quick_geometry_active = false;
             self.popup_placement = None;
             if let Some((position, size)) = self.manager_geometry.take() {

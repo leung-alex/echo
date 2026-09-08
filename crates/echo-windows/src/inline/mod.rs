@@ -11,7 +11,12 @@ use std::sync::{
     Arc, Mutex,
 };
 use std::time::{Duration, Instant};
+mod composition;
+#[cfg(feature = "native-test")]
+pub mod diagnostics;
+mod ime_observer;
 mod ime_window;
+mod key_policy;
 mod keyboard;
 mod subscriptions;
 mod target;
@@ -61,6 +66,10 @@ pub enum InlineEvent {
         session: u64,
         text: &'static str,
     },
+    Suspended {
+        session: u64,
+        reason: &'static str,
+    },
 }
 impl std::fmt::Debug for InlineEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -68,6 +77,27 @@ impl std::fmt::Debug for InlineEvent {
     }
 }
 pub type EventHandler = Arc<dyn Fn(InlineEvent) + Send + Sync>;
+
+#[derive(Clone, Debug)]
+pub struct TargetCapabilities {
+    pub backend: &'static str,
+    pub can_read_query: bool,
+    pub can_observe_selection: bool,
+    pub advertises_exact_selection: bool,
+    pub has_text_edit_pattern: bool,
+    pub exact_selection_verified: bool,
+}
+
+/// Bounded, content-free diagnostics. No key text, composer or clipboard payload.
+#[derive(Clone, Debug)]
+pub struct InlineTrace {
+    pub elapsed_us: u64,
+    pub kind: &'static str,
+    pub detail: u32,
+    pub session: u64,
+    pub input_serial: u64,
+    pub observed_serial: u64,
+}
 
 pub(super) const IME_CLEAR: u8 = 0;
 pub(super) const IME_ACTIVE: u8 = 1;
@@ -90,12 +120,18 @@ pub(super) struct Shared {
     displayed_serial: AtomicU64,
     selectable: AtomicBool,
     committing: AtomicBool,
+    outcome_unknown: AtomicBool,
+    range_valid: AtomicBool,
     ime: AtomicU8,
+    composition_evidence: Mutex<Option<composition::CompositionEvidence>>,
     may_compose: AtomicBool,
     ime_ui: AtomicU8,
     native_identity: AtomicBool,
     dirty_queued: AtomicBool,
     callback: EventHandler,
+    started_at: Instant,
+    trace: Mutex<std::collections::VecDeque<InlineTrace>>,
+    capabilities: Mutex<Option<TargetCapabilities>>,
 }
 impl Shared {
     fn new(callback: EventHandler) -> Arc<Self> {
@@ -113,12 +149,18 @@ impl Shared {
             displayed_serial: AtomicU64::new(0),
             selectable: AtomicBool::new(false),
             committing: AtomicBool::new(false),
+            outcome_unknown: AtomicBool::new(false),
+            range_valid: AtomicBool::new(false),
             ime: AtomicU8::new(IME_UNKNOWN),
+            composition_evidence: Mutex::new(None),
             may_compose: AtomicBool::new(false),
             ime_ui: AtomicU8::new(IME_UNKNOWN),
             native_identity: AtomicBool::new(false),
             dirty_queued: AtomicBool::new(false),
             callback,
+            started_at: Instant::now(),
+            trace: Mutex::new(std::collections::VecDeque::with_capacity(512)),
+            capabilities: Mutex::new(None),
         })
     }
     fn ticket(&self) -> InlineTicket {
@@ -126,6 +168,21 @@ impl Shared {
             session: self.active.load(Ordering::Acquire),
             revision: self.revision.load(Ordering::Acquire),
             input_serial: self.observed_serial.load(Ordering::Acquire),
+        }
+    }
+    fn record(&self, kind: &'static str, detail: u32) {
+        if let Ok(mut trace) = self.trace.try_lock() {
+            if trace.len() == 512 {
+                trace.pop_front();
+            }
+            trace.push_back(InlineTrace {
+                elapsed_us: self.started_at.elapsed().as_micros() as u64,
+                kind,
+                detail,
+                session: self.active.load(Ordering::Acquire),
+                input_serial: self.input_serial.load(Ordering::Acquire),
+                observed_serial: self.observed_serial.load(Ordering::Acquire),
+            });
         }
     }
     fn accepts(&self, ticket: InlineTicket) -> bool {
@@ -137,16 +194,52 @@ impl Shared {
             && self.observed_serial.load(Ordering::Acquire) == ticket.input_serial
     }
     fn composition(&self, target: &target::Target) -> (u8, bool) {
+        let session = self.active.load(Ordering::Acquire);
+        let serial = self.input_serial.load(Ordering::Acquire);
+        let observed_at = Instant::now();
         let (reported, possible) = target.composition();
-        let observed = self.ime_ui.load(Ordering::Acquire);
-        let state = if observed == IME_ACTIVE {
-            IME_ACTIVE
-        } else if reported == IME_UNKNOWN && observed == IME_CLEAR {
-            IME_CLEAR
-        } else {
-            reported
-        };
+        let mut state = reported;
+        if let Ok(mut evidence) = self.composition_evidence.lock() {
+            if reported == IME_UNKNOWN {
+                if let Some(e) = *evidence {
+                    if e.source == composition::CompositionSource::TextEditEvent {
+                        state = e.state_at(session, serial, Instant::now());
+                    }
+                }
+            }
+            if reported != IME_UNKNOWN || state == IME_UNKNOWN {
+                *evidence = Some(composition::CompositionEvidence {
+                    state,
+                    session,
+                    input_serial: serial,
+                    observed_at,
+                    source: target.composition_source(),
+                });
+            }
+        }
+        if serial != self.input_serial.load(Ordering::Acquire)
+            || session != self.active.load(Ordering::Acquire)
+        {
+            state = IME_UNKNOWN;
+        }
         (state, possible)
+    }
+    // Hook-side read is bounded: contention means Unknown, never a wait.
+    fn verified_composition(&self) -> u8 {
+        let session = self.active.load(Ordering::Acquire);
+        let serial = self.input_serial.load(Ordering::Acquire);
+        self.composition_evidence
+            .try_lock()
+            .ok()
+            .and_then(|e| *e)
+            .map_or(IME_UNKNOWN, |e| e.state_at(session, serial, Instant::now()))
+    }
+    fn suspend(&self, session: u64, reason: &'static str) {
+        if self.active.load(Ordering::Acquire) == session {
+            self.range_valid.store(false, Ordering::Release);
+            self.selectable.store(false, Ordering::Release);
+            (self.callback)(InlineEvent::Suspended { session, reason });
+        }
     }
     fn can_confirm(&self) -> bool {
         let t = self.ticket();
@@ -156,6 +249,13 @@ impl Shared {
             && self.displayed_serial.load(Ordering::Acquire) == t.input_serial
             && self.ime.load(Ordering::Acquire) == IME_CLEAR
             && !self.committing.load(Ordering::Acquire)
+            && !self.outcome_unknown.load(Ordering::Acquire)
+            && self.range_valid.load(Ordering::Acquire)
+    }
+    fn replacement_live(&self, ticket: InlineTicket) -> bool {
+        self.accepts(ticket)
+            && self.range_valid.load(Ordering::Acquire)
+            && !self.outcome_unknown.load(Ordering::Acquire)
     }
     fn input_changed(&self, sender: &SyncSender<Request>, session: u64) {
         if session == 0 || self.active.load(Ordering::Acquire) != session {
@@ -206,17 +306,51 @@ impl Shared {
 
 pub(super) struct Deadline {
     cancelled: AtomicBool,
+    // 0 pending, 1 selecting, 2 write dispatched, 3/4 cancelled before/during
+    // selection. A timeout and native-write authorization have one CAS order.
+    delivery_stage: AtomicU8,
     expires: Instant,
 }
 impl Deadline {
     fn new(timeout: Duration) -> Arc<Self> {
         Arc::new(Self {
             cancelled: AtomicBool::new(false),
+            delivery_stage: AtomicU8::new(0),
             expires: Instant::now() + timeout,
         })
     }
     fn live(&self) -> bool {
         !self.cancelled.load(Ordering::Acquire) && Instant::now() < self.expires
+    }
+    fn begin_selection(&self) -> bool {
+        self.live()
+            && self
+                .delivery_stage
+                .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+    }
+    fn dispatch_write(&self) -> bool {
+        self.live()
+            && self
+                .delivery_stage
+                .compare_exchange(1, 2, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+    }
+    fn cancel_delivery(&self) -> PasteDeliveryFailure {
+        self.cancelled.store(true, Ordering::Release);
+        let previous = self
+            .delivery_stage
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |stage| match stage {
+                0 => Some(3),
+                1 => Some(4),
+                _ => None,
+            })
+            .unwrap_or_else(|stage| stage);
+        match previous {
+            0 | 3 => PasteDeliveryFailure::RangeUnavailable,
+            1 | 4 => PasteDeliveryFailure::SelectionUnconfirmed,
+            _ => PasteDeliveryFailure::ReplacementUnconfirmed,
+        }
     }
 }
 pub(super) enum Request {
@@ -322,11 +456,41 @@ impl InlineController {
             u64::from(s.can_confirm()),
         ]
     }
+    pub fn diagnostics(&self) -> Vec<InlineTrace> {
+        self.inner
+            .shared
+            .trace
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .cloned()
+            .collect()
+    }
+    pub fn capabilities(&self) -> Option<TargetCapabilities> {
+        self.inner
+            .shared
+            .capabilities
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
     pub fn invalidate_results(&self) {
         self.inner.shared.selectable.store(false, Ordering::Release);
     }
     pub fn live(&self, ticket: InlineTicket) -> bool {
         self.inner.shared.accepts(ticket)
+    }
+    pub fn replacement_outcome_unknown(&self) -> bool {
+        self.inner.shared.outcome_unknown.load(Ordering::Acquire)
+    }
+    #[cfg(feature = "native-test")]
+    pub fn safety_status(&self) -> [bool; 3] {
+        let s = &self.inner.shared;
+        [
+            s.committing.load(Ordering::Acquire),
+            s.outcome_unknown.load(Ordering::Acquire),
+            s.range_valid.load(Ordering::Acquire),
+        ]
     }
     pub fn preflight(
         &self,
@@ -364,14 +528,25 @@ impl InlineController {
             .try_send(Request::Paste(ticket, sequence, guard.clone(), reply))
             .map_err(|_| "Inline service is busy")?;
         match response.recv_timeout(Duration::from_millis(900)) {
-            Ok(result) => result,
+            Ok(result) => {
+                self.inner.shared.record("paste-reply-received", 0);
+                result
+            }
             Err(_) => {
-                guard.cancelled.store(true, Ordering::Release);
-                // A provider may have completed a native paste before the acknowledgement.
-                // Never replay automatically or guess that the target was unchanged.
-                Ok(PasteDelivery::Failed(
-                    PasteDeliveryFailure::ReplacementUnconfirmed,
-                ))
+                self.inner.shared.record("paste-reply-timeout", 0);
+                let failure = guard.cancel_delivery();
+                // Only an authorized native write can make the text outcome
+                // unknown. Cancelling the earlier stage also forbids a late
+                // selection reply from dispatching that write afterward.
+                if failure == PasteDeliveryFailure::ReplacementUnconfirmed
+                    && self.inner.shared.active.load(Ordering::Acquire) == ticket.session
+                {
+                    self.inner
+                        .shared
+                        .outcome_unknown
+                        .store(true, Ordering::Release);
+                }
+                Ok(PasteDelivery::Failed(failure))
             }
         }
     }
@@ -433,7 +608,8 @@ fn run(
                 shared.dirty_queued.store(false, Ordering::Release);
                 if let Some(active) = &mut session {
                     if shared.active.load(Ordering::Acquire) != active.id {
-                        hook.disarm(active.id);
+                        // UI cancellation hides the popup before requesting
+                        // hook retirement. Query retirement alone cannot do so.
                         session = None;
                         continue;
                     }
@@ -452,6 +628,12 @@ fn run(
                 due = None;
                 shared.selectable.store(false, Ordering::Release);
                 shared.committing.store(false, Ordering::Release);
+                shared.outcome_unknown.store(false, Ordering::Release);
+                shared.range_valid.store(false, Ordering::Release);
+                *shared
+                    .capabilities
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = None;
                 let fallback_snapshot = snapshot.clone();
                 let result = begin(id, snapshot, &shared, &hook, &sender, automation.as_ref());
                 match result {
@@ -502,6 +684,16 @@ fn run(
                     .filter(|s| s.id == ticket.session)
                     .ok_or_else(|| "Inline session ended".to_string())
                     .and_then(|s| preflight(s, &shared, ticket, text, &deadline));
+                if result.is_err()
+                    && session
+                        .as_ref()
+                        .is_some_and(|s| s.id == ticket.session && s.backend.definitely_left())
+                {
+                    shared.cancel(
+                        ticket.session,
+                        "Original input control changed; invoke in the new editor",
+                    );
+                }
                 let _ = reply.send(result);
             }
             Ok(Request::Paste(ticket, sequence, deadline, reply)) => {
@@ -510,10 +702,37 @@ fn run(
                     .filter(|s| s.id == ticket.session)
                     .ok_or_else(|| "Inline session ended".to_string())
                     .and_then(|s| paste(s, &shared, ticket, sequence, &deadline));
+                if (result.is_err()
+                    || matches!(
+                        result,
+                        Ok(PasteDelivery::Failed(PasteDeliveryFailure::RangeChanged))
+                    ))
+                    && session
+                        .as_ref()
+                        .is_some_and(|s| s.id == ticket.session && s.backend.definitely_left())
+                {
+                    shared.cancel(
+                        ticket.session,
+                        "Original input control changed; invoke in the new editor",
+                    );
+                }
+                shared.record(
+                    "paste-returned",
+                    u32::from(matches!(result, Ok(PasteDelivery::Pasted))),
+                );
                 shared.committing.store(false, Ordering::Release);
+                if matches!(
+                    result,
+                    Ok(PasteDelivery::Failed(
+                        PasteDeliveryFailure::ReplacementUnconfirmed
+                    ))
+                ) {
+                    shared.outcome_unknown.store(true, Ordering::Release);
+                }
                 if matches!(result, Ok(PasteDelivery::Pasted)) {
                     shared.active.store(0, Ordering::Release);
-                    hook.disarm(ticket.session);
+                    // The UI acknowledges delivery by hiding, then cancelling
+                    // this lease. Protect the interval before that completion.
                     session = None;
                     due = None;
                 }
@@ -560,12 +779,27 @@ fn begin(
     shared.ime.store(IME_UNKNOWN, Ordering::Release);
     shared.native_identity.store(false, Ordering::Release);
     hook.arm(id)?;
+    shared.record("armed", 0);
+    #[cfg(feature = "native-test")]
+    {
+        let delay = diagnostics::acquisition_delay();
+        if delay != 0 {
+            shared.record("acquisition-fault-start", delay);
+            std::thread::sleep(Duration::from_millis(u64::from(delay)));
+            shared.record("acquisition-fault-end", delay);
+        }
+    }
     let serial = shared.input_serial.load(Ordering::Acquire);
     let backend = target::Target::open(&snapshot, uia)?;
+    shared.record("target-open", 0);
     shared
         .native_identity
         .store(backend.backend() == "native-edit", Ordering::Release);
     let initial = backend.snapshot()?;
+    *shared
+        .capabilities
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = Some(backend.capabilities());
     let range = QueryRange::begin(&initial).map_err(str::to_string)?;
     let (composition, may_compose) = shared.composition(&backend);
     // A readable input may start with composition active/unknown. Keep focus
@@ -575,18 +809,26 @@ fn begin(
         return Err("Inline activation was cancelled".into());
     }
     if shared.input_serial.load(Ordering::Acquire) != serial {
+        shared.record("acquisition-raced", 0);
         return Err("The composer changed while the inline range was being captured. Typed text was kept; use independent search or invoke again.".into());
     }
     shared.ime.store(composition, Ordering::Release);
     shared.may_compose.store(may_compose, Ordering::Release);
     shared.revision.store(range.revision(), Ordering::Release);
+    shared.range_valid.store(true, Ordering::Release);
     shared.observed_serial.store(serial, Ordering::Release);
     let subscriptions = backend.automation_element().and_then(|(uia, element)| {
         subscriptions::Subscription::new(uia, element, shared.clone(), sender.clone(), id)
     });
     (shared.callback)(InlineEvent::Started(InlineStarted {
         ticket: shared.ticket(),
-        query: range.query(),
+        query: if composition == IME_ACTIVE {
+            backend
+                .preview_query(&range, &initial)
+                .unwrap_or_else(|| range.query())
+        } else {
+            range.query()
+        },
         target: backend.paste_target.clone(),
         anchor,
         backend: backend.backend(),
@@ -608,6 +850,13 @@ fn observe(session: &mut Session, shared: &Shared) -> bool {
     if shared.committing.load(Ordering::Acquire) {
         return false;
     }
+    if session.backend.definitely_left() {
+        shared.cancel(
+            session.id,
+            "The original editor lost focus; inline completion cancelled",
+        );
+        return false;
+    }
     let serial = shared.input_serial.load(Ordering::Acquire);
     let snapshot = match session.backend.snapshot() {
         Ok(value) => {
@@ -618,15 +867,15 @@ fn observe(session: &mut Session, shared: &Shared) -> bool {
             // A target may expose the new text and the old UTF-16 selection for
             // one message turn (notably surrogate-pair backspace). Retry a bounded
             // number of turns; Enter stays disabled until a coherent read arrives.
-            if session.read_failures < 4 && session.backend.current() {
+            if session.read_failures < 4 {
                 session.read_failures += 1;
                 shared.selectable.store(false, Ordering::Release);
                 return true;
             }
             eprintln!("Echo inline range observation rejected: {error}");
-            shared.cancel(
+            shared.suspend(
                 session.id,
-                "Input control or text range is no longer available; typed query kept",
+                "Input range is temporarily unavailable; Enter stays protected. Edit the query or use Esc/F6.",
             );
             return false;
         }
@@ -638,12 +887,15 @@ fn observe(session: &mut Session, shared: &Shared) -> bool {
         return true;
     }
     if let Err(reason) = session.range.observe(&snapshot) {
+        shared.range_valid.store(false, Ordering::Release);
         if composition != IME_ACTIVE {
-            shared.cancel(session.id, reason);
+            shared.suspend(session.id, reason);
             return false;
         }
         // Do not expand a protected query across an IME's transient range.
         shared.selectable.store(false, Ordering::Release);
+    } else {
+        shared.range_valid.store(true, Ordering::Release);
     }
     session.prepared = None;
     if let Some(anchor) = session.backend.anchor() {
@@ -658,12 +910,21 @@ fn observe(session: &mut Session, shared: &Shared) -> bool {
     shared.observed_serial.store(serial, Ordering::Release);
     (shared.callback)(InlineEvent::Changed {
         ticket: shared.ticket(),
-        query: session.range.query(),
+        query: if composition == IME_ACTIVE {
+            session
+                .backend
+                .preview_query(&session.range, &snapshot)
+                .unwrap_or_else(|| session.range.query())
+        } else {
+            session.range.query()
+        },
         anchor: Some(session.anchor),
         composing: composition == IME_ACTIVE,
-        suspended: composition == IME_UNKNOWN,
+        suspended: composition == IME_UNKNOWN
+            || !shared.range_valid.load(Ordering::Acquire)
+            || shared.outcome_unknown.load(Ordering::Acquire),
     });
-    false
+    composition == IME_ACTIVE || (composition == IME_UNKNOWN && possible)
 }
 fn preflight(
     session: &mut Session,
@@ -672,7 +933,10 @@ fn preflight(
     text: String,
     guard: &Deadline,
 ) -> Result<(), String> {
-    if !guard.live() || !shared.accepts(ticket) {
+    if shared.outcome_unknown.load(Ordering::Acquire) {
+        return Err("Replacement outcome is unknown. Check the input, then Esc/F6; no repeat paste is allowed in this session.".into());
+    }
+    if !guard.live() || !shared.replacement_live(ticket) {
         return Err(
             "The query changed before insertion. Enter was not sent; choose a current result."
                 .into(),
@@ -688,7 +952,7 @@ fn preflight(
         .range
         .seal(&snapshot, ticket.revision)
         .map_err(str::to_string)?;
-    if !guard.live() || !shared.accepts(ticket) {
+    if !guard.live() || !shared.replacement_live(ticket) {
         return Err("The query changed during validation; nothing was replaced".into());
     }
     session.prepared = Some((ticket, text));
@@ -704,7 +968,7 @@ fn paste(
     let Some((prepared, inserted)) = session.prepared.take() else {
         return Err("Inline replacement was not preflighted".into());
     };
-    if prepared != ticket || !guard.live() || !shared.accepts(ticket) {
+    if prepared != ticket || !guard.live() || !shared.replacement_live(ticket) {
         return Ok(PasteDelivery::Failed(PasteDeliveryFailure::RangeChanged));
     }
     if shared.composition(&session.backend).0 != IME_CLEAR {
@@ -721,8 +985,22 @@ fn paste(
         ));
     }
     shared.committing.store(true, Ordering::Release);
+    if !guard.begin_selection() {
+        return Ok(PasteDelivery::Failed(
+            PasteDeliveryFailure::RangeUnavailable,
+        ));
+    }
     session.backend.select(span, &snapshot, guard)?;
-    if !guard.live() || !shared.accepts(ticket) {
+    shared.record("selection-verified", snapshot.text.len() as u32);
+    if let Some(c) = shared
+        .capabilities
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_mut()
+    {
+        c.exact_selection_verified = true;
+    }
+    if !guard.live() || !shared.replacement_live(ticket) {
         return Ok(PasteDelivery::Failed(PasteDeliveryFailure::RangeChanged));
     }
     if !crate::windows_impl::validate_inline_clipboard(sequence, &inserted) {
@@ -731,13 +1009,25 @@ fn paste(
         ));
     }
     // No mutation was performed before exact selection and all identities were
-    // rechecked. The native paste is one edit; no separate query deletion occurs.
-    if session.backend.paste_selected().is_err() {
+    // rechecked. Standard Edit uses its native range operation; rich editors
+    // retain native clipboard paste. Neither route separately deletes the query.
+    shared.record(
+        "replacement-method",
+        u32::from(session.backend.uses_native_range_replace()),
+    );
+    if !guard.dispatch_write() {
+        return Ok(PasteDelivery::Failed(
+            PasteDeliveryFailure::SelectionUnconfirmed,
+        ));
+    }
+    if session.backend.paste_selected(&inserted).is_err() {
+        shared.record("paste-request-error", 0);
         return Ok(PasteDelivery::Failed(
             PasteDeliveryFailure::ReplacementUnconfirmed,
         ));
     }
     let expected = session.backend.normalize_inserted(&inserted);
+    shared.record("paste-requested", expected.len() as u32);
     let lf = inserted
         .replace("\r\n", "\n")
         .encode_utf16()
@@ -747,18 +1037,25 @@ fn paste(
         .replace('\n', "\r\n")
         .encode_utf16()
         .collect::<Vec<_>>();
-    let started = Instant::now();
-    while guard.live() && started.elapsed() < Duration::from_millis(300) {
+    // The request already has a bounded 900 ms deadline. A separate 300 ms cap
+    // discarded useful remaining time after an acknowledged edit when the host
+    // briefly stalled its readback. Spend the remaining request budget only on
+    // observation; never repeat the mutation and never extend that deadline.
+    while guard.live() {
         if !shared.accepts(ticket) {
             break;
         }
+        shared.record("paste-readback-start", 0);
         if let Ok(actual) = session.backend.snapshot() {
+            shared.record("paste-readback", actual.text.len() as u32);
             if session.range.matches_replacement(&actual.text, &expected)
                 || session.range.matches_replacement(&actual.text, &lf)
                 || session.range.matches_replacement(&actual.text, &crlf)
             {
                 return Ok(PasteDelivery::Pasted);
             }
+        } else {
+            shared.record("paste-readback-error", 0);
         }
         std::thread::sleep(Duration::from_millis(15));
     }
@@ -771,6 +1068,51 @@ fn paste(
 mod tests {
     use super::*;
     #[test]
+    fn timeout_distinguishes_selection_from_dispatched_write() {
+        let pending = Deadline::new(Duration::from_secs(1));
+        assert_eq!(
+            pending.cancel_delivery(),
+            PasteDeliveryFailure::RangeUnavailable
+        );
+        assert!(!pending.begin_selection());
+        let selecting = Deadline::new(Duration::from_secs(1));
+        assert!(selecting.begin_selection());
+        assert_eq!(
+            selecting.cancel_delivery(),
+            PasteDeliveryFailure::SelectionUnconfirmed
+        );
+        assert!(!selecting.dispatch_write());
+        let writing = Deadline::new(Duration::from_secs(1));
+        assert!(writing.begin_selection());
+        assert!(writing.dispatch_write());
+        assert_eq!(
+            writing.cancel_delivery(),
+            PasteDeliveryFailure::ReplacementUnconfirmed
+        );
+    }
+    #[test]
+    fn timeout_cannot_report_selection_only_after_authorizing_a_write() {
+        for _ in 0..100 {
+            let deadline = Deadline::new(Duration::from_secs(2));
+            assert!(deadline.begin_selection());
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+            let worker_deadline = deadline.clone();
+            let worker_barrier = barrier.clone();
+            let worker = std::thread::spawn(move || {
+                worker_barrier.wait();
+                worker_deadline.dispatch_write()
+            });
+            barrier.wait();
+            let result = deadline.cancel_delivery();
+            let dispatched = worker.join().unwrap();
+            assert_eq!(
+                dispatched,
+                result == PasteDeliveryFailure::ReplacementUnconfirmed
+            );
+            assert!(!deadline.dispatch_write());
+        }
+    }
+    #[test]
     fn ready_result_must_match_query_and_every_observed_input_generation() {
         let s = Shared::new(Arc::new(|_| {}));
         s.active.store(7, Ordering::Relaxed);
@@ -782,6 +1124,7 @@ mod tests {
         s.displayed_serial.store(3, Ordering::Relaxed);
         s.ime.store(IME_CLEAR, Ordering::Relaxed);
         s.selectable.store(true, Ordering::Relaxed);
+        s.range_valid.store(true, Ordering::Relaxed);
         assert!(s.can_confirm());
         s.input_serial.store(4, Ordering::Relaxed);
         assert!(!s.can_confirm());
@@ -806,5 +1149,21 @@ mod tests {
         s.requested.store(5, Ordering::Relaxed);
         s.cancel(4, "stale");
         assert_eq!(s.active.load(Ordering::Relaxed), 5);
+    }
+    #[test]
+    fn paused_range_and_unknown_delivery_reject_a_matching_ticket() {
+        let s = Shared::new(Arc::new(|_| {}));
+        s.active.store(4, Ordering::Relaxed);
+        s.requested.store(4, Ordering::Relaxed);
+        s.range_valid.store(true, Ordering::Relaxed);
+        let ticket = s.ticket();
+        assert!(s.replacement_live(ticket));
+        s.suspend(4, "provider read failed");
+        assert!(s.accepts(ticket));
+        assert!(!s.replacement_live(ticket));
+        s.range_valid.store(true, Ordering::Relaxed);
+        assert!(s.replacement_live(ticket));
+        s.outcome_unknown.store(true, Ordering::Relaxed);
+        assert!(!s.replacement_live(ticket));
     }
 }

@@ -766,14 +766,22 @@ func (a *app) format(check bool) error {
 		if err = a.checkGoFormatting(files); err != nil {
 			return err
 		}
-		return a.run("cargo", "fmt", "--all", "--", "--check")
+		if err = a.run("cargo", "fmt", "--all", "--", "--check"); err != nil {
+			return err
+		}
+		return a.run("rustfmt", "--edition", "2021", "--check", "crates/echo-windows/src/inline/ime_observer/dll.rs")
 	}
 	if len(files) > 0 {
 		if err = a.run("gofmt", append([]string{"-w"}, files...)...); err != nil {
 			return err
 		}
 	}
-	return a.run("cargo", "fmt", "--all")
+	if err = a.run("cargo", "fmt", "--all"); err != nil {
+		return err
+	}
+	// This DLL entry point is compiled by the Windows adapter's build script,
+	// so Cargo's crate traversal does not include it.
+	return a.run("rustfmt", "--edition", "2021", "crates/echo-windows/src/inline/ime_observer/dll.rs")
 }
 
 func (a *app) checkGoFormatting(files []string) error {

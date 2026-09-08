@@ -16,6 +16,7 @@ export component EntryView inherits Rectangle {
     in property <bool> batch;
     in property <bool> busy;
     in property <bool> input-blocked;
+    in property <bool> inline-mode;
     in property <bool> quick-insert;
     in property <bool> copy-only;
     in property <bool> reorder-enabled;
@@ -76,7 +77,7 @@ export component EntryView inherits Rectangle {
             data: root.drag-data(root.entry.key); allow-move: true;
             row-touch := TouchArea {
                 enabled: !root.busy && !root.capture-only;
-                clicked => { if (!root.input-blocked) { row-focus.focus(); root.select(root.entry.key); if ((root.quick-insert || root.copy-only) && !root.batch) { root.perform(root.copy-only ? "copy" : "insert"); } } }
+                clicked => { if (!root.input-blocked) { if (!root.inline-mode) { row-focus.focus(); } root.select(root.entry.key); if ((root.quick-insert || root.copy-only) && !root.batch) { root.perform(root.copy-only ? "copy" : "insert"); } } }
             }
         }
     }
@@ -119,16 +120,16 @@ export component EntryView inherits Rectangle {
             if (root.batch): EchoButton {
                 text: root.entry.batch-selected ? "✓ Selected" : "Select";
                 label: "Toggle selection"; checked: root.entry.batch-selected;
-                enabled: !root.busy; clicked => { root.perform("toggle-batch"); }
+                take-focus-on-click: !root.inline-mode; execution-blocked: root.input-blocked; enabled: !root.busy; clicked => { root.perform("toggle-batch"); }
             }
-            if (!root.batch): EchoButton { icon: @image-url("icons/copy.svg"); label: "Copy item"; flat: true; enabled: !root.busy; clicked => { root.perform("copy"); } }
-            if (!root.batch && root.quick-insert): EchoButton { icon: @image-url("icons/insert.svg"); label: "Insert item"; flat: true; enabled: !root.busy; clicked => { root.perform("insert"); } }
-            if (!root.batch && !root.favorites): EchoButton { icon: @image-url("icons/star.svg"); label: "Move to Favorites"; flat: true; enabled: !root.busy; clicked => { root.perform("favorite"); } }
-            if (!root.batch && !root.favorites): EchoButton { icon: @image-url("icons/pin.svg"); label: root.entry.pinned ? "Unpin item" : "Pin item"; flat: true; checked: root.entry.pinned; enabled: !root.busy; clicked => { root.perform("pin"); } }
-            if (!root.batch && root.favorites): EchoButton { icon: @image-url("icons/edit.svg"); label: "Edit favorite"; flat: true; enabled: !root.busy; clicked => { root.perform("edit"); } }
-            if (!root.batch && root.favorites): EchoButton { icon: @image-url("icons/up.svg"); label: "Move favorite up"; flat: true; enabled: !root.busy && root.reorder-enabled; clicked => { root.perform("up"); } }
-            if (!root.batch && root.favorites): EchoButton { icon: @image-url("icons/down.svg"); label: "Move favorite down"; flat: true; enabled: !root.busy && root.reorder-enabled; clicked => { root.perform("down"); } }
-            if (!root.batch): EchoButton { text: "···"; label: "Item options"; flat: true; enabled: !root.busy; clicked => { root.perform("options"); } }
+            if (!root.batch): EchoButton { icon: @image-url("icons/copy.svg"); label: "Copy item"; flat: true; take-focus-on-click: !root.inline-mode; execution-blocked: root.input-blocked; enabled: !root.busy; clicked => { root.perform("copy"); } }
+            if (!root.batch && root.quick-insert): EchoButton { icon: @image-url("icons/insert.svg"); label: "Insert item"; flat: true; take-focus-on-click: !root.inline-mode; execution-blocked: root.input-blocked; enabled: !root.busy; clicked => { root.perform("insert"); } }
+            if (!root.batch && !root.favorites): EchoButton { icon: @image-url("icons/star.svg"); label: "Move to Favorites"; flat: true; take-focus-on-click: !root.inline-mode; execution-blocked: root.input-blocked; enabled: !root.busy; clicked => { root.perform("favorite"); } }
+            if (!root.batch && !root.favorites): EchoButton { icon: @image-url("icons/pin.svg"); label: root.entry.pinned ? "Unpin item" : "Pin item"; flat: true; checked: root.entry.pinned; take-focus-on-click: !root.inline-mode; execution-blocked: root.input-blocked; enabled: !root.busy; clicked => { root.perform("pin"); } }
+            if (!root.batch && root.favorites): EchoButton { icon: @image-url("icons/edit.svg"); label: "Edit favorite"; flat: true; take-focus-on-click: !root.inline-mode; execution-blocked: root.input-blocked; enabled: !root.busy; clicked => { root.perform("edit"); } }
+            if (!root.batch && root.favorites): EchoButton { icon: @image-url("icons/up.svg"); label: "Move favorite up"; flat: true; take-focus-on-click: !root.inline-mode; execution-blocked: root.input-blocked; enabled: !root.busy && root.reorder-enabled; clicked => { root.perform("up"); } }
+            if (!root.batch && root.favorites): EchoButton { icon: @image-url("icons/down.svg"); label: "Move favorite down"; flat: true; take-focus-on-click: !root.inline-mode; execution-blocked: root.input-blocked; enabled: !root.busy && root.reorder-enabled; clicked => { root.perform("down"); } }
+            if (!root.batch): EchoButton { text: "···"; label: "Item options"; flat: true; take-focus-on-click: !root.inline-mode; execution-blocked: root.input-blocked; enabled: !root.busy; clicked => { root.perform("options"); } }
         }
     }
     Rectangle { y: root.height - 1px; height: 1px; background: EchoTheme.line; }

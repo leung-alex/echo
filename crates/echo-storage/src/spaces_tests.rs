@@ -346,6 +346,10 @@ fn settings_patch_is_atomic_and_does_not_overwrite_automatic_resume() {
         clipboard: saved.clipboard.clone(),
         ui: saved.ui.clone(),
     };
+    invalid.clipboard.max_entries = 2001;
+    assert!(s.save_settings_patch(invalid.clone()).is_err());
+    assert_eq!(s.settings_snapshot().unwrap(), saved);
+    invalid.clipboard.max_entries = 2000;
     invalid.clipboard.max_item_bytes = invalid.clipboard.max_total_bytes + 1;
     assert!(s.save_settings_patch(invalid).is_err());
     assert_eq!(s.settings_snapshot().unwrap(), saved);

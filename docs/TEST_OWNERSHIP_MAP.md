@@ -33,6 +33,15 @@ Mutating native tests require separate authorization through `ECHO_WINDOWS_ACCEP
 
 Build, smoke, unit, accessibility-tree, and UI Automation results are not substitutes for physical environment evidence. In particular, text input or UIA tests cannot certify physical Chinese IME behavior, mixed-DPI multi-monitor behavior, or an eight-hour soak unless those exact scenarios were actually run and recorded.
 
+Inline completion's keyboard lease, target range, composition evidence and native
+selection verification belong to `echo-windows`; query selection and stale row
+gating belong to `echo-presentation`. See `docs/engineering/inline-completion.md`.
+The explicit storage scale gate is `cargo test -p echo-storage --test fuzzy_search
+fuzzy_search_large_corpus_keeps_tail_results_and_cancels --locked -- --ignored
+--nocapture`; it exercises 1k/10k real SQLite corpora, including searchable bodies
+beyond 16 MiB, and reports cold, normalized reuse and cancellation timings. Those
+numbers do not certify desktop input latency or physical-input acceptance.
+
 ## Packaging Evidence
 
 Portable directory/ZIP and optional NSIS packaging are separate outputs. Successfully producing one output does not imply that installer behavior, upgrade/uninstall behavior, or a final release-candidate pass was tested. Report every gate as PASS, FAIL, or NOT RUN from observed evidence only.

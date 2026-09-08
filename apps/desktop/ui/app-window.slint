@@ -160,10 +160,13 @@ export component AppWindow inherits Window {
     out property <length> stage-width: root.width;
     out property <length> stage-height: root.height;
     in property <length> popup-card-width;
+    in property <length> popup-card-height;
+    in property <length> popup-card-top;
+    in property <string> empty-state-text;
     out property <length> panel-width: max(120px,min(root.stage-width - 32px,root.popup-card-width > 0px ? root.popup-card-width : min(T.panel-max-width,max(T.panel-min-width,root.stage-width * T.panel-width-ratio))));
-    out property <length> panel-height: max(120px,root.stage-height - 2 * T.stage-padding-y);
+    out property <length> panel-height: root.inline-mode && root.popup-card-height > 0px ? root.popup-card-height : max(120px,root.stage-height - 2 * T.stage-padding-y);
     out property <length> panel-left: (root.width - root.panel-width) / 2;
-    out property <length> panel-top: T.stage-padding-y;
+    out property <length> panel-top: root.inline-mode && root.popup-card-height > 0px ? root.popup-card-top : T.stage-padding-y;
     out property <length> settings-card-width: min(T.settings-card-max-width,root.width - 48px);
     out property <length> settings-card-left: (root.width - root.settings-card-width) / 2;
     private property <length> settings-scroll-anchor-x;
@@ -204,7 +207,7 @@ export component AppWindow inherits Window {
             Rectangle {
                 y: 0px; width: root.stage-width; height: root.stage-height;
                 visible: root.route == "history"; clip: true;
-                Image { x: 0px; y: 0px; width: parent.width; height: parent.height; source: root.stage-image; visible: root.flow-enabled; image-fit: fill; }
+                Image { x: 0px; y: root.panel-top + root.panel-height / 2 - root.stage-height / 2; width: parent.width; height: parent.height; source: root.stage-image; visible: root.flow-enabled; image-fit: fill; }
                 TouchArea {
                     enabled: !root.modal && !root.busy;
                     private property <length> start-x;
@@ -230,6 +233,7 @@ export component AppWindow inherits Window {
                 title: root.space-title; subtitle: root.space-subtitle; icon-key: root.space-icon; accent: root.space-accent;
                 rows: root.rows; favorites: root.active-view != "history"; capture-only: false;
                 loading: root.loading; stale: root.stale-rows; error: root.status-error;
+                empty-state-text: root.empty-state-text;
                 busy: root.busy || root.modal || root.navigation-busy;
                 compact: root.density == "compact"; batch: root.batch-mode; selected-count: root.selected-count;
                 selection-index: root.selection-index; query <=> root.query; quick-insert: root.quick-insert && root.paste-target-available;

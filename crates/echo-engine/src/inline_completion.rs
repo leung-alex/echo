@@ -76,6 +76,21 @@ impl QueryRange {
     pub fn span(&self) -> Range<usize> {
         self.prefix.len()..self.prefix.len() + self.query.len()
     }
+    /// Project uncommitted composition into a search query without changing the
+    /// retained replacement span or revision. Only a later committed observation
+    /// may update that span. The adapter proves the source and composition state.
+    pub fn preview_composition(
+        &self,
+        snapshot: &ComposerSnapshot,
+        preedit: &str,
+    ) -> Result<String, &'static str> {
+        let span = self.validate_context(snapshot)?;
+        let mut query = snapshot.text[span.start..snapshot.selection.start].to_vec();
+        query.extend(preedit.encode_utf16());
+        query.extend_from_slice(&snapshot.text[snapshot.selection.end..span.end]);
+        validate_query(&query)?;
+        String::from_utf16(&query).map_err(|_| "Composition contains invalid text")
+    }
     pub fn observe(&mut self, snapshot: &ComposerSnapshot) -> Result<bool, &'static str> {
         let span = self.validate_context(snapshot)?;
         let query = &snapshot.text[span];
@@ -150,6 +165,46 @@ fn validate_query(query: &[u16]) -> Result<(), &'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn composition_preview_preserves_the_committed_ticket_and_range() {
+        let mut query = QueryRange::begin(&snap("pre||post", 4, 4)).unwrap();
+        assert_eq!(
+            query
+                .preview_composition(&snap("pre||post", 4, 4), "nihao")
+                .unwrap(),
+            "nihao"
+        );
+        assert_eq!(query.query(), "");
+        assert_eq!(query.revision(), 1);
+        assert_eq!(query.span(), 4..4);
+        query.observe(&snap("pre|你好|post", 6, 6)).unwrap();
+        assert_eq!(query.query(), "你好");
+        assert_eq!(query.seal(&snap("pre|你好|post", 6, 6), 2).unwrap(), 4..6);
+    }
+    #[test]
+    fn composition_preview_uses_current_selection_and_rejects_context_escape() {
+        let mut query = QueryRange::begin(&snap("前后", 1, 1)).unwrap();
+        query.observe(&snap("前abc后", 4, 4)).unwrap();
+        assert_eq!(
+            query
+                .preview_composition(&snap("前abc后", 2, 3), "🙂")
+                .unwrap(),
+            "a🙂c"
+        );
+        assert!(query
+            .preview_composition(&snap("前abc后", 0, 1), "ni")
+            .is_err());
+        assert!(query
+            .preview_composition(&snap("外abc后", 2, 2), "ni")
+            .is_err());
+        assert!(query
+            .preview_composition(&snap("前abc后", 2, 2), "\0")
+            .is_err());
+        assert!(query
+            .preview_composition(&snap("前abc后", 2, 2), &"x".repeat(MAX_QUERY_UNITS))
+            .is_err());
+        assert_eq!(query.query(), "abc");
+    }
     fn snap(text: &str, start: usize, end: usize) -> ComposerSnapshot {
         ComposerSnapshot {
             text: text.encode_utf16().collect(),

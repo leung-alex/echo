@@ -928,13 +928,35 @@ impl<S: crate::SpaceStore> QuickInsertService<S> {
         limit: u32,
         cursor: Option<PageCursor>,
     ) -> Result<(QuickInsertPage, i64, u64)> {
+        self.fuzzy_list_space_cancellable(space, query, limit, cursor, &|| false)
+    }
+    /// Cooperation point for a caller's latest-query generation. Cancellation
+    /// never returns a partial corpus as a successful page.
+    pub fn fuzzy_list_space_cancellable(
+        &self,
+        space: crate::SpaceId,
+        query: &str,
+        limit: u32,
+        cursor: Option<PageCursor>,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<(QuickInsertPage, i64, u64)> {
+        if cancelled() {
+            return Err(LibraryError::Storage("Search cancelled by newer work".into()).into());
+        }
         if query.trim().is_empty() {
             return self.list_space(space, "", limit, cursor);
         }
         self.fuzzy
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .search(self.library.store().as_ref(), space, query, limit, cursor)
+            .search(
+                self.library.store().as_ref(),
+                space,
+                query,
+                limit,
+                cursor,
+                cancelled,
+            )
             .map_err(|e| LibraryError::Storage(e).into())
     }
     pub fn release_search_cache(&self) {

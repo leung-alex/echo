@@ -3,12 +3,14 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Drawing;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Web.Script.Serialization;
 public static class EchoInlineDriver {
     static readonly JavaScriptSerializer Json = new JavaScriptSerializer();
+    static Dictionary<string,object> applicationTarget;
     [StructLayout(LayoutKind.Sequential)] struct Point { public int X,Y; }
     [StructLayout(LayoutKind.Sequential)] struct Rect { public int Left,Top,Right,Bottom; }
     [StructLayout(LayoutKind.Sequential)] struct Gui { public uint Size,Flags; public IntPtr Active,Focus,Capture,MenuOwner,MoveSize,Caret; public Rect CaretRect; }
@@ -36,6 +38,24 @@ public static class EchoInlineDriver {
     [DllImport("user32.dll")] static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
     [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr hwnd,IntPtr after,int x,int y,int w,int h,uint flags);
     static IntPtr Owned(string root,int pid,string title,bool visible=true) {
+        string registered=Path.Combine(root,"application-input-targets.json");
+        if(File.Exists(registered)) {
+            var targets=Json.Deserialize<Dictionary<string,object>[]>(File.ReadAllText(registered));
+            foreach(var target in targets) {
+                if(Convert.ToInt32(target["pid"])!=pid||(string)target["title"]!=title)continue;
+                using(var process=Process.GetProcessById(pid)) {
+                    if(!String.Equals(Path.GetFullPath((string)target["executable"]),Path.GetFullPath(process.MainModule.FileName),StringComparison.OrdinalIgnoreCase)||
+                       process.StartTime.ToUniversalTime().ToFileTimeUtc()!=Convert.ToInt64(target["started_filetime"]))throw new InvalidOperationException("Registered application process identity changed.");
+                }
+                long handle=Convert.ToInt64(target["hwnd"]);
+                foreach(object forbidden in (System.Collections.IEnumerable)target["forbidden_windows"])if(Convert.ToInt64(forbidden)==handle)throw new InvalidOperationException("Executing task window is forbidden.");
+                EchoUi.BindWindow(pid,title,handle);
+                var selected=EchoUi.Window(pid,title,visible);
+                if(selected==IntPtr.Zero)throw new InvalidOperationException("Registered application HWND is unavailable.");
+                applicationTarget=target;
+                return selected;
+            }
+        }
         var entries=Json.Deserialize<Dictionary<string,object>[]>(File.ReadAllText(Path.Combine(root,"owned-processes.json")));
         using(var process=Process.GetProcessById(pid)) {
             bool match=false;
@@ -50,6 +70,23 @@ public static class EchoInlineDriver {
         var hwnd=EchoUi.Window(pid,title,visible);
         if(hwnd==IntPtr.Zero)throw new InvalidOperationException("Owned visible window missing.");
         return hwnd;
+    }
+    static string VerifyApplicationComposer(int pid,string title,string operation) {
+        if(applicationTarget==null)return null;
+        if(operation!="hotkey"&&operation!="paced-hotkey"&&operation!="key"&&operation!="text"&&operation!="held-enter"&&operation!="geometry"&&operation!="application-state")throw new InvalidOperationException("This operation is not allowed on a shared application process.");
+        Guard(EchoUi.Window(pid,title,true));
+        bool draft=false;System.Windows.Automation.AutomationElement editor=null;
+        foreach(var element in EchoUi.Elements(pid,title)) {
+            if(element.Current.ControlType==System.Windows.Automation.ControlType.Text&&element.Current.Name.Trim()==((string)applicationTarget["draft_marker"]).Trim())draft=true;
+            if(element.Current.ControlType==System.Windows.Automation.ControlType.Edit&&element.Current.Name==(string)applicationTarget["composer_name"]&&element.Current.HasKeyboardFocus) {
+                if(editor!=null)throw new InvalidOperationException("More than one focused composer.");editor=element;
+            }
+        }
+        if(!draft||editor==null)throw new InvalidOperationException("The explicit window is not the authorized blank-draft composer with input focus (draft="+draft+", focused_editor="+(editor!=null)+"); no input sent.");
+        var value=((System.Windows.Automation.ValuePattern)editor.GetCurrentPattern(System.Windows.Automation.ValuePattern.Pattern)).Current.Value;
+        bool permitted=false;foreach(object expected in (System.Collections.IEnumerable)applicationTarget["allowed_values"])if((string)expected==value)permitted=true;
+        if(!permitted)throw new InvalidOperationException("Composer text differs from this run's allowed synthetic values; no input sent.");
+        return value;
     }
     static uint[] Chord(string text) {
         uint mods=0,key=0;
@@ -156,7 +193,10 @@ public static class EchoInlineDriver {
     [DllImport("user32.dll")] static extern bool SetCursorPos(int x,int y);
     [DllImport("user32.dll")] static extern IntPtr WindowFromPoint(Point point);
     [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr hwnd,uint flags);
-    static void ClickOwned(int pid,string title,string label,IntPtr hwnd,bool activate) {
+    [DllImport("user32.dll")] static extern int GetSystemMetrics(int index);
+    [DllImport("user32.dll",EntryPoint="GetWindowLongPtrW")] static extern IntPtr GetWindowLongPtr(IntPtr hwnd,int index);
+    static object ClickOwned(int pid,string title,string label,IntPtr hwnd,bool activate) {
+        IntPtr foregroundBefore=GetForegroundWindow();
         foreach(var vk in new[]{0x01,0x02,0x10,0x11,0x12,0x5b,0x5c})if((GetAsyncKeyState(vk)&0x8000)!=0)throw new InvalidOperationException("A physical button/modifier is held; pointer test cancelled");
         if(activate&&!SetWindowPos(hwnd,new IntPtr(-1),0,0,0,0,0x0001|0x0002|0x0010))throw new InvalidOperationException("Could not raise the owned fixture without activation");
         var bounds=EchoUi.Find(pid,title,label).Current.BoundingRectangle;
@@ -168,16 +208,35 @@ public static class EchoInlineDriver {
             throw new InvalidOperationException("Owned point unavailable: control="+bounds+" point="+point.X+","+point.Y+" window="+window.Left+","+window.Top+","+window.Right+","+window.Bottom+" targetPid="+pid+" hitPid="+foundPid+" foregroundOwned="+(GetForegroundWindow()==hwnd));
         }
         Point old;GetCursorPos(out old);
+        IntPtr foregroundAtClick=GetForegroundWindow();
+        long extendedStyle=GetWindowLongPtr(hwnd,-20).ToInt64();
+        if(!activate&&(foregroundAtClick==IntPtr.Zero||foregroundAtClick!=foregroundBefore))
+            throw new InvalidOperationException("Foreground changed during read-only click targeting: before="+foregroundBefore+" after="+foregroundAtClick);
+        if(!activate&&(extendedStyle&0x08000000)==0)
+            throw new InvalidOperationException("Inline window lost WS_EX_NOACTIVATE before pointer input");
         try {
             if(!SetCursorPos(point.X,point.Y)||GetAncestor(WindowFromPoint(point),2)!=hwnd)throw new InvalidOperationException("Owned pointer target changed before click");
-            var list=new List<Input>{new Input{Type=0,Data=new InputData{Mouse=new Mouse{Flags=2}}},new Input{Type=0,Data=new InputData{Mouse=new Mouse{Flags=4}}}};
+            // Bind each queued button event to the verified physical point.
+            // SendInput queues delivery: an immediate SetCursorPos restore must
+            // not redirect a pending button event to the user's prior window.
+            int left=GetSystemMetrics(76),top=GetSystemMetrics(77),width=GetSystemMetrics(78),height=GetSystemMetrics(79);
+            if(width<1||height<1)throw new InvalidOperationException("Virtual desktop geometry unavailable");
+            int x=(int)(((long)(point.X-left)*65536+32768)/width),y=(int)(((long)(point.Y-top)*65536+32768)/height);
+            var list=new List<Input>{new Input{Type=0,Data=new InputData{Mouse=new Mouse{X=x,Y=y,Flags=0xc003}}},new Input{Type=0,Data=new InputData{Mouse=new Mouse{X=x,Y=y,Flags=0xc005}}}};
             Send(list);
+            Thread.Sleep(100);
             var watch=Stopwatch.StartNew();while(activate&&GetForegroundWindow()!=hwnd&&watch.ElapsedMilliseconds<1500)Thread.Sleep(10);
             if(activate&&GetForegroundWindow()!=hwnd)throw new InvalidOperationException("Physical click did not activate the owned fixture");
+            return new {foreground_before=foregroundBefore.ToInt64(),foreground_at_click=foregroundAtClick.ToInt64(),foreground_after=GetForegroundWindow().ToInt64(),extended_style=extendedStyle,x=point.X,y=point.Y,window=hwnd.ToInt64()};
         } finally {Point current;GetCursorPos(out current);if(current.X==point.X&&current.Y==point.Y)SetCursorPos(old.X,old.Y);if(activate)SetWindowPos(hwnd,new IntPtr(-2),0,0,0,0,0x0001|0x0002|0x0010);}
     }
     static void Guard(IntPtr hwnd) {
-        if(GetForegroundWindow()!=hwnd)throw new InvalidOperationException("Owned target lost foreground; input was not sent");
+        var foreground=GetForegroundWindow();
+        if(foreground!=hwnd) {
+            uint expectedPid,actualPid;
+            GetWindowThreadProcessId(hwnd,out expectedPid);GetWindowThreadProcessId(foreground,out actualPid);
+            throw new InvalidOperationException("Owned target lost foreground; input was not sent (expected_hwnd="+hwnd.ToInt64()+", expected_pid="+expectedPid+", actual_hwnd="+foreground.ToInt64()+", actual_pid="+actualPid+")");
+        }
         foreach(var vk in new[]{0x10,0x11,0x12,0x5b,0x5c})if((GetAsyncKeyState(vk)&0x8000)!=0)throw new InvalidOperationException("A physical modifier is held; input cancelled");
     }
     static void Text(IntPtr hwnd,string text,bool enter) {
@@ -235,9 +294,15 @@ public static class EchoInlineDriver {
         IntPtr input=Owned(root,inputPid,inputTitle);
         if(GetForegroundWindow()!=input)throw new InvalidOperationException("Owned input is not foreground");
         var icon=EchoUi.Find(pid,title,"Copy item").Current.BoundingRectangle;
+        Point oldPointer;GetCursorPos(out oldPointer);
+        var hover=new Point{X=(int)(icon.Left+icon.Width/2),Y=(int)(icon.Top+icon.Height/2)};
+        foreach(var key in new[]{0x01,0x02,0x10,0x11,0x12,0x5b,0x5c})if((GetAsyncKeyState(key)&0x8000)!=0)throw new InvalidOperationException("Physical pointer/modifier busy; hover sampling cancelled");
+        if(GetAncestor(WindowFromPoint(hover),2)!=echo||!SetCursorPos(hover.X,hover.Y))throw new InvalidOperationException("Owned action hover point unavailable");
+        Thread.Sleep(150);
         Rect initial;GetWindowRect(echo,out initial);
         int ox=(int)(icon.Left-initial.Left),oy=(int)(icon.Top-initial.Top);
         var frames=new List<object>();var watch=Stopwatch.StartNew();
+        try {
         using(var bitmap=new System.Drawing.Bitmap((int)icon.Width,(int)icon.Height))
         using(var graphics=System.Drawing.Graphics.FromImage(bitmap)) {
             File.WriteAllText(Path.Combine(root,"actions.ready"),"owned copy button samples only");
@@ -250,13 +315,68 @@ public static class EchoInlineDriver {
                 frames.Add(new{ms=watch.ElapsedMilliseconds,colors=colors});Thread.Sleep(10);
             }
         }
-        return new{source="physical pixels within owned Echo Copy action",frames=frames};
+        } finally {Point current;GetCursorPos(out current);if(current.X==hover.X&&current.Y==hover.Y)SetCursorPos(oldPointer.X,oldPointer.Y);}
+        return new{source="physical pixels within owned Echo Copy action",stationary_hover=true,frames=frames};
+    }
+    static object RecordWindow(string root,IntPtr echo,int pid,string title,int inputPid,string inputTitle,string folder) {
+        if(folder.IndexOfAny(Path.GetInvalidFileNameChars())>=0||folder=="."||folder=="..")throw new ArgumentException("Simple recording name required");
+        var output=Path.Combine(root,folder);Directory.CreateDirectory(output);
+        IntPtr input=Owned(root,inputPid,inputTitle);
+        var frames=new List<object>();var watch=Stopwatch.StartNew();int count=0;
+        File.WriteAllText(Path.Combine(output,"ready"),"physical screen pixels inside the owned synthetic Echo window");
+        Bitmap bitmap=null;Graphics graphics=null;
+        // UIA fault/recovery observations can outlast twelve seconds. The runner
+        // stops recording at scenario completion; this is only a leak watchdog.
+        try { while(watch.ElapsedMilliseconds<60000&&!File.Exists(Path.Combine(output,"stop"))) {
+            uint owner;GetWindowThreadProcessId(echo,out owner);
+            if(GetForegroundWindow()!=input||owner!=pid||!IsWindowVisible(echo))throw new InvalidOperationException("Recording lost the owned input or Echo window");
+            Rect rect;if(!GetWindowRect(echo,out rect))throw new InvalidOperationException("Echo bounds unavailable");
+            int width=rect.Right-rect.Left,height=rect.Bottom-rect.Top;
+            if(width<=0||height<=0||width>4096||height>4096)throw new InvalidOperationException("Recording bounds exceed the owned window budget");
+            string file=count.ToString("D4")+".jpg";long stamp=watch.ElapsedMilliseconds;
+            if(bitmap==null||bitmap.Width!=width||bitmap.Height!=height) {
+                if(graphics!=null)graphics.Dispose();if(bitmap!=null)bitmap.Dispose();
+                bitmap=new Bitmap(width,height);graphics=Graphics.FromImage(bitmap);
+            }
+            graphics.CopyFromScreen(rect.Left,rect.Top,0,0,bitmap.Size,System.Drawing.CopyPixelOperation.SourceCopy);
+            bitmap.Save(Path.Combine(output,file),System.Drawing.Imaging.ImageFormat.Jpeg);
+            frames.Add(new{ms=stamp,file=file,bounds=new[]{rect.Left,rect.Top,rect.Right,rect.Bottom},foreground=input.ToInt64()});
+            count++;int remaining=(int)(count*1000L/40-watch.ElapsedMilliseconds);if(remaining>0)Thread.Sleep(remaining);
+        } } finally {if(graphics!=null)graphics.Dispose();if(bitmap!=null)bitmap.Dispose();}
+        var result=new{source="physical screen; complete owned Echo window; JPEG frames",elapsed_ms=watch.ElapsedMilliseconds,frames=frames};
+        File.WriteAllText(Path.Combine(output,"frames.json"),Json.Serialize(result),new System.Text.UTF8Encoding(false));
+        return new{count=count,elapsed_ms=watch.ElapsedMilliseconds};
+    }
+    static void PacedHotkey(IntPtr expected,string chord,int delay) {
+        if(delay<1||delay>500)throw new ArgumentException("Bounded key transition delay required.");
+        Guard(expected);var c=Chord(chord);var pressed=new List<uint>();var modifiers=new List<uint>();
+        if((c[0]&2)!=0)modifiers.Add(0x11);if((c[0]&1)!=0)modifiers.Add(0x12);if((c[0]&4)!=0)modifiers.Add(0x10);
+        if((GetAsyncKeyState((int)c[1])&0x8000)!=0)throw new InvalidOperationException("Physical shortcut key is busy.");
+        try {
+            foreach(var key in modifiers){if(GetForegroundWindow()!=expected)throw new InvalidOperationException("Foreground changed during paced chord.");Send(new List<Input>{Key(key,false)});pressed.Add(key);Thread.Sleep(delay);}
+            if(GetForegroundWindow()!=expected)throw new InvalidOperationException("Foreground changed during paced chord.");
+            Send(new List<Input>{Key(c[1],false)});pressed.Add(c[1]);Thread.Sleep(delay);
+            Send(new List<Input>{Key(c[1],true)});pressed.Remove(c[1]);Thread.Sleep(delay);
+        }finally{var release=new List<Input>();for(int i=pressed.Count-1;i>=0;i--)release.Add(Key(pressed[i],true));if(release.Count>0)Send(release);}
     }
     delegate bool EnumWindowProc(IntPtr window,IntPtr parameter);
     [DllImport("user32.dll")] static extern bool EnumWindows(EnumWindowProc callback,IntPtr parameter);
     [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern int GetClassNameW(IntPtr window,System.Text.StringBuilder name,int maximum);
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
     [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr window,uint command);
+    [DllImport("imm32.dll",SetLastError=true)] static extern IntPtr ImmGetContext(IntPtr window);
+    [DllImport("imm32.dll",SetLastError=true)] static extern int ImmGetCompositionStringW(IntPtr context,uint index,IntPtr buffer,uint bytes);
+    [DllImport("imm32.dll")] static extern bool ImmReleaseContext(IntPtr window,IntPtr context);
+    static object ForeignImeProbe(IntPtr expected) {
+        Guard(expected);uint pid;uint tid=GetWindowThreadProcessId(expected,out pid);
+        var gui=new Gui{Size=(uint)Marshal.SizeOf(typeof(Gui))};
+        if(!GetGUIThreadInfo(tid,ref gui))throw new InvalidOperationException("Focused control unavailable");
+        var context=ImmGetContext(gui.Focus);int bytes=-1;int error=Marshal.GetLastWin32Error();
+        if(context!=IntPtr.Zero)try{bytes=ImmGetCompositionStringW(context,8,IntPtr.Zero,0);error=Marshal.GetLastWin32Error();}
+        finally{ImmReleaseContext(gui.Focus,context);}
+        return new{window=gui.Focus.ToInt64(),context=context.ToInt64(),composition_bytes=bytes,error=error,
+            note="Read-only cross-process capability observation; not a production authorization source"};
+    }
     static object ImeWindowMetadata(IntPtr expected) {
         Guard(expected);var items=new List<object>();
         EnumWindows(delegate(IntPtr window,IntPtr unused){
@@ -279,9 +399,12 @@ public static class EchoInlineDriver {
             else if(args[0]=="block")result=Block(root,args[2]);
             else {
                 int pid=Int32.Parse(args[2]);string title=args[3];var hwnd=Owned(root,pid,title);
+                string applicationValue=VerifyApplicationComposer(pid,title,args[0]);
                 switch(args[0]) {
+                    case "application-state":if(applicationTarget==null)throw new InvalidOperationException("An explicit application draft registration is required");result=new{draft=true,focused=true,text=applicationValue};break;
+                    case "foreign-ime-probe":result=ForeignImeProbe(hwnd);break;
                     case "activate-owned":ClickOwned(pid,title,args[4],hwnd,true);result=Geometry(hwnd);break;
-                    case "click-owned":ClickOwned(pid,title,args[4],hwnd,false);result=Geometry(hwnd);break;
+                    case "click-owned":result=ClickOwned(pid,title,args[4],hwnd,false);break;
                     case "english-owned":result=EnglishOwned(hwnd);break;
                     case "close-owned":if(!PostMessageW(hwnd,0x0010,IntPtr.Zero,IntPtr.Zero))throw new InvalidOperationException("Owned close message failed");result=new{requested=true};break;
                     case "text":Text(hwnd,args[4],false);result=new{sent=true};break;
@@ -289,6 +412,7 @@ public static class EchoInlineDriver {
                     case "key":OneKey(hwnd,UInt32.Parse(args[4]),args.Length>5?Int32.Parse(args[5]):1,args.Length>6&&args[6]=="shift");result=new{sent=true};break;
                     case "held-enter":HoldEnter(hwnd);result=new{sent=true};break;
                     case "paste-text":Guard(hwnd);System.Windows.Forms.Clipboard.SetText(args[4]);Hotkey(hwnd,"Ctrl+V",1,null);result=new{sent=true};break;
+                    case "clipboard-text":Guard(hwnd);System.Windows.Forms.Clipboard.SetText(args[4]);result=new{staged=true};break;
                     case "read-control":result=ReadControl(pid,title,args[4]);break;
                     case "invoke-control":EchoUi.Invoke(pid,title,args[4]);result=new{invoked=true};break;
                     case "patterns":var patterns=new List<string>();foreach(var pattern in EchoUi.Find(pid,title,args[4]).GetSupportedPatterns())patterns.Add(pattern.ProgrammaticName);result=patterns;break;
@@ -310,6 +434,7 @@ public static class EchoInlineDriver {
                         result=tree.ToString();break;
                     case "dump":result=EchoUi.Dump(pid,title);break;
                     case "sample-actions":result=SampleActions(root,hwnd,pid,title,Int32.Parse(args[4]),args[5]);break;
+                    case "record-window":result=RecordWindow(root,hwnd,pid,title,Int32.Parse(args[4]),args[5],args[6]);break;
                     case "sample-headers":result=SampleHeaders(root,hwnd,pid,title,Int32.Parse(args[4]),args[5]);break;
                     case "ime-metadata":result=ImeWindowMetadata(hwnd);break;
                     case "geometry":result=Geometry(hwnd);break;
@@ -322,6 +447,8 @@ public static class EchoInlineDriver {
                     case "focus-edit":EchoUi.Find(pid,title,args[4]).SetFocus();var wait=Stopwatch.StartNew();while(GetForegroundWindow()!=hwnd && wait.ElapsedMilliseconds<1500)Thread.Sleep(10);if(GetForegroundWindow()!=hwnd)throw new InvalidOperationException("Owned input did not obtain foreground");result=Geometry(hwnd);break;
                     case "card":var b=EchoUi.Find(pid,title,args[4]).Current.BoundingRectangle;result=new[]{b.Left,b.Top,b.Right,b.Bottom};break;
                     case "hotkey":Hotkey(hwnd,args[4],args.Length>5?Int32.Parse(args[5]):1,null);result=new{sent=true};break;
+                    case "paced-hotkey":PacedHotkey(hwnd,args[4],Int32.Parse(args[5]));result=new{sent=true};break;
+                    case "hotkey-enter":Hotkey(hwnd,args[4],1,null);Thread.Sleep(Math.Max(0,Math.Min(500,Int32.Parse(args[5]))));OneKey(hwnd,13,1,false);result=new{sent=true};break;
                     case "hotkey-ready":result=HotkeyReady(root,hwnd,args[4],Int32.Parse(args[5]),args[6]);break;
                     case "hold-hotkey":Hotkey(hwnd,args[4],1,root);result=new{released=true};break;
                     case "move":if(!SetWindowPos(hwnd,IntPtr.Zero,Int32.Parse(args[4]),Int32.Parse(args[5]),0,0,0x0001|0x0004|0x0010))throw new InvalidOperationException("Owned window move failed.");result=Geometry(hwnd);break;

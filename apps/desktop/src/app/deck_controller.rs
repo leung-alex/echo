@@ -318,6 +318,8 @@ impl App {
             self.window.get_stage_width().round() as u32,
             self.window.get_stage_height().round() as u32,
             dpi.to_bits(),
+            self.window.get_panel_height().to_bits(),
+            self.window.get_panel_top().to_bits(),
         );
         if geometry != self.geometry {
             let height_only_inline = self.surface.visible
@@ -771,7 +773,7 @@ impl App {
         let height = self.window.get_panel_height();
         let point = [
             x - self.window.get_stage_width() / 2.0,
-            y - self.window.get_stage_height() / 2.0,
+            y - self.window.get_panel_top() - height / 2.0,
         ];
         if point[0].abs() <= width / 2.0 && point[1].abs() <= height / 2.0 {
             return;

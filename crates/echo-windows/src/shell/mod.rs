@@ -9,7 +9,9 @@ mod pipe;
 mod tray;
 pub use hotkey::{HotkeyController, HotkeyReservation};
 mod window;
-pub use card_window::{apply_card_chrome, set_card_region, CardShape};
+pub use card_window::{
+    apply_card_chrome, expand_card_region, finish_card_frame, set_card_region, CardShape,
+};
 mod environment;
 use common::{wide, Handle, Security};
 pub use environment::{fit_window, ui_environment, UiEnvironment};

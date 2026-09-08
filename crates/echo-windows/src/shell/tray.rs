@@ -55,6 +55,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
             }
             WM_HOTKEY => {
                 if host.hotkeys.matches(w, l) {
+                    if let Err(error) = super::hotkey::finish_alt_chord(l, GetForegroundWindow()) {
+                        (host.handler)(ShellEvent::HotkeyStatus(error));
+                        return 0;
+                    }
                     (host.handler)(ShellEvent::QuickInsert(
                         crate::focus::FocusSnapshot::capture(),
                     ));

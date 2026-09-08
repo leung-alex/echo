@@ -27,6 +27,7 @@ export component SpacePanel inherits Rectangle {
     in property <int> selection-index;
     in property <bool> quick-insert;
     in property <bool> inline-mode;
+    in property <string> empty-state-text;
     private property <length> header-height: root.inline-mode ? 102px : T.panel-header-height;
     out property <length> natural-height: root.header-height + T.panel-footer-height + 16px + (root.rows.length == 0 ? 78px : list.viewport-height);
     changed natural-height => { if (root.inline-mode && !root.capture-only) {root.viewport-changed();} }
@@ -132,6 +133,7 @@ export component SpacePanel inherits Rectangle {
         height:max(0px,parent.height - self.y - T.panel-footer-height - 8px);
         viewport-y <=> root.scroll-y;visible:!root.stale && !root.titles-only;
         for entry in root.rows: EntryView {
+            inline-mode: root.inline-mode;
             entry:entry;favorites:root.favorites;compact:root.compact;capture-only:root.capture-only;batch:root.batch;
             busy:root.busy;input-blocked:root.loading || root.stale;quick-insert:root.quick-insert;copy-only:root.copy-only;reorder-enabled:root.query == "";
             selected-geometry(y,height) => {
@@ -152,7 +154,7 @@ export component SpacePanel inherits Rectangle {
     if (root.rows.length == 0 || root.stale || root.titles-only): VerticalLayout {
         x:T.panel-padding;y:root.inline-mode ? root.header-height + 16px : max(root.header-height + 24px,(parent.height - 150px)/2);
         width:parent.width - 2*T.panel-padding;height:root.inline-mode ? 70px : 130px;alignment:start;spacing:16px;
-        Text {text:root.titles-only ? "Private space" : root.loading ? "Loading…" : root.error ? "Unable to load this space" : root.query != "" ? "No matches in this space" : root.favorites ? "A space for things you use often" : "Your clipboard history appears here";
+        Text {text:root.titles-only ? "Private space" : root.empty-state-text != "" ? root.empty-state-text : root.loading ? "Loading…" : root.error ? "Unable to load this space" : root.query != "" ? "No matches in this space" : root.favorites ? "A space for things you use often" : "Your clipboard history appears here";
             color:EchoTheme.muted;font-size:15px;horizontal-alignment:center;wrap:word-wrap;}
         if (!root.capture-only && root.favorites && !root.loading && !root.error && root.query == ""): HorizontalLayout {
             alignment:center;spacing:10px;

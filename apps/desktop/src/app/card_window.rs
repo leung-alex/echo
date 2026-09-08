@@ -94,7 +94,7 @@ impl App {
                                 .map(|p| {
                                     [
                                         ((p[0] + sw / 2.0) * dpi).round() as i32,
-                                        ((p[1] + sh / 2.0) * dpi).round() as i32,
+                                        ((p[1] + top + h / 2.0) * dpi).round() as i32,
                                     ]
                                 })
                                 .collect(),
@@ -108,12 +108,50 @@ impl App {
             return;
         }
         // Cache before entering Win32: SetWindowRgn posts geometry notifications.
+        let defer = self.inline_active() && self.window_shapes.is_some();
         self.window_shapes = Some(shapes.clone());
-        if let Err(error) = shell::set_card_region(hwnd, shapes.as_deref()) {
+        let result = if defer {
+            self.card_region_serial = self.card_region_serial.wrapping_add(1).max(1);
+            let generation = self.card_region_serial;
+            self.card_region_generation.set(generation);
+            self.pending_card_region = Some((generation, shapes.clone()));
+            // Expand before painting so neither complete frame can be clipped.
+            // Shrink only after the matching presentation reaches DWM.
+            let result = shell::expand_card_region(hwnd, shapes.as_deref());
+            self.window.window().request_redraw();
+            result
+        } else {
+            self.pending_card_region = None;
+            self.card_region_generation.set(0);
+            shell::set_card_region(hwnd, shapes.as_deref())
+        };
+        if let Err(error) = result {
             self.report(
                 format!("Could not update the card window shape: {error}"),
                 true,
             );
+        }
+    }
+    pub(super) fn commit_card_region(&mut self, generation: u64) {
+        let Some((pending, shapes)) = &self.pending_card_region else {
+            return;
+        };
+        if generation != *pending || !self.surface.visible {
+            return;
+        }
+        let Some(hwnd) = self.hwnd else {
+            return;
+        };
+        // A later result may already have requested a different region. The
+        // generation comparison above prevents an older frame shrinking it.
+        let result = shell::finish_card_frame(hwnd)
+            .and_then(|()| shell::set_card_region(hwnd, shapes.as_deref()));
+        match result {
+            Ok(()) => {
+                self.pending_card_region = None;
+                self.card_region_generation.set(0);
+            }
+            Err(error) => self.report(format!("Could not finish the card frame: {error}"), true),
         }
     }
 }

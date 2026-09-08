@@ -11,16 +11,24 @@
 <textarea id="textarea" aria-label="Inline textarea composer"></textarea>
 <div class="facts">Sent: <output id="textarea-count" aria-label="Textarea submit count">0</output></div>
 <textarea class="report" id="textarea-report" readonly aria-label="Textarea actual text"></textarea></section>
-<section><h2>AI rich-text composer with a mention</h2><button id="reset-ai" type="button">Reset rich composer</button><button id="reset-empty-ai" type="button">Reset empty rich composer</button><button id="add-ai-attachment" type="button">Add synthetic attachment</button>
-<div id="ai" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Inline rich AI composer"></div>
+<style>#ai .placeholder{pointer-events:none;user-select:none;position:relative}#ai .placeholder:after{content:attr(data-placeholder);pointer-events:none;user-select:none;position:absolute;inset:0 0 auto;opacity:.5}#ai[data-decoration=leaf] .placeholder>br{display:none}#ai[data-decoration=literal] .placeholder:after{content:none}</style>
+<section><h2>AI rich-text composer with a mention</h2><button id="reset-ai" type="button">Reset rich composer</button><button id="reset-empty-ai" type="button">Reset empty rich composer</button><button id="reset-decorated-ai" type="button">Reset decorated empty rich composer</button><button id="reset-label-ai" type="button">Reset actual label text</button><button id="add-ai-attachment" type="button">Add synthetic attachment</button>
+<div id="ai" class="ProseMirror" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Inline rich AI composer"></div>
+<button id="reset-leaf-ai" type="button">Reset leaf decorated empty composer</button><button id="reset-leaf-literal-ai" type="button">Reset leaf decoration with literal text</button>
+<button id="reset-direct-literal-ai" type="button">Reset direct literal placeholder class</button>
+<button id="range-paragraphs-ai" type="button">Select query between real paragraphs</button><button id="range-blank-paragraphs-ai" type="button">Select query between blank paragraphs</button><button id="range-newline-textarea" type="button">Select real newlines in textarea</button>
+<button id="range-unicode-paragraphs-ai" type="button">Select query after Unicode paragraph</button>
+<button id="typed-paragraph-ai" type="button">Prepare typed paragraph query</button>
+<button id="rebuild-ai" type="button">Reset editor with paragraph rebuild</button><button id="focus-other-ai" type="button">Focus alternate rich editor</button>
+<div id="ai-other" hidden contenteditable="true" role="textbox" aria-label="Inline rich AI composer">other editor untouched</div>
 <div class="facts">Sent: <output id="ai-count" aria-label="AI submit count">0</output><output id="token-count" aria-label="Mention preserved">1</output><output id="attachment" aria-label="Attachment preserved">synthetic.pdf</output></div>
 <textarea class="report" id="ai-report" readonly aria-label="AI actual text"></textarea></section>
 <textarea class="report" id="state" readonly aria-label="Browser fixture state"></textarea>
 <script>
 const counts={search:0,textarea:0,ai:0};
-function report(id){const e=document.getElementById(id);document.getElementById(id+'-report').value=id==='ai'?e.textContent:e.value;document.getElementById(id+'-count').textContent=counts[id];document.getElementById('token-count').textContent=document.getElementById('ai-token')?'1':'0';const result={};for(const key of ['search','textarea','ai']){const input=document.getElementById(key);result[key]={text:key==='ai'?input.textContent:input.value,submitted:counts[key],focused:document.activeElement===input};}result.mention=!!document.getElementById('ai-token');result.attachment=document.getElementById('attachment').textContent;document.getElementById('state').value=JSON.stringify(result);}
+function report(id){const e=document.getElementById(id);document.getElementById(id+'-report').value=id==='ai'?e.textContent:e.value;document.getElementById(id+'-count').textContent=counts[id];document.getElementById('token-count').textContent=document.getElementById('ai-token')?'1':'0';const result={};for(const key of ['search','textarea','ai']){const input=document.getElementById(key);result[key]={text:key==='ai'?input.textContent:input.value,submitted:counts[key],focused:document.activeElement===input};}result.paragraphs=[...document.getElementById('ai').children].map(p=>({tag:p.tagName,text:p.textContent,html:p.innerHTML}));result.other={text:document.getElementById('ai-other').textContent,submitted:counts.other||0,focused:document.activeElement===document.getElementById('ai-other')};result.rebuilds=Number(document.getElementById('ai').dataset.rebuilds||0);result.mention=!!document.getElementById('ai-token');result.attachment=document.getElementById('attachment').textContent;document.getElementById('state').value=JSON.stringify(result);}
 function reset(id,selected=false){
- const e=document.getElementById(id);counts[id]=0;
+ const e=document.getElementById(id);counts[id]=0;e.dataset.decorated='false';e.dataset.decoration='after';e.dataset.rebuild='false';e.dataset.rebuilds='0';document.getElementById('ai-other').hidden=true;counts.other=0;
  if(id==='ai'){
   e.innerHTML='<p><span id="ai-token" contenteditable="false">@Teammate</span> pre| |post</p>';
   const node=e.lastChild.lastChild;const range=document.createRange();range.setStart(node,5);range.collapse(true);
@@ -29,13 +37,33 @@ function reset(id,selected=false){
  report(id);
 }
 for(const id of ['search','textarea','ai']){
- const e=document.getElementById(id);e.addEventListener('input',()=>report(id));
+ const e=document.getElementById(id);e.addEventListener('input',()=>{if(id==='ai'&&e.dataset.rebuild==='true'){const p=e.firstChild;const clone=p.cloneNode(true);p.replaceWith(clone);const r=document.createRange();r.selectNodeContents(clone);r.collapse(false);getSelection().removeAllRanges();getSelection().addRange(r);e.dataset.rebuilds=String(Number(e.dataset.rebuilds||0)+1);}if(id==='ai'&&e.dataset.decorated==='true'){
+  // A real ProseMirror transaction wraps native text inserted beside a hidden
+  // empty paragraph and removes the decoration whenever the editor has text.
+  if(e.dataset.decoration==='leaf'&&(e.childNodes.length!==1||e.firstChild?.nodeName!=='P')){const text=e.textContent;const p=document.createElement('p');p.dataset.placeholder='Ask fixture';if(text)p.textContent=text;else p.append(document.createElement('br'));e.replaceChildren(p);const r=document.createRange();r.selectNodeContents(p);r.collapse(false);getSelection().removeAllRanges();getSelection().addRange(r);}
+  for(const p of e.children){p.classList.toggle('placeholder',e.childElementCount===1&&p.tagName==='P'&&e.textContent==='');}
+ }report(id);});
  e.addEventListener('keydown',event=>{if(event.key==='Enter'&&!event.isComposing){counts[id]++;event.preventDefault();report(id);}});
  document.getElementById('reset-'+id).onclick=()=>reset(id);
 }
 document.getElementById('reset-empty-ai').onclick=()=>{const e=document.getElementById('ai');e.innerHTML='<p><br></p>';counts.ai=0;e.focus();const r=document.createRange();r.setStart(e.firstChild,0);r.collapse(true);getSelection().removeAllRanges();getSelection().addRange(r);report('ai');};
+document.getElementById('reset-decorated-ai').onclick=()=>{document.getElementById('reset-empty-ai').click();const e=document.getElementById('ai');e.dataset.decorated='true';e.firstChild.className='placeholder';e.firstChild.dataset.placeholder=e.getAttribute('aria-label');report('ai');};
+document.getElementById('reset-leaf-ai').onclick=()=>{document.getElementById('reset-decorated-ai').click();const e=document.getElementById('ai');e.dataset.decoration='leaf';e.firstChild.dataset.placeholder='Ask fixture';report('ai');};
+document.getElementById('reset-leaf-literal-ai').onclick=()=>{document.getElementById('reset-leaf-ai').click();const e=document.getElementById('ai');e.firstChild.insertBefore(document.createTextNode('Ask fixture'),e.firstChild.firstChild);report('ai');};
+document.getElementById('reset-direct-literal-ai').onclick=()=>{document.getElementById('reset-empty-ai').click();const e=document.getElementById('ai');e.dataset.decoration='literal';e.dataset.decorated='false';e.firstChild.className='placeholder';e.firstChild.replaceChildren(document.createTextNode('Ask fixture'));report('ai');};
+document.getElementById('reset-label-ai').onclick=()=>{document.getElementById('reset-empty-ai').click();const e=document.getElementById('ai');e.dataset.decorated='false';e.firstChild.append(document.createTextNode(e.getAttribute('aria-label')));report('ai');};
 document.getElementById('selected-search').onclick=()=>reset('search',true);
 document.getElementById('add-ai-attachment').onclick=()=>{document.getElementById('attachment').textContent='synthetic.pdf';};
+function paragraphRange(blank){const e=document.getElementById('ai');reset('ai');e.replaceChildren();for(const text of (blank?['before','','','echo-perf-text-0013','','after']:['before','echo-perf-text-0013','after'])){const p=document.createElement('p');if(text)p.textContent=text;else p.append(document.createElement('br'));e.append(p);}const p=e.children[blank?3:1];e.focus();const r=document.createRange();r.selectNodeContents(p);getSelection().removeAllRanges();getSelection().addRange(r);report('ai');}
+document.getElementById('range-paragraphs-ai').onclick=()=>paragraphRange(false);
+document.getElementById('range-blank-paragraphs-ai').onclick=()=>paragraphRange(true);
+document.getElementById('range-unicode-paragraphs-ai').onclick=()=>{paragraphRange(false);document.getElementById('ai').firstChild.textContent='before 👨‍👩‍👧‍👦 e\u0301 中文';report('ai');};
+document.getElementById('typed-paragraph-ai').onclick=()=>{const e=document.getElementById('ai');const p=e.children[1];p.textContent='lead| |tail';e.focus();const r=document.createRange();r.setStart(p.firstChild,5);r.collapse(true);getSelection().removeAllRanges();getSelection().addRange(r);report('ai');};
+document.getElementById('range-newline-textarea').onclick=()=>{reset('textarea');const e=document.getElementById('textarea');e.value='before|\necho-perf-text-0013\n|after';e.setSelectionRange(7,e.value.length-6);report('textarea');};
+document.getElementById('rebuild-ai').onclick=()=>{document.getElementById('reset-empty-ai').click();const e=document.getElementById('ai');e.dataset.decorated='false';e.dataset.rebuild='true';e.dataset.rebuilds='0';report('ai');};
+document.getElementById('focus-other-ai').onclick=()=>{const e=document.getElementById('ai-other');e.hidden=false;e.focus();report('ai');};
+document.getElementById('ai-other').addEventListener('keydown',event=>{if(event.key==='Enter'&&!event.isComposing){counts.other=(counts.other||0)+1;event.preventDefault();report('ai');}});
+document.getElementById('ai-other').addEventListener('input',()=>report('ai'));
 document.addEventListener('selectionchange',()=>report('ai'));
 reset('ai');reset('textarea');reset('search');
 </script></html>

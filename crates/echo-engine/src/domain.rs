@@ -188,6 +188,9 @@ pub enum PasteDeliveryFailure {
     RangeChanged,
     CompositionBusy,
     ClipboardChanged,
+    /// Replacement was never dispatched; a range-selection request may have
+    /// changed only the selection before its acknowledgement timed out.
+    SelectionUnconfirmed,
     ReplacementUnconfirmed,
 }
 

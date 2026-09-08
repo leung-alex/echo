@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
 
+/// Absolute History capacity; Saved Items have a separate lifecycle.
+pub const MAX_HISTORY_ENTRIES: u32 = 2_000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ThemeMode {
@@ -50,7 +53,7 @@ impl Default for ClipboardSettings {
             history_enabled: true,
             record_sensitive: false,
             store_window_titles: false,
-            max_entries: 5_000,
+            max_entries: MAX_HISTORY_ENTRIES,
             max_total_bytes: 512 * 1024 * 1024,
             max_item_bytes: 32 * 1024 * 1024,
             theme: ThemeMode::System,

@@ -21,6 +21,8 @@ export global EchoTheme {
 }
 
 export component EchoButton inherits Rectangle {
+    in property <bool> execution-blocked;
+    in property <bool> take-focus-on-click: true;
     in property <string> label;
     in property <string> text;
     in property <image> icon;
@@ -43,8 +45,8 @@ export component EchoButton inherits Rectangle {
     opacity: enabled ? 1 : 0.45;
     accessible-role: button;
     accessible-label: label == "" ? text : label;
-    accessible-enabled: enabled;
-    accessible-action-default => { if (enabled) { root.clicked(); } }
+    accessible-enabled: enabled && !execution-blocked;
+    accessible-action-default => { if (enabled && !execution-blocked) { root.clicked(); } }
     content := HorizontalLayout {
         padding: 6px;
         spacing: 6px;
@@ -68,13 +70,13 @@ export component EchoButton inherits Rectangle {
     touch := TouchArea {
         enabled: root.enabled;
         mouse-cursor: pointer;
-        clicked => { focus.focus(); root.clicked(); }
+        clicked => { if (!root.execution-blocked) { if (root.take-focus-on-click) { focus.focus(); } root.clicked(); } }
     }
     focus := FocusScope {
         width: 0;
         enabled: root.enabled;
         key-pressed(event) => {
-            if (event.text == Key.Return || event.text == " ") { root.clicked(); return accept; }
+            if (event.text == Key.Return || event.text == " ") { if (!root.execution-blocked) { root.clicked(); } return accept; }
             return reject;
         }
     }

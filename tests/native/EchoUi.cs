@@ -11,6 +11,15 @@ using System.Windows.Automation;
 
 public static class EchoUi
 {
+    static IntPtr explicitWindow;
+    static int explicitPid;
+    static string explicitTitle;
+    // One command process, one explicitly registered application window. This
+    // prevents two same-title Codex windows from sharing an input lookup.
+    public static void BindWindow(int pid, string title, long hwnd)
+    {
+        explicitPid = pid; explicitTitle = title; explicitWindow = new IntPtr(hwnd);
+    }
     public delegate bool EnumProc(IntPtr hwnd, IntPtr state);
     [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left, Top, Right, Bottom; }
 
@@ -29,6 +38,13 @@ public static class EchoUi
 
     public static IntPtr Window(int pid, string title, bool visible)
     {
+        if (explicitWindow != IntPtr.Zero && pid == explicitPid && title == explicitTitle)
+        {
+            uint owner; GetWindowThreadProcessId(explicitWindow, out owner);
+            var label = new StringBuilder(512); GetWindowText(explicitWindow, label, label.Capacity);
+            return owner == (uint)pid && label.ToString() == title && (!visible || IsWindowVisible(explicitWindow))
+                ? explicitWindow : IntPtr.Zero;
+        }
         IntPtr found = IntPtr.Zero;
         EnumWindows(delegate(IntPtr hwnd, IntPtr state)
         {

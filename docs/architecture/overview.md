@@ -40,7 +40,7 @@ A Clipboard Item can retain multiple original representations, including text, H
 
 `apps/desktop/src/service.rs` runs blocking engine, storage, and preview work off the UI thread. Work and completions cross the boundary as typed Rust enums. `apps/desktop/src/app.rs` owns UI-thread coordination, generated Slint models, activation routing, stale-result rejection, and orderly shutdown. Slint component handles never leave the UI thread.
 
-`apps/desktop/ui` contains the compiled Slint component tree. It renders History, Favorites, custom spaces, settings, About and dialogs in one native window. Search and navigation belong inside each space card; there is no companion window. It does not call storage or native platform APIs directly.
+`apps/desktop/ui` contains the compiled Slint component tree. It renders History, Favorites, custom spaces, settings, About and dialogs in one native window. Search and navigation normally belong inside each space card. Inline Quick Insert uses the same non-activating native window while the query remains in the original editor; F6 explicitly switches to independent search. It does not call storage or native platform APIs directly.
 
 ## Runtime Flows
 
@@ -75,6 +75,6 @@ The UI About view embeds Slint's `AboutSlint` component. Distribution attributio
 
 ## Storage and Search
 
-History and Saved Item search use bounded FTS5 MATCH queries and stable cursors. No background UI polling is required. Storage runtime ownership, ordered schema migrations, instrumentation, reconciliation, and the deterministic storage diagnostic are documented in `docs/architecture/storage-runtime.md`.
+Storage retains bounded FTS5 queries and stable cursors. Quick Insert uses Nucleo multiword matching over complete scoped metadata with revision-bound fuzzy cursors; a displayed page never defines the searchable corpus. The domain worker cooperatively abandons superseded scans. See `../engineering/inline-completion.md` for input protection and validation boundaries. No background UI polling is required. Storage runtime ownership, ordered schema migrations, instrumentation, reconciliation, and the deterministic storage diagnostic are documented in `docs/architecture/storage-runtime.md`.
 
 Saved Items are the only durable reusable-item concept and remain distinct from History. Moving History into a space transactionally creates a Saved Item with its original representations and removes the source capture. Schema v6 adds spaces and membership/order relations; Favorites is a default collection, not an aggregate of every custom space. Sharing adds membership without copying payloads. Removing the last custom-space membership rehomes the item in Favorites. Deleting a custom space rehomes its exclusive items; deleting content everywhere remains a separate confirmed operation.

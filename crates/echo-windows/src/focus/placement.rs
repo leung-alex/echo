@@ -279,6 +279,35 @@ pub fn place_inline(
     p.card.y = p.window.y + padding;
     p
 }
+/// Keep the native swapchain bounds stable while the visible inline cards
+/// shrink/grow. Resizing an HWND before its next frame can crop the old buffer.
+/// The unpainted area is transparent and excluded by the native card region.
+pub fn place_inline_stage(
+    anchor: PopupAnchor,
+    stage_width: f32,
+    card_width: f32,
+    wanted_height: f32,
+    padding_y: f32,
+    previous_above: Option<bool>,
+) -> PopupPlacement {
+    let mut placement = place_inline(
+        anchor,
+        stage_width,
+        card_width,
+        520.0,
+        padding_y,
+        previous_above,
+    );
+    let scale = anchor.geometry.dpi.clamp(48, 768) as f32 / 96.0;
+    let height = (wanted_height.clamp(1.0, 520.0) * scale).round() as i32;
+    let height = height.min(placement.card.height);
+    if placement.above {
+        placement.card.y += placement.card.height - height;
+    }
+    placement.card.height = height;
+    placement
+}
+
 #[cfg(test)]
 mod inline_tests {
     use super::*;
@@ -326,6 +355,31 @@ mod inline_tests {
         assert_eq!(large.card.y, small.card.y);
         assert!(small.card.y >= 44);
         assert!(small.window.height < large.window.height);
+    }
+    #[test]
+    fn inline_card_reflows_inside_one_stable_native_canvas() {
+        for y in [24, 400, 750, 990] {
+            for dpi in [96, 144, 192] {
+                let mut a = anchor(y);
+                a.geometry.dpi = dpi;
+                a.geometry.work_area.x = -1920;
+                a.geometry.target.x = -800;
+                let large = place_inline_stage(a, 900.0, 520.0, 520.0, 24.0, None);
+                for height in [180.0, 285.0, 520.0] {
+                    let p = place_inline_stage(a, 900.0, 520.0, height, 24.0, Some(large.above));
+                    assert_eq!(p.window, large.window);
+                    assert_eq!(p.card.x, large.card.x);
+                    assert_eq!(p.above, large.above);
+                    assert!(p.card.y >= p.window.y);
+                    assert!(p.card.y + p.card.height <= p.window.y + p.window.height);
+                    if p.above {
+                        assert_eq!(p.card.y + p.card.height, large.card.y + large.card.height);
+                    } else {
+                        assert_eq!(p.card.y, large.card.y);
+                    }
+                }
+            }
+        }
     }
 }
 

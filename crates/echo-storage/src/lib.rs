@@ -30,7 +30,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 const INLINE_LIMIT: usize = 64 * 1024;
-const DEFAULT_MAX_ENTRIES: u32 = 5_000;
+const DEFAULT_MAX_ENTRIES: u32 = echo_engine::MAX_HISTORY_ENTRIES;
 const DEFAULT_MAX_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
 const DEFAULT_MAX_ITEM_BYTES: u64 = 32 * 1024 * 1024;
 const SEARCH_FTS_SCHEMA_KEY: &str = "search_fts_schema";
@@ -123,6 +123,7 @@ impl ClipboardStore {
         };
         store.configure()?;
         store.ensure_schema()?;
+        store.enforce_history_ceiling()?;
         Ok(store)
     }
 
@@ -144,6 +145,7 @@ impl ClipboardStore {
         };
         store.configure()?;
         store.ensure_schema()?;
+        store.enforce_history_ceiling()?;
         Ok(store)
     }
 
@@ -656,7 +658,7 @@ impl ClipboardStore {
                 history_enabled INTEGER NOT NULL DEFAULT 1,
                 record_sensitive INTEGER NOT NULL DEFAULT 0,
                 store_window_titles INTEGER NOT NULL DEFAULT 0,
-                max_entries INTEGER NOT NULL DEFAULT 5000,
+                max_entries INTEGER NOT NULL DEFAULT 2000,
                 max_total_bytes INTEGER NOT NULL DEFAULT 536870912,
                 max_item_bytes INTEGER NOT NULL DEFAULT 33554432,
                 theme TEXT NOT NULL DEFAULT 'system'
@@ -857,7 +859,9 @@ impl ClipboardStore {
             history_enabled,
             record_sensitive,
             store_window_titles,
-            max_entries: max_entries.try_into().unwrap_or(DEFAULT_MAX_ENTRIES),
+            max_entries: u32::try_from(max_entries)
+                .unwrap_or(DEFAULT_MAX_ENTRIES)
+                .min(DEFAULT_MAX_ENTRIES),
             max_total_bytes: max_total_bytes
                 .try_into()
                 .unwrap_or(DEFAULT_MAX_TOTAL_BYTES),
@@ -876,7 +880,7 @@ impl ClipboardStore {
                 settings.history_enabled as i64,
                 settings.record_sensitive as i64,
                 settings.store_window_titles as i64,
-                i64::from(settings.max_entries),
+                i64::from(settings.max_entries.min(DEFAULT_MAX_ENTRIES)),
                 i64::try_from(settings.max_total_bytes).unwrap_or(i64::MAX),
                 i64::try_from(settings.max_item_bytes).unwrap_or(i64::MAX),
                 settings.theme.as_str(),
@@ -1294,6 +1298,26 @@ impl ClipboardStore {
         Ok(())
     }
 
+    // Apply the hard ceiling to existing databases without changing byte limits.
+    fn enforce_history_ceiling(&mut self) -> Result<()> {
+        let tx = self.connection.transaction()?;
+        tx.execute(
+            "UPDATE clipboard_settings SET max_entries=?, settings_revision=settings_revision+1
+             WHERE id=1 AND (max_entries>? OR max_entries<0)",
+            params![DEFAULT_MAX_ENTRIES, DEFAULT_MAX_ENTRIES],
+        )?;
+        Self::enforce_capacity_tx(
+            &tx,
+            &ClipboardSettings {
+                max_entries: DEFAULT_MAX_ENTRIES,
+                max_total_bytes: u64::MAX,
+                ..ClipboardSettings::default()
+            },
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
     fn enforce_capacity_tx(
         tx: &Transaction<'_>,
         settings: &ClipboardSettings,
@@ -1306,7 +1330,7 @@ impl ClipboardStore {
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )?;
-            if count <= i64::from(settings.max_entries)
+            if count <= i64::from(settings.max_entries.min(DEFAULT_MAX_ENTRIES))
                 && total <= i64::try_from(settings.max_total_bytes).unwrap_or(i64::MAX)
             {
                 break;
@@ -1314,9 +1338,9 @@ impl ClipboardStore {
             let oldest: Option<i64> = tx
                 .query_row(
                     "SELECT id FROM clipboard_entries
-                     WHERE history_pinned_at IS NULL
+                     WHERE history_pinned_at IS NULL OR ?
                      ORDER BY updated_at ASC, id ASC LIMIT 1",
-                    [],
+                    [count > i64::from(DEFAULT_MAX_ENTRIES)],
                     |row| row.get(0),
                 )
                 .optional()?;
@@ -1356,17 +1380,22 @@ impl ClipboardStore {
         let trimmed = query.trim();
         if trimmed.is_empty() {
             let (cursor_clause, cursor_values) = history_cursor_filter(cursor)?;
+            // Limit the ordered identities before loading wide text columns.
+            // Full-corpus fuzzy scans otherwise sort those columns on every page.
+            let order = "CASE WHEN e.history_pinned_at IS NULL THEN 1 ELSE 0 END ASC,
+                         e.history_pinned_at DESC,
+                         CASE WHEN e.history_pinned_at IS NULL THEN e.updated_at END DESC,
+                         e.id DESC";
             let sql = format!(
                 "SELECT e.id, e.created_at, e.updated_at, e.source_app, e.source_executable,
                         e.source_window_title, e.content_type, e.preview_text, e.searchable_text,
                         e.sanitized_html, e.fingerprint, e.history_pinned_at,
                         e.byte_size
-                 FROM clipboard_entries e
-                 WHERE 1 = 1 {cursor_clause}
-                 ORDER BY CASE WHEN e.history_pinned_at IS NULL THEN 1 ELSE 0 END ASC,
-                          e.history_pinned_at DESC,
-                          CASE WHEN e.history_pinned_at IS NULL THEN e.updated_at END DESC,
-                          e.id DESC LIMIT ?"
+                 FROM (SELECT e.id FROM clipboard_entries e
+                       WHERE 1 = 1 {cursor_clause}
+                       ORDER BY {order} LIMIT ?) page
+                 JOIN clipboard_entries e ON e.id = page.id
+                 ORDER BY {order}"
             );
             let mut values = cursor_values;
             values.push(Value::Integer(fetch_limit));
@@ -4269,6 +4298,134 @@ mod tests {
         assert!(store.entry(history_id).unwrap().is_some());
         assert!(store.list_saved_items("", 20).unwrap().is_empty());
         assert_eq!(store.list_entries("rollback", 20).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn wide_history_pages_preserve_pin_boundaries_ties_and_original_text() {
+        let mut store = memory_store();
+        let mut originals = Vec::new();
+        for i in 0..125 {
+            let text = format!("entry {i:03} {}", "中文🙂".repeat(1024));
+            let id = store
+                .record_capture(text_capture(&text, i / 5 + 1))
+                .unwrap()
+                .id;
+            store
+                .connection
+                .execute(
+                    "UPDATE clipboard_entries SET updated_at = ? WHERE id = ?",
+                    params![(i / 5 + 1) as i64, id],
+                )
+                .unwrap();
+            originals.push((id, text));
+        }
+        let pins = [originals[1].0, originals[63].0, originals[124].0];
+        for id in pins {
+            store.pin_history(id).unwrap();
+        }
+        let expected = pins
+            .into_iter()
+            .rev()
+            .chain(
+                originals
+                    .iter()
+                    .rev()
+                    .map(|(id, _)| *id)
+                    .filter(|id| !pins.contains(id)),
+            )
+            .collect::<Vec<_>>();
+        let mut actual = Vec::new();
+        let mut cursor = None;
+        loop {
+            let page = store.list_entries_page("", 2, cursor).unwrap();
+            assert!(page.items.len() <= 2);
+            for entry in page.items {
+                let original = &originals.iter().find(|(id, _)| *id == entry.id).unwrap().1;
+                assert_eq!(entry.searchable_text.as_deref(), Some(original.as_str()));
+                assert_eq!(
+                    store.entry_payload(entry.id).unwrap()[0].bytes,
+                    original.as_bytes()
+                );
+                actual.push(entry.id);
+            }
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn history_ceiling_evicts_oldest_at_2001_even_when_pinned() {
+        let mut store = memory_store();
+        assert_eq!(store.settings().unwrap().max_entries, 2000);
+        let mut settings = store.settings().unwrap();
+        settings.max_entries = 5000;
+        store.update_settings(&settings).unwrap();
+        assert_eq!(
+            store.settings_snapshot().unwrap().clipboard.max_entries,
+            2000
+        );
+        let first = store
+            .record_capture(text_capture("ceiling-first", 1))
+            .unwrap()
+            .id;
+        for index in 2..=2000 {
+            store
+                .record_capture(text_capture(&format!("ceiling-{index}"), index))
+                .unwrap();
+        }
+        store
+            .connection
+            .execute(
+                "UPDATE clipboard_entries SET history_pinned_at=1, updated_at=id",
+                [],
+            )
+            .unwrap();
+        let saved = store
+            .create_favorite(FavoriteDraft {
+                content: "retained saved item".into(),
+                name: None,
+                icon_key: None,
+                tags: vec![],
+            })
+            .unwrap();
+        let newest = store
+            .record_capture(text_capture("ceiling-newest", 2001))
+            .unwrap()
+            .id;
+        let count: i64 = store
+            .connection
+            .query_row("SELECT COUNT(*) FROM clipboard_entries", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 2000);
+        assert!(store.entry(first).unwrap().is_none());
+        assert!(store.entry(newest).unwrap().is_some());
+        assert_eq!(store.list_saved_items("", 10).unwrap()[0].id, saved.id);
+    }
+
+    #[test]
+    fn history_ceiling_normalizes_legacy_database_on_open() {
+        let root = disk_tempdir();
+        let store = ClipboardStore::open(root.path()).unwrap();
+        store
+            .connection
+            .execute("UPDATE clipboard_settings SET max_entries=5000", [])
+            .unwrap();
+        // Seed just the overflow boundary to represent an older database.
+        store.connection.execute_batch("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<2001)
+            INSERT INTO clipboard_entries (id,fingerprint,content_type,preview_text,byte_size,created_at,updated_at)
+            SELECT x,printf('legacy-%d',x),'text','legacy',1,x,x FROM n;").unwrap();
+        drop(store);
+        let store = ClipboardStore::open(root.path()).unwrap();
+        assert_eq!(store.settings().unwrap().max_entries, 2000);
+        let count: i64 = store
+            .connection
+            .query_row("SELECT COUNT(*) FROM clipboard_entries", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 2000);
+        assert!(store.entry(1).unwrap().is_none());
     }
 
     #[test]

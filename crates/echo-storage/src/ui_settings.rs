@@ -19,7 +19,8 @@ impl ClipboardStore {
                             max_entries: r
                                 .get::<_, i64>(3)?
                                 .try_into()
-                                .unwrap_or(DEFAULT_MAX_ENTRIES),
+                                .unwrap_or(DEFAULT_MAX_ENTRIES)
+                                .min(DEFAULT_MAX_ENTRIES),
                             max_total_bytes: r
                                 .get::<_, i64>(4)?
                                 .try_into()
@@ -57,6 +58,11 @@ impl ClipboardStore {
     }
     pub fn save_settings_patch(&mut self, mut patch: SettingsPatch) -> Result<SettingsSnapshot> {
         let c = &patch.clipboard;
+        if c.max_entries > DEFAULT_MAX_ENTRIES {
+            return Err(StorageError::Invalid(
+                "Maximum history entries cannot exceed 2000".into(),
+            ));
+        }
         if c.max_entries == 0
             || c.max_total_bytes == 0
             || c.max_item_bytes == 0

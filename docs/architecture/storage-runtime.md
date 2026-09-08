@@ -39,6 +39,11 @@ database commit, blob write, thumbnail generation/write, history and Saved
 Item query, preview open, maintenance reconcile, and first-result
 availability. Metrics contain no clipboard text, file paths, or payload bytes.
 
+Unfiltered History pagination selects its ordered page of identities before
+reading wide text columns. Full-space fuzzy scans use this same cursor path;
+crossing the in-memory corpus budget must not repeatedly sort full text bodies.
+Pin order, timestamp ties, payload representations and schema remain unchanged.
+
 ## Deterministic Diagnostic
 
 Run `.\echo.cmd perf`. It prints one JSON object with schema
@@ -51,3 +56,5 @@ Run `.\echo.cmd perf`. It prints one JSON object with schema
 
 The command gates these counts and booleans before printing. It intentionally
 does not gate wall-clock time, so the output is stable across machines.
+
+History has an absolute ceiling of 2,000 entries. Opening an older database normalizes larger limits and evicts excess History rows. Capturing entry 2,001 evicts the oldest History row by updated time and ID, including pinned rows at this hard ceiling. Lower configured limits keep the existing pin protection. Saved Items are independent and are not evicted by the History ceiling.

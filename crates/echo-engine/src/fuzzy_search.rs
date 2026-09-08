@@ -85,14 +85,25 @@ struct Corpus {
     bytes: usize,
     items: Vec<Candidate>,
 }
+struct CachedPage {
+    space: SpaceId,
+    revision: i64,
+    count: u64,
+    query: String,
+    limit: u32,
+    cursor: Option<PageCursor>,
+    value: (QuickInsertPage, i64, u64),
+}
 #[derive(Default)]
 pub(crate) struct FuzzySearchCache {
     corpora: VecDeque<Corpus>,
+    last_page: Option<CachedPage>,
 }
 const CACHE_BYTES: usize = 16 * 1024 * 1024;
 impl FuzzySearchCache {
     pub(crate) fn clear(&mut self) {
         self.corpora.clear();
+        self.last_page = None;
     }
     pub(crate) fn search<S: SpaceStore>(
         &mut self,
@@ -101,7 +112,11 @@ impl FuzzySearchCache {
         query: &str,
         limit: u32,
         cursor: Option<PageCursor>,
+        cancelled: &dyn Fn() -> bool,
     ) -> Result<(QuickInsertPage, i64, u64), String> {
+        if cancelled() {
+            return Err("Search cancelled by newer work".into());
+        }
         if query.len() > 16 * 1024 {
             return Err("Search query exceeds the bounded input limit".into());
         }
@@ -112,6 +127,20 @@ impl FuzzySearchCache {
             .find(|s| s.id == space)
             .ok_or("Space is unavailable")?;
         let normalized = query.split_whitespace().collect::<Vec<_>>().join(" ");
+        let limit = limit.clamp(1, MAX_PAGE_SIZE);
+        if let Some(cached) = &self.last_page {
+            if cached.space == space
+                && cached.revision == metadata.revision
+                && cached.count == metadata.item_count
+                && cached.query == normalized
+                && cached.limit == limit
+                && cached.cursor == cursor
+                && !cancelled()
+            {
+                return Ok(cached.value.clone());
+            }
+        }
+        self.last_page = None;
         let digest = Sha256::digest(normalized.as_bytes());
         let hash = u64::from_le_bytes(digest[..8].try_into().unwrap());
         let after = match cursor {
@@ -127,7 +156,8 @@ impl FuzzySearchCache {
             }
             _ => return Err("Fuzzy cursor is outdated or belongs to another query".into()),
         };
-        let limit = limit.clamp(1, MAX_PAGE_SIZE) as usize;
+        let page_limit = limit;
+        let limit = limit as usize;
         let mut matcher = FuzzyMatcher::new(&normalized);
         let mut ranked: BTreeMap<(Reverse<u32>, u64), QuickInsertItem> = BTreeMap::new();
         let mut total = 0u64;
@@ -154,6 +184,10 @@ impl FuzzySearchCache {
         if let Some(index) = self.corpora.iter().position(|c| c.space == space) {
             let corpus = self.corpora.remove(index).unwrap();
             for (i, candidate) in corpus.items.iter().enumerate() {
+                if i % 64 == 0 && cancelled() {
+                    self.corpora.push_front(corpus);
+                    return Err("Search cancelled by newer work".into());
+                }
                 visit(i as u64, candidate);
             }
             self.corpora.push_front(corpus);
@@ -164,6 +198,9 @@ impl FuzzySearchCache {
             let mut order = 0u64;
             let mut page_cursor = None;
             loop {
+                if cancelled() {
+                    return Err("Search cancelled by newer work".into());
+                }
                 let (batch, next) = if space == SpaceId::HISTORY {
                     let page = store
                         .list_entries("", MAX_PAGE_SIZE, page_cursor)
@@ -205,6 +242,9 @@ impl FuzzySearchCache {
                     (items, page.page.next_cursor)
                 };
                 for c in batch {
+                    if order % 64 == 0 && cancelled() {
+                        return Err("Search cancelled by newer work".into());
+                    }
                     visit(order, &c);
                     order += 1;
                     if cacheable {
@@ -258,6 +298,9 @@ impl FuzzySearchCache {
             }
         }
         let more = ranked.len() > limit;
+        if cancelled() {
+            return Err("Search cancelled by newer work".into());
+        }
         let mut values = ranked.into_iter().take(limit).collect::<Vec<_>>();
         let next_cursor = if more {
             values
@@ -272,14 +315,45 @@ impl FuzzySearchCache {
         } else {
             None
         };
-        Ok((
+        let value = (
             QuickInsertPage {
                 items: values.drain(..).map(|(_, i)| i).collect(),
                 next_cursor,
             },
             metadata.revision,
             total,
-        ))
+        );
+        // At most one bounded result page; never cache an unbounded result set.
+        let page_bytes = value
+            .0
+            .items
+            .iter()
+            .map(|i| {
+                1024 + i.preview_text.as_ref().map_or(0, String::len)
+                    + i.editable_text.as_ref().map_or(0, String::len)
+                    + i.name.as_ref().map_or(0, String::len)
+                    + i.tags.iter().map(String::len).sum::<usize>()
+            })
+            .sum::<usize>();
+        self.last_page = if page_bytes <= 256 * 1024 {
+            while self.corpora.iter().map(|c| c.bytes).sum::<usize>() + page_bytes > CACHE_BYTES {
+                if self.corpora.pop_back().is_none() {
+                    break;
+                }
+            }
+            Some(CachedPage {
+                space,
+                revision: metadata.revision,
+                count: metadata.item_count,
+                query: normalized,
+                limit: page_limit,
+                cursor,
+                value: value.clone(),
+            })
+        } else {
+            None
+        };
+        Ok(value)
     }
 }
 fn candidate(item: QuickInsertItem, body: String) -> Candidate {
@@ -330,5 +404,23 @@ mod tests {
     fn consecutive_and_boundary_matches_outscore_scattered_letters() {
         let mut m = FuzzyMatcher::new("work");
         assert!(m.score("work item").unwrap() > m.score("w___o___r___k item").unwrap());
+    }
+    #[test]
+    fn smart_case_respects_explicit_uppercase_query() {
+        assert!(FuzzyMatcher::new("work").score("WORK item").is_some());
+        assert!(FuzzyMatcher::new("WORK").score("WORK item").is_some());
+        assert!(FuzzyMatcher::new("WORK").score("work item").is_none());
+    }
+    #[test]
+    fn family_emoji_highlights_preserve_the_whole_grapheme() {
+        let text = "前👨‍👩‍👧‍👦Cafe\u{301} 中文 <x>& [a](b)";
+        let mut matcher = FuzzyMatcher::new("👨‍👩‍👧‍👦 cafe 中");
+        assert!(matcher.score(text).is_some());
+        let highlighted = matcher
+            .highlights(text)
+            .iter()
+            .map(|range| &text[range.clone()])
+            .collect::<String>();
+        assert_eq!(highlighted, "👨‍👩‍👧‍👦Cafe\u{301}中");
     }
 }

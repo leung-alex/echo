@@ -73,6 +73,8 @@ pub struct Surface {
     pub row_limit: usize,
     pub view: QuickInsertView,
     pub query: String,
+    /// Query represented by the complete displayed snapshot, including zero rows.
+    pub presented_query: Option<String>,
     pub items: Vec<QuickInsertItem>,
     pub selection: Option<RowKey>,
     pub selected_ids: BTreeSet<i64>,
@@ -103,6 +105,7 @@ impl Surface {
             row_limit: MAX_RESIDENT_ROWS,
             view,
             query: String::new(),
+            presented_query: None,
             items: Vec::new(),
             selection: None,
             selected_ids: BTreeSet::new(),
@@ -131,6 +134,7 @@ impl Surface {
             QuickInsertView::Favorites
         };
         self.items.clear();
+        self.presented_query = None;
         self.revision = 0;
         self.total = 0;
         self.reset_page();
@@ -147,7 +151,11 @@ impl Surface {
             return;
         }
         self.query = query;
+        let selection = self.selection;
         self.reset_page();
+        // Retain the displayed identity while execution remains gated by ready.
+        // finish_load validates that the key still belongs to the new result.
+        self.selection = selection;
     }
     pub fn set_view(&mut self, view: QuickInsertView) {
         if self.view == view {
@@ -220,6 +228,20 @@ impl Surface {
     pub fn has_previous(&self) -> bool {
         !self.previous_windows.is_empty()
     }
+    /// A bounded worker rejected admission, so no completion will arrive.
+    /// Undo only the paging reservation and retain the last presented content.
+    pub fn retry_unqueued_load(&mut self, ticket: LoadTicket, more: bool) -> bool {
+        if ticket.epoch != self.epoch || ticket.serial != self.serial || !self.visible {
+            return false;
+        }
+        if more && !ticket.append {
+            self.window_start = self.previous_windows.pop().unwrap_or(None);
+        }
+        self.loading = false;
+        self.ready = false;
+        self.dirty = true;
+        true
+    }
     pub fn finish_load(
         &mut self,
         ticket: LoadTicket,
@@ -232,6 +254,7 @@ impl Surface {
         match result {
             Ok(page) => {
                 self.ready = true;
+                self.presented_query = Some(self.query.clone());
                 if ticket.append {
                     for item in page.items {
                         if !self
@@ -403,6 +426,29 @@ mod tests {
         assert!(!s.finish_load(a, Ok(page(&[1]))));
     }
     #[test]
+    fn complete_empty_snapshot_survives_pending_failed_and_stale_queries() {
+        let mut s = shown();
+        s.set_query("missing".into());
+        let empty = s.begin_load(false).unwrap();
+        assert!(s.finish_load(empty, Ok(page(&[]))));
+        assert_eq!(s.presented_query.as_deref(), Some("missing"));
+        s.set_query("next".into());
+        let failed = s.begin_load(false).unwrap();
+        assert!(!s.ready);
+        assert_eq!(s.presented_query.as_deref(), Some("missing"));
+        assert!(s.finish_load(failed, Err("unavailable".into())));
+        assert_eq!(s.presented_query.as_deref(), Some("missing"));
+        s.set_query("latest".into());
+        let latest = s.begin_load(false).unwrap();
+        assert!(!s.finish_load(empty, Ok(page(&[7]))));
+        assert_eq!(s.presented_query.as_deref(), Some("missing"));
+        assert!(s.finish_load(latest, Ok(page(&[9]))));
+        assert_eq!(s.presented_query.as_deref(), Some("latest"));
+        assert_eq!(s.selected().unwrap().id, 9);
+        s.set_space(echo_engine::SpaceId::FAVORITES);
+        assert_eq!(s.presented_query, None);
+    }
+    #[test]
     fn selection_survives_reorder() {
         let mut s = shown();
         let a = s.begin_load(false).unwrap();
@@ -411,6 +457,22 @@ mod tests {
         let b = s.begin_load(false).unwrap();
         s.finish_load(b, Ok(page(&[2, 1])));
         assert_eq!(s.selected().unwrap().id, 2);
+    }
+    #[test]
+    fn narrowing_query_keeps_surviving_selection_but_disables_execution() {
+        let mut s = shown();
+        let first = s.begin_load(false).unwrap();
+        s.finish_load(first, Ok(page(&[1, 2, 3])));
+        s.select_index(1);
+        s.set_query("narrow".into());
+        assert!(!s.ready);
+        let next = s.begin_load(false).unwrap();
+        s.finish_load(next, Ok(page(&[3, 2])));
+        assert_eq!(s.selected().unwrap().id, 2);
+        s.set_query("different".into());
+        let next = s.begin_load(false).unwrap();
+        s.finish_load(next, Ok(page(&[3])));
+        assert_eq!(s.selected().unwrap().id, 3);
     }
     #[test]
     fn hidden_surface_never_queries_or_accepts_late_results() {
@@ -482,6 +544,36 @@ mod tests {
         assert!(s.has_previous());
         assert!(s.previous_window());
         assert!(s.window_start.is_none());
+    }
+
+    #[test]
+    fn rejected_queue_admission_retries_without_losing_rows_or_paging_position() {
+        let mut s = shown();
+        s.items = (1..=500).map(item).collect();
+        s.next_cursor = Some(PageCursor::History {
+            pinned_at: None,
+            updated_at: 0,
+            id: 500,
+        });
+        let expected = s.next_cursor;
+        for _ in 0..3 {
+            let rejected = s.begin_load(true).unwrap();
+            assert_eq!(rejected.cursor, expected);
+            assert!(s.retry_unqueued_load(rejected, true));
+            assert!(!s.loading && s.dirty && !s.ready);
+            assert_eq!(s.items.len(), 500);
+            assert!(!s.has_previous());
+        }
+        let accepted = s.begin_load(true).unwrap();
+        assert!(s.finish_load(accepted, Ok(page(&[501]))));
+        assert!(s.has_previous());
+        s.set_query("new".into());
+        let rejected = s.begin_load(false).unwrap();
+        assert!(s.retry_unqueued_load(rejected, false));
+        let accepted = s.begin_load(false).unwrap();
+        assert!(!s.finish_load(rejected, Ok(page(&[999]))));
+        assert!(s.finish_load(accepted, Ok(page(&[502]))));
+        assert_eq!(s.items[0].id, 502);
     }
 
     #[test]

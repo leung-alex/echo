@@ -18,14 +18,29 @@ impl App {
     pub(super) fn inline_active(&self) -> bool {
         self.inline_ui.ticket.is_some() || self.inline_ui.unavailable
     }
-    pub(super) fn stop_inline(&mut self) {
+    pub(super) fn stop_inline(&mut self) -> bool {
+        // Retire the visual lease before permitting a new host Enter. The
+        // adapter still drains any already-consumed physical key-up afterward.
+        if self.inline_active() || self.inline_ui.pending {
+            if let Err(error) = self.window.hide() {
+                self.report(
+                    &format!("Inline window could not hide; Enter remains protected: {error}"),
+                    true,
+                );
+                return false;
+            }
+        }
         self.inline_timer.stop();
         self.worker.inline.cancel(self.session.epoch);
         self.inline_ui = InlineUi::default();
         self.window.set_inline_mode(false);
         if let Some(hook) = &self.hook {
-            let _ = hook.set_inline_popup(false);
+            if let Err(error) = hook.set_inline_popup(false) {
+                self.report(&format!("Window mode could not be restored: {error}"), true);
+                return false;
+            }
         }
+        true
     }
     pub(super) fn begin_inline(
         &mut self,
@@ -109,11 +124,15 @@ impl App {
                 query,
                 anchor,
                 composing,
-                suspended,
+                mut suspended,
             } => {
                 if self.inline_ui.ticket.is_none() || ticket.session != self.session.epoch {
                     return;
                 }
+                // A queued pre-paste observation cannot clear an unknown
+                // delivery outcome published after it was produced.
+                let outcome_unknown = self.worker.inline.replacement_outcome_unknown();
+                suspended |= outcome_unknown;
                 let state_changed = self.surface.query != query
                     || self.inline_ui.composing != composing
                     || self.inline_ui.suspended != suspended;
@@ -138,7 +157,9 @@ impl App {
                 } else {
                     self.inline_results_ready();
                 }
-                if state_changed && composing {
+                if state_changed && outcome_unknown {
+                    self.report("Replacement outcome is unknown. Check the input; Esc/F6 is required before another insertion.", true);
+                } else if state_changed && composing {
                     self.report(
                         "Input method is composing · candidate keys stay with the input method",
                         false,
@@ -204,6 +225,13 @@ impl App {
                     self.inline_fallback(reason);
                 }
             }
+            InlineEvent::Suspended { session, reason } => {
+                if self.inline_active() && session == self.session.epoch {
+                    self.inline_ui.suspended = true;
+                    self.worker.inline.invalidate_results();
+                    self.report(reason, false);
+                }
+            }
             InlineEvent::Notice { session, text } => {
                 if self.inline_active() && session == self.session.epoch {
                     self.report(text, false);
@@ -219,7 +247,9 @@ impl App {
                 && old.process_started_at == snapshot.process_started_at
                 && snapshot.still_current()
         });
-        self.stop_inline();
+        if !self.stop_inline() {
+            return;
+        }
         self.popup_placement = None;
         if !still_original {
             self.activation_focus = None;

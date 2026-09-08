@@ -1,5 +1,6 @@
 //! Keep UIA reads and replacements inside the activated editor, not its page.
 //! GetEnclosingElement may be a paragraph inside an editor, not the editor itself.
+use windows::core::Interface;
 use windows::Win32::UI::Accessibility::*;
 
 unsafe fn inside(
@@ -120,6 +121,78 @@ pub(super) unsafe fn validate_selection(
     }
     Ok(())
 }
+
+/// Some Chromium providers collapse an interior empty p/br into the previous
+/// paragraph's separator. Its first input then introduces a new separator that
+/// looks like query text. Refuse that unproven mapping before any replacement.
+pub(super) unsafe fn ambiguous_interior_paragraph_caret(
+    uia: &IUIAutomation,
+    editor: &IUIAutomationElement,
+    pattern: &IUIAutomationTextPattern,
+    doc: &IUIAutomationTextRange,
+    selected: &IUIAutomationTextRange,
+) -> bool {
+    if editor
+        .CurrentClassName()
+        .ok()
+        .is_none_or(|s| s.to_string() != "ProseMirror")
+        || selected
+            .CompareEndpoints(
+                TextPatternRangeEndpoint_Start,
+                selected,
+                TextPatternRangeEndpoint_End,
+            )
+            .ok()
+            != Some(0)
+        || selected
+            .CompareEndpoints(
+                TextPatternRangeEndpoint_Start,
+                doc,
+                TextPatternRangeEndpoint_Start,
+            )
+            .ok()
+            .is_none_or(|v| v <= 0)
+        || selected
+            .CompareEndpoints(
+                TextPatternRangeEndpoint_End,
+                doc,
+                TextPatternRangeEndpoint_End,
+            )
+            .ok()
+            .is_none_or(|v| v >= 0)
+    {
+        return false;
+    }
+    let Ok(walker) = uia.RawViewWalker() else {
+        return false;
+    };
+    let mut child = walker.GetFirstChildElement(editor).ok();
+    for _ in 0..64 {
+        let Some(element) = child else {
+            break;
+        };
+        if element.CurrentControlType().ok() == Some(UIA_GroupControlTypeId) {
+            if let Ok(range) = pattern.RangeFromChild(&element) {
+                if range
+                    .GetText(3)
+                    .is_ok_and(|v| matches!(v.to_string().as_str(), "\n" | "\r\n"))
+                    && range
+                        .CompareEndpoints(
+                            TextPatternRangeEndpoint_Start,
+                            selected,
+                            TextPatternRangeEndpoint_Start,
+                        )
+                        .ok()
+                        == Some(0)
+                {
+                    return true;
+                }
+            }
+        }
+        child = walker.GetNextSiblingElement(&element).ok();
+    }
+    false
+}
 pub(super) unsafe fn empty_value_caret(
     editor: &IUIAutomationElement,
     selected: &IUIAutomationTextRange,
@@ -198,6 +271,174 @@ pub(super) unsafe fn empty_paragraph_caret(
         return false;
     }
     true
+}
+
+/// ProseMirror's empty-paragraph decoration can expose generated CSS text through
+/// Chromium UIA. Recognize the complete paragraph/range structure, including the
+/// sole generated text leaf used when the empty <br> is hidden. A label, class name,
+/// newline, or empty selection alone never authorizes trimming.
+pub(super) unsafe fn empty_decorated_paragraph_caret(
+    uia: &IUIAutomation,
+    editor: &IUIAutomationElement,
+    doc: &IUIAutomationTextRange,
+    selected: &IUIAutomationTextRange,
+) -> bool {
+    if editor.CurrentAriaRole().map(|r| r.to_string()).as_deref() != Ok("textbox")
+        || selected
+            .CompareEndpoints(
+                TextPatternRangeEndpoint_Start,
+                selected,
+                TextPatternRangeEndpoint_End,
+            )
+            .ok()
+            != Some(0)
+        || selected
+            .CompareEndpoints(
+                TextPatternRangeEndpoint_Start,
+                doc,
+                TextPatternRangeEndpoint_Start,
+            )
+            .ok()
+            != Some(0)
+    {
+        return false;
+    }
+    let Ok(name) = editor.CurrentName() else {
+        return false;
+    };
+    let name = name.to_vec();
+    if name.is_empty() || name.len() > 512 {
+        return false;
+    }
+    let Ok(raw) = doc.GetText(516) else {
+        return false;
+    };
+    let raw = raw.to_vec();
+    if raw.is_empty() || raw.len() > 515 {
+        return false;
+    }
+    if !editor.CurrentClassName().is_ok_and(|c| {
+        c.to_string()
+            .split_whitespace()
+            .any(|token| token == "ProseMirror")
+    }) {
+        return false;
+    }
+    // Chromium's FindAll children can flatten ignored paragraph groups into
+    // their text leaves. The raw tree preserves the paragraph identity.
+    let Ok(walker) = uia.RawViewWalker() else {
+        return false;
+    };
+    let Ok(paragraph) = walker.GetFirstChildElement(editor) else {
+        return false;
+    };
+    let mut sibling = std::ptr::null_mut();
+    let sibling_result =
+        (walker.vtable().GetNextSiblingElement)(walker.as_raw(), paragraph.as_raw(), &mut sibling);
+    if !sibling.is_null() {
+        drop(IUIAutomationElement::from_raw(sibling));
+        return false;
+    }
+    if sibling_result.is_err() {
+        return false;
+    }
+    if paragraph.CurrentControlType().ok() != Some(UIA_GroupControlTypeId)
+        || !paragraph.CurrentClassName().is_ok_and(|c| {
+            c.to_string()
+                .split_whitespace()
+                .any(|token| token == "placeholder")
+        })
+    {
+        return false;
+    }
+    if !editor
+        .GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
+        .and_then(|p| p.CurrentValue())
+        .is_ok_and(|value| value.to_vec() == raw)
+    {
+        return false;
+    }
+    let Ok(enclosing) = doc.GetEnclosingElement() else {
+        return false;
+    };
+    if uia
+        .CompareElements(&enclosing, &paragraph)
+        .is_ok_and(|same| same.as_bool())
+    {
+        return raw.strip_prefix(&[10]) == Some(name.as_slice())
+            || raw.strip_prefix(&[13, 10]) == Some(name.as_slice());
+    }
+    // A decoration with a hidden <br> can be the entire document range. Chromium
+    // retains its anonymous CSS-generated group between the paragraph and text.
+    // Require that exact single-child chain; real text alongside the decoration
+    // introduces another sibling or a wider enclosing range and is retained.
+    if raw.len() > 512
+        || raw.iter().any(|unit| matches!(*unit, 10 | 13))
+        || enclosing.CurrentControlType().ok() != Some(UIA_TextControlTypeId)
+        || !enclosing
+            .CurrentName()
+            .is_ok_and(|label| label.to_vec() == raw)
+    {
+        return false;
+    }
+    let Ok(decoration) = walker.GetFirstChildElement(&paragraph) else {
+        return false;
+    };
+    let mut next_decoration = std::ptr::null_mut();
+    let result = (walker.vtable().GetNextSiblingElement)(
+        walker.as_raw(),
+        decoration.as_raw(),
+        &mut next_decoration,
+    );
+    if !next_decoration.is_null() {
+        drop(IUIAutomationElement::from_raw(next_decoration));
+        return false;
+    }
+    if result.is_err() {
+        return false;
+    }
+    let leaf = match decoration.CurrentControlType().ok() {
+        Some(role)
+            if role == UIA_GroupControlTypeId
+                && decoration.CurrentName().is_ok_and(|name| name.is_empty())
+                && decoration
+                    .CurrentClassName()
+                    .is_ok_and(|class| class.is_empty()) =>
+        {
+            let Ok(leaf) = walker.GetFirstChildElement(&decoration) else {
+                return false;
+            };
+            leaf
+        }
+        // The observed ChatGPT provider flattens the CSS group itself. Keep
+        // this less informative shape scoped to its verified editor identity;
+        // arbitrary ProseMirror paragraphs with a literal text leaf must not
+        // become empty just because they happen to use a placeholder class.
+        Some(role)
+            if role == UIA_TextControlTypeId
+                && editor
+                    .CurrentAutomationId()
+                    .is_ok_and(|id| id.to_string() == "prompt-textarea")
+                && name == "Chat with ChatGPT".encode_utf16().collect::<Vec<_>>() =>
+        {
+            decoration
+        }
+        _ => return false,
+    };
+    if !uia
+        .CompareElements(&leaf, &enclosing)
+        .is_ok_and(|same| same.as_bool())
+    {
+        return false;
+    }
+    let mut next_leaf = std::ptr::null_mut();
+    let result =
+        (walker.vtable().GetNextSiblingElement)(walker.as_raw(), leaf.as_raw(), &mut next_leaf);
+    if !next_leaf.is_null() {
+        drop(IUIAutomationElement::from_raw(next_leaf));
+        return false;
+    }
+    result.is_ok()
 }
 
 /// Compare semantic text positions when a provider uses parent/leaf boundary

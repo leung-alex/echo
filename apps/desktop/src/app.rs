@@ -158,7 +158,10 @@ pub struct App {
     navigation_us: Vec<u64>,
     window_shapes: Option<Option<Vec<shell::CardShape>>>,
     last_scroll_bits: u32,
-    geometry: (u32, u32, u32),
+    geometry: (u32, u32, u32, u32, u32),
+    pending_card_region: Option<(u64, Option<Vec<shell::CardShape>>)>,
+    card_region_serial: u64,
+    card_region_generation: Rc<std::cell::Cell<u64>>,
     pending_scroll: Option<f32>,
     navigate_after_refresh: Option<SpaceId>,
     graphics: crate::graphics::GraphicsInfo,
@@ -254,7 +257,10 @@ impl App {
             navigation_us: Vec::new(),
             window_shapes: None,
             last_scroll_bits: 0,
-            geometry: (0, 0, 0),
+            geometry: (0, 0, 0, 0, 0),
+            pending_card_region: None,
+            card_region_serial: 0,
+            card_region_generation: Rc::new(std::cell::Cell::new(0)),
             pending_scroll: None,
             navigate_after_refresh: None,
             graphics,
@@ -352,6 +358,9 @@ impl App {
                     }
                     if self.deck.phase != Phase::Animating {
                         self.render();
+                    }
+                    if self.inline_active() {
+                        self.prepare_window_geometry();
                     }
                     self.content_ready();
                     self.inline_results_ready();
@@ -547,7 +556,9 @@ impl App {
         if !self.spaces.iter().any(|s| s.id == id) {
             id = SpaceId::HISTORY;
         }
-        self.stop_inline();
+        if !self.stop_inline() {
+            return;
+        }
         self.compatibility_notice = None;
         self.remember_position();
         self.surface.hide();
@@ -617,6 +628,21 @@ impl App {
                 Arc::new(move |e| hub.post(Event::Shell(e))),
             )?);
             self.hwnd = Some(hwnd);
+            // Propagate the redraw. The queued command runs after winit finishes
+            // this draw/present, for both GPU and software renderers.
+            use slint::winit_030::{EventResult, WinitWindowAccessor};
+            let generation = self.card_region_generation.clone();
+            let hub = self.hub.clone();
+            self.window.window().on_winit_window_event(move |_, event| {
+                if matches!(
+                    event,
+                    slint::winit_030::winit::event::WindowEvent::RedrawRequested
+                ) && generation.get() != 0
+                {
+                    hub.post(Event::Command(Command::CommitCardRegion(generation.get())));
+                }
+                EventResult::Propagate
+            });
         }
         if let Some(hwnd) = self.hwnd {
             if !self.quick_geometry_active {
@@ -676,7 +702,9 @@ impl App {
         self.send(Work::Resume(self.surface.space));
     }
     fn dismiss(&mut self) {
-        self.stop_inline();
+        if !self.stop_inline() {
+            return;
+        }
         self.capture_pending = false;
         self.hide_window();
         if let Some(snapshot) = self.activation_focus.take() {
@@ -731,15 +759,31 @@ impl App {
             self.surface.space,
             self.surface.query.clone(),
         )) {
-            self.surface.loading = false;
-            self.window.set_loading(false);
+            self.surface.retry_unqueued_load(ticket, more);
+            let hub = self.hub.clone();
+            self.search_timer.start(
+                TimerMode::SingleShot,
+                Duration::from_millis(100),
+                move || {
+                    hub.post(Event::Command(if more {
+                        Command::More
+                    } else {
+                        Command::Refresh
+                    }))
+                },
+            );
         }
     }
     fn render(&mut self) {
-        if (self.surface.loading || self.surface.dirty) && self.model.row_count() > 0 {
+        if (self.surface.loading || self.surface.dirty)
+            && (self.surface.presented_query.is_some() || self.model.row_count() > 0)
+        {
             // Preserve complete visual rows, including highlight spans and action
             // strips, until the next query is ready. Safety is a separate gate.
             self.window.set_loading(true);
+            if self.surface.dirty && !self.surface.loading && !self.search_timer.running() {
+                self.load(false);
+            }
             return;
         }
         let mut section = String::new();
@@ -787,6 +831,20 @@ impl App {
         self.render_selection();
         self.window.set_status(self.surface.status.clone().into());
         self.window.set_status_error(self.surface.error);
+        if self.surface.ready || self.surface.presented_query.is_none() {
+            let empty = if self.surface.loading {
+                "Loading…"
+            } else if self.surface.error {
+                "Unable to load this space"
+            } else if !self.surface.query.is_empty() {
+                "No matches in this space"
+            } else if self.surface.space == SpaceId::HISTORY {
+                "Your clipboard history appears here"
+            } else {
+                "A space for things you use often"
+            };
+            self.window.set_empty_state_text(empty.into());
+        }
         self.render_navigation();
         self.dirty_snapshots.insert(self.surface.space);
         if self.surface.ready {
@@ -794,7 +852,7 @@ impl App {
                 self.window.set_scroll_y(scroll);
             }
         }
-        if self.surface.dirty && !self.surface.loading {
+        if self.surface.dirty && !self.surface.loading && !self.search_timer.running() {
             self.load(false);
         }
     }
@@ -1016,6 +1074,7 @@ impl App {
                 }
             }
             Command::StageClick(x, y) => self.stage_click(x, y),
+            Command::CommitCardRegion(generation) => self.commit_card_region(generation),
             Command::StageScroll(delta) => self.stage_scroll(delta),
             Command::SaveFavorite => self.save_favorite(),
             Command::CancelEditor => self.cancel_editor(),
@@ -1141,7 +1200,7 @@ impl App {
     fn executed(
         &mut self,
         operation: echo_presentation::session::Operation,
-        result: Result<QuickInsertOutcome, String>,
+        result: Result<QuickInsertOutcome, QuickInsertError>,
     ) {
         let completion = self
             .session
@@ -1151,7 +1210,9 @@ impl App {
             Completion::Stale => {}
             Completion::Inserted => {
                 if self.inline_active() {
-                    self.stop_inline();
+                    if !self.stop_inline() {
+                        return;
+                    }
                     self.activation_focus = None;
                     self.hide_window();
                 }
@@ -1171,20 +1232,19 @@ impl App {
                     let error = result
                         .as_ref()
                         .err()
-                        .cloned()
+                        .map(ToString::to_string)
                         .unwrap_or_else(|| "Replacement failed".into());
-                    if error.contains("ReplacementUnconfirmed") || error.contains("RangeChanged") {
-                        self.stop_inline();
-                        self.activation_focus = None;
-                        self.session.dismiss();
-                        self.worker
-                            .epoch
-                            .store(self.session.epoch, Ordering::Release);
-                        self.send(Work::Cancel);
-                        self.window.set_quick_insert(false);
-                        self.window.set_paste_target_available(false);
-                        let _ = self.show_window();
-                        self.report(format!("{error}. Check your input before retrying; Echo will not replay this operation."), true);
+                    if matches!(
+                        result,
+                        Err(QuickInsertError::DeliveryFailed(
+                            PasteDeliveryFailure::ReplacementUnconfirmed
+                                | PasteDeliveryFailure::SelectionUnconfirmed
+                                | PasteDeliveryFailure::RangeChanged
+                        ))
+                    ) {
+                        self.inline_ui.suspended = true;
+                        self.worker.inline.invalidate_results();
+                        self.report(format!("{error}. Enter stays protected. Check the input; Esc keeps it and F6 opens independent search."), true);
                     } else {
                         self.report(error, true);
                         self.inline_results_ready();
@@ -1196,7 +1256,10 @@ impl App {
                     self.load(false);
                 }
                 self.report(
-                    result.err().unwrap_or_else(|| "Operation failed".into()),
+                    result
+                        .err()
+                        .map(|e| e.to_string())
+                        .unwrap_or_else(|| "Operation failed".into()),
                     true,
                 );
             }

@@ -54,4 +54,4 @@ pub use saved_items::{
     is_text_like, normalize_icon_key, normalize_name, normalize_optional_name, normalize_tags,
     FavoriteDraft, FavoriteUpdate, SavedItem, SavedItemDraft, SavedItemValidationError,
 };
-pub use settings::{ClipboardSettings, ThemeMode};
+pub use settings::{ClipboardSettings, ThemeMode, MAX_HISTORY_ENTRIES};

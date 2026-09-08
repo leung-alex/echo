@@ -17,6 +17,8 @@ use std::{
 };
 
 mod capture_lane;
+#[cfg(feature = "native-test")]
+pub(crate) mod native_faults;
 mod settings_commit;
 
 pub enum Mutation {
@@ -50,8 +52,9 @@ pub enum Work {
     Stop,
 }
 pub struct Worker {
-    sender: SyncSender<Work>,
-    control: SyncSender<Work>,
+    sender: SyncSender<(u64, Work)>,
+    control: SyncSender<(u64, Work)>,
+    search_epoch: Arc<AtomicU64>,
     capture: capture_lane::CaptureLane,
     thread: Option<JoinHandle<()>>,
     pub epoch: Arc<AtomicU64>,
@@ -74,6 +77,8 @@ impl Worker {
         let epoch = Arc::new(AtomicU64::new(0));
         let capture = capture_lane::CaptureLane::start(hub.clone(), epoch.clone())?;
         let worker_epoch = epoch.clone();
+        let search_epoch = Arc::new(AtomicU64::new(0));
+        let worker_search_epoch = search_epoch.clone();
         let (boot_tx, boot_rx) = mpsc::sync_channel(1);
         let thread = std::thread::Builder::new()
             .name("echo-domain-worker".into())
@@ -87,6 +92,7 @@ impl Worker {
                     boot_tx,
                     hotkeys,
                     worker_inline,
+                    worker_search_epoch,
                 )
             })
             .map_err(|e| e.to_string())?;
@@ -109,9 +115,17 @@ impl Worker {
             capture,
             thread: Some(thread),
             epoch,
+            search_epoch,
         })
     }
     pub fn send(&self, work: Work) -> Result<(), String> {
+        let search_generation = if matches!(&work, Work::List(..) | Work::Stop) {
+            self.search_epoch
+                .fetch_add(1, Ordering::AcqRel)
+                .wrapping_add(1)
+        } else {
+            self.search_epoch.load(Ordering::Acquire)
+        };
         let work = match work {
             Work::BeginInline(epoch, snapshot) => return self.inline.begin(epoch, snapshot),
             Work::Begin(epoch, context, snapshot) => {
@@ -124,21 +138,22 @@ impl Worker {
             Work::Adopt(..) | Work::Cancel | Work::Execute(..) | Work::ExecuteInline(..)
         ) {
             self.control
-                .try_send(work)
+                .try_send((search_generation, work))
                 .map_err(|_| "Echo activation queue is busy".to_string())?;
             // Wake an idle worker; a full ordinary queue already guarantees a wake.
-            let _ = self.sender.try_send(Work::Wake);
+            let _ = self.sender.try_send((search_generation, Work::Wake));
             return Ok(());
         }
         self.sender
-            .try_send(work)
+            .try_send((search_generation, work))
             .map_err(|_| "Echo is busy; retry the operation".into())
     }
     pub fn stop(&mut self) {
         let epoch = self.epoch.fetch_add(1, Ordering::AcqRel);
         self.inline.cancel(epoch);
         self.capture.stop();
-        let _ = self.sender.send(Work::Stop);
+        self.search_epoch.fetch_add(1, Ordering::AcqRel);
+        let _ = self.sender.send((0, Work::Stop));
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -183,12 +198,13 @@ impl Services {
 fn run(
     path: PathBuf,
     hub: Arc<Hub>,
-    receiver: mpsc::Receiver<Work>,
-    control: mpsc::Receiver<Work>,
+    receiver: mpsc::Receiver<(u64, Work)>,
+    control: mpsc::Receiver<(u64, Work)>,
     epoch: Arc<AtomicU64>,
     bootstrap: SyncSender<Result<SettingsSnapshot, String>>,
     hotkeys: echo_windows::shell::HotkeyController,
     inline: echo_windows::inline::InlineController,
+    search_epoch: Arc<AtomicU64>,
 ) {
     let services = match Services::open(&path, hotkeys, inline) {
         Ok(service) => service,
@@ -223,7 +239,8 @@ fn run(
         })
         .ok();
     hub.post(Event::Ready(Ok(settings)));
-    while let Ok(work) = control.try_recv().or_else(|_| receiver.recv()) {
+    while let Ok((search_generation, work)) = control.try_recv().or_else(|_| receiver.recv()) {
+        let cancelled = || search_epoch.load(Ordering::Acquire) != search_generation;
         match work {
             Work::Diagnostics(report) => {
                 hub.post(Event::DiagnosticExported(export_diagnostics(&path, report)))
@@ -231,17 +248,27 @@ fn run(
             Work::Wake => {}
             Work::Stop => break,
             Work::List(ticket, space, query) => {
-                hub.post(Event::Loaded(
-                    space,
-                    ticket,
-                    scope_page(&services, space, &query, ticket.cursor),
-                ));
+                #[cfg(feature = "native-test")]
+                let result = if native_faults::before_list() {
+                    Err("Synthetic query failure for isolated acceptance".into())
+                } else {
+                    scope_page(&services, space, &query, ticket.cursor, &cancelled)
+                };
+                #[cfg(not(feature = "native-test"))]
+                let result = scope_page(&services, space, &query, ticket.cursor, &cancelled);
+                // Every accepted request completes, including cancelled scans.
+                // Presentation rejects old tickets; a failed newer enqueue must
+                // never leave the existing request permanently marked loading.
+                let event = Event::Loaded(space, ticket, result);
+                #[cfg(feature = "native-test")]
+                native_faults::publish_loaded(&hub, event);
+                #[cfg(not(feature = "native-test"))]
+                hub.post(event);
             }
-            Work::Preview(space, generation, query) => hub.post(Event::Preview(
-                space,
-                generation,
-                scope_page(&services, space, &query, None),
-            )),
+            Work::Preview(space, generation, query) => {
+                let result = scope_page(&services, space, &query, None, &cancelled);
+                hub.post(Event::Preview(space, generation, result));
+            }
             Work::Spaces => hub.post(Event::Spaces(
                 services
                     .library
@@ -320,34 +347,30 @@ fn run(
                 let result = if epoch.load(Ordering::Acquire) != operation.epoch
                     || operation.epoch != ticket.session
                 {
-                    Err("Inline session was cancelled".into())
+                    Err(QuickInsertError::InvalidTarget)
                 } else {
-                    services
-                        .quick
-                        .execute_inline(key.source, key.id, ticket)
-                        .map_err(|e| e.to_string())
+                    services.quick.execute_inline(key.source, key.id, ticket)
                 };
                 hub.post(Event::Executed(operation, result));
             }
             Work::Execute(operation, key) => {
                 let result = if epoch.load(Ordering::Acquire) != operation.epoch {
-                    Err("Insertion session was cancelled".into())
+                    Err(QuickInsertError::InvalidTarget)
                 } else {
-                    services
-                        .quick
-                        .execute(key.source, key.id, operation.action)
-                        .map_err(|e| e.to_string())
+                    services.quick.execute(key.source, key.id, operation.action)
                 };
                 hub.post(Event::Executed(operation, result));
             }
             Work::Mutate(serial, mutation) => {
                 hub.post(Event::Mutated(serial, mutate(&services, mutation)))
             }
-            Work::Thumbnail(generation, hash) => hub.post(Event::Thumbnail(
-                generation,
-                hash.clone(),
-                thumbnail(&services, &hash),
-            )),
+            Work::Thumbnail(generation, hash) => {
+                let event = Event::Thumbnail(generation, hash.clone(), thumbnail(&services, &hash));
+                #[cfg(feature = "native-test")]
+                native_faults::publish_thumbnail(&hub, event);
+                #[cfg(not(feature = "native-test"))]
+                hub.post(event);
+            }
         }
     }
     services.clipboard.shutdown();
@@ -554,10 +577,11 @@ fn scope_page(
     space: SpaceId,
     query: &str,
     cursor: Option<PageCursor>,
+    cancelled: &dyn Fn() -> bool,
 ) -> Result<crate::events::LoadedPage, String> {
     services
         .quick
-        .fuzzy_list_space(space, query, 50, cursor)
+        .fuzzy_list_space_cancellable(space, query, 50, cursor, cancelled)
         .map(|(page, revision, total)| crate::events::LoadedPage {
             page,
             revision,
