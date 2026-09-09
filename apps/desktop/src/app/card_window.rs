@@ -7,6 +7,7 @@ struct FrameStamp {
     query: u64,
     content: i64,
     ready: bool,
+    modal: bool,
     scene: u64,
 }
 pub(super) struct PendingCardFrame {
@@ -30,6 +31,7 @@ impl App {
             query: self.surface.query_epoch(),
             content: self.surface.revision,
             ready: self.surface.ready && !self.surface.loading,
+            modal: self.window.get_modal(),
             scene,
         }
     }
@@ -74,7 +76,9 @@ impl App {
             };
             hook.set_resize_bounds(bounds);
         }
-        let shapes = {
+        let shapes = if self.window.get_modal() {
+            None
+        } else {
             let [l, top, w, h] = if history {
                 [
                     self.window.get_panel_left(),
@@ -228,6 +232,7 @@ mod tests {
             query: 5,
             content: 7,
             ready: true,
+            modal: false,
             scene: 11,
         };
         let pending = PendingCardFrame {
@@ -252,6 +257,10 @@ mod tests {
                 ..stamp
             },
             FrameStamp { scene: 12, ..stamp },
+            FrameStamp {
+                modal: true,
+                ..stamp
+            },
         ] {
             assert!(!pending.matches(13, next));
         }

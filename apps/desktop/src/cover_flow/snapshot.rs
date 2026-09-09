@@ -137,7 +137,6 @@ snapshot! {
     query: SharedString = get_capture_query => set_query,
     navigation_label: SharedString = get_capture_navigation_label => set_navigation_label,
     navigation_hint: SharedString = get_capture_navigation_hint => set_navigation_hint,
-    search_focused: bool = get_capture_search_focused => set_search_focused,
     previous_enabled: bool = get_capture_previous_enabled => set_previous_enabled,
     next_enabled: bool = get_capture_next_enabled => set_next_enabled,
     has_more: bool = get_capture_has_more => set_has_more,

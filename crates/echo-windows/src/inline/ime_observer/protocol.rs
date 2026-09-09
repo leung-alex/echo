@@ -1,9 +1,9 @@
 //! Fixed-size, ephemeral target-thread observation. No key or edit commands.
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub const MAGIC: u64 = 0x4543484f494d4501;
+pub const MAGIC: u64 = 0x4543484f494d4502;
 pub const MAX_UNITS: usize = 2048;
-pub const MESSAGE: &str = "Echo.CompositionObservation.v1";
+pub const MESSAGE: &str = "Echo.CompositionObservation.v2";
 pub const PREFIX: &str = "Local\\Echo.CompositionObservation.";
 
 #[repr(C)]
@@ -13,6 +13,7 @@ pub struct Channel {
     pub target_thread: u32,
     pub target_window: u64,
     pub target_started: u64,
+    pub tsf_only: u32,
     pub request: AtomicU64,
     pub response: AtomicU64,
     pub sample: Sample,
@@ -41,13 +42,14 @@ impl Sample {
     }
 }
 impl Channel {
-    pub fn new(pid: u32, thread: u32, window: u64, started: u64) -> Self {
+    pub fn new(pid: u32, thread: u32, window: u64, started: u64, tsf_only: bool) -> Self {
         Self {
             magic: MAGIC,
             target_pid: pid,
             target_thread: thread,
             target_window: window,
             target_started: started,
+            tsf_only: u32::from(tsf_only),
             request: AtomicU64::new(0),
             response: AtomicU64::new(0),
             sample: Sample::unknown(),

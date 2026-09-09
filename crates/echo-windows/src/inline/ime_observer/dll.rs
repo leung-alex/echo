@@ -2,6 +2,7 @@
 //! never intercepts keys, subclasses windows, or changes text or IME state.
 #![allow(dead_code)]
 mod protocol;
+mod tsf;
 use protocol::*;
 use std::{
     ffi::c_void,
@@ -72,6 +73,18 @@ unsafe fn sample(window: Handle, channel: &Channel) -> Sample {
         ) == 0
         || created != channel.target_started
     {
+        return value;
+    }
+    if channel.tsf_only == 1 {
+        value.status = match tsf::active() {
+            Some(false) => 3,
+            Some(true) => 4,
+            None => 0,
+        };
+        // COM can reenter the host. Reject a focus transition during the read.
+        if GetFocus() != window || GetAncestor(window, 2) != GetForegroundWindow() {
+            value.status = 0;
+        }
         return value;
     }
     let context = ImmGetContext(window);

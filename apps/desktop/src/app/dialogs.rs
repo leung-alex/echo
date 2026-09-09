@@ -152,8 +152,11 @@ impl App {
         }
     }
     pub(super) fn set_route(&mut self, route: &str) {
+        let reopen_manager = self.inline_active() && route != "history" && self.surface.visible;
         if self.inline_active() && route != "history" {
-            self.stop_inline();
+            if !self.stop_inline() {
+                return;
+            }
             self.activation_focus = None;
             self.popup_anchor = None;
             self.session.dismiss();
@@ -163,9 +166,6 @@ impl App {
             self.send(Work::Cancel);
             self.window.set_quick_insert(false);
             self.window.set_paste_target_available(false);
-            if let Some(hwnd) = self.hwnd {
-                let _ = shell::focus_window(hwnd);
-            }
         }
         self.remember_position();
         self.finish_motion();
@@ -183,7 +183,7 @@ impl App {
             self.window.invoke_focus_controls();
         } else if route == "history" {
             self.apply_theme();
-            self.window.invoke_focus_search(false);
+            self.window.invoke_focus_content();
             if self.surface.dirty {
                 self.load(false);
             }
@@ -193,7 +193,20 @@ impl App {
         if let Some(hwnd) = self.hwnd.filter(|_| !self.quick_geometry_active) {
             let _ = shell::fit_window(hwnd, center, 16.0);
         }
-        // Settings does not recapture or discard the external Quick Insert session.
+        if reopen_manager {
+            // stop_inline hides the non-activating popup before retiring its
+            // keyboard lease. Show the fully laid-out manager, then activate it.
+            self.update_card_region();
+            if let Err(error) = self.window.show() {
+                self.report(format!("Could not show {route}: {error}"), true);
+                return;
+            }
+            if let Some(hwnd) = self.hwnd {
+                if let Err(error) = shell::focus_window(hwnd) {
+                    self.report(format!("Could not focus {route}: {error}"), true);
+                }
+            }
+        }
     }
     fn discard_drafts(&mut self) {
         self.close_editor();
@@ -472,7 +485,7 @@ impl App {
     }
     pub(super) fn item_options(&mut self, key: RowKey) {
         self.picker = Picker::ItemMenu(key);
-        let actions = if key.source == QuickInsertSource::History {
+        let mut actions = if key.source == QuickInsertSource::History {
             vec![
                 ("move", "Move into a space…", false),
                 ("delete", "Delete this capture", true),
@@ -485,7 +498,27 @@ impl App {
                 ("delete", "Delete everywhere…", true),
             ]
         };
+        if key.source == QuickInsertSource::Favorite {
+            actions.insert(0, ("edit", "Edit saved content", false));
+            if self.surface.query.is_empty() {
+                actions.push(("up", "Move up", false));
+                actions.push(("down", "Move down", false));
+            }
+        }
         self.open_actions("Item options", actions);
+    }
+    pub(super) fn delete_item(&mut self, item: RowKey) {
+        if item.source == QuickInsertSource::Favorite {
+            self.inspect_item("delete", item);
+        } else {
+            self.ask_confirmation(
+                "Delete this capture?",
+                "Only this History record will be removed. Saved copies are kept.",
+                "Delete capture",
+                true,
+                Confirmation::DeleteItem(item),
+            );
+        }
     }
     fn target_picker(&mut self, key: RowKey) {
         self.picker = Picker::Target(key);
@@ -517,7 +550,7 @@ impl App {
         }
         if key == "cancel" {
             self.close_picker();
-            self.window.invoke_focus_search(false);
+            self.window.invoke_focus_content();
             return;
         }
         match self.picker.clone() {
@@ -542,6 +575,11 @@ impl App {
                 _ => {}
             },
             Picker::ItemMenu(item) => match key {
+                "edit" => self.inspect_item("edit", item),
+                "up" | "down" => {
+                    self.close_picker();
+                    self.action(key, &item.to_string());
+                }
                 "move" | "share" => self.target_picker(item),
                 "duplicate" => {
                     self.edit_created_copy = true;
@@ -551,17 +589,7 @@ impl App {
                     self.space_mutation(self.surface.space, SpaceAction::RemoveItem(item.id))
                 }
                 "delete" => {
-                    if item.source == QuickInsertSource::Favorite {
-                        self.inspect_item("delete", item);
-                    } else {
-                        self.ask_confirmation(
-                            "Delete this capture?",
-                            "Only this History record will be removed. Saved copies are kept.",
-                            "Delete capture",
-                            true,
-                            Confirmation::DeleteItem(item),
-                        );
-                    }
+                    self.delete_item(item);
                 }
                 _ => {}
             },
@@ -730,12 +758,7 @@ impl App {
                 .unwrap_or_default()
                 .into(),
         );
-        self.window.set_draft_tags(
-            item.as_ref()
-                .map(|i| i.tags.join(", "))
-                .unwrap_or_default()
-                .into(),
-        );
+        self.editor_tags = item.as_ref().map(|i| i.tags.clone()).unwrap_or_default();
         self.window.set_draft_icon(
             item.as_ref()
                 .and_then(|i| i.icon_key.clone())
@@ -749,11 +772,10 @@ impl App {
         self.report("", false);
         self.window.set_editor_open(true);
     }
-    fn editor_values(&self) -> (String, String, String, String) {
+    fn editor_values(&self) -> (String, String, String) {
         (
             self.window.get_draft_name().to_string(),
             self.window.get_draft_content().to_string(),
-            self.window.get_draft_tags().to_string(),
             self.window.get_draft_icon().to_string(),
         )
     }
@@ -771,9 +793,9 @@ impl App {
         self.inspect_intent = None;
         self.window.set_draft_content("".into());
         self.window.set_draft_name("".into());
-        self.window.set_draft_tags("".into());
+        self.editor_tags.clear();
         if self.window.get_route().as_str() == "history" {
-            self.window.invoke_focus_search(false);
+            self.window.invoke_focus_content();
         }
     }
     pub(super) fn cancel_editor(&mut self) {
@@ -796,9 +818,18 @@ impl App {
         if !self.window.get_editor_open() || self.mutation.is_some() {
             return;
         }
-        let (name, content, tags, icon) = self.editor_values();
-        let name = formatting::optional(&name);
-        let tags = formatting::tags(&tags);
+        let (name, content, icon) = self.editor_values();
+        let name = match echo_engine::normalize_name(&name) {
+            Ok(name) => Some(name),
+            Err(_) => {
+                self.report("Name is required. Enter a name before saving.", true);
+                self.window.set_editor_name_focus_request(
+                    self.window.get_editor_name_focus_request().wrapping_add(1),
+                );
+                return;
+            }
+        };
+        let tags = self.editor_tags.clone();
         let icon_key = formatting::optional(&icon);
         if let Some(key) = self.editor_key {
             self.mutate(Mutation::Update(

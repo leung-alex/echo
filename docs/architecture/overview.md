@@ -40,7 +40,7 @@ A Clipboard Item can retain multiple original representations, including text, H
 
 `apps/desktop/src/service.rs` runs blocking engine, storage, and preview work off the UI thread. Work and completions cross the boundary as typed Rust enums. `apps/desktop/src/app.rs` owns UI-thread coordination, generated Slint models, activation routing, stale-result rejection, and orderly shutdown. Slint component handles never leave the UI thread.
 
-`apps/desktop/ui` contains the compiled Slint component tree. It renders History, Favorites, custom spaces, settings, About and dialogs in one native window. Search and navigation normally belong inside each space card. Inline Quick Insert uses the same non-activating native window while the query remains in the original editor; F6 explicitly switches to independent search. It does not call storage or native platform APIs directly.
+`apps/desktop/ui` contains the compiled Slint component tree. It renders History, Favorites, custom spaces, settings, About and dialogs in one native window. Navigation belongs inside each space card; there is no local search field. Inline Quick Insert uses the same non-activating native window while the query remains in the original editor; F6 opens unfiltered history for manual copying without a paste target. It does not call storage or native platform APIs directly.
 
 ## Runtime Flows
 

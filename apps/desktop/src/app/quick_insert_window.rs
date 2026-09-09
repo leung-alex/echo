@@ -94,8 +94,12 @@ impl App {
             }
             self.window.set_popup_card_width(card);
             let placement = if self.inline_active() {
-                let height = if (self.surface.ready && !self.surface.loading)
-                    || self.surface.presented_query.as_deref() == Some(self.surface.query.as_str())
+                let height = if let Some(height) = self.inline_ui.base_height {
+                    height
+                } else if self.surface.ready
+                    && !self.surface.loading
+                    && self.surface.presented_query.as_deref() == Some(self.surface.query.as_str())
+                    && self.deck.phase != Phase::Animating
                 {
                     // Slint 1.17.1 materializes repeaters before its normal draw.
                     // Geometry is needed before that draw, so run the same bounded
@@ -106,7 +110,9 @@ impl App {
                         self.window.window(),
                     )
                     .ensure_tree_instantiated();
-                    self.window.get_inline_content_height().clamp(180.0, 520.0)
+                    let height = self.window.get_inline_content_height().clamp(180.0, 520.0);
+                    self.inline_ui.base_height = Some(height);
+                    height
                 } else if let Some(previous) = self.popup_placement {
                     (previous.card.height as f32 / scale).clamp(180.0, 520.0)
                 } else {
@@ -133,12 +139,27 @@ impl App {
                     .find(|p| p.offset != 0.0)
                     .is_none_or(|p| p.offset > 0.0)
             });
-            let (placement, right) = echo_windows::focus::expand_popup_stage(
+            let (mut placement, right) = echo_windows::focus::expand_popup_stage(
                 anchor,
                 placement,
                 extents,
                 preferred_right,
             );
+            // The editor needs a work-area-sized host, independently of the
+            // session's anchored cards. Closing it recomputes the original host.
+            if self.window.get_editor_open() {
+                let work = anchor.geometry.work_area;
+                let margin = (16.0 * scale).round() as i32;
+                let available = (work.height - 2 * margin).max(1);
+                let height = placement
+                    .window
+                    .height
+                    .max((660.0 * scale).round() as i32)
+                    .min(available);
+                placement.window.y = (placement.window.y + (placement.window.height - height) / 2)
+                    .clamp(work.y + margin, work.y + work.height - margin - height);
+                placement.window.height = height;
+            }
             let side_changed = self.popup_side_right != Some(right);
             self.popup_side_right = Some(right);
             self.window

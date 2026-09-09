@@ -43,12 +43,15 @@ export component AppWindow inherits Window {
     in property <string> editing-key;
     in-out property <string> draft-name;
     in-out property <string> draft-content;
-    in-out property <string> draft-tags;
+    in property <int> editor-name-focus-request;
     in-out property <string> draft-icon;
     in property <[FavoriteIconChoice]> favorite-icon-choices;
     private property <bool> icon-picker-open;
     callback filter-favorite-icons(string);
-    changed editor-open => { if (!root.editor-open) { root.icon-picker-open = false; } }
+    changed editor-open => {
+        if (!root.editor-open) { root.icon-picker-open = false; }
+        root.viewport-changed();
+    }
     in property <bool> content-editable;
     in-out property <bool> clear-confirm-open;
     callback query-edited(string);
@@ -101,6 +104,11 @@ export component AppWindow inherits Window {
     in property <bool> previous-enabled;
     in property <bool> next-enabled;
     in property <bool> navigation-busy;
+    in property <float> front-shadow-opacity: 1;
+    in property <length> moving-shadow-x;
+    in property <length> moving-shadow-y;
+    in property <length> moving-shadow-width;
+    in property <length> moving-shadow-height;
     in property <bool> flow-enabled;
     in property <image> stage-image;
     in property <image> preview-image;
@@ -121,8 +129,6 @@ export component AppWindow inherits Window {
     in property <string> capture-subtitle;
     in property <string> capture-icon;
     in property <color> capture-accent: EchoTheme.amber;
-    out property <bool> search-focused: live-panel.search-focused;
-    in property <bool> capture-search-focused;
     in property <string> capture-navigation-label;
     in property <string> capture-navigation-hint;
     in property <bool> capture-previous-enabled;
@@ -187,7 +193,7 @@ export component AppWindow inherits Window {
     callback viewport-changed();
     callback stage-clicked(float,float);
     callback stage-scrolled(float);
-    public function focus-search(select-all: bool) {live-panel.focus-search(select-all);}
+    public function focus-content() {live-panel.focus-content();}
     public function focus-controls() {if (root.route == "history") {live-panel.focus-controls();} else {settings-back.focus();}}
     public function reset-scroll() { root.scroll-y = 0px; }
     public function reveal-selection() { live-panel.reveal-selection(); }
@@ -200,7 +206,6 @@ export component AppWindow inherits Window {
     no-frame: true;
     background: transparent;
     default-font-family: "Segoe UI"; default-font-size: T.font-body;
-    forward-focus: live-panel;
     FocusScope {
         key-pressed(event) => { if (root.ime-composing()) { return reject; } return root.key-event(event.text,event.modifiers.control,event.modifiers.shift,"control") ? accept : reject; }
         Rectangle {
@@ -208,6 +213,15 @@ export component AppWindow inherits Window {
             Rectangle {
                 y: 0px; width: root.stage-width; height: root.stage-height;
                 visible: root.route == "history"; clip: true;
+                Rectangle {
+                    visible: root.navigation-busy && root.flow-enabled;
+                    x: root.moving-shadow-x; y: root.moving-shadow-y;
+                    width: root.moving-shadow-width; height: root.moving-shadow-height;
+                    background: transparent; border-radius: T.panel-radius;
+                    drop-shadow-blur: T.flow-shadow-softness;
+                    drop-shadow-offset-y: T.flow-shadow-offset-y;
+                    drop-shadow-color: #000000.with-alpha(T.flow-shadow-opacity * root.front-shadow-opacity);
+                }
                 Image { x: 0px; y: root.panel-top + root.panel-height / 2 - root.stage-height / 2; width: parent.width; height: parent.height; source: root.stage-image; visible: root.flow-enabled; image-fit: fill; }
                 TouchArea {
                     enabled: !root.modal && !root.busy;
@@ -231,6 +245,7 @@ export component AppWindow inherits Window {
                 visible: root.route == "history";
                 opacity: root.navigation-busy && root.flow-enabled ? 0 : 1;
                 inline-mode: root.inline-mode;
+                control-focus-mode:root.control-focus-mode;
                 title: root.space-title; subtitle: root.space-subtitle; icon-key: root.space-icon; accent: root.space-accent;
                 rows: root.rows; favorites: root.active-view != "history"; capture-only: false;
                 loading: root.loading; stale: root.stale-rows; error: root.status-error;
@@ -343,11 +358,11 @@ export component AppWindow inherits Window {
                 if (event.text == Key.Tab) {
                     if (event.modifiers.shift) {
                         if (name-edit.has-focus) { cancel-button.focus(); } else if (content-edit.has-focus) { name-edit.focus(); }
-                        else if (tags-edit.has-focus) { content-edit.focus(); } else if (icon-edit.has-focus) { tags-edit.focus(); }
+                        else if (icon-edit.has-focus) { content-edit.focus(); }
                         else if (choose-icon.focused) { icon-edit.focus(); } else if (save-button.focused) { choose-icon.focus(); } else { save-button.focus(); }
                     } else {
-                        if (name-edit.has-focus) { content-edit.focus(); } else if (content-edit.has-focus) { tags-edit.focus(); }
-                        else if (tags-edit.has-focus) { icon-edit.focus(); } else if (icon-edit.has-focus) { choose-icon.focus(); } else if (choose-icon.focused) { save-button.focus(); }
+                        if (name-edit.has-focus) { content-edit.focus(); } else if (content-edit.has-focus) { icon-edit.focus(); }
+                        else if (icon-edit.has-focus) { choose-icon.focus(); } else if (choose-icon.focused) { save-button.focus(); }
                         else if (save-button.focused) { cancel-button.focus(); } else { name-edit.focus(); }
                     } return accept;
                 } return reject;
@@ -361,13 +376,20 @@ export component AppWindow inherits Window {
                 VerticalLayout {
                     padding: 20px; spacing: 10px;
                     Text { text: root.editor-new ? "New content" : "Edit content"; color: EchoTheme.text; font-size: 21px; font-weight: 650; }
+                    ScrollView {
+                        vertical-stretch: 1;
+                        horizontal-scrollbar-policy: always-off;
+                        VerticalLayout {
+                            spacing: 10px;
                     if (root.editor-sharing != ""): Text { text: root.editor-sharing; color: EchoTheme.muted; wrap: word-wrap; min-width: 0px; font-size: 12px; }
-                    Text { text: "Name (optional)"; color: EchoTheme.muted; font-size: 12px; }
-                    name-edit := LineEdit { text <=> root.draft-name; accessible-label: "Favorite name"; enabled: !root.busy; }
+                    Text { text: "Name (required)"; color: EchoTheme.muted; font-size: 12px; }
+                    name-edit := LineEdit {
+                        text <=> root.draft-name; accessible-label: "Favorite name (required)"; enabled: !root.busy;
+                        private property <int> focus-request: root.editor-name-focus-request;
+                        changed focus-request => { self.focus(); }
+                    }
                     Text { text: root.content-editable ? "Content" : "Original non-text content is preserved"; color: EchoTheme.muted; font-size: 12px; wrap: word-wrap; }
                     content-edit := TextEdit { accessible-action-set-value(value) => { if (root.content-editable && !root.busy) { root.draft-content = value; } } text <=> root.draft-content; read-only: !root.content-editable; accessible-label: "Favorite content"; enabled: !root.busy; min-height: 80px; }
-                    Text { text: "Tags (comma separated)"; color: EchoTheme.muted; font-size: 12px; }
-                    tags-edit := LineEdit { text <=> root.draft-tags; accessible-label: "Favorite tags"; enabled: !root.busy; }
                     Text { text: "Favorite icon"; color: EchoTheme.muted; font-size: 12px; }
                     HorizontalLayout {
                         spacing: 8px;
@@ -381,6 +403,8 @@ export component AppWindow inherits Window {
                         }
                     }
                     if (root.status-error): Text { text: root.status; color: EchoTheme.danger; wrap: word-wrap; font-size: 12px; min-width: 0px; }
+                        }
+                    }
                     HorizontalLayout {
                         spacing: 10px; alignment: end;
                         cancel-button := EchoButton { text: "Cancel"; enabled: !root.busy; clicked => { root.cancel-editor(); } }
@@ -411,7 +435,7 @@ export component AppWindow inherits Window {
                     Text { text: "This removes unpinned history.\nPinned items and Favorites are kept.\nThis cannot be undone."; color: EchoTheme.muted; wrap: word-wrap; }
                     HorizontalLayout {
                         alignment: end; spacing: 10px;
-                        keep-button := EchoButton { text: "Keep history"; enabled: !root.busy; clicked => { root.clear-confirm-open = false; root.focus-search(false); } }
+                        keep-button := EchoButton { text: "Keep history"; enabled: !root.busy; clicked => { root.clear-confirm-open = false; root.focus-content(); } }
                         clear-button := EchoButton { text: "Clear unpinned"; danger: true; enabled: !root.busy; clicked => { root.confirm-clear(); } }
                     }
                 }
@@ -530,7 +554,6 @@ export component AppWindow inherits Window {
 
 // Offscreen-only component. The injected adapter never creates a native window.
 export component CardSnapshot inherits Window {
-    in property <bool> search-focused;
     in property <string> navigation-hint;
     in property <bool> previous-enabled;
     in property <bool> next-enabled;
@@ -560,7 +583,7 @@ export component CardSnapshot inherits Window {
         title:root.panel-title;subtitle:root.subtitle;icon-key:root.icon-key;accent:root.accent;
         rows:root.rows;favorites:root.favorites;loading:root.loading;titles-only:root.titles-only;
         compact:root.compact;capture-only:true;query <=> root.query;
-        capture-search-focused:root.search-focused;navigation-hint:root.navigation-hint;
+        navigation-hint:root.navigation-hint;
         previous-enabled:root.previous-enabled;next-enabled:root.next-enabled;
         has-more:root.has-more;has-previous:root.has-previous;
         batch:root.batch;selected-count:root.selected-count;quick-insert:root.quick-insert;

@@ -8,6 +8,7 @@ pub(super) fn accent(key: &str) -> slint::Color {
         "violet" => (160, 127, 220),
         "rose" => (205, 115, 150),
         "slate" => (138, 153, 166),
+        "default" => (54, 120, 155),
         _ => (255, 196, 0),
     };
     slint::Color::from_rgb_u8(r, g, b)
@@ -84,7 +85,11 @@ impl App {
                 key: s.id.to_string().into(),
                 title: s.title.clone().into(),
                 icon_key: s.icon_key.clone().unwrap_or_default().into(),
-                accent: accent(&s.accent_key),
+                accent: accent(if s.id.is_system() {
+                    "default"
+                } else {
+                    &s.accent_key
+                }),
                 count: s.item_count.to_string().into(),
                 system: s.id.is_system(),
                 selected: s.id == selected,
@@ -101,7 +106,12 @@ impl App {
             self.window.set_space_title(space.title.clone().into());
             self.window
                 .set_space_icon(space.icon_key.clone().unwrap_or_default().into());
-            self.window.set_space_accent(accent(&space.accent_key));
+            self.window
+                .set_space_accent(accent(if space.id.is_system() {
+                    "default"
+                } else {
+                    &space.accent_key
+                }));
             self.window.set_navigation_label(
                 format!("{}  ·  {} / {}", space.title, index + 1, count).into(),
             );
@@ -178,6 +188,7 @@ impl App {
             return;
         }
         let navigation_started = Instant::now();
+        self.window.set_front_shadow_opacity(1.0);
         #[cfg(feature = "cover-flow")]
         if let Some(flow) = &self.flow {
             flow.begin_transition();
@@ -200,7 +211,7 @@ impl App {
         self.surface.hide();
         self.surface.set_space(id);
         self.surface.visible = true;
-        let query = if !self.inline_active() && self.ui.query_on_switch == QueryOnSwitch::Clear {
+        let query = if !self.inline_active() {
             String::new()
         } else {
             self.window.get_query().to_string()
@@ -235,7 +246,7 @@ impl App {
             self.schedule_prewarm();
         }
         if !self.inline_active() {
-            self.window.invoke_focus_search(false);
+            self.window.invoke_focus_content();
         }
         self.update_card_region();
         if self.navigation_us.len() < 256 {
@@ -253,6 +264,7 @@ impl App {
             .set_navigation_busy(self.deck.phase == Phase::Animating);
     }
     pub(super) fn finish_motion(&mut self) {
+        self.window.set_front_shadow_opacity(1.0);
         self.flow_timer.stop();
         if self.deck.phase == Phase::Animating {
             self.deck.snap();
@@ -273,6 +285,7 @@ impl App {
             return;
         }
         if !self.surface.visible || self.window.get_route().as_str() != "history" {
+            self.window.set_front_shadow_opacity(1.0);
             self.flow_timer.stop();
             return;
         }
@@ -429,7 +442,7 @@ impl App {
         slint::private_unstable_api::re_exports::WindowInner::from_pub(self.window.window())
             .ensure_tree_instantiated();
         self.window
-            .set_popup_card_height(self.window.get_inline_content_height().clamp(180.0, 520.0));
+            .set_popup_card_height(self.inline_ui.base_height.unwrap_or(300.0));
         let ids: Vec<_> = self
             .flow_poses()
             .into_iter()
@@ -680,7 +693,12 @@ impl App {
             });
             self.window
                 .set_capture_icon(space.icon_key.clone().unwrap_or_default().into());
-            self.window.set_capture_accent(accent(&space.accent_key));
+            self.window
+                .set_capture_accent(accent(if space.id.is_system() {
+                    "default"
+                } else {
+                    &space.accent_key
+                }));
             self.window.set_capture_subtitle(
                 format!(
                     "{} items{}",
@@ -728,9 +746,6 @@ impl App {
                 });
             self.window
                 .set_capture_quick_insert(self.window.get_quick_insert());
-            self.window.set_capture_search_focused(
-                id == self.surface.space && self.window.get_search_focused(),
-            );
             self.window.set_capture_favorites(id != SpaceId::HISTORY);
             self.window.set_capture_loading(loading);
             self.window.set_capture_titles_only(private);
@@ -779,6 +794,36 @@ impl App {
             }
             let animated = self.deck.phase == Phase::Animating;
             let poses = self.flow_poses();
+            // Drive the handoff from the incoming card's position, not a timer
+            // started after arrival. Finish before the spring's final snap.
+            let distance = (self.deck.spring.position - self.deck.spring.target).abs() as f32;
+            let progress = if animated {
+                ((0.65 - distance) / 0.55).clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
+            self.window
+                .set_front_shadow_opacity(progress * progress * (3.0 - 2.0 * progress));
+            if let Some(front) = poses.iter().find(|p| p.space == self.deck.requested) {
+                let width = self.window.get_panel_width();
+                let perspective = (1.0
+                    - front.z / (width * echo_presentation::echo_tokens::FLOW_PERSPECTIVE_RATIO))
+                    .max(0.01);
+                let shadow_width = width * front.scale * front.yaw.cos() / perspective;
+                let shadow_height = self.window.get_panel_height() * front.scale / perspective;
+                self.window.set_moving_shadow_width(shadow_width);
+                self.window.set_moving_shadow_height(shadow_height);
+                self.window.set_moving_shadow_x(
+                    self.window.get_panel_left() + width / 2.0 + front.x / perspective
+                        - shadow_width / 2.0,
+                );
+                self.window.set_moving_shadow_y(
+                    self.window.get_panel_top()
+                        + self.window.get_panel_height() / 2.0
+                        + front.y / perspective
+                        - shadow_height / 2.0,
+                );
+            }
             let ids = poses.iter().map(|p| p.space.0).collect::<Vec<_>>();
             self.flow.as_ref().unwrap().retain(&ids);
             if !animated {
@@ -815,6 +860,11 @@ impl App {
                 })
                 .map(|p| crate::cover_flow::compositor::PanelDraw {
                     id: p.space.0,
+                    shadow_opacity: if animated && p.space == self.deck.requested {
+                        1.0 - self.window.get_front_shadow_opacity()
+                    } else {
+                        1.0
+                    },
                     origin_x: self.window.get_panel_left() + self.window.get_panel_width() / 2.0
                         - self.window.get_stage_width() / 2.0,
                     width: self.window.get_panel_width(),

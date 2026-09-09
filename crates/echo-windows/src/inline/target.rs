@@ -36,6 +36,44 @@ struct AutomationTarget {
     element: IUIAutomationElement,
     edit: Option<IUIAutomationTextEditPattern>,
 }
+enum Preedit {
+    // Standard EDIT excludes preedit from its snapshot; insert at selection.
+    Native(String),
+    // UIA includes preedit in the document. Retain the verified document and
+    // exact UTF-16 span so a later snapshot cannot normalize unrelated text.
+    Embedded {
+        document: Vec<u16>,
+        span: Range<usize>,
+        text: String,
+    },
+}
+impl Preedit {
+    fn preview(
+        &self,
+        range: &QueryRange,
+        snapshot: &ComposerSnapshot,
+        chinese: bool,
+    ) -> Option<String> {
+        let (projection, text) = match self {
+            Self::Native(text) => (snapshot.clone(), text),
+            Self::Embedded {
+                document,
+                span,
+                text,
+            } => {
+                if document != &snapshot.text {
+                    return None;
+                }
+                let mut projection = snapshot.clone();
+                projection.selection = span.clone();
+                (projection, text)
+            }
+        };
+        let text = super::composition::pinyin_search_text(text, chinese);
+        let result = range.preview_composition(&projection, &text);
+        result.ok()
+    }
+}
 pub(super) struct Target {
     pub(super) paste_target: PasteTarget,
     control: isize,
@@ -46,7 +84,8 @@ pub(super) struct Target {
     ime_observer: std::cell::RefCell<Option<super::ime_observer::Observer>>,
     ime_observer_eligible: bool,
     ime_observer_retry: std::cell::Cell<Instant>,
-    preedit: std::cell::RefCell<Option<String>>,
+    preedit: std::cell::RefCell<Option<Preedit>>,
+    chinese_composition: std::cell::Cell<bool>,
     composition_source: std::cell::Cell<super::composition::CompositionSource>,
 }
 impl Target {
@@ -145,6 +184,7 @@ impl Target {
             ime_observer_eligible,
             ime_observer_retry: std::cell::Cell::new(Instant::now()),
             preedit: std::cell::RefCell::new(None),
+            chinese_composition: std::cell::Cell::new(false),
             composition_source: std::cell::Cell::new(
                 super::composition::CompositionSource::TargetRead,
             ),
@@ -406,7 +446,28 @@ impl Target {
         }
         let layout = unsafe { GetKeyboardLayout(self.thread) };
         let language = (layout as usize & 0x3ff) as u16;
+        self.chinese_composition.set(language == 0x04);
         let possible = matches!(language, 0x04 | 0x11 | 0x12) || unsafe { ImmIsIME(layout) != 0 };
+        // Chromium can retain its last UIA composition range after cancellation
+        // or confirmation, including across Echo sessions. The live TSF context
+        // on the actual target thread owns lifecycle; UIA owns preview text.
+        let tsf = if (possible || self.ime_observer.borrow().is_some())
+            && self.automation.is_some()
+            && self.current()
+        {
+            self.observe_thread(true)
+        } else {
+            None
+        };
+        if let Some(sample) = &tsf {
+            self.composition_source
+                .set(super::composition::CompositionSource::TargetThread);
+            if !sample.active {
+                return (IME_CLEAR, possible);
+            }
+        } else if self.automation.is_some() && self.ime_observer.borrow().is_some() {
+            return (IME_UNKNOWN, possible);
+        }
         if let Some(edit) = self
             .automation
             .as_ref()
@@ -418,19 +479,26 @@ impl Target {
                 let hr = (edit.vtable().GetActiveComposition)(edit.as_raw(), &mut raw);
                 if hr.is_ok() {
                     if raw.is_null() {
-                        return (IME_CLEAR, possible);
+                        return (if tsf.is_some() { IME_ACTIVE } else { IME_CLEAR }, possible);
                     }
                     let range = IUIAutomationTextRange::from_raw(raw);
-                    let active = range
-                        .CompareEndpoints(
-                            TextPatternRangeEndpoint_Start,
-                            &range,
-                            TextPatternRangeEndpoint_End,
-                        )
-                        .map_or(true, |difference| difference != 0);
+                    let active = tsf.is_some()
+                        || range
+                            .CompareEndpoints(
+                                TextPatternRangeEndpoint_Start,
+                                &range,
+                                TextPatternRangeEndpoint_End,
+                            )
+                            .map_or(true, |difference| difference != 0);
+                    if active {
+                        *self.preedit.borrow_mut() = self.embedded_preedit(&range).ok();
+                    }
                     return (if active { IME_ACTIVE } else { IME_CLEAR }, possible);
                 }
             }
+        }
+        if tsf.is_some() {
+            return (IME_ACTIVE, possible);
         }
         if !possible {
             return (IME_CLEAR, false);
@@ -439,27 +507,16 @@ impl Target {
         // Observe IMM on the actual editor thread; never treat a foreign HIMC
         // or an unrelated candidate window as a composition contract.
         if self.ime_observer_eligible && self.current() {
-            let mut observer = self.ime_observer.borrow_mut();
-            if observer.is_none() && Instant::now() >= self.ime_observer_retry.get() {
-                self.ime_observer_retry
-                    .set(Instant::now() + Duration::from_millis(500));
-                *observer = super::ime_observer::Observer::new(
-                    self.control,
-                    self.paste_target.process_id,
-                    self.paste_target.process_started_at,
-                )
-                .ok();
-            }
-            if let Some(sample) = observer.as_ref().and_then(|observer| observer.read()) {
+            if let Some(sample) = self.observe_thread(false) {
                 self.composition_source
                     .set(super::composition::CompositionSource::TargetThread);
                 if sample.active {
-                    *self.preedit.borrow_mut() = Some(sample.preedit);
+                    *self.preedit.borrow_mut() = Some(Preedit::Native(sample.preedit));
                     return (IME_ACTIVE, true);
                 }
                 return (IME_CLEAR, true);
             }
-            if observer.is_some() {
+            if self.ime_observer.borrow().is_some() {
                 return (IME_UNKNOWN, true);
             }
         }
@@ -481,15 +538,80 @@ impl Target {
         }
         (IME_UNKNOWN, true)
     }
+    fn observe_thread(&self, tsf_only: bool) -> Option<super::ime_observer::Observation> {
+        let mut observer = self.ime_observer.borrow_mut();
+        if observer.is_none() && Instant::now() >= self.ime_observer_retry.get() {
+            self.ime_observer_retry
+                .set(Instant::now() + Duration::from_millis(500));
+            *observer = super::ime_observer::Observer::new(
+                self.control,
+                self.paste_target.process_id,
+                self.paste_target.process_started_at,
+                tsf_only,
+            )
+            .ok();
+        }
+        observer.as_ref().and_then(|observer| observer.read())
+    }
     pub(super) fn preview_query(
         &self,
         range: &QueryRange,
         snapshot: &ComposerSnapshot,
     ) -> Option<String> {
         let preedit = self.preedit.borrow();
-        range
-            .preview_composition(snapshot, preedit.as_deref()?)
-            .ok()
+        preedit
+            .as_ref()?
+            .preview(range, snapshot, self.chinese_composition.get())
+    }
+    unsafe fn embedded_preedit(&self, active: &IUIAutomationTextRange) -> Result<Preedit, String> {
+        // Freeze text before inspecting endpoints/enclosing elements. Chromium
+        // rich-text providers can normalize that same range to its first leaf
+        // during those calls, truncating later GetText results to one character.
+        let preedit = text(active)?;
+        let doc = if let Some(target) = &self.automation {
+            live_document(target)?.1
+        } else {
+            self.native_element
+                .as_ref()
+                .ok_or("No composition document")?
+                .GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId)
+                .and_then(|pattern| pattern.DocumentRange())
+                .map_err(|_| "Composition document is unavailable")?
+        };
+        // Verify editor ancestry and measure the start. Use the frozen preedit
+        // length for the end, then require an exact slice match in the document.
+        // Never extend by searching for a similar word or by scanning punctuation.
+        if let Some(target) = &self.automation {
+            if !super::text_scope::encloses_only_editor(&target.uia, active, &target.element) {
+                return Err("Composition is outside the editor".into());
+            }
+        } else {
+            super::text_scope::validate_selection(&doc, active)?;
+        }
+        let prefix = doc.Clone().map_err(|_| "Cannot read composition prefix")?;
+
+        prefix
+            .MoveEndpointByRange(
+                TextPatternRangeEndpoint_End,
+                active,
+                TextPatternRangeEndpoint_Start,
+            )
+            .map_err(|_| "Cannot measure composition start")?;
+        let document = text(&doc)?;
+        let before = text(&prefix)?;
+        let span = before.len()..before.len() + preedit.len();
+        if !document.starts_with(&before)
+            || document.get(span.clone()) != Some(preedit.as_slice())
+            || text(&doc)? != document
+        {
+            return Err("Composition changed while being read".into());
+        }
+        let text = String::from_utf16(&preedit).map_err(|_| "Invalid composition text")?;
+        Ok(Preedit::Embedded {
+            document,
+            span,
+            text,
+        })
     }
     pub(super) fn composition_source(&self) -> super::composition::CompositionSource {
         self.composition_source.get()
@@ -929,7 +1051,7 @@ unsafe fn automation_snapshot(target: &AutomationTarget) -> Result<ComposerSnaps
             &selected,
         )
     {
-        return Err("Empty paragraph boundary is ambiguous; use independent search".into());
+        return Err("Empty paragraph boundary is ambiguous; use manual copying".into());
     }
     if before
         .iter()
@@ -965,4 +1087,105 @@ unsafe fn writable(element: &IUIAutomationElement) -> bool {
         && value.Anonymous.Anonymous.Anonymous.boolVal.0 == 0;
     let _ = VariantClear(&mut value);
     result
+}
+
+#[cfg(test)]
+mod pinyin_tests {
+    use super::*;
+    #[test]
+    fn pinyin_full_preedit_matches_multiple_words_without_changing_source() {
+        for (preedit, candidate) in [("w'he", "when"), ("e'ch", "echo"), ("p'ro", "project")] {
+            let current = snapshot(
+                preedit,
+                preedit.encode_utf16().count()..preedit.encode_utf16().count(),
+            );
+            let range = QueryRange::begin(&snapshot(preedit, 0..current.text.len())).unwrap();
+            let preview = Preedit::Embedded {
+                document: current.text.clone(),
+                span: 0..current.text.len(),
+                text: preedit.into(),
+            };
+            let query = preview.preview(&range, &current, true).unwrap();
+            assert!(!echo_engine::FuzzyMatcher::new(&query)
+                .highlights(candidate)
+                .is_empty());
+            assert!(echo_engine::FuzzyMatcher::new(preedit)
+                .highlights(candidate)
+                .is_empty());
+            assert_eq!(range.query(), preedit);
+            assert_eq!(range.revision(), 1);
+        }
+    }
+    fn snapshot(text: &str, selection: Range<usize>) -> ComposerSnapshot {
+        ComposerSnapshot {
+            text: text.encode_utf16().collect(),
+            selection,
+        }
+    }
+    #[test]
+    fn pinyin_native_preview_preserves_prefix_ticket_and_commit() {
+        let initial = snapshot("don't O'Reilly ", 0..15);
+        let mut range = QueryRange::begin(&initial).unwrap();
+        let current = snapshot("don't O'Reilly ", 15..15);
+        for (input, expected) in [
+            ("e", "e"),
+            ("e'ch", "ech"),
+            ("echo", "echo"),
+            ("e'c", "ec"),
+            ("", ""),
+        ] {
+            assert_eq!(
+                Preedit::Native(input.into())
+                    .preview(&range, &current, true)
+                    .unwrap(),
+                format!("don't O'Reilly {expected}")
+            );
+        }
+        assert_eq!(range.query(), "don't O'Reilly ");
+        assert_eq!(range.revision(), 1);
+        range
+            .observe(&snapshot("don't O'Reilly echo", 19..19))
+            .unwrap();
+        assert_eq!(range.query(), "don't O'Reilly echo");
+        assert_eq!(
+            range
+                .seal(&snapshot("don't O'Reilly echo", 19..19), 2)
+                .unwrap(),
+            0..19
+        );
+        range
+            .observe(&snapshot("don't O'Reilly 回声", 17..17))
+            .unwrap();
+        assert_eq!(range.query(), "don't O'Reilly 回声");
+    }
+    #[test]
+    fn pinyin_embedded_preview_uses_verified_span_not_current_caret() {
+        let initial = snapshot("🙂don't e'ch O'Reilly", 2..21);
+        let range = QueryRange::begin(&initial).unwrap();
+        let current = snapshot("🙂don't e'ch O'Reilly", 12..12);
+        let preedit = Preedit::Embedded {
+            document: current.text.clone(),
+            span: 8..12,
+            text: "e'ch".into(),
+        };
+        assert_eq!(
+            preedit.preview(&range, &current, true).unwrap(),
+            "don't ech O'Reilly"
+        );
+        assert_eq!(
+            preedit.preview(&range, &current, false).unwrap(),
+            "don't e'ch O'Reilly"
+        );
+        assert_eq!(range.query(), "don't e'ch O'Reilly");
+        assert_eq!(range.revision(), 1);
+        assert!(preedit
+            .preview(&range, &snapshot("🙂don't echo O'Reilly", 12..12), true)
+            .is_none());
+        let outside = Preedit::Embedded {
+            document: current.text.clone(),
+            span: 0..2,
+            text: "🙂".into(),
+        };
+        assert!(outside.preview(&range, &current, true).is_none());
+    }
 }

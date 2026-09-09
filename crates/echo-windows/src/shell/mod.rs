@@ -5,6 +5,7 @@ use windows_sys::Win32::{Foundation::*, System::Threading::*, UI::WindowsAndMess
 mod card_window;
 mod common;
 mod hotkey;
+mod ime_mode;
 mod pipe;
 mod tray;
 pub use hotkey::{HotkeyController, HotkeyReservation};

@@ -10,7 +10,6 @@ pub enum Target {
 pub enum Intent {
     None,
     Escape,
-    FocusSearch(bool),
     SwitchPanel,
     SwitchSpace(i32),
     NewSpace,
@@ -22,6 +21,7 @@ pub enum Intent {
     SelectAllBatch,
     Primary,
     Copy,
+    ItemOptions,
     PreventDefault,
 }
 #[derive(Debug, Clone, Copy)]
@@ -40,7 +40,7 @@ pub fn interpret(key: Key<'_>) -> Intent {
     }
     let k = key.text.to_lowercase();
     if key.ctrl && k == "f" {
-        return Intent::FocusSearch(true);
+        return Intent::None;
     }
     if key.text == "Escape" {
         return Intent::Escape;
@@ -48,6 +48,9 @@ pub fn interpret(key: Key<'_>) -> Intent {
     // Editor controls own text navigation, selection, space and Enter.
     if key.target == Target::Control {
         return Intent::None;
+    }
+    if key.text == "ContextMenu" || (key.text == "F10" && key.shift && !key.ctrl) {
+        return Intent::ItemOptions;
     }
     if key.batch {
         if key.ctrl && k == "a" {
@@ -88,7 +91,7 @@ pub fn interpret(key: Key<'_>) -> Intent {
             }
         }
         if k == "/" {
-            return Intent::FocusSearch(false);
+            return Intent::None;
         }
         if key.ctrl && k == "c" {
             return Intent::Copy;
@@ -141,10 +144,10 @@ mod tests {
         assert_eq!(interpret(k("Enter")), Intent::Primary);
     }
     #[test]
-    fn control_f_selects_search() {
+    fn control_f_has_no_search_action() {
         let mut x = k("f");
         x.ctrl = true;
-        assert_eq!(interpret(x), Intent::FocusSearch(true));
+        assert_eq!(interpret(x), Intent::None);
     }
     #[test]
     fn text_editor_retains_its_keys() {
@@ -172,7 +175,7 @@ mod tests {
         x.text = "k";
         assert_eq!(interpret(x), Intent::Move(-1));
         x.text = "/";
-        assert_eq!(interpret(x), Intent::FocusSearch(false));
+        assert_eq!(interpret(x), Intent::None);
     }
     #[test]
     fn batch_enter_does_not_paste() {
@@ -218,7 +221,7 @@ pub fn interpret_space(
     }
     let k = key.text.to_lowercase();
     if key.ctrl && k == "f" {
-        return Intent::FocusSearch(true);
+        return Intent::None;
     }
     if key.target == Target::Control {
         return Intent::None;
@@ -311,13 +314,13 @@ mod space_tests {
         );
     }
     #[test]
-    fn control_f_can_return_from_buttons_but_not_modal_editors() {
+    fn control_f_leaves_buttons_and_editors_unchanged() {
         let mut k = key("f");
         k.ctrl = true;
         k.target = Target::Control;
         assert_eq!(
             interpret_space(k, SwitchShortcut::Tab, true, false, false),
-            Intent::FocusSearch(true)
+            Intent::None
         );
         assert_eq!(
             interpret_space(k, SwitchShortcut::Tab, true, true, false),

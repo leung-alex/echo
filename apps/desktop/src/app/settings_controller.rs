@@ -323,7 +323,6 @@ impl App {
                 self.window.set_capture_navigation_label(title.into());
                 self.window
                     .set_capture_navigation_hint("Tab / Shift+Tab".into());
-                self.window.set_capture_search_focused(false);
                 self.window.set_capture_has_more(false);
                 self.window.set_capture_has_previous(false);
                 self.window.set_capture_previous_enabled(true);
@@ -390,6 +389,7 @@ impl App {
                     let d = i as f32 - progress;
                     let amount = d.abs().min(1.0);
                     crate::cover_flow::compositor::PanelDraw {
+                        shadow_opacity: 1.0,
                         origin_x: 0.0,
                         id: -1 - i,
                         width: w,

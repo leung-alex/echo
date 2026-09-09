@@ -463,6 +463,9 @@ unsafe extern "system" fn keyboard(code: i32, w: WPARAM, l: LPARAM) -> LRESULT {
             if up { state.swallowed[key] = false; PostThreadMessageW(GetCurrentThreadId(), WAKE, 0, 0); }
             return true;
         }
+        if state.shared.editor_session.load(Ordering::Acquire) == state.session && state.session != 0 {
+            return false;
+        }
         let session = state.shared.active.load(Ordering::Acquire);
         if state.retiring { return false; }
         if session == 0 || session != state.session {
@@ -501,7 +504,7 @@ unsafe extern "system" fn keyboard(code: i32, w: WPARAM, l: LPARAM) -> LRESULT {
                 (state.shared.callback)(InlineEvent::Confirm(ticket));
             } else {
                 (state.shared.callback)(InlineEvent::Notice { session, text: if composition == IME_UNKNOWN {
-                    "IME state is not verified. Finish composition or press F6 for independent search. Enter was not sent."
+                    "IME state is not verified. Finish composition or press F6 for manual copying. Enter was not sent."
                 } else { "Results are updating, empty, or a modifier is held. Enter was not sent; press it again when ready." }});
             }
             return true;
@@ -512,7 +515,7 @@ unsafe extern "system" fn keyboard(code: i32, w: WPARAM, l: LPARAM) -> LRESULT {
             }
             if key == VK_F6 as usize {
                 state.swallowed[key] = true;
-                (state.shared.callback)(InlineEvent::Compatibility { session, reason: "Independent search requested; the composer's typed query was kept".into() });
+                (state.shared.callback)(InlineEvent::Compatibility { session, reason: "Manual history browsing requested; the composer's typed query was kept".into() });
                 return true;
             }
             if composition == IME_CLEAR && (key == VK_UP as usize || key == VK_DOWN as usize) && !state.shift() {
@@ -528,6 +531,13 @@ unsafe extern "system" fn keyboard(code: i32, w: WPARAM, l: LPARAM) -> LRESULT {
         }
         // Notification only; not a key logger. Actual text is read from the pinned
         // provider after delivery. No virtual-key-to-character conversion exists.
+        // Shift-down alone cannot edit the query. Invalidating here makes the
+        // immediately following Shift+Tab see Unknown and escape to the host.
+        // Shift-up still observes an IME language toggle; Shift+editing keys
+        // invalidate when the actual editing/selection key is delivered.
+        if down && [VK_SHIFT, VK_LSHIFT, VK_RSHIFT].contains(&(key as u16)) {
+            return false;
+        }
         if down || (up && [VK_SHIFT, VK_LSHIFT, VK_RSHIFT, VK_CONTROL, VK_MENU].contains(&(key as u16))) {
             state.shared.record("input-invalidation", if down { 1 } else { 0 });
             if state.shared.may_compose.load(Ordering::Acquire) && down && !state.mods() {
@@ -696,6 +706,41 @@ mod tests {
             slot.borrow_mut().take();
         });
         GUARD.with(|g| g.set(GuardLease::default()));
+    }
+
+    #[test]
+    fn shift_down_preserves_navigation_evidence_and_release_observes_ime_toggle() {
+        let shared = install_test_lease(Arc::new(|_| {}));
+        *shared.composition_evidence.lock().unwrap() = Some(composition::CompositionEvidence {
+            state: IME_CLEAR,
+            source: composition::CompositionSource::TargetThread,
+            session: 1,
+            input_serial: 0,
+            observed_at: Instant::now(),
+        });
+        let event = KBDLLHOOKSTRUCT {
+            vkCode: VK_LSHIFT as u32,
+            ..unsafe { std::mem::zeroed() }
+        };
+        unsafe {
+            keyboard(
+                HC_ACTION as i32,
+                WM_KEYDOWN as usize,
+                &event as *const _ as isize,
+            );
+        }
+        assert_eq!(shared.input_serial.load(Ordering::Acquire), 0);
+        assert_eq!(shared.verified_composition(), IME_CLEAR);
+        unsafe {
+            keyboard(
+                HC_ACTION as i32,
+                WM_KEYUP as usize,
+                &event as *const _ as isize,
+            );
+        }
+        assert_eq!(shared.input_serial.load(Ordering::Acquire), 1);
+        assert_eq!(shared.verified_composition(), IME_UNKNOWN);
+        reset_test_lease();
     }
 
     #[test]

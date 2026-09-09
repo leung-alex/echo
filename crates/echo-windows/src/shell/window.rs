@@ -252,6 +252,7 @@ pub fn center_composition(handle: isize, favorite: isize) -> Result<(), String> 
     Ok(())
 }
 struct HookData {
+    ime_mode: super::ime_mode::ImeMode,
     handler: EventHandler,
     main: bool,
     composing: Arc<AtomicBool>,
@@ -384,6 +385,7 @@ pub fn attach_window(
             resize_bounds: std::cell::Cell::new(None),
             inline: std::cell::Cell::new(false),
             prior_popup_style: std::cell::Cell::new(None),
+            ime_mode: Default::default(),
         });
         if SetWindowSubclass(
             hwnd,
@@ -411,6 +413,22 @@ unsafe extern "system" fn subclass(
 ) -> LRESULT {
     let state = &*(data as *const HookData);
     match msg {
+        WM_INPUTLANGCHANGE => state.ime_mode.clear(),
+        WM_IME_NOTIFY if !state.inline.get() => {
+            if w == windows_sys::Win32::UI::Input::Ime::IMN_SETOPENSTATUS as usize
+                || w == windows_sys::Win32::UI::Input::Ime::IMN_SETCONVERSIONMODE as usize
+            {
+                state.ime_mode.remember(hwnd);
+            }
+        }
+        WM_IME_SETCONTEXT if !state.inline.get() => {
+            if state.composing.load(Ordering::Acquire) {
+                return DefSubclassProc(hwnd, msg, w, l);
+            }
+            return state
+                .ime_mode
+                .context_changed(hwnd, w != 0, || DefSubclassProc(hwnd, msg, w, l));
+        }
         // Winit reapplies its cached extended style on visibility/flag changes.
         // Preserve the native inline contract across those framework updates.
         WM_STYLECHANGING if state.inline.get() && w as i32 == GWL_EXSTYLE && l != 0 => {

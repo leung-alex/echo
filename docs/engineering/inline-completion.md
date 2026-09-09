@@ -1,7 +1,10 @@
 # Inline completion lifecycle and evidence
 
 Inline Quick Insert retains focus in the external editor and replaces only the
-session's original query span. F6 explicitly switches to independent Echo search.
+session's original query span. Echo has no local search field. F6 retires the
+inline session and opens unfiltered history for manual copying, with no paste
+target. Unavailable input inspection and inspection timeouts use the same
+copy-only fallback; they never replace the original input.
 History and Saved Items retain their distinct ownership and original payloads.
 
 ## Input ownership
@@ -227,3 +230,37 @@ ordinary application suite performs a local replacement and one Undo, then clear
 only the verified synthetic query. It never tests an unguarded post-close Enter in
 a real chat or task composer. The registration is never used to close the shared
 application process.
+
+Chinese composition search previews ignore ASCII apostrophes between ASCII
+letters only inside verified active preedit (`e'ch` searches as `ech`). UIA
+TextEdit previews retain the active range's UTF-16 span and document and require
+an exact match with the current snapshot. Native EDIT previews project the
+target-thread preedit at the snapshot selection. Both paths leave the original
+query, replacement span and revision untouched. Committed text, other input
+languages and text outside the composition keep their apostrophes. Missing or
+inconsistent composition ranges use the existing protected fallback; they never
+trigger whole-query punctuation removal. Filtering and highlighting consume the
+same projected query, while candidate keys remain with the input method.
+For Chromium rich editors, freeze the active range's text before inspecting its
+enclosing element or endpoints: those calls can normalize the provider range to
+its first text leaf. Verify editor ancestry, measure the start, and require the
+entire frozen preedit to equal the current document slice. Never substitute a
+later, truncated GetText result or infer a range by searching for similar text.
+Regression review must include an initially empty contenteditable paragraph:
+activate Echo, type `w`, `h`, `e` with Chinese IME and wait at `w'he`; `when`
+must remain matched. Repeat with `e'ch`, Backspace and composition cancellation.
+
+For UIA editors, the session-owned target-thread observer also reads the existing
+TSF thread manager's focused context and enumerates its active compositions.
+Chromium may retain a nonempty UIA composition range after cancellation or
+confirmation, even across Echo sessions; a successful live TSF read owns lifecycle
+while UIA still supplies verified preview text. No TSF manager is created or
+activated and no edit session or candidate operation is requested. Unsupported
+observation retains the UIA fallback; a failed previously established observer
+read is Unknown and cannot authorize Enter. The ephemeral observer protocol is
+version 2; stored content and clipboard representations do not change.
+Activation schedules a fresh observation after subscriptions are installed.
+Late composition events cannot overwrite a newer target read or another session.
+Native regression review must cover Esc cancellation, Return confirming English,
+and Space confirming Chinese: Up/Down and Tab/Shift+Tab resume in the same popup
+and after reopening, without moving source focus or submitting the fixture.

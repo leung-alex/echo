@@ -7,6 +7,7 @@ pub const HARD_BUDGET: u64 = t::BUDGET_TEXTURE_HARD_MIB as u64 * 1024 * 1024;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PanelDraw {
     pub id: i64,
+    pub shadow_opacity: f32,
     /// Screen-space camera translation, applied after perspective division.
     pub origin_x: f32,
     pub width: f32,
@@ -316,7 +317,7 @@ impl Compositor {
                     t::FLOW_SHADOW_SOFTNESS,
                     t::FLOW_SHADOW_MARGIN,
                     t::FLOW_SHADOW_OFFSET_Y,
-                    t::FLOW_SHADOW_OPACITY,
+                    t::FLOW_SHADOW_OPACITY * pose.shadow_opacity,
                     t::FLOW_REFLECTION_GAP,
                     t::FLOW_EDGE_PADDING_PIXELS,
                     t::FLOW_EDGE_AA_PIXELS,

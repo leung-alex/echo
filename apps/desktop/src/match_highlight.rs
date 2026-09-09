@@ -1,6 +1,7 @@
 //! Presentation-only match formatting. Source payload and accessible names stay
 //! plain text. Markup metacharacters are escaped before applying trusted styling.
 use echo_engine::FuzzyMatcher;
+use echo_presentation::echo_tokens as t;
 use slint::StyledText;
 use std::ops::Range;
 fn escape(text: &str) -> String {
@@ -46,7 +47,11 @@ fn styled(text: &str, matcher: &mut FuzzyMatcher, dark: bool) -> (StyledText, i3
     if ranges.is_empty() {
         return (StyledText::from_plain_text(text), 0);
     }
-    let color = if dark { "#ffd26f" } else { "#855400" };
+    let color = if dark {
+        t::COLOR_ACCENT_TEXT_DARK
+    } else {
+        t::COLOR_ACCENT_TEXT_LIGHT
+    };
     let value = StyledText::from_markdown(&markup(text, &ranges, color))
         .unwrap_or_else(|_| StyledText::from_plain_text(text));
     (value, ranges.len() as i32)

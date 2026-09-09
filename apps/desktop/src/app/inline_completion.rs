@@ -11,10 +11,56 @@ pub(super) struct InlineUi {
     pub composing: bool,
     pub suspended: bool,
     pub above: Option<bool>,
+    pub base_height: Option<f32>,
+    pub editor_focus: bool,
     #[allow(dead_code)] // Read by the isolated native-test diagnostics, not normal telemetry.
     pub backend: &'static str,
 }
 impl App {
+    pub(super) fn sync_inline_editor_focus(&mut self) {
+        let editing = self.inline_active() && self.window.get_editor_open();
+        if editing == self.inline_ui.editor_focus {
+            return;
+        }
+        if editing {
+            self.worker
+                .inline
+                .set_editor_active(self.session.epoch, true);
+            let result = self
+                .hook
+                .as_ref()
+                .ok_or_else(|| "Window hook unavailable".to_owned())
+                .and_then(|hook| hook.set_inline_popup(false))
+                .and_then(|_| {
+                    self.hwnd
+                        .ok_or_else(|| "Window handle unavailable".to_owned())
+                })
+                .and_then(shell::focus_window);
+            if let Err(error) = result {
+                self.window.set_editor_open(false);
+                self.worker
+                    .inline
+                    .set_editor_active(self.session.epoch, false);
+                self.report(format!("Could not focus the editor: {error}"), true);
+                return;
+            }
+            self.inline_ui.editor_focus = true;
+        } else {
+            if let Some(hook) = &self.hook {
+                if let Err(error) = hook.set_inline_popup(self.inline_active()) {
+                    self.report(format!("Could not restore input mode: {error}"), true);
+                    return;
+                }
+            }
+            if let Some(snapshot) = &self.activation_focus {
+                echo_windows::focus::restore_after_dismiss(snapshot);
+            }
+            self.inline_ui.editor_focus = false;
+            self.worker
+                .inline
+                .set_editor_active(self.session.epoch, false);
+        }
+    }
     pub(super) fn inline_active(&self) -> bool {
         self.inline_ui.ticket.is_some() || self.inline_ui.unavailable
     }
@@ -70,6 +116,9 @@ impl App {
         }
     }
     pub(super) fn inline_event(&mut self, event: InlineEvent) {
+        if self.inline_ui.editor_focus {
+            return;
+        }
         match event {
             InlineEvent::Started(start) => {
                 crate::popup_timing::mark("target_identified");
@@ -96,7 +145,7 @@ impl App {
                         anchor: Some(start.anchor),
                     }),
                 ));
-                self.report("Type in your input · Enter replaces this query · Esc cancels · F6 independent search", false);
+                self.report("Type in your input · Enter replaces this query · Esc cancels · F6 browse and copy", false);
             }
             InlineEvent::Unavailable {
                 session,
@@ -106,24 +155,8 @@ impl App {
                 if session != self.session.epoch || !self.inline_ui.pending {
                     return;
                 }
-                self.inline_timer.stop();
-                self.inline_ui = InlineUi {
-                    unavailable: true,
-                    suspended: true,
-                    ..Default::default()
-                };
-                self.surface.set_query(String::new());
-                self.window.set_query("".into());
-                self.window.set_inline_mode(true);
-                self.handle(Event::Activated(
-                    session,
-                    Context::QuickInsert,
-                    Ok(crate::events::ActivationResult {
-                        target: None,
-                        anchor: Some(anchor),
-                    }),
-                ));
-                self.report(format!("Input stays active · {reason} · F6: search in Echo (no automatic replacement)"),false);
+                self.popup_anchor = Some(anchor);
+                self.inline_fallback(format!("Input filtering unavailable: {reason}"));
             }
             InlineEvent::Changed {
                 ticket,
@@ -171,10 +204,10 @@ impl App {
                         false,
                     );
                 } else if state_changed && suspended {
-                    self.report("IME state is unavailable · Enter is protected · F6 opens independent search", false);
+                    self.report("IME state is unavailable · Enter is protected · F6 opens history for copying", false);
                 } else if state_changed {
                     self.report(
-                        "Enter replaces the query · Esc keeps typed text · F6 independent search",
+                        "Enter replaces the query · Esc keeps typed text · F6 browse and copy",
                         false,
                     );
                 }
@@ -246,6 +279,7 @@ impl App {
         }
     }
     pub(super) fn inline_fallback(&mut self, reason: String) {
+        // A late provider response must not pull focus away from a new editor.
         let snapshot = echo_windows::focus::FocusSnapshot::capture();
         let still_original = self.activation_focus.as_ref().is_some_and(|old| {
             old.window_id == snapshot.window_id
@@ -253,29 +287,38 @@ impl App {
                 && old.process_started_at == snapshot.process_started_at
                 && snapshot.still_current()
         });
+        let anchor = self.popup_anchor.clone();
         if !self.stop_inline() {
             return;
         }
-        self.popup_placement = None;
+        self.activation_focus = None;
         if !still_original {
-            self.activation_focus = None;
             self.dismiss();
             return;
         }
-        self.capture_pending = true;
-        self.activation_focus = Some(snapshot.clone());
+        self.popup_placement = None;
+        self.surface.set_query(String::new());
+        self.window.set_query("".into());
+        self.previews.clear();
+        self.surface.set_space(SpaceId::HISTORY);
+        self.deck.show(SpaceId::HISTORY, self.now());
+        self.render_navigation();
+        self.pending_scroll = Some(0.0);
+        let epoch = self.session.activate(Context::QuickInsert);
+        self.worker.epoch.store(epoch, Ordering::Release);
         self.compatibility_notice = Some(format!(
-            "Independent search: {reason}. Existing composer text is kept, not replaced."
+            "{reason}. Browse history and copy manually; your input is unchanged."
         ));
-        if !self.send(Work::Begin(
-            self.session.epoch,
+        self.handle(Event::Activated(
+            epoch,
             Context::QuickInsert,
-            Some(snapshot),
-        )) {
-            self.capture_pending = false;
-            self.dismiss();
-        }
+            Ok(crate::events::ActivationResult {
+                target: None,
+                anchor,
+            }),
+        ));
     }
+
     pub(super) fn inline_results_ready(&self) {
         if let Some(ticket) = self.inline_ui.ticket {
             self.worker.inline.results_ready(

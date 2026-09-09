@@ -213,7 +213,8 @@ pub struct App {
     picker_cursor: Option<PageCursor>,
     picker_items: Vec<QuickInsertItem>,
     editor_key: Option<RowKey>,
-    editor_original: Option<(String, String, String, String)>,
+    editor_original: Option<(String, String, String)>,
+    editor_tags: Vec<String>,
     space_edit_id: Option<(SpaceId, i64)>,
     space_original: Option<(String, String, String, String)>,
     inspect_intent: Option<(u64, String, RowKey)>,
@@ -316,6 +317,7 @@ impl App {
             picker_items: Vec::new(),
             editor_key: None,
             editor_original: None,
+            editor_tags: Vec::new(),
             space_edit_id: None,
             space_original: None,
             inspect_intent: None,
@@ -605,10 +607,7 @@ impl App {
                 _ => {}
             }
         }
-        if query.len() > 16 * 1024 {
-            self.report("Search text is too large", true);
-            return;
-        }
+        query.clear();
         if !self.spaces.iter().any(|s| s.id == id) {
             id = SpaceId::HISTORY;
         }
@@ -646,8 +645,8 @@ impl App {
         let epoch = self.session.activate(context);
         self.worker.epoch.store(epoch, Ordering::Release);
         self.set_busy();
-        // An explicit activation query remains an independent-search request.
-        if context == Context::QuickInsert && self.ui.inline_completion && query.is_empty() {
+        // Filtering is driven only by the original input, never a hidden local query.
+        if context == Context::QuickInsert && self.ui.inline_completion {
             if let Some(snapshot) = self.activation_focus.clone() {
                 self.begin_inline(epoch, snapshot);
                 return;
@@ -751,7 +750,7 @@ impl App {
         if self.inline_active() {
             // Keyboard focus remains in the original input.
         } else if self.window.get_route().as_str() == "history" {
-            self.window.invoke_focus_search(false);
+            self.window.invoke_focus_content();
         } else {
             self.window.invoke_focus_controls();
         }
@@ -1095,8 +1094,7 @@ impl App {
         match command {
             Command::InlineTimeout(epoch) => {
                 if self.session.epoch == epoch && self.inline_ui.pending {
-                    self.dismiss();
-                    self.report("Input inspection timed out; focus remains in your input. Invoke again to retry.", false);
+                    self.inline_fallback("Input inspection timed out".into());
                 }
             }
             Command::Quit => self.request_quit(),
@@ -1186,6 +1184,7 @@ impl App {
                 }
             }
             Command::ViewportChanged => {
+                self.sync_inline_editor_focus();
                 self.viewport_changed();
                 if self.inline_active() {
                     self.prepare_window_geometry();
@@ -1232,6 +1231,10 @@ impl App {
         {
             return;
         }
+        if action == "clear-all" && self.surface.space == SpaceId::HISTORY {
+            self.ask_confirmation("Clear unpinned history?", "This deletes unpinned History records. Pinned records and saved content in Favorites and custom spaces are kept.", "Clear all unpinned", true, dialogs::Confirmation::ClearHistory);
+            return;
+        }
         let Some(key) = self.surface.resolve_key(value) else {
             return;
         };
@@ -1252,6 +1255,7 @@ impl App {
             }
             "edit" if key.source == QuickInsertSource::Favorite => self.inspect_item("edit", key),
             "options" => self.item_options(key),
+            "delete" => self.delete_item(key),
             "toggle-batch" => {
                 self.surface.toggle_selected(key.id);
                 self.render_selection();
@@ -1362,7 +1366,7 @@ impl App {
                     ) {
                         self.inline_ui.suspended = true;
                         self.worker.inline.invalidate_results();
-                        self.report(format!("{error}. Enter stays protected. Check the input; Esc keeps it and F6 opens independent search."), true);
+                        self.report(format!("{error}. Enter stays protected. Check the input; Esc keeps it and F6 opens history for copying."), true);
                     } else {
                         self.report(error, true);
                         self.inline_results_ready();
@@ -1480,7 +1484,7 @@ impl App {
                 }
                 self.schedule_prewarm();
                 if !self.window.get_modal() && self.window.get_route().as_str() == "history" {
-                    self.window.invoke_focus_search(false);
+                    self.window.invoke_focus_content();
                 }
             }
             Err(error) => {
@@ -1543,6 +1547,8 @@ impl App {
             (NativeKey::Home, "Home"),
             (NativeKey::End, "End"),
             (NativeKey::F6, "F6"),
+            (NativeKey::F10, "F10"),
+            (NativeKey::Menu, "ContextMenu"),
         ] {
             if slint::SharedString::from(native).as_str() == text {
                 key = name;
@@ -1585,23 +1591,24 @@ impl App {
         match intent {
             Intent::None | Intent::PreventDefault => {}
             Intent::Escape => self.escape(),
-            Intent::FocusSearch(select) => {
-                self.window.set_control_focus_mode(false);
-                self.window.invoke_focus_search(select);
-            }
             Intent::FocusMode => {
                 let value = !self.window.get_control_focus_mode();
                 self.window.set_control_focus_mode(value);
                 if value {
                     self.window.invoke_focus_controls();
                 } else {
-                    self.window.invoke_focus_search(false);
+                    self.window.invoke_focus_content();
                 }
             }
             Intent::SwitchSpace(delta) => self.navigate(delta),
             Intent::SwitchPanel => self.navigate(1),
             Intent::NewSpace => self.space_action("new", ""),
             Intent::NewItem => self.new_item(),
+            Intent::ItemOptions => {
+                if let Some(key) = self.surface.selection {
+                    self.action("options", &key.to_string());
+                }
+            }
             Intent::Move(delta) => {
                 if self.surface.ready {
                     self.surface.move_selection(delta);

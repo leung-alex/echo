@@ -57,11 +57,11 @@
     },
     "panel.header-height": {
       "type": "length",
-      "value": 156
+      "value": 64
     },
     "panel.footer-height": {
       "type": "length",
-      "value": 64
+      "value": 0
     },
     "row.history-min-height": {
       "type": "length",
@@ -77,7 +77,7 @@
     },
     "row.image-height": {
       "type": "length",
-      "value": 104
+      "value": 116
     },
     "row.max-text-height": {
       "type": "length",
@@ -85,15 +85,21 @@
     },
     "row.radius": {
       "type": "length",
-      "value": 8
+      "value": 12
     },
     "row.icon-size": {
       "type": "length",
       "value": 28
     },
+    "row.action-size": { "type": "length", "value": 28 },
+    "row.action-icon-size": { "type": "length", "value": 20 },
+    "row.action-gap": { "type": "length", "value": 2 },
+    "row.action-radius": { "type": "length", "value": 6 },
+    "row.action-color": { "type": "color", "value": "#70757b", "dark": "#b7bdc5" },
+    "row.action-hover": { "type": "color", "value": "#0000000a", "dark": "#ffffff14" },
     "row.timeline-width": {
       "type": "length",
-      "value": 64
+      "value": 76
     },
     "control.height": {
       "type": "length",
@@ -273,7 +279,7 @@
     },
     "font.body": {
       "type": "length",
-      "value": 14
+      "value": 15
     },
     "font.secondary": {
       "type": "length",
@@ -285,7 +291,7 @@
     },
     "font.panel-title": {
       "type": "length",
-      "value": 23
+      "value": 26
     },
     "font.setting-title": {
       "type": "length",
@@ -362,7 +368,7 @@
     },
     "color.panel": {
       "type": "color",
-      "value": "#f7f6f2",
+      "value": "#f7f7f6",
       "dark": "#161d23"
     },
     "color.raised": {
@@ -377,8 +383,8 @@
     },
     "color.muted": {
       "type": "color",
-      "value": "#59656e",
-      "dark": "#b2bbc2"
+      "value": "#61788b",
+      "dark": "#b2c4d1"
     },
     "color.faint": {
       "type": "color",
@@ -387,33 +393,33 @@
     },
     "color.line": {
       "type": "color",
-      "value": "#dddad2",
-      "dark": "#303940"
+      "value": "#e4e7e9",
+      "dark": "#35434e"
     },
     "color.accent": {
       "type": "color",
-      "value": "#ffc400",
-      "dark": "#ffc400"
+      "value": "#36789b",
+      "dark": "#79b9dc"
     },
     "color.accent-text": {
       "type": "color",
-      "value": "#735700",
-      "dark": "#ffd64d"
+      "value": "#285f80",
+      "dark": "#a5d6f0"
     },
     "color.on-accent": {
       "type": "color",
-      "value": "#171b1e",
-      "dark": "#171b1e"
+      "value": "#ffffff",
+      "dark": "#102430"
     },
     "color.selection": {
       "type": "color",
-      "value": "#eee5c8",
-      "dark": "#343021"
+      "value": "#edf5fa",
+      "dark": "#253e4f"
     },
     "color.focus": {
       "type": "color",
-      "value": "#957000",
-      "dark": "#ffd64d"
+      "value": "#36789b",
+      "dark": "#91cceb"
     },
     "color.danger": {
       "type": "color",
@@ -437,19 +443,19 @@
     },
     "flow.shadow-softness": {
       "type": "length",
-      "value": 14
+      "value": 24
     },
     "flow.shadow-margin": {
       "type": "length",
-      "value": 30
+      "value": 40
     },
     "flow.shadow-offset-y": {
       "type": "length",
-      "value": 8
+      "value": 12
     },
     "flow.shadow-opacity": {
       "type": "number",
-      "value": 0.16
+      "value": 0.27
     },
     "flow.reflection-gap": {
       "type": "length",
@@ -520,6 +526,32 @@
     "flow.edge-padding-pixels": {
       "type": "number",
       "value": 3.0
+    },
+    "row.shadow-softness": {
+      "type": "length",
+      "value": 8
+    },
+    "row.shadow-offset-y": {
+      "type": "length",
+      "value": 2
+    },
+    "row.selected-shadow-softness": {
+      "type": "length",
+      "value": 14
+    },
+    "row.selected-shadow-offset-y": {
+      "type": "length",
+      "value": 4
+    },
+    "row.shadow-color": {
+      "type": "color",
+      "value": "#152b4018",
+      "dark": "#00000055"
+    },
+    "row.selected-shadow-color": {
+      "type": "color",
+      "value": "#152b4033",
+      "dark": "#00000088"
     }
   }
 }

@@ -26,7 +26,7 @@ unsafe fn inside(
     }
     false
 }
-unsafe fn encloses_only_editor(
+pub(super) unsafe fn encloses_only_editor(
     uia: &IUIAutomation,
     range: &IUIAutomationTextRange,
     editor: &IUIAutomationElement,

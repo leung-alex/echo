@@ -1,4 +1,4 @@
-//! Same-bitness, session-owned IMM observation for verified standard Edit controls.
+//! Same-bitness, session-owned IMM/TSF observation on the verified editor thread.
 //! The embedded module has no keyboard hook and no edit/IME mutation operation.
 mod protocol;
 use protocol::*;
@@ -110,11 +110,15 @@ fn decode(sample: Sample, pid: u32, thread: u32, window: u64) -> Option<Observat
             active: true,
             preedit: String::from_utf16(&sample.text[..sample.units as usize]).ok()?,
         }),
+        3 | 4 if sample.units == 0 => Some(Observation {
+            active: sample.status == 4,
+            preedit: String::new(),
+        }),
         _ => None,
     }
 }
 impl Observer {
-    pub fn new(window: isize, pid: u32, started: u64) -> Result<Self, String> {
+    pub fn new(window: isize, pid: u32, started: u64, tsf_only: bool) -> Result<Self, String> {
         unsafe {
             let window = window as HWND;
             let mut owner = 0;
@@ -176,7 +180,7 @@ impl Observer {
             }
             std::ptr::write(
                 observer.view.Value.cast::<Channel>(),
-                Channel::new(pid, thread, window as u64, started),
+                Channel::new(pid, thread, window as u64, started, tsf_only),
             );
             observer.atom = GlobalAddAtomW(name.as_ptr());
             if observer.atom == 0 {
@@ -266,6 +270,25 @@ impl Drop for Observer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn tsf_lifecycle_samples_do_not_require_or_fabricate_preedit_text() {
+        let mut sample = Sample::unknown();
+        sample.pid = 1;
+        sample.thread = 2;
+        sample.window = 3;
+        for (status, active) in [(3, false), (4, true), (3, false)] {
+            sample.status = status;
+            let result = decode(sample, 1, 2, 3).unwrap();
+            assert_eq!(result.active, active);
+            assert!(result.preedit.is_empty());
+            assert!(decode(sample, 1, 2, 4).is_none());
+        }
+        sample.units = 1;
+        assert!(decode(sample, 1, 2, 3).is_none());
+        sample.units = 0;
+        sample.status = 0;
+        assert!(decode(sample, 1, 2, 3).is_none());
+    }
     #[test]
     fn target_thread_samples_require_identity_valid_utf16_and_explicit_state() {
         let mut sample = Sample::unknown();

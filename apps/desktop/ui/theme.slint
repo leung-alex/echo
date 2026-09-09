@@ -21,6 +21,7 @@ export global EchoTheme {
 }
 
 export component EchoButton inherits Rectangle {
+    in property <bool> row-action;
     in property <bool> execution-blocked;
     in property <bool> take-focus-on-click: true;
     in property <string> label;
@@ -33,13 +34,15 @@ export component EchoButton inherits Rectangle {
     in property <bool> checked;
     callback clicked();
     out property <bool> focused: focus.has-focus;
+    callback focus-changed(bool);
+    changed focused => {root.focus-changed(self.focused);}
     forward-focus: focus;
-    min-width: text == "" ? 32px : content.min-width + 24px;
-    height: T.control-height;
+    min-width: row-action ? T.row-action-size : text == "" ? 32px : content.min-width + 24px;
+    height: row-action ? T.row-action-size : T.control-height;
     horizontal-stretch: 0;
     vertical-stretch: 0;
-    border-radius: T.control-radius;
-    background: primary ? EchoTheme.amber : checked || touch.has-hover ? EchoTheme.surface : flat ? transparent : EchoTheme.elevated;
+    border-radius: row-action ? T.row-action-radius : T.control-radius;
+    background: row-action ? (touch.has-hover ? (EchoTheme.high-contrast ? EchoTheme.selection : T.row-action-hover) : transparent) : primary ? EchoTheme.amber : checked || touch.has-hover ? EchoTheme.surface : flat ? transparent : EchoTheme.elevated;
     border-width: focus.has-focus || !flat ? 1px : 0px;
     border-color: focus.has-focus ? EchoTheme.amber : EchoTheme.line;
     opacity: enabled ? 1 : 0.45;
@@ -48,14 +51,14 @@ export component EchoButton inherits Rectangle {
     accessible-enabled: enabled && !execution-blocked;
     accessible-action-default => { if (enabled && !execution-blocked) { root.clicked(); } }
     content := HorizontalLayout {
-        padding: 6px;
+        padding: root.row-action ? 4px : 6px;
         spacing: 6px;
         alignment: center;
         if (root.icon.width > 0): Image {
             source: root.icon;
-            width: 18px;
-            height: 18px;
-            colorize: root.primary ? EchoTheme.on-accent : root.danger ? EchoTheme.danger : EchoTheme.muted;
+            width: root.row-action ? T.row-action-icon-size : 18px;
+            height: root.row-action ? T.row-action-icon-size : 18px;
+            colorize: root.row-action ? (EchoTheme.high-contrast ? (touch.has-hover ? EchoTheme.on-accent : EchoTheme.text) : T.row-action-color) : root.primary ? EchoTheme.on-accent : root.danger ? EchoTheme.danger : EchoTheme.muted;
         }
         if (root.text != ""): Text {
             text: root.text;
@@ -71,6 +74,29 @@ export component EchoButton inherits Rectangle {
         enabled: root.enabled;
         mouse-cursor: pointer;
         clicked => { if (!root.execution-blocked) { if (root.take-focus-on-click) { focus.focus(); } root.clicked(); } }
+    }
+    private property <bool> hint-requested: root.row-action && root.enabled && (touch.has-hover || focus.has-focus);
+    private property <bool> hint-visible: false;
+    changed hint-requested => {root.hint-visible = false;}
+    Timer {
+        interval: 450ms;
+        running: root.hint-requested && !root.hint-visible;
+        triggered => {root.hint-visible = root.hint-requested;}
+    }
+    // Draw in the existing scene, without a native tooltip window or input area.
+    if (root.hint-visible && root.label != ""): Rectangle {
+        x: root.width - self.width; y: root.height + 6px;
+        width: hint-label.preferred-width + 24px; height: 38px;
+        border-radius: 14px;
+        background: EchoTheme.elevated;
+        border-width: 1px; border-color: EchoTheme.line;
+        drop-shadow-blur: 8px; drop-shadow-offset-y: 2px;
+        drop-shadow-color: EchoTheme.high-contrast ? transparent : #00000012;
+        hint-label := Text {
+            text: root.label; color: EchoTheme.text; font-size: 13px;
+            horizontal-alignment: center; vertical-alignment: center;
+            accessible-role: none;
+        }
     }
     focus := FocusScope {
         width: 0;

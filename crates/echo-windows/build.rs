@@ -2,6 +2,7 @@ use std::{env, path::PathBuf, process::Command};
 
 fn main() {
     println!("cargo:rerun-if-changed=src/inline/ime_observer/dll.rs");
+    println!("cargo:rerun-if-changed=src/inline/ime_observer/tsf.rs");
     println!("cargo:rerun-if-changed=src/inline/ime_observer/protocol.rs");
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;

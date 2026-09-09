@@ -68,9 +68,6 @@ pub fn optional(value: &str) -> Option<String> {
     let v = value.trim();
     (!v.is_empty()).then(|| v.to_owned())
 }
-pub fn tags(value: &str) -> Vec<String> {
-    value.split(',').filter_map(optional).collect()
-}
 pub fn settings(
     entries: &str,
     total_mib: &str,

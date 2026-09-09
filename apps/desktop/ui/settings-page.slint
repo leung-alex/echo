@@ -97,7 +97,6 @@ export component SettingsPage inherits Rectangle {
             clicked => { root.section = index; }
         }
         Rectangle { height: 20px; }
-        EchoButton { text: "About Echo"; flat: true; clicked => { root.action("about"); } }
         EchoButton { text: "Quit Echo"; flat: true; danger: true; clicked => { root.action("quit"); } }
     }
     settings-scroll := ScrollView {
@@ -158,8 +157,6 @@ export component SettingsPage inherits Rectangle {
                 CheckBox { enabled: !root.busy; text: "Remember selection and scroll position in this session"; checked <=> root.remember-position; }
                 Text { text: "Open Echo in"; color: EchoTheme.text; }
                 EnumChoice { enabled: !root.busy; model: ["history","last"]; selected-index: root.startup-space == "last" ? 1 : 0; selected(value) => { root.startup-space = value; } accessible-label: "Startup space"; }
-                Text { text: "Search text when switching spaces"; color: EchoTheme.text; }
-                EnumChoice { enabled: !root.busy; model: ["preserve","clear"]; selected-index: root.query-on-switch == "clear" ? 1 : 0; selected(value) => { root.query-on-switch = value; } accessible-label: "Query on space switch"; }
             }
             if (root.section == 2): VerticalLayout {
                 spacing: 16px; alignment: start;
@@ -176,11 +173,11 @@ export component SettingsPage inherits Rectangle {
                 Text { text: "Uses the text cursor when available, then the input control. An unverified target is Copy only. Press the shortcut again to dismiss Echo."; color: EchoTheme.muted; wrap: word-wrap; min-width: 0px; }
                 Rectangle { height: 1px; background: EchoTheme.line; }
                 CheckBox { text: "Filter suggestions in the original input"; checked <=> root.inline-completion; enabled: !root.busy; }
-                Text { text: "Alt+V keeps focus in your input. Type to filter; Enter replaces only this query, not the whole message. Esc keeps typed text. Unsupported text ranges or IME states use independent search. F6 switches to independent search."; color: EchoTheme.muted; wrap: word-wrap; min-width: 0px; }
+                Text { text: "Alt+V keeps focus in your input. Type to filter; Enter replaces only this query, not the whole message. Esc keeps typed text. When input cannot be read, browse history and copy manually. F6 opens history for copying."; color: EchoTheme.muted; wrap: word-wrap; min-width: 0px; }
                 Text { text: "Switch spaces with"; color: EchoTheme.text; }
                 EnumChoice { enabled: !root.busy; model: ["tab","ctrl_tab"]; selected-index: root.switch-shortcut == "ctrl_tab" ? 1 : 0; selected(value) => { root.switch-shortcut = value; } accessible-label: "Space switching shortcut"; }
                 Text { text: root.switch-shortcut == "tab" ? "Tab → next space     Shift+Tab → previous space" : "Ctrl+Tab → next space     Ctrl+Shift+Tab → previous space"; color: EchoTheme.text; wrap: word-wrap; min-width: 0px; }
-                Text { text: "↑ / ↓     Select content\nEnter     Insert into the captured target\nCtrl+F    Search the current space\nF6        Switch between navigation and control focus\nCtrl+N    New content in a writable space\nCtrl+Shift+N    New space\nEsc       Dismiss the current layer, then search, then Echo"; color: EchoTheme.muted; wrap: word-wrap; min-width: 0px; }
+                Text { text: "↑ / ↓     Select content\nEnter     Insert into the captured target\nF6        Switch between navigation and control focus\nCtrl+N    New content in a writable space\nCtrl+Shift+N    New space\nEsc       Dismiss the current layer, then Echo"; color: EchoTheme.muted; wrap: word-wrap; min-width: 0px; }
                 Text { text: "Text editors, dialogs, settings and IME composition retain normal keyboard behavior. A quick Tab → Enter never inserts the previous space's content."; color: EchoTheme.muted; wrap: word-wrap; min-width: 0px; }
             }
             if (root.section == 3): VerticalLayout {
@@ -221,7 +218,6 @@ export component SettingsPage inherits Rectangle {
             if (root.error != ""): Text { text: root.error; color: EchoTheme.danger; wrap: word-wrap; min-width: 0px; }
             if (root.narrow): HorizontalLayout {
                 alignment: start; spacing: 10px;
-                EchoButton { text: "About Echo"; clicked => { root.action("about"); } }
                 EchoButton { text: "Quit Echo"; clicked => { root.action("quit"); } }
             }
         }

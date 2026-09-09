@@ -109,6 +109,7 @@ pub(crate) const INJECTED_TAG: usize = 0x4543_484f;
 pub(super) struct Shared {
     requested: AtomicU64,
     active: AtomicU64,
+    editor_session: AtomicU64,
     window: AtomicIsize,
     focus: AtomicIsize,
     process: AtomicU32,
@@ -138,6 +139,7 @@ impl Shared {
         Arc::new(Self {
             requested: AtomicU64::new(0),
             active: AtomicU64::new(0),
+            editor_session: AtomicU64::new(0),
             window: AtomicIsize::new(0),
             focus: AtomicIsize::new(0),
             process: AtomicU32::new(0),
@@ -287,6 +289,9 @@ impl Shared {
         }
     }
     fn cancel(&self, session: u64, reason: &'static str) {
+        if self.editor_session.load(Ordering::Acquire) == session {
+            return;
+        }
         if session == 0 {
             return;
         }
@@ -414,7 +419,7 @@ impl InlineController {
         self.inner
             .sender
             .try_send(Request::Begin(session, snapshot))
-            .map_err(|_| "Inline input service is busy; use independent search".to_string())
+            .map_err(|_| "Inline input service is busy; use manual copying".to_string())
     }
     pub fn cancel(&self, session: u64) {
         let s = &self.inner.shared;
@@ -427,6 +432,20 @@ impl InlineController {
         s.selectable.store(false, Ordering::Release);
         self.inner.hook.disarm(session);
         let _ = self.inner.sender.try_send(Request::Cancel(session));
+    }
+    /// Temporarily give an Echo editor the keyboard without retiring the target.
+    pub fn set_editor_active(&self, session: u64, active: bool) {
+        let s = &self.inner.shared;
+        if active {
+            s.editor_session.store(session, Ordering::Release);
+            s.selectable.store(false, Ordering::Release);
+        } else if s
+            .editor_session
+            .compare_exchange(session, 0, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            s.input_changed(&self.inner.sender, session);
+        }
     }
     pub fn results_ready(&self, ticket: InlineTicket, selectable: bool) {
         let s = &self.inner.shared;
@@ -498,12 +517,12 @@ impl InlineController {
         payload: &[ClipboardRepresentation],
     ) -> Result<(), String> {
         let text = payload.iter().find(|r| r.format == "text")
-            .ok_or("This item has no plain-text representation. Use Copy or independent search; the query was not deleted.")?;
+            .ok_or("This item has no plain-text representation. Use Copy or manual copying; the query was not deleted.")?;
         let text = String::from_utf8(text.bytes.clone())
             .map_err(|_| "Original text is not valid UTF-8")?;
         if text.encode_utf16().count() > echo_engine::MAX_COMPOSER_UNITS || text.contains('\0') {
             return Err(
-                "Item is too large for verified inline replacement; use independent search".into(),
+                "Item is too large for verified inline replacement; use manual copying".into(),
             );
         }
         let guard = Deadline::new(Duration::from_millis(600));
@@ -637,7 +656,12 @@ fn run(
                 let fallback_snapshot = snapshot.clone();
                 let result = begin(id, snapshot, &shared, &hook, &sender, automation.as_ref());
                 match result {
-                    Ok(active) => session = Some(active),
+                    Ok(active) => {
+                        session = Some(active);
+                        // Cover the gap between the initial read and subscription:
+                        // composition may have ended without a subscribed event.
+                        due = Some(Instant::now() + Duration::from_millis(20));
+                    }
                     Err(reason) => {
                         // A failed capability probe is NOT permission to focus Echo.
                         // Keep the session hook as an Enter shield until Esc/F6/dismiss.
@@ -757,7 +781,15 @@ fn begin(
     sender: &SyncSender<Request>,
     uia: Option<&windows::Win32::UI::Accessibility::IUIAutomation>,
 ) -> Result<Session, String> {
-    shared.active.store(id, Ordering::Release);
+    {
+        let mut evidence = shared
+            .composition_evidence
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        shared.active.store(id, Ordering::Release);
+        *evidence = None;
+        shared.ime.store(IME_UNKNOWN, Ordering::Release);
+    }
     shared.window.store(snapshot.window_id, Ordering::Release);
     shared
         .focus
@@ -810,7 +842,7 @@ fn begin(
     }
     if shared.input_serial.load(Ordering::Acquire) != serial {
         shared.record("acquisition-raced", 0);
-        return Err("The composer changed while the inline range was being captured. Typed text was kept; use independent search or invoke again.".into());
+        return Err("The composer changed while the inline range was being captured. Typed text was kept; use manual copying or invoke again.".into());
     }
     shared.ime.store(composition, Ordering::Release);
     shared.may_compose.store(may_compose, Ordering::Release);
@@ -847,6 +879,9 @@ fn begin(
 }
 /// Returns true when input raced the provider read and needs one more deferred sample.
 fn observe(session: &mut Session, shared: &Shared) -> bool {
+    if shared.editor_session.load(Ordering::Acquire) == session.id {
+        return false;
+    }
     if shared.committing.load(Ordering::Acquire) {
         return false;
     }
