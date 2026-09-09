@@ -194,9 +194,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut s = state.borrow_mut();
             s.width=w; s.height=h; s.dpi=dpi;
             s.poses=vec![PanelDraw { origin_x:0.0,id:1,width:pw,height:h,x:-(n as f32)*12.0,y:0.0,z:0.0,
-                yaw:-angle,scale:1.0,opacity:1.0,shade:0.0 },
+                yaw:-angle,scale:1.0,opacity:1.0,shadow_opacity:1.0,shade:0.0 },
                 PanelDraw { origin_x:0.0,id:2,width:pw,height:h,x:pw*0.70,y:12.0,z:-pw*0.23,
-                    yaw:54.0f32.to_radians(),scale:0.90,opacity:0.96,shade:0.10 }];
+                    yaw:54.0f32.to_radians(),scale:0.90,opacity:0.96,shadow_opacity:1.0,shade:0.10 }];
             s.dirty=true;
             step.set(n+1); app.window().request_redraw();
             Ok(())
