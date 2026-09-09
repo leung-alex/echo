@@ -244,6 +244,19 @@ class Run:
             ready = ready and "No matches in this space" in dump
         return ready
 
+    def manual_history_ready(self):
+        if not self.d("exists"):
+            return False
+        dump = self.d("dump")
+        if "History space" not in dump or "ControlType.Edit | Search clipboard history" in dump:
+            return False
+        if not self.args.native_test:
+            return True
+        value = self.metrics()
+        return value if (value["ready"] and not value["loading"] and value["query"] == ""
+                         and not value["inline"]["active"] and not value["inline"]["pending"]
+                         and not value["quick_insert"]["has_target"]) else False
+
     def open_inline(self, query=""):
         deactivations = self.n("state")["deactivations"]
         self.f("hotkey", self.native, self.native_title, "Alt+V")
@@ -403,13 +416,15 @@ class Run:
     def native_checks(self):
         self.start_processes()
         self.check("installed-chinese-ime-confirmation-and-insertion", self.test_installed_ime)
-        self.check("startup-independent-search-does-not-flash", self.test_independent_streaming)
-        self.check("f6-independent-search-does-not-flash", lambda:self.test_independent_streaming(True))
+        self.check("startup-manual-history-has-no-local-search", self.test_manual_history)
+        self.check("f6-manual-history-preserves-query", lambda:self.test_manual_history(True))
         self.check("fuzzy-words-and-trailing-spaces-keep-actions-stable", self.test_fuzzy_words)
+        self.check("transient-root-focus-preserves-original-session", self.test_root_focus)
+        self.check("manual-history-row-copy-retains-text", self.test_manual_copy)
         self.check("first-popup-never-activates", self.test_first)
         self.check("delayed-acquisition-keeps-enter-protected", self.test_delayed_acquisition)
-        self.check("composer-query-and-adaptive-height", self.test_height)
-        self.check("enter-replaces-query-not-prefix-or-suffix", lambda: self.enter(expected="pre|" + PAYLOAD + " |post"))
+        self.check("composer-query-keeps-session-geometry-stable", self.test_height)
+        self.check("enter-replaces-query-not-prefix-or-suffix", self.test_exact_replacement)
         self.check("real-top-and-bottom-input-placement", self.test_input_placement)
         self.check("held-enter-never-leaks-submit-after-close", self.test_held)
         self.check("no-results-enter-is-consumed", self.test_empty)
@@ -436,7 +451,7 @@ class Run:
         self.check("multiline-native-input-replacement", lambda: self.test_control("multiline"))
         self.check("rich-edit-native-input-replacement", lambda: self.test_control("rich"))
         self.check("unsupported-protected-input-is-explicit-compatibility", self.test_password)
-        self.check("f6-preserves-query-and-opens-independent-search", self.test_f6)
+        self.check("f6-preserves-query-and-opens-manual-history", self.test_f6)
         self.check("cancel-and-rearm-preserves-key-lifecycles", self.test_cancel_matrix)
         self.check("streaming-filter-never-clears-the-panel", self.test_streaming_filter)
         if self.args.stress:
@@ -539,40 +554,26 @@ class Run:
         if duration < 5000 or fps < 30:
             raise RuntimeError("Recording did not reach five seconds at 30 fps: " + name)
 
-    def test_independent_streaming(self, fallback=False):
-        if not self.args.native_test:
-            raise NotRun("Internal rendering trace requires native-test")
+    def test_manual_history(self, fallback=False):
         self.reset()
         if fallback:
             self.open_inline(); self.type_query("ec")
-            self.f("key",self.native,self.native_title,117)
+        before = self.state()["text"]
+        if fallback:
+            self.f("key", self.native, self.native_title, 117)
         else:
-            subprocess.run([str(self.args.executable),"--history"],env=self.env,stdin=subprocess.DEVNULL,check=True,timeout=8,
+            subprocess.run([str(self.args.executable), "--history"], env=self.env,
+                           stdin=subprocess.DEVNULL, check=True, timeout=8,
                            creationflags=subprocess.CREATE_NO_WINDOW)
-        label="Search clipboard history"
-        self.wait(lambda: "ControlType.Edit | "+label in self.d("dump"),"independent search ready",12)
-        self.f("activate-owned",self.echo,TITLE,label)
-        self.f("hotkey",self.echo,TITLE,"Ctrl+A");self.f("key",self.echo,TITLE,8)
-        self.wait(lambda:self.metrics()["ready"] and self.metrics()["query"]=="","independent baseline",12)
-        trace="fallback-search-trace" if fallback else "startup-search-trace"
-        recording=self.record_begin(trace+"-screen",self.echo,TITLE)
-        self.control_request("trace_begin",file=trace)
-        progress=[];typed=""
-        try:
-            for part in ("e","c"," ","p","rf"," ","0013"):
-                self.f("text",self.echo,TITLE,part);typed+=part
-                m=self.wait(lambda: v if (v:=self.metrics())["query"]==typed and v["ready"] and not v["loading"] else None,"independent query update",12)
-                progress.append({"query":typed,"rows":m["snapshot_model_count"]})
-                time.sleep(.10)
-        finally:
-            self.control_request("trace_end")
-            self.record_end(recording)
-        frames=json.loads((self.evidence/trace/"frames.json").read_text(encoding="utf-8"))
-        if len(frames)<10 or any(f["stale"] or not f["visible"] or f["rows"]==0 or f["selected_rows"]!=1 for f in frames):
-            raise RuntimeError("Independent search blanked rows or action selection during typing")
-        self.shot(trace+"-final"); self.d("close")
-        self.wait(lambda:not self.d("exists"), "independent search closed before the next case")
-        return {"frames":len(frames),"blank_frames":0,"progress":progress}
+        value = self.wait(self.manual_history_ready, "unfiltered manual history ready", 12)
+        if self.state()["text"] != before:
+            raise RuntimeError("Opening manual history changed the original input")
+        if self.args.native_test and value["snapshot_model_count"] == 0:
+            raise RuntimeError("Synthetic history unexpectedly has no visible rows")
+        self.shot("f6-manual-history" if fallback else "startup-manual-history")
+        self.d("close")
+        self.wait(lambda: not self.d("exists"), "manual history closed")
+        return {"query_preserved": True, "local_search": False, "paste_target": False}
 
     def test_fuzzy_words(self):
         if not self.args.native_test:
@@ -749,8 +750,8 @@ class Run:
         if self.args.renderer == "femtovg-wgpu" and any(not f["flow_enabled"] for f in frames):
             raise RuntimeError("Typing cleared the existing side-card scene")
         final=self.metrics()
-        if final["snapshot_model_count"] != 1 or final["panel"][3] >= initial["panel"][3]:
-            raise RuntimeError("The exact result did not narrow and shrink the panel")
+        if final["snapshot_model_count"] != 1 or abs(final["panel"][3] - initial["panel"][3]) > 2:
+            raise RuntimeError("Filtering did not retain the latched session height and one exact result")
         if self.state()["text"] != "pre|"+QUERY+" |post": raise RuntimeError("Typing left the original composer")
         self.shot("streaming-final")
         self.f("key",self.native,self.native_title,27)
@@ -796,13 +797,48 @@ class Run:
         return results
 
     def test_height(self):
+        self.reset(); self.open_inline()
         before = self.f("geometry", self.echo, TITLE)
         self.type_query(); self.shot("02-inline-filtered")
-        self.wait(lambda: self.f("geometry", self.echo, TITLE)["window"][3] - self.f("geometry", self.echo, TITLE)["window"][1] < before["window"][3] - before["window"][1], "height shrank")
         after = self.f("geometry", self.echo, TITLE)
+        if any(abs(a-b)>1 for a,b in zip(before["window"], after["window"])):
+            raise RuntimeError("Filtering changed the current session's anchored geometry")
+        if self.args.native_test and self.metrics()["snapshot_model_count"] != 1:
+            raise RuntimeError("Filtering did not narrow the result model")
         if self.state()["text"] != "pre|" + QUERY + " |post":
             raise RuntimeError("Typing did not stay in the composer")
         return {"before": before, "after": after, "query": QUERY}
+
+    def test_root_focus(self):
+        if not self.args.native_test:
+            raise NotRun("Session identity assertions require native-test")
+        self.reset(); self.open_inline(); self.type_query()
+        session = self.metrics()["inline"]["readiness"][0]
+        for _ in range(4):
+            self.n("root-focus-roundtrip")
+            self.wait(lambda: self.state()["focused"] and self.inline_ready(QUERY), "original editor revalidated after root transition")
+            self.confirm_ready()
+            if self.metrics()["inline"]["readiness"][0] != session:
+                raise RuntimeError("Root focus transition cancelled or replaced the original session")
+            if self.state()["text"] != "pre|" + QUERY + " |post" or self.state()["enter_count"] != 0:
+                raise RuntimeError("Root focus transition changed the host input")
+        return {"transitions":4, "replacement":self.enter(expected="pre|" + PAYLOAD + " |post")}
+
+    def test_manual_copy(self):
+        self.reset(); self.open_inline()
+        self.f("key", self.native, self.native_title, 117)
+        self.wait(self.manual_history_ready, "manual-copy history ready")
+        expected = "SELECT id, updated_at\nFROM clipboard_entries\nORDER BY updated_at DESC;\n-- fixture 0199"
+        self.f("activate-owned", self.echo, TITLE, expected)
+        self.wait(lambda: self.n("clipboard-matches", expected=expected)["matches"], "original multiline text copied")
+        state = self.state()
+        if state["text"] != "pre| |post" or state["enter_count"]:
+            raise RuntimeError("Manual copying inserted or submitted into the original input")
+        return {"clipboard_matches_original": True, "host_input_unchanged": True}
+
+    def test_exact_replacement(self):
+        self.reset(); self.open_inline(); self.type_query()
+        return self.enter(expected="pre|" + PAYLOAD + " |post")
 
     def test_input_placement(self):
         evidence=[]
@@ -1054,7 +1090,7 @@ class Run:
                 self.f("text", self.native, self.native_title, " ")
                 self.wait(lambda: self.state()["text"] == before["text"][:4+len(QUERY)]+" "+before["text"][4+len(QUERY):], "editing remains possible after selection failure")
                 self.f("key", self.native, self.native_title, 117)
-                self.wait(lambda: "ControlType.Edit | Search clipboard history" in self.d("dump"), "F6 after rejected selection")
+                self.wait(self.manual_history_ready, "F6 after rejected selection")
                 self.d("close"); self.wait(lambda:not self.d("exists"), "fallback closed")
                 results.append({"fault":name,"before":before,"after":after,"status":failure["status"],"replayed":False})
             finally:
@@ -1077,7 +1113,7 @@ class Run:
                     raise RuntimeError("Unknown composition leaked confirmation or prevented ordinary text input")
                 self.f("key",self.native,self.native_title,cancel)
                 if cancel==117:
-                    self.wait(lambda:"ControlType.Edit | Search clipboard history" in self.d("dump"),"Unknown can use F6")
+                    self.wait(self.manual_history_ready,"Unknown can use F6")
                     self.d("close")
                 self.wait(lambda:not self.d("exists"),"Unknown can explicitly exit")
                 results.append({"cancel":cancel,"unknown_readiness":unknown["inline"]["readiness"],"after":after})
@@ -1201,7 +1237,7 @@ class Run:
             before = self.reset(control)["fields"][control]["text"]
             self.f("hotkey", self.native, self.native_title, "Alt+V")
             self.wait(lambda: self.d("exists"), "protected-input fallback")
-            self.wait(lambda: "Input stays active" in self.d("dump"), "explicit unavailable-input notice")
+            self.wait(lambda: "Input filtering unavailable:" in self.d("dump") and "copy manually" in self.d("dump"), "visible manual-copy compatibility notice")
             if "ControlType.Edit | Search clipboard history" in self.d("dump"):
                 raise RuntimeError("An unsupported input unexpectedly activated an Echo search field")
             if not self.n("state")["foreground"]:
@@ -1210,15 +1246,16 @@ class Run:
                 raise RuntimeError("Protected input incorrectly admitted a paste target")
             if self.state(control)["text"] != before:
                 raise RuntimeError("Protected input was changed")
+            self.shot("compatibility-" + control)
         return "Password and read-only controls remain focused; unavailable replacement never reveals an activating search field"
 
     def test_f6(self):
         self.reset(); self.open_inline(); self.type_query()
         self.f("key", self.native, self.native_title, 117)
-        self.wait(lambda: "ControlType.Edit | Search clipboard history" in self.d("dump"), "independent search field")
+        self.wait(self.manual_history_ready, "unfiltered manual history")
         if self.state()["text"] != "pre|" + QUERY + " |post":
             raise RuntimeError("F6 deleted the original query")
-        return "Typed query preserved; normal Echo search regained focus explicitly"
+        return "Typed query preserved; unfiltered history opened without a search field or paste target"
 
     def test_cancel_matrix(self):
         results = []
@@ -1234,8 +1271,8 @@ class Run:
                     self.f("key", self.native, self.native_title, 27, 8)
                 else:
                     self.f("key", self.native, self.native_title, 117)
-                    self.wait(lambda: "ControlType.Edit | Search clipboard history" in self.d("dump"),
-                              "explicit F6 independent mode")
+                    self.wait(self.manual_history_ready,
+                              "explicit F6 manual mode")
                     self.d("close")
                     self.n("focus", control="single")
                 self.wait(lambda: not self.d("exists"), "cancellation hides the old surface")
@@ -1306,10 +1343,13 @@ class Run:
     def browser_checks(self):
         if self.echo is None:
             self.start_processes()
-        base = Path(os.environ["ProgramFiles"])
-        browser = base / "Google/Chrome/Application/chrome.exe" if self.args.browser == "chrome" else Path(os.environ.get("ProgramFiles(x86)", str(base))) / "Microsoft/Edge/Application/msedge.exe"
-        if not browser.exists():
-            raise RuntimeError("Requested browser is not installed: " + str(browser))
+        relative = "Google/Chrome/Application/chrome.exe" if self.args.browser == "chrome" else "Microsoft/Edge/Application/msedge.exe"
+        roots = [Path(os.environ[name]) for name in ("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432") if os.environ.get(name)]
+        # Some remote shells omit ProgramFiles(x86) despite a 32-bit Edge install.
+        roots.append(Path(os.environ.get("SystemDrive", "C:") + "/") / "Program Files (x86)")
+        browser = next((base / relative for base in roots if (base / relative).is_file()), None)
+        if browser is None:
+            raise RuntimeError("Requested browser executable was not found in installed program directories")
         profile = self.evidence / "isolated-browser-profile"
         html = (self.root / "tests/native/fixtures/inline-composer.html").as_uri()
         browser_arguments = ["--user-data-dir=" + str(profile), "--no-first-run", "--no-default-browser-check",
@@ -1335,11 +1375,14 @@ class Run:
         self.browser_title = self.wait(title, "owned browser fixture window", 15)
         self.record(self.browser, self.browser_title)
         (self.evidence/"browser-initial-tree.txt").write_text(self.f("dump-tree",self.browser,self.browser_title),encoding="utf-8")
-        if self.args.omnibox:
-            self.f("activate-owned",self.browser,self.browser_title,"Echo Inline Composer Fixture")
+        # Activate the validated isolated browser before requesting its page
+        # tree. A newly launched background Chromium window may not expose the
+        # document provider yet; do not force accessibility flags or use a daily profile.
+        self.f("activate-owned",self.browser,self.browser_title,"Echo Inline Composer Fixture")
         self.wait(lambda: self.browser_state(), "local browser accessibility tree ready", 15)
         if self.args.omnibox:
             self.check("browser-omnibox-inline-query-keeps-popup-and-never-navigates", self.test_omnibox)
+        self.check("browser-query-and-cancel-preserves-clipboard", self.test_browser_query_only)
         self.check("browser-empty-paragraph-first-key-spaces-and-replacement", self.test_empty_rich)
         self.check("browser-decorated-empty-paragraph-first-key", lambda: self.test_empty_rich(True))
         self.check("browser-leaf-decoration-first-key", lambda: self.test_empty_rich("leaf"))
@@ -1364,6 +1407,41 @@ class Run:
             self.check("browser-editor-identity-stress", lambda: self.repeat_case("browser-editor-identity", 20, self.test_browser_editor_identity))
             self.check("browser-mouse-lifecycle-stress", lambda: self.repeat_case("browser-mouse", 30, self.test_browser_click))
         self.check("browser-profile-cleanup", self.close_browser)
+
+    def test_browser_query_only(self):
+        # No confirmation or copy: this gate is safe with an opaque clipboard
+        # owner format because it never asks Echo to replace the clipboard.
+        user = ctypes.WinDLL("user32")
+        user.GetClipboardSequenceNumber.restype = ctypes.c_uint32
+        sequence = user.GetClipboardSequenceNumber()
+        observations = []
+        for control in ("search", "textarea", "ai"):
+            self.browser_reset(control)
+            self.browser_open()
+            query = ""
+            for part in ("ec", " ", "prf", " ", "0013"):
+                self.f("text", self.browser, self.browser_title, part)
+                query += part
+                def observed():
+                    value = self.inline_ready()
+                    return value if value and value["query"].replace("\u00a0", " ") == query else None
+                self.wait(observed, "browser query observed without confirmation")
+            value = self.metrics()
+            if value["snapshot_model_count"] != 1 or value.get("highlighted_rows", 0) != 1:
+                raise RuntimeError("Browser multiword query did not find and highlight the exact result")
+            before = self.browser_state()
+            self.shot("query-only-" + control)
+            self.f("key", self.browser, self.browser_title, 27)
+            self.wait(lambda: not self.d("exists"), "browser cancellation hides popup")
+            after = self.browser_state()
+            if after[control]["text"] != before[control]["text"] or any(after[c]["submitted"] for c in ("search", "textarea", "ai")):
+                raise RuntimeError("Query cancellation changed or submitted the host input")
+            if after["mention"] != before["mention"] or after["attachment"] != before["attachment"]:
+                raise RuntimeError("Query filtering changed host decorations")
+            if user.GetClipboardSequenceNumber() != sequence:
+                raise RuntimeError("Clipboard changed during a no-copy/no-confirmation scenario")
+            observations.append({"control": control, "query": query, "rows": 1, "highlighted": True, "cancel_preserved_input": True})
+        return {"observations": observations, "clipboard_sequence_unchanged": True, "insertion": "NOT_RUN"}
 
     def test_omnibox(self):
         # This is a NORMAL owned Chrome window, not --app (which has no omnibox).
@@ -1529,7 +1607,7 @@ class Run:
     def test_browser_click(self):
         self.browser_reset(); self.browser_open(); self.browser_query()
         self.confirm_ready()
-        pointer = self.f("click-owned", self.echo, TITLE, "Insert item")
+        pointer = self.f("click-owned", self.echo, TITLE, PAYLOAD)
         atomic(self.evidence / "mouse-click-observation.json", pointer)
         self.wait(lambda: not self.d("exists"), "mouse-selected replacement")
         state = self.browser_state()

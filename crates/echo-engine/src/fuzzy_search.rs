@@ -101,6 +101,9 @@ pub(crate) struct FuzzySearchCache {
 }
 const CACHE_BYTES: usize = 16 * 1024 * 1024;
 impl FuzzySearchCache {
+    pub(crate) fn clear_results(&mut self) {
+        self.last_page = None;
+    }
     pub(crate) fn clear(&mut self) {
         self.corpora.clear();
         self.last_page = None;
@@ -369,6 +372,38 @@ fn candidate(item: QuickInsertItem, body: String) -> Candidate {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn retiring_query_keeps_bounded_corpus_until_explicit_trim() {
+        let mut cache = FuzzySearchCache::default();
+        cache.corpora.push_back(Corpus {
+            space: SpaceId::FAVORITES,
+            revision: 1,
+            count: 0,
+            bytes: 0,
+            items: Vec::new(),
+        });
+        cache.last_page = Some(CachedPage {
+            space: SpaceId::FAVORITES,
+            revision: 1,
+            count: 0,
+            query: "synthetic query".into(),
+            limit: 50,
+            cursor: None,
+            value: (
+                QuickInsertPage {
+                    items: Vec::new(),
+                    next_cursor: None,
+                },
+                1,
+                0,
+            ),
+        });
+        cache.clear_results();
+        assert!(cache.last_page.is_none());
+        assert_eq!(cache.corpora.len(), 1);
+        cache.clear();
+        assert!(cache.corpora.is_empty());
+    }
     #[test]
     fn space_separated_tokens_match_independently_and_fuzzily() {
         let mut m = FuzzyMatcher::new("wrk tr ui");

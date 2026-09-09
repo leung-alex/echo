@@ -224,6 +224,16 @@ fn fuzzy_search_large_corpus_keeps_tail_results_and_cancels() {
                 oldest
             );
             let normalized_us = start.elapsed().as_micros();
+            // Closing a session retires its query/page, not the bounded corpus.
+            // Verify the reopened production path still reaches the oldest item.
+            quick.release_search_results();
+            let start = std::time::Instant::now();
+            let (reopened, _, reopened_total) = quick
+                .fuzzy_list_space(SpaceId::FAVORITES, "uniquetailneedle", 50, None)
+                .unwrap();
+            assert_eq!(reopened_total, 1);
+            assert_eq!(reopened.items[0].id, oldest);
+            let reopen_us = start.elapsed().as_micros();
             let checks = std::cell::Cell::new(0);
             let start = std::time::Instant::now();
             let result =
@@ -233,7 +243,7 @@ fn fuzzy_search_large_corpus_keeps_tail_results_and_cancels() {
                 });
             assert!(result.is_err());
             assert_eq!(checks.get(), 8);
-            println!("SEARCH_SCALE count={} round={} body_bytes_min={} cold_us={} normalized_us={} cancel_us={}", i + 1, round + 1, (i + 1) * padding.len(), cold_us, normalized_us, start.elapsed().as_micros());
+            println!("SEARCH_SCALE count={} round={} body_bytes_min={} cold_us={} normalized_us={} reopen_us={} cancel_us={}", i + 1, round + 1, (i + 1) * padding.len(), cold_us, normalized_us, reopen_us, start.elapsed().as_micros());
             assert_eq!(
                 quick
                     .fuzzy_list_space(SpaceId::FAVORITES, "common", 50, None)

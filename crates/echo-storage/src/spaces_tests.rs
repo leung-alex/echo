@@ -375,3 +375,78 @@ fn shared_runtime_space_reads_and_writes_use_existing_actors() {
     s.shutdown().unwrap();
     assert!(s.list_spaces().is_err());
 }
+
+#[test]
+fn indexed_space_cursor_keeps_tied_negative_keys_and_filtered_totals() {
+    let mut s = store();
+    let mut ids = Vec::new();
+    for n in 0..6 {
+        ids.push(
+            s.create_favorite(content(&format!(
+                "{} {n}",
+                if n % 2 == 0 { "match" } else { "other" }
+            )))
+            .unwrap()
+            .id,
+        );
+    }
+    s.connection
+        .execute(
+            "UPDATE space_memberships SET sort_key=-1024 WHERE space_id=2",
+            [],
+        )
+        .unwrap();
+    let mut cursor = None;
+    let mut seen = Vec::new();
+    loop {
+        let page = s
+            .list_space_items(SpaceId::FAVORITES, "", 2, cursor)
+            .unwrap();
+        assert_eq!(page.total, 6);
+        seen.extend(page.page.items.iter().map(|item| item.id));
+        cursor = page.page.next_cursor;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert_eq!(seen, ids);
+    let filtered = s
+        .list_space_items(SpaceId::FAVORITES, "match", 2, None)
+        .unwrap();
+    assert_eq!(filtered.total, 3);
+    assert_eq!(
+        filtered
+            .page
+            .items
+            .iter()
+            .map(|item| item.id)
+            .collect::<Vec<_>>(),
+        [ids[0], ids[2]]
+    );
+    let tail = s
+        .list_space_items(SpaceId::FAVORITES, "match", 2, filtered.page.next_cursor)
+        .unwrap();
+    assert_eq!(tail.total, 3);
+    assert_eq!(tail.page.items[0].id, ids[4]);
+    assert!(tail.page.next_cursor.is_none());
+    let mut plan = s.connection.prepare(
+        "EXPLAIN QUERY PLAN SELECT s.id FROM space_memberships m JOIN saved_items s ON s.id=m.saved_item_id
+         WHERE m.space_id=? AND (m.sort_key,m.saved_item_id)>(?,?)
+         ORDER BY m.sort_key,m.saved_item_id LIMIT ?"
+    ).unwrap();
+    let details = plan
+        .query_map(params![2, -1024, ids[1], 2], |row| row.get::<_, String>(3))
+        .unwrap()
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(
+        details
+            .iter()
+            .any(|line| line.contains("space_memberships_page_idx")),
+        "{details:?}"
+    );
+    assert!(
+        !details.iter().any(|line| line.contains("USE TEMP B-TREE")),
+        "{details:?}"
+    );
+}

@@ -16,6 +16,16 @@ pub(super) struct InlineUi {
     #[allow(dead_code)] // Read by the isolated native-test diagnostics, not normal telemetry.
     pub backend: &'static str,
 }
+impl InlineUi {
+    fn accepts_ticket(&self, ticket: InlineTicket, session: u64) -> bool {
+        self.ticket.is_some_and(|previous| {
+            ticket.session == session
+                && previous.session == session
+                && ticket.revision >= previous.revision
+                && ticket.input_serial >= previous.input_serial
+        })
+    }
+}
 impl App {
     pub(super) fn sync_inline_editor_focus(&mut self) {
         let editing = self.inline_active() && self.window.get_editor_open();
@@ -165,7 +175,7 @@ impl App {
                 composing,
                 mut suspended,
             } => {
-                if self.inline_ui.ticket.is_none() || ticket.session != self.session.epoch {
+                if !self.inline_ui.accepts_ticket(ticket, self.session.epoch) {
                     return;
                 }
                 // A queued pre-paste observation cannot clear an unknown
@@ -364,5 +374,62 @@ impl App {
             self.set_busy();
             self.inline_results_ready();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn inline_observations_never_regress_revision_or_input_serial() {
+        let current = InlineTicket {
+            session: 9,
+            revision: 4,
+            input_serial: 12,
+        };
+        let ui = InlineUi {
+            ticket: Some(current),
+            ..Default::default()
+        };
+        assert!(ui.accepts_ticket(current, 9));
+        assert!(ui.accepts_ticket(
+            InlineTicket {
+                revision: 5,
+                input_serial: 13,
+                ..current
+            },
+            9
+        ));
+        assert!(!ui.accepts_ticket(
+            InlineTicket {
+                revision: 3,
+                ..current
+            },
+            9
+        ));
+        assert!(!ui.accepts_ticket(
+            InlineTicket {
+                input_serial: 11,
+                ..current
+            },
+            9
+        ));
+        assert!(!ui.accepts_ticket(
+            InlineTicket {
+                revision: 5,
+                input_serial: 11,
+                ..current
+            },
+            9
+        ));
+        assert!(!ui.accepts_ticket(
+            InlineTicket {
+                session: 8,
+                ..current
+            },
+            9
+        ));
+        assert!(!ui.accepts_ticket(current, 10));
+        assert!(!InlineUi::default().accepts_ticket(current, 9));
     }
 }

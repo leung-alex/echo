@@ -63,6 +63,9 @@ mod windows_impl {
 
     const OPEN_ATTEMPTS: usize = 5;
 
+    mod clipboard;
+    use clipboard::ClipboardGuard;
+
     pub struct WindowsPlatform {
         changes: PlatformChangePublisher,
         clipboard_window: Arc<AtomicIsize>,
@@ -185,6 +188,9 @@ mod windows_impl {
             policy: &CapturePolicy,
         ) -> Result<Option<ClipboardSnapshot>, PlatformError> {
             let _clipboard = ClipboardGuard::open()?;
+            if !ClipboardGuard::capture_allowed()? {
+                return Ok(None);
+            }
             let sequence = self.clipboard_sequence();
             let source = self
                 .source
@@ -290,34 +296,10 @@ mod windows_impl {
             representations: &[ClipboardRepresentation],
         ) -> Result<u64, PlatformError> {
             self.validate_captured_target_before_clipboard()?;
-            let _clipboard = ClipboardGuard::open()?;
-            unsafe { EmptyClipboard() }.map_err(platform_error)?;
-            for representation in representations {
-                match representation.format.as_str() {
-                    "text" => ClipboardGuard::write_unicode(&String::from_utf8_lossy(
-                        &representation.bytes,
-                    ))?,
-                    "html" => ClipboardGuard::write_global(
-                        register_format("HTML Format")?,
-                        nul_terminated(&representation.bytes),
-                    )?,
-                    "rtf" => ClipboardGuard::write_global(
-                        register_format("Rich Text Format")?,
-                        nul_terminated(&representation.bytes),
-                    )?,
-                    "image" => {
-                        let dib = bmp_to_dib(&representation.bytes).ok_or_else(|| {
-                            PlatformError("image representation is not a BMP".to_owned())
-                        })?;
-                        ClipboardGuard::write_global(8, dib)?;
-                    }
-                    "files" => ClipboardGuard::write_file_paths(&representation.bytes)?,
-                    _ => {}
-                }
-            }
-            // Publish/close before recording the token used for a later paste.
-            // Windows may synthesize companion text formats when the writer closes.
-            drop(_clipboard);
+            let prepared = clipboard::PreparedClipboard::new(representations)?;
+            let owner = HWND(self.clipboard_window.load(Ordering::Acquire) as *mut c_void);
+            prepared.publish(owner)?;
+            // Close/publish before recording the token; Windows may synthesize formats.
             Ok(self.clipboard_sequence())
         }
 
@@ -611,172 +593,6 @@ mod windows_impl {
         let _ = unsafe { RemoveClipboardFormatListener(window) };
         let _ = unsafe { DestroyWindow(window) };
         window_slot.store(0, Ordering::Release);
-    }
-
-    struct ClipboardGuard;
-
-    impl ClipboardGuard {
-        fn open() -> Result<Self, PlatformError> {
-            for attempt in 0..OPEN_ATTEMPTS {
-                if unsafe { OpenClipboard(None) }.is_ok() {
-                    return Ok(Self);
-                }
-                thread::sleep(Duration::from_millis(5 * (attempt + 1) as u64));
-            }
-            Err(PlatformError("Windows clipboard is busy".to_owned()))
-        }
-
-        fn read_global(format: u32) -> Result<Vec<u8>, PlatformError> {
-            let handle = unsafe { GetClipboardData(format) }.map_err(platform_error)?;
-            let global = HGLOBAL(handle.0);
-            let size = unsafe { GlobalSize(global) };
-            if size == 0 {
-                return Ok(Vec::new());
-            }
-            let pointer = unsafe { GlobalLock(global) };
-            if pointer.is_null() {
-                return Err(PlatformError("unable to lock clipboard memory".to_owned()));
-            }
-            let bytes = unsafe { std::slice::from_raw_parts(pointer.cast::<u8>(), size) }.to_vec();
-            unsafe {
-                let _ = GlobalUnlock(global);
-            }
-            Ok(bytes)
-        }
-
-        fn global_size(format: u32) -> Result<usize, PlatformError> {
-            let handle = unsafe { GetClipboardData(format) }.map_err(platform_error)?;
-            Ok(unsafe { GlobalSize(HGLOBAL(handle.0)) })
-        }
-
-        fn read_global_if_allowed(
-            format: u32,
-            semantic_format: &str,
-            policy: &CapturePolicy,
-            total_bytes: &mut u64,
-        ) -> Result<Option<Vec<u8>>, PlatformError> {
-            let available_size = Self::global_size(format)? as u64;
-            if available_size != 0
-                && !policy.accepts_size(semantic_format, available_size, *total_bytes)
-            {
-                return Ok(None);
-            }
-            let bytes = Self::read_global(format)?;
-            let byte_size = bytes.len() as u64;
-            if !policy.accepts_size(semantic_format, byte_size, *total_bytes) {
-                return Ok(None);
-            }
-            *total_bytes = total_bytes.saturating_add(byte_size);
-            Ok(Some(bytes))
-        }
-
-        fn read_file_paths() -> Result<Vec<String>, PlatformError> {
-            let handle = unsafe { GetClipboardData(15) }.map_err(platform_error)?;
-            let drop = HDROP(handle.0);
-            let count = unsafe { DragQueryFileW(drop, u32::MAX, None) };
-            let mut paths = Vec::with_capacity(count as usize);
-            for index in 0..count {
-                let length = unsafe { DragQueryFileW(drop, index, None) };
-                let mut buffer = vec![0_u16; length as usize + 1];
-                unsafe {
-                    DragQueryFileW(drop, index, Some(&mut buffer));
-                }
-                paths.push(String::from_utf16_lossy(&buffer[..length as usize]));
-            }
-            Ok(paths)
-        }
-
-        fn read_file_paths_if_allowed(
-            policy: &CapturePolicy,
-            total_bytes: &mut u64,
-        ) -> Result<Option<Vec<String>>, PlatformError> {
-            let available_size = Self::global_size(15)? as u64;
-            if available_size != 0 && !policy.accepts_size("files", available_size, *total_bytes) {
-                return Ok(None);
-            }
-            let paths = Self::read_file_paths()?;
-            let byte_size = paths.join("\n").len() as u64;
-            if !policy.accepts_size("files", byte_size, *total_bytes) {
-                return Ok(None);
-            }
-            *total_bytes = total_bytes.saturating_add(byte_size);
-            Ok(Some(paths))
-        }
-
-        fn write_unicode(text: &str) -> Result<(), PlatformError> {
-            let mut utf16 = text.encode_utf16().collect::<Vec<_>>();
-            utf16.push(0);
-            let bytes = unsafe {
-                std::slice::from_raw_parts(
-                    utf16.as_ptr().cast::<u8>(),
-                    utf16.len() * size_of::<u16>(),
-                )
-            };
-            Self::write_global(13, bytes.to_vec())
-        }
-
-        fn write_file_paths(bytes: &[u8]) -> Result<(), PlatformError> {
-            let mut utf16 = String::from_utf8_lossy(bytes)
-                .lines()
-                .flat_map(|path| path.encode_utf16().chain(std::iter::once(0)))
-                .collect::<Vec<_>>();
-            utf16.push(0);
-            #[repr(C)]
-            struct DropFiles {
-                files_offset: u32,
-                point_x: i32,
-                point_y: i32,
-                non_client: i32,
-                wide: i32,
-            }
-            let header = DropFiles {
-                files_offset: size_of::<DropFiles>() as u32,
-                point_x: 0,
-                point_y: 0,
-                non_client: 0,
-                wide: 1,
-            };
-            let mut payload = vec![0_u8; size_of::<DropFiles>() + utf16.len() * size_of::<u16>()];
-            unsafe {
-                ptr::copy_nonoverlapping(
-                    (&header as *const DropFiles).cast::<u8>(),
-                    payload.as_mut_ptr(),
-                    size_of::<DropFiles>(),
-                );
-                ptr::copy_nonoverlapping(
-                    utf16.as_ptr().cast::<u8>(),
-                    payload.as_mut_ptr().add(size_of::<DropFiles>()),
-                    utf16.len() * size_of::<u16>(),
-                );
-            }
-            Self::write_global(15, payload)
-        }
-
-        fn write_global(format: u32, bytes: Vec<u8>) -> Result<(), PlatformError> {
-            let global =
-                unsafe { GlobalAlloc(GMEM_MOVEABLE, bytes.len()) }.map_err(platform_error)?;
-            let pointer = unsafe { GlobalLock(global) };
-            if pointer.is_null() {
-                return Err(PlatformError(
-                    "unable to allocate clipboard memory".to_owned(),
-                ));
-            }
-            unsafe {
-                ptr::copy_nonoverlapping(bytes.as_ptr(), pointer.cast::<u8>(), bytes.len());
-                let _ = GlobalUnlock(global);
-            }
-            let handle = HANDLE(global.0);
-            unsafe { SetClipboardData(format, Some(handle)) }.map_err(platform_error)?;
-            Ok(())
-        }
-    }
-
-    impl Drop for ClipboardGuard {
-        fn drop(&mut self) {
-            unsafe {
-                let _ = CloseClipboard();
-            }
-        }
     }
 
     fn capture_native_target() -> Result<Option<PasteTarget>, PlatformError> {

@@ -11,6 +11,19 @@ use windows_sys::Win32::{
     System::{LibraryLoader::GetModuleHandleW, Threading::GetCurrentThreadId},
     UI::{Accessibility::*, Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
 };
+// A top-level root is not an identified text control. WinForms/IME activation
+// can focus it for one message turn before restoring the original child.
+// Treat that as unknown, not an accepted target; preflight still requires the
+// exact original editor, and another child remains a definite mismatch.
+fn native_focus_match(root: isize, expected: isize, observed: isize) -> Option<bool> {
+    if expected != 0 && observed == expected {
+        Some(true)
+    } else if observed == 0 || observed == root {
+        None
+    } else {
+        Some(false)
+    }
+}
 const WAKE: u32 = WM_APP + 61;
 const RETIRE_TIMER: usize = 62;
 thread_local! { static LOCAL: RefCell<Option<Local>> = const { RefCell::new(None) }; }
@@ -369,7 +382,31 @@ impl Local {
         {
             return None;
         }
-        Some(info.hwndFocus as isize == self.shared.focus.load(Ordering::Acquire))
+        let expected = self.shared.focus.load(Ordering::Acquire);
+        let observed = info.hwndFocus as isize;
+        #[cfg(feature = "native-test")]
+        if observed != expected {
+            let mut pid = 0;
+            GetWindowThreadProcessId(info.hwndFocus, &mut pid);
+            self.shared.record("native-focus-expected", expected as u32);
+            self.shared.record("native-focus-observed", observed as u32);
+            self.shared.record("native-focus-pid", pid);
+            self.shared
+                .record("native-focus-root", root as usize as u32);
+            self.shared.record(
+                "native-focus-parent",
+                GetParent(info.hwndFocus) as usize as u32,
+            );
+            let mut class = [0_u16; 128];
+            let count = GetClassNameW(info.hwndFocus, class.as_mut_ptr(), class.len() as i32);
+            let hash = class[..count.max(0) as usize]
+                .iter()
+                .fold(2166136261_u32, |hash, value| {
+                    (hash ^ u32::from(*value)).wrapping_mul(16777619)
+                });
+            self.shared.record("native-focus-class", hash);
+        }
+        native_focus_match(root as isize, expected, observed)
     }
     fn mods(&self) -> bool {
         [
@@ -623,6 +660,7 @@ unsafe extern "system" fn win_event(
                 // the MTA retries; no insertion can pass current() meanwhile.
                 if target_match.is_none() {
                     state.shared.record("foreground-unavailable", event);
+                    state.shared.selectable.store(false, Ordering::Release);
                     let _ = state.sender.try_send(Request::Observe(id));
                     return;
                 }
@@ -668,6 +706,14 @@ unsafe extern "system" fn win_event(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn native_focus_requires_exact_editor_and_treats_root_transition_as_unknown() {
+        assert_eq!(super::native_focus_match(10, 20, 20), Some(true));
+        assert_eq!(super::native_focus_match(10, 20, 10), None);
+        assert_eq!(super::native_focus_match(10, 20, 0), None);
+        assert_eq!(super::native_focus_match(10, 20, 30), Some(false));
+        assert_eq!(super::native_focus_match(10, 10, 10), Some(true));
+    }
     use super::*;
 
     fn install_test_lease(callback: Arc<dyn Fn(InlineEvent) + Send + Sync>) -> Arc<Shared> {

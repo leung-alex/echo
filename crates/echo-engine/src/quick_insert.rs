@@ -959,6 +959,13 @@ impl<S: crate::SpaceStore> QuickInsertService<S> {
             )
             .map_err(|e| LibraryError::Storage(e).into())
     }
+    /// Retire the session query while retaining bounded, revision-checked metadata.
+    pub fn release_search_results(&self) {
+        self.fuzzy
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear_results();
+    }
     pub fn release_search_cache(&self) {
         self.fuzzy.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }

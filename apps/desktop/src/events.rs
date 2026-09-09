@@ -117,23 +117,13 @@ impl Hub {
             .drain(..)
             .collect()
     }
-    /// Hook callbacks never wait for a UI-owned lock. A contended enqueue is
-    /// handed to the event-loop proxy; no COM/storage/rendering runs here.
+    /// All inline events use one proxy path; hook callbacks never wait on the UI queue.
     pub fn post_inline(self: &Arc<Self>, event: echo_windows::inline::InlineEvent) {
         if self.closed.load(Ordering::Acquire) {
             return;
         }
-        if let Ok(mut queue) = self.queue.try_lock() {
-            if let echo_windows::inline::InlineEvent::Changed { ticket, .. } = &event {
-                queue.retain(|e| !matches!(e, Event::Inline(echo_windows::inline::InlineEvent::Changed { ticket: older, .. }) if older.session == ticket.session));
-            }
-            queue.push_back(Event::Inline(event));
-            drop(queue);
-            self.kick();
-        } else {
-            let hub = self.clone();
-            let _ = slint::invoke_from_event_loop(move || hub.post(Event::Inline(event)));
-        }
+        let hub = self.clone();
+        let _ = slint::invoke_from_event_loop(move || hub.post(Event::Inline(event)));
     }
     pub fn post(self: &Arc<Self>, event: Event) {
         if self.closed.load(Ordering::Acquire) {
@@ -141,6 +131,27 @@ impl Hub {
         }
         {
             let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+            if self.closed.load(Ordering::Acquire) {
+                return;
+            }
+            // Never coalesce across Confirm, Cancel or other control-event barriers.
+            if let Event::Inline(echo_windows::inline::InlineEvent::Changed { ticket, .. }) = &event
+            {
+                if let Some(Event::Inline(echo_windows::inline::InlineEvent::Changed {
+                    ticket: previous,
+                    ..
+                })) = queue.back()
+                {
+                    if ticket.session == previous.session {
+                        if ticket.revision < previous.revision
+                            || ticket.input_serial < previous.input_serial
+                        {
+                            return;
+                        }
+                        queue.pop_back();
+                    }
+                }
+            }
             let duplicate = match &event {
                 Event::Command(Command::FlowTick) => queue
                     .iter()
@@ -195,12 +206,17 @@ impl Hub {
             self.scheduled.store(false, Ordering::Release);
         }
     }
+    fn take_batch(&self) -> Vec<Event> {
+        let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+        let count = queue.len().min(32);
+        queue.drain(..count).collect()
+    }
     fn drain(self: Arc<Self>) {
-        let events = {
-            let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
-            queue.drain(..).collect::<Vec<_>>()
-        };
+        let events = self.take_batch();
         for event in events {
+            if self.closed.load(Ordering::Acquire) {
+                break;
+            }
             crate::app::deliver(event);
         }
         self.scheduled.store(false, Ordering::Release);
@@ -241,3 +257,6 @@ pub struct DiagnosticReport {
     pub system_animations: bool,
     pub on_battery: bool,
 }
+
+#[cfg(test)]
+mod tests;

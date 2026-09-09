@@ -1,7 +1,7 @@
 name: Echo native Rust and Slint
 on:
   push:
-    branches: [codex/ui]
+    branches: [main, codex/ui]
   pull_request:
   workflow_dispatch:
 permissions:
@@ -35,10 +35,20 @@ jobs:
         run: |
           ./echo.cmd verify
           if ($LASTEXITCODE) { throw 'Native verification failed' }
+      - name: Verify complete large-corpus search and cancellation
+        run: |
+          cargo test -p echo-storage --test fuzzy_search fuzzy_search_large_corpus_keeps_tail_results_and_cancels --locked -- --ignored --nocapture
+          if ($LASTEXITCODE) { throw 'Large-corpus search regression failed' }
       - name: Release build without a browser runtime
         run: |
           ./echo.cmd build --release
           if ($LASTEXITCODE) { throw 'Native Release build failed' }
+      - name: Verify software-only fallback
+        run: |
+          cargo test -p echo-desktop --no-default-features --locked
+          if ($LASTEXITCODE) { throw 'Software-only tests failed' }
+          cargo build -p echo-desktop --no-default-features --locked
+          if ($LASTEXITCODE) { throw 'Software-only build failed' }
       - name: Record platform acceptance boundary
         if: always()
         run: |

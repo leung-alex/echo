@@ -107,11 +107,17 @@ impl ClipboardStore {
                 values.push(Value::Text(fts_match_query(query)));
             }
         }
-        let total: i64 = self.connection.query_row(
-            &format!("SELECT COUNT(*) {join} WHERE {filter}"),
-            params_from_iter(values.clone()),
-            |row| row.get(0),
-        )?;
+        // space_record already counted this membership set in the same WAL
+        // snapshot. Do not fetch every Saved Item again on every scan page.
+        let total: i64 = if query.is_empty() {
+            i64::try_from(space.item_count).unwrap_or(i64::MAX)
+        } else {
+            self.connection.query_row(
+                &format!("SELECT COUNT(*) {join} WHERE {filter}"),
+                params_from_iter(values.clone()),
+                |row| row.get(0),
+            )?
+        };
         if let Some(cursor) = cursor {
             let PageCursor::Space {
                 space_id,
@@ -125,22 +131,18 @@ impl ClipboardStore {
             if space_id != id.0 || revision != space.revision {
                 return Err(SpaceError::StaleCursor.into());
             }
-            filter.push_str(" AND (m.sort_key>? OR (m.sort_key=? AND s.id>?))");
-            values.extend([
-                Value::Integer(sort_key),
-                Value::Integer(sort_key),
-                Value::Integer(row_id),
-            ]);
+            filter.push_str(" AND (m.sort_key,m.saved_item_id) > (?,?)");
+            values.extend([Value::Integer(sort_key), Value::Integer(row_id)]);
         }
         values.push(Value::Integer(i64::from(size) + 1));
         let sql = format!(
             "SELECT s.id,s.source_history_id,s.created_at,s.updated_at,s.name,
             s.content_type,s.editable_text,s.source_app,s.source_executable,s.source_window_title,
             s.preview_text,s.byte_size,s.icon_key,m.sort_key {join} WHERE {filter}
-            ORDER BY m.sort_key,s.id LIMIT ?"
+            ORDER BY m.sort_key,m.saved_item_id LIMIT ?"
         );
         let mut items = {
-            let mut statement = self.connection.prepare(&sql)?;
+            let mut statement = self.connection.prepare_cached(&sql)?;
             let rows = statement.query_map(params_from_iter(values), map_saved_item)?;
             rows.collect::<std::result::Result<Vec<_>, _>>()?
         };
@@ -553,11 +555,11 @@ impl ClipboardStore {
         validate_space_tx(&tx, space, Some(revision))?;
         Self::verify_saved_representations_tx(&tx, &self.blobs_dir, item)?;
         let now = now_millis();
-        tx.execute("UPDATE saved_items SET favorite_order=favorite_order+1", [])?;
+        let order = super::saved_order::prepend_key_tx(&tx)?;
         tx.execute("INSERT INTO saved_items(source_history_id,created_at,updated_at,name,content_type,editable_text,
             source_app,source_executable,source_window_title,preview_text,byte_size,icon_key,favorite_order,is_independent)
             SELECT NULL,?,?,name || ' copy',content_type,editable_text,source_app,source_executable,
-            source_window_title,preview_text,byte_size,icon_key,0,1 FROM saved_items WHERE id=?",params![now,now,item])?;
+            source_window_title,preview_text,byte_size,icon_key,?,1 FROM saved_items WHERE id=?",params![now,now,order,item])?;
         let copy = tx.last_insert_rowid();
         tx.execute("INSERT INTO saved_item_representations(saved_item_id,format,mime_type,inline_data,blob_hash,content_hash,byte_size)
             SELECT ?,format,mime_type,inline_data,blob_hash,content_hash,byte_size FROM saved_item_representations WHERE saved_item_id=?",

@@ -10,6 +10,9 @@ import (
 )
 
 func (a *app) runNativeGate(scope string) error {
+	if scope == "clipboard" || scope == "quick-insert" {
+		return a.runInlineGate(scope)
+	}
 	if scope == "ui" {
 		return a.runCoverFlowGate()
 	}

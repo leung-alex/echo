@@ -129,7 +129,7 @@ try {
     }
 
     if ($Scope -eq 'smoke') {
-        Check 'smoke-search' { Query '0013'; Wait-Text 'echo-perf-text-0013'; 'exact fixture result observed' }
+        Check 'smoke-manual-history' { Wait-Text 'History space'; if ((D dump).Contains('ControlType.Edit | Search clipboard history')) { throw 'Removed local search field is exposed.' }; 'native history is ready without a local search field' }
         Check 'close-to-hide' { D close $mainTitle | Out-Null; Wait-Hidden; if ($echoProcess.HasExited) { throw 'Closing terminated the resident.' }; 'owned WM_CLOSE hides the window and preserves the resident' }
         Start-ScopedProcess @('--history'); Wait-Until { D exists } 'activation reopen' | Out-Null
         Check 'graceful-exit' { Start-ScopedProcess @('--quit'); if (!$echoProcess.WaitForExit(10000) -or $echoProcess.ExitCode -ne 0) { throw 'Owned resident did not exit cleanly.' }; "exit=$($echoProcess.ExitCode)" }

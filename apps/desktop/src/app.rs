@@ -1178,6 +1178,7 @@ impl App {
             Command::Prewarm => self.prewarm(),
             Command::TrimHidden => {
                 if !self.surface.visible {
+                    self.send(Work::TrimSearchCache(self.session.epoch));
                     self.clear_flow_cache();
                     self.previews.clear();
                     self.images.trim_to(0);

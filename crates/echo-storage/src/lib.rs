@@ -1,6 +1,7 @@
 use std::any::Any;
 use std::collections::{HashSet, VecDeque};
 
+mod saved_order;
 mod spaces;
 #[cfg(test)]
 mod spaces_tests;
@@ -1618,7 +1619,8 @@ impl ClipboardStore {
              LIMIT 1"
         );
         self.connection
-            .query_row(&sql, [owner_id], map_thumbnail)
+            .prepare_cached(&sql)?
+            .query_row([owner_id], map_thumbnail)
             .optional()
             .map_err(StorageError::from)
     }
@@ -1766,16 +1768,13 @@ impl ClipboardStore {
                 saved_id
             } else {
                 let draft = SavedItemDraft::from_history(entry);
-                tx.execute(
-                    "UPDATE saved_items SET favorite_order = favorite_order + 1",
-                    [],
-                )?;
+                let order = saved_order::prepend_key_tx(&tx)?;
                 tx.execute(
                     "INSERT INTO saved_items
                      (source_history_id, created_at, updated_at, name, content_type, editable_text,
                       source_app, source_executable, source_window_title, preview_text, byte_size,
                       icon_key, favorite_order, is_independent)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)",
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
                     params![
                         entry.id,
                         draft.created_at,
@@ -1789,6 +1788,7 @@ impl ClipboardStore {
                         draft.preview_text,
                         i64::try_from(entry.byte_size).unwrap_or(i64::MAX),
                         draft.icon_key,
+                        order,
                     ],
                 )?;
                 let saved_id = tx.last_insert_rowid();
@@ -1863,16 +1863,13 @@ impl ClipboardStore {
         let prepared = self.prepare_representation(&representation, None)?;
         let tx = self.connection.transaction()?;
         spaces::validate_space_tx(&tx, destination, expected_revision)?;
-        tx.execute(
-            "UPDATE saved_items SET favorite_order = favorite_order + 1",
-            [],
-        )?;
+        let order = saved_order::prepend_key_tx(&tx)?;
         tx.execute(
             "INSERT INTO saved_items
              (source_history_id, created_at, updated_at, name, content_type, editable_text,
               source_app, source_executable, source_window_title, preview_text, byte_size,
               icon_key, favorite_order, is_independent)
-             VALUES (NULL, ?, ?, ?, 'text', ?, NULL, NULL, NULL, ?, ?, ?, 0, 1)",
+             VALUES (NULL, ?, ?, ?, 'text', ?, NULL, NULL, NULL, ?, ?, ?, ?, 1)",
             params![
                 now,
                 now,
@@ -1881,6 +1878,7 @@ impl ClipboardStore {
                 preview_text(&draft.content),
                 i64::try_from(representation.bytes.len()).unwrap_or(i64::MAX),
                 icon_key,
+                order,
             ],
         )?;
         let id = tx.last_insert_rowid();
@@ -2370,7 +2368,7 @@ impl ClipboardStore {
     }
 
     fn tags_for_item(&self, id: i64) -> Result<Vec<String>> {
-        let mut statement = self.connection.prepare(
+        let mut statement = self.connection.prepare_cached(
             "SELECT t.name FROM tags t
              JOIN saved_item_tags sit ON sit.tag_id = t.id
              WHERE sit.saved_item_id = ? ORDER BY sit.rowid",

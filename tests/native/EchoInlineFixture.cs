@@ -8,6 +8,13 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using System.Drawing;
 public static class EchoInlineFixture {
+    static readonly Queue<object> focusEvents = new Queue<object>();
+    static void RecordFocus(IntPtr window, Message message, uint sent) {
+        while(focusEvents.Count >= 24) focusEvents.Dequeue();
+        focusEvents.Enqueue(new { qpc=Stopwatch.GetTimestamp(), window=window.ToInt64(),
+            message=message.Msg, other=message.WParam.ToInt64(), sent=sent,
+            stack=message.Msg==8 ? new StackTrace().ToString() : "" });
+    }
     sealed class OwnedTextBox : TextBox {
         public bool RejectSelection;
         public bool RefuseExternalReads;
@@ -40,6 +47,7 @@ public static class EchoInlineFixture {
         [DllImport("kernel32.dll")] static extern UIntPtr GlobalSize(IntPtr memory);
         [DllImport("kernel32.dll")] static extern bool GlobalUnlock(IntPtr memory);
         protected override void WndProc(ref Message message) {
+            if(message.Msg==7 || message.Msg==8) RecordFocus(Handle, message, InSendMessageEx(IntPtr.Zero));
             if (message.Msg == 0x000E && AcquisitionDelayMs > 0 && InSendMessageEx(IntPtr.Zero) != 0) {
                 int delay = AcquisitionDelayMs; AcquisitionDelayMs = 0;
                 AcquisitionDelayCount++; System.Threading.Thread.Sleep(delay);
@@ -123,6 +131,7 @@ public static class EchoInlineFixture {
     [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr hwnd);
     [DllImport("user32.dll")] static extern bool AllowSetForegroundWindow(uint pid);
     [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] static extern IntPtr SetFocus(IntPtr window);
     [DllImport("imm32.dll")] static extern IntPtr ImmGetContext(IntPtr hwnd);
     [DllImport("imm32.dll")] static extern bool ImmReleaseContext(IntPtr hwnd,IntPtr context);
     [DllImport("imm32.dll")] static extern bool ImmGetOpenStatus(IntPtr context);
@@ -135,6 +144,15 @@ public static class EchoInlineFixture {
         finally{ImmReleaseContext(input.Handle,context);}
     }
     static void EnglishForOwnedInput(TextBoxBase input) {
+        // Reset the control policy as well as the IMM context. A previous IME test
+        // leaves ImeMode.On, which can reopen composition after the next focus event.
+        input.ImeMode=ImeMode.Off;
+        foreach(InputLanguage language in InputLanguage.InstalledInputLanguages) {
+            if(language.Culture.TwoLetterISOLanguageName=="en") {
+                InputLanguage.CurrentInputLanguage=language;
+                break;
+            }
+        }
         var context=ImmGetContext(input.Handle);
         if(context!=IntPtr.Zero){try{ImmSetOpenStatus(context,false);}finally{ImmReleaseContext(input.Handle,context);}}
     }
@@ -187,7 +205,7 @@ public static class EchoInlineFixture {
                 selection_fault_count=owned==null?0:owned.SelectionFaultCount,
                 selection_fault_error=owned==null?"":owned.SelectionFaultError};
         }
-        return new {fields=fields,foreground=GetForegroundWindow()==form.Handle,deactivations=deactivations,pid=Process.GetCurrentProcess().Id};
+        return new {focus_events=focusEvents.ToArray(),window=form.Handle.ToInt64(),fields=fields,foreground=GetForegroundWindow()==form.Handle,deactivations=deactivations,pid=Process.GetCurrentProcess().Id};
     }
     [STAThread] public static int Main(string[] args) {
         if(args.Length!=2||Environment.GetEnvironmentVariable("ECHO_WINDOWS_ACCEPTANCE")!="1")return 2;
@@ -222,8 +240,24 @@ public static class EchoInlineFixture {
             string id=(string)request["id"];string op=(string)request["op"];
             try {
                 if(op=="quit"){timer.Stop();Atomic("native-response.json",new{id=id,status="PASS",value=State()});form.Close();return;}
+                if(op=="clipboard-matches") {
+                    bool matches=Clipboard.ContainsText() && Clipboard.GetText()==(string)request["expected"];
+                    Atomic("native-response.json",new{id=id,status="PASS",value=new{matches=matches}});return;
+                }
                 if(op=="allow"){if(!AllowSetForegroundWindow(Convert.ToUInt32(request["pid"])))throw new InvalidOperationException("Foreground grant failed");}
                 if(op=="move"){form.Location=new Point(Convert.ToInt32(request["x"]),Convert.ToInt32(request["y"]));}
+                if(op=="root-focus-roundtrip") {
+                    var edit=inputs["single"];
+                    if(GetForegroundWindow()!=form.Handle || !edit.Focused)
+                        throw new InvalidOperationException("Root-focus test requires its owned active input");
+                    var restore=new Timer{Interval=40};
+                    restore.Tick+=delegate {
+                        restore.Stop(); restore.Dispose();
+                        if(GetForegroundWindow()==form.Handle)edit.Focus();
+                        QueueState();
+                    };
+                    SetFocus(form.Handle); restore.Start();
+                }
                 if(op=="ime-chinese")ChineseForOwnedInput(inputs[(string)request["control"]]);
                 if(op=="ime-english")EnglishForOwnedInput(inputs[(string)request["control"]]);
                 if(op=="selection-policy")((OwnedTextBox)inputs["single"]).RejectSelection=Convert.ToBoolean(request["reject"]);

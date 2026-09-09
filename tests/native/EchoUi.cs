@@ -142,12 +142,12 @@ public static class EchoUi
     {
         if (Window(pid, title, true) == IntPtr.Zero) return false;
         List<AutomationElement> elements = Elements(pid, title);
-        AutomationElement search = elements.FirstOrDefault(delegate(AutomationElement item)
+        AutomationElement space = elements.FirstOrDefault(delegate(AutomationElement item)
         {
-            try { return item.Current.Name == "Search clipboard history" && item.Current.IsEnabled && !item.Current.IsOffscreen; }
+            try { return item.Current.Name == "History space" && item.Current.IsEnabled && !item.Current.IsOffscreen; }
             catch (ElementNotAvailableException) { return false; }
         });
-        if (search == null) return false;
+        if (space == null) return false;
         return elements.Any(delegate(AutomationElement item)
         {
             try
@@ -157,7 +157,8 @@ public static class EchoUi
                     (name.IndexOf("Echo fixture", StringComparison.Ordinal) >= 0 ||
                      name.IndexOf("echo-fixture-", StringComparison.Ordinal) >= 0 ||
                      name.IndexOf("echo-perf-text-", StringComparison.Ordinal) >= 0 ||
-                     name.IndexOf("Fixture image", StringComparison.Ordinal) >= 0);
+                     name.IndexOf("Fixture image", StringComparison.Ordinal) >= 0 ||
+                     name.IndexOf("Your clipboard history appears here", StringComparison.Ordinal) >= 0);
             }
             catch (ElementNotAvailableException) { return false; }
         });

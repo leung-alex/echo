@@ -27,7 +27,8 @@ export component SpacePanel inherits Rectangle {
     in property <bool> quick-insert;
     in property <bool> inline-mode;
     in property <string> empty-state-text;
-    private property <length> header-height: T.panel-header-height;
+    private property <bool> show-notice: !root.capture-only && !root.titles-only && root.status != "" && (root.status-error || (root.copy-only && !root.inline-mode));
+    private property <length> header-height: T.panel-header-height + (root.show-notice ? 64px : 0px);
     out property <length> natural-height: root.header-height + 24px + (root.rows.length == 0 ? 78px : list.viewport-height);
     changed natural-height => { if (root.inline-mode && !root.capture-only) {root.viewport-changed();} }
     in property <bool> copy-only;
@@ -124,6 +125,12 @@ export component SpacePanel inherits Rectangle {
         enabled: !root.busy && !root.loading && !root.stale && !root.modal && !root.animating;
         take-focus-on-click: !root.inline-mode;
         clicked => { if (!root.ime-composing()) {root.action("clear-all", "");} }
+    }
+    if (root.show-notice): Text {
+        x:T.panel-padding;y:T.panel-header-height + 4px;
+        width:parent.width - 2*T.panel-padding;height:56px;
+        text:root.status;wrap:word-wrap;overflow:elide;
+        color:root.status-error ? EchoTheme.danger : EchoTheme.muted;font-size:12px;
     }
     if (root.batch): HorizontalLayout {
         x:T.panel-padding;y:root.header-height + 8px;width:parent.width - 2*T.panel-padding;height:36px;spacing:8px;alignment:start;

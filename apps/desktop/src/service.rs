@@ -42,6 +42,7 @@ pub enum Work {
     BeginInline(u64, echo_windows::focus::FocusSnapshot),
     Adopt(u64, Option<PasteTarget>),
     Cancel,
+    TrimSearchCache(u64),
     RetryHotkey,
     Execute(Operation, RowKey),
     ExecuteInline(Operation, RowKey, echo_engine::InlineTicket),
@@ -50,6 +51,17 @@ pub enum Work {
     Diagnostics(crate::events::DiagnosticReport),
     Wake,
     Stop,
+}
+// Invalidate synchronously, before routing to a possibly busy control/capture lane.
+fn advance_search_generation(epoch: &AtomicU64, work: &Work) -> u64 {
+    if matches!(
+        work,
+        Work::List(..) | Work::Cancel | Work::Begin(..) | Work::BeginInline(..) | Work::Stop
+    ) {
+        epoch.fetch_add(1, Ordering::AcqRel).wrapping_add(1)
+    } else {
+        epoch.load(Ordering::Acquire)
+    }
 }
 pub struct Worker {
     sender: SyncSender<(u64, Work)>,
@@ -119,13 +131,7 @@ impl Worker {
         })
     }
     pub fn send(&self, work: Work) -> Result<(), String> {
-        let search_generation = if matches!(&work, Work::List(..) | Work::Stop) {
-            self.search_epoch
-                .fetch_add(1, Ordering::AcqRel)
-                .wrapping_add(1)
-        } else {
-            self.search_epoch.load(Ordering::Acquire)
-        };
+        let search_generation = advance_search_generation(&self.search_epoch, &work);
         let work = match work {
             Work::BeginInline(epoch, snapshot) => return self.inline.begin(epoch, snapshot),
             Work::Begin(epoch, context, snapshot) => {
@@ -328,7 +334,12 @@ fn run(
             }
             Work::Cancel => {
                 services.quick.clear_session();
-                services.quick.release_search_cache();
+                services.quick.release_search_results();
+            }
+            Work::TrimSearchCache(generation) => {
+                if epoch.load(Ordering::Acquire) == generation {
+                    services.quick.release_search_cache();
+                }
             }
             Work::RetryHotkey => {
                 let result = services
@@ -548,6 +559,30 @@ fn thumbnail(services: &Services, hash: &str) -> Result<PixelData, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn dismissal_and_activation_invalidate_running_search_before_queue_delivery() {
+        let epoch = AtomicU64::new(4);
+        assert_eq!(advance_search_generation(&epoch, &Work::Cancel), 5);
+        assert_ne!(epoch.load(Ordering::Acquire), 4);
+        assert_eq!(
+            advance_search_generation(&epoch, &Work::Begin(9, Context::QuickInsert, None)),
+            6
+        );
+        assert_eq!(advance_search_generation(&epoch, &Work::Stop), 7);
+    }
+    #[test]
+    fn maintenance_does_not_cancel_a_new_search() {
+        let epoch = AtomicU64::new(8);
+        assert_eq!(
+            advance_search_generation(&epoch, &Work::TrimSearchCache(1)),
+            8
+        );
+        assert_eq!(
+            advance_search_generation(&epoch, &Work::Resume(SpaceId::HISTORY)),
+            8
+        );
+        assert_eq!(epoch.load(Ordering::Acquire), 8);
+    }
     #[test]
     fn reordering_keeps_every_favorite_including_unloaded_pages() {
         let mut ids = (1..=1000).collect::<Vec<_>>();

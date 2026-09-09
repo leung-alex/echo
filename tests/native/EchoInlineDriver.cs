@@ -383,11 +383,23 @@ public static class EchoInlineDriver {
     static object SampleActions(string root,IntPtr echo,int pid,string title,int inputPid,string inputTitle) {
         IntPtr input=Owned(root,inputPid,inputTitle);
         if(GetForegroundWindow()!=input)throw new InvalidOperationException("Owned input is not foreground");
-        var icon=EchoUi.Find(pid,title,"Copy item").Current.BoundingRectangle;
+        var row=EchoUi.Find(pid,title,"echo-perf-text-0013 — Reusable content, available when you need it.").Current.BoundingRectangle;
         Point oldPointer;GetCursorPos(out oldPointer);
-        var hover=new Point{X=(int)(icon.Left+icon.Width/2),Y=(int)(icon.Top+icon.Height/2)};
+        var hover=new Point{X=(int)(row.Left+row.Width/2),Y=(int)(row.Top+row.Height/2)};
         foreach(var key in new[]{0x01,0x02,0x10,0x11,0x12,0x5b,0x5c})if((GetAsyncKeyState(key)&0x8000)!=0)throw new InvalidOperationException("Physical pointer/modifier busy; hover sampling cancelled");
         if(GetAncestor(WindowFromPoint(hover),2)!=echo||!SetCursorPos(hover.X,hover.Y))throw new InvalidOperationException("Owned action hover point unavailable");
+        Thread.Sleep(150);
+        System.Windows.Rect icon;
+        try {
+            icon=EchoUi.Find(pid,title,"Copy item").Current.BoundingRectangle;
+        } catch {
+            Point current;GetCursorPos(out current);
+            if(current.X==hover.X&&current.Y==hover.Y)SetCursorPos(oldPointer.X,oldPointer.Y);
+            throw;
+        }
+        hover=new Point{X=(int)(icon.Left+icon.Width/2),Y=(int)(icon.Top+icon.Height/2)};
+        if(GetForegroundWindow()!=input||GetAncestor(WindowFromPoint(hover),2)!=echo||!SetCursorPos(hover.X,hover.Y))
+            throw new InvalidOperationException("Owned copy-action hover is unavailable");
         Thread.Sleep(150);
         Rect initial;GetWindowRect(echo,out initial);
         int ox=(int)(icon.Left-initial.Left),oy=(int)(icon.Top-initial.Top);
@@ -398,6 +410,9 @@ public static class EchoInlineDriver {
             File.WriteAllText(Path.Combine(root,"actions.ready"),"owned copy button samples only");
             while(watch.ElapsedMilliseconds<12000&&!File.Exists(Path.Combine(root,"actions.stop"))) {
                 if(GetForegroundWindow()!=input||EchoUi.Window(pid,title,true)!=echo)throw new InvalidOperationException("Action sample lost target focus");
+                Point pointer;GetCursorPos(out pointer);
+                if(pointer.X!=hover.X||pointer.Y!=hover.Y)throw new InvalidOperationException("Stationary-hover acceptance interrupted by pointer movement");
+                if(GetAncestor(WindowFromPoint(pointer),2)!=echo)throw new InvalidOperationException("Owned copy action was occluded during sampling");
                 Rect rect;GetWindowRect(echo,out rect);
                 graphics.CopyFromScreen(rect.Left+ox,rect.Top+oy,0,0,bitmap.Size,System.Drawing.CopyPixelOperation.SourceCopy);
                 var colors=new List<int>();
