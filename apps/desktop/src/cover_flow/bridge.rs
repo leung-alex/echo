@@ -6,7 +6,7 @@ use crate::{
     AppWindow,
 };
 use slint::{ComponentHandle, GraphicsAPI, RenderingState};
-use std::{cell::RefCell, rc::Rc, sync::Arc, time::Instant};
+use std::{cell::RefCell, collections::HashMap, rc::Rc, sync::Arc, time::Instant};
 #[derive(Clone, Default, PartialEq)]
 struct Scene {
     width: f32,
@@ -26,6 +26,9 @@ struct State {
     policy: RasterPolicy,
     content_revision: u64,
     present_revision: u64,
+    snapshots: HashMap<i64, (i64, super::snapshot::PanelSnapshot)>,
+    scene_revision: u64,
+    frame_started: Option<Instant>,
 }
 pub struct FlowBridge {
     state: Rc<RefCell<State>>,
@@ -42,8 +45,18 @@ impl FlowBridge {
             .set_rendering_notifier(move |phase, api| {
                 let mut state = render.borrow_mut();
                 state.perf.phase(&phase);
+                if matches!(phase, RenderingState::BeforeRendering) && crate::popup_timing::enabled() {
+                    state.frame_started = Some(Instant::now());
+                }
                 match phase {
+                    RenderingState::AfterRendering => {
+                        crate::popup_timing::mark("render_submitted");
+                        if let Some(start) = state.frame_started.take() {
+                            crate::popup_timing::event("slint_frame", serde_json::json!({"duration_us":start.elapsed().as_micros() as u64}));
+                        }
+                    }
                     RenderingState::RenderingSetup => {
+                        crate::popup_timing::mark("rendering_setup");
                         if let GraphicsAPI::WGPU29 {
                             instance,
                             device,
@@ -64,6 +77,7 @@ impl FlowBridge {
                         }
                     }
                     RenderingState::BeforeRendering if state.dirty => {
+                        let _timing = crate::popup_timing::span("composite");
                         let scene = state.scene.clone();
                         state.dirty = false;
                         if let Some(compositor) = state.compositor.as_mut() {
@@ -75,6 +89,11 @@ impl FlowBridge {
                         }
                     }
                     RenderingState::RenderingTeardown => {
+                        crate::popup_timing::mark("rendering_teardown");
+                        state.snapshots.clear();
+                        state.scene = Scene::default();
+                        state.content_revision = state.content_revision.wrapping_add(1);
+                        state.scene_revision = state.scene_revision.wrapping_add(1);
                         state.panel_renderer = None;
                         state.compositor = None;
                         state.dirty = false;
@@ -111,6 +130,9 @@ impl FlowBridge {
         let s = self.state.borrow();
         s.compositor.is_some() && s.panel_renderer.is_some()
     }
+    pub fn scene_revision(&self) -> u64 {
+        self.state.borrow().scene_revision
+    }
     pub fn contains(&self, id: i64) -> bool {
         self.state
             .borrow()
@@ -119,12 +141,24 @@ impl FlowBridge {
             .is_some_and(|c| c.contains(id))
     }
     pub fn retain(&self, ids: &[i64]) {
-        if let Some(c) = self.state.borrow_mut().compositor.as_mut() {
+        let mut state = self.state.borrow_mut();
+        state.snapshots.retain(|id, _| ids.contains(id));
+        if let Some(c) = state.compositor.as_mut() {
             c.retain(ids);
         }
     }
+    /// Retire a presentation without destroying reusable card targets or models.
+    pub fn invalidate_scene(&self) {
+        let mut state = self.state.borrow_mut();
+        state.scene = Scene::default();
+        // The next present() supplies valid dimensions. A resize can draw before it.
+        state.dirty = false;
+        state.content_revision = state.content_revision.wrapping_add(1);
+    }
     pub fn clear(&self) {
+        crate::popup_timing::mark("flow_resources_released");
         let mut s = self.state.borrow_mut();
+        s.snapshots.clear();
         if let Some(c) = s.compositor.as_mut() {
             c.clear();
         }
@@ -174,9 +208,19 @@ impl FlowBridge {
             panels,
         };
         let changed = scene != state.scene || state.present_revision != state.content_revision;
+        if changed {
+            state.scene_revision = state.scene_revision.wrapping_add(1);
+        }
         state.scene = scene;
         state.dirty |= changed;
         state.present_revision = state.content_revision;
+        if changed && crate::popup_timing::enabled() {
+            let c = state.compositor.as_ref().unwrap();
+            crate::popup_timing::event(
+                "scene_ready",
+                serde_json::json!({"revision":state.scene_revision,"bytes":c.bytes(),"panels":c.panel_count(),"captures":state.captures}),
+            );
+        }
         Ok((image, changed))
     }
     /// GPU-only panel rendering. This function never calls take_snapshot/map/poll.
@@ -185,6 +229,7 @@ impl FlowBridge {
         window: &AppWindow,
         id: i64,
         downsample: bool,
+        revision: i64,
     ) -> Result<(), String> {
         let start = Instant::now();
         let mut state = self.state.borrow_mut();
@@ -202,6 +247,26 @@ impl FlowBridge {
         if downsample {
             dpi = dpi.min(1.0);
         }
+        let snapshot = super::snapshot::PanelSnapshot::read(window, dpi);
+        if crate::popup_timing::enabled() {
+            if let Some((old_revision, old)) = state.snapshots.get(&id) {
+                crate::popup_timing::event(
+                    "snapshot_check",
+                    serde_json::json!({"space":id,"revision_changed":*old_revision!=revision,"changes":snapshot.changes(old)}),
+                );
+            }
+        }
+        if state
+            .snapshots
+            .get(&id)
+            .is_some_and(|old| old.0 == revision && old.1 == snapshot)
+            && state.compositor.as_ref().is_some_and(|c| c.contains(id))
+        {
+            if crate::popup_timing::enabled() {
+                crate::popup_timing::event("snapshot_hit", serde_json::json!({"space": id}));
+            }
+            return Ok(());
+        }
         let (width, height) = (
             (window.get_panel_width() * dpi).round() as u32,
             (window.get_panel_height() * dpi).round() as u32,
@@ -215,10 +280,17 @@ impl FlowBridge {
             .panel_renderer
             .as_ref()
             .ok_or("Panel renderer is not ready")?
-            .render(window, &texture, dpi)?;
+            .render(&snapshot, &texture)?;
+        state.snapshots.insert(id, (revision, snapshot));
         state.content_revision = state.content_revision.wrapping_add(1);
         state.captures += 1;
         let us = start.elapsed().as_micros() as u64;
+        if crate::popup_timing::enabled() {
+            crate::popup_timing::event(
+                "snapshot_capture",
+                serde_json::json!({"space": id,"duration_us": us,"width": width,"height":height}),
+            );
+        }
         state.capture_us = state.capture_us.saturating_add(us);
         if state.perf.capture_us.len() < 512 {
             state.perf.capture_us.push(us);
@@ -293,6 +365,7 @@ impl FlowBridge {
             let mut state = self.state.borrow_mut();
             state.dirty = false;
             state.scene = Scene::default();
+            state.snapshots.clear();
             (state.panel_renderer.take(), state.compositor.take())
         };
         drop(resources);

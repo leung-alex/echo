@@ -13,6 +13,14 @@ pub(super) fn accent(key: &str) -> slint::Color {
     slint::Color::from_rgb_u8(r, g, b)
 }
 impl App {
+    pub(super) fn flow_poses(&self) -> Vec<echo_presentation::deck::Pose> {
+        let width = self.window.get_panel_width();
+        if let Some(right) = self.popup_side_right.filter(|_| self.quick_geometry_active) {
+            self.deck.popup_poses(width, right)
+        } else {
+            self.deck.poses(width)
+        }
+    }
     pub(super) fn spaces_loaded(&mut self, result: Result<Vec<Space>, String>) {
         let spaces = match result {
             Ok(v) => v,
@@ -63,6 +71,7 @@ impl App {
         self.schedule_prewarm();
     }
     pub(super) fn render_navigation(&self) {
+        let _timing = crate::popup_timing::span("navigation_model_update");
         // Keep the live native tree frozen while only GPU textures are moving.
         if self.deck.phase == Phase::Animating {
             return;
@@ -237,6 +246,7 @@ impl App {
     pub(super) fn content_ready(&mut self) {
         if self.surface.ready && !self.surface.loading && self.surface.space == self.deck.requested
         {
+            crate::popup_timing::mark("content_ready");
             self.deck.ready(self.surface.space);
         }
         self.window
@@ -292,6 +302,7 @@ impl App {
         self.pending_previews.clear();
     }
     pub(super) fn schedule_prewarm(&mut self) {
+        self.prepare_visible_neighbors();
         if self.inline_active()
             && (!self.surface.ready || self.surface.loading || self.surface.dirty)
         {
@@ -312,6 +323,35 @@ impl App {
             move || hub.post(Event::Command(Command::Prewarm)),
         );
     }
+    /// Current neighbors are first-frame work, not speculative navigation prewarm.
+    fn prepare_visible_neighbors(&mut self) {
+        if !self.inline_active()
+            || !self.surface.visible
+            || !self.flow_allowed()
+            || self.window.get_route().as_str() != "history"
+            || self.window.get_modal()
+            || self.deck.phase == Phase::Animating
+        {
+            return;
+        }
+        let front = self.surface.space;
+        for pose in self.flow_poses().into_iter().filter(|p| p.space != front) {
+            if self.ui.side_content == SideContent::Visible
+                && !self.has_current_preview(pose.space)
+                && self.pending_previews.insert(pose.space)
+            {
+                crate::popup_timing::mark("visible_preview_requested");
+                if !self.send(Work::Preview(
+                    pose.space,
+                    self.preview_epoch,
+                    self.surface.query.clone(),
+                )) {
+                    self.pending_previews.remove(&pose.space);
+                }
+            }
+        }
+        self.prepare_scene();
+    }
     pub(super) fn viewport_changed(&mut self) {
         let dpi = self.window.window().scale_factor();
         let geometry = (
@@ -320,38 +360,17 @@ impl App {
             dpi.to_bits(),
             self.window.get_panel_height().to_bits(),
             self.window.get_panel_top().to_bits(),
+            self.window.get_panel_left().to_bits(),
         );
         if geometry != self.geometry {
-            let height_only_inline = self.surface.visible
-                && geometry.0 == self.geometry.0
-                && geometry.2 == self.geometry.2;
             self.geometry = geometry;
-            if height_only_inline {
-                // A narrower query resizes the output, not the whole UI lifetime.
-                // Retain the last side textures until their replacements are ready.
-                self.dirty_snapshots
-                    .extend(self.deck.order().iter().copied());
-                // Reflow retained side content at the new size before presenting.
-                // Scaling a tall cached bitmap into a short card distorts its text.
-                let sides = self
-                    .deck
-                    .poses(self.window.get_panel_width())
-                    .into_iter()
-                    .filter(|p| {
-                        p.space != self.surface.space && self.previews.contains_key(&p.space)
-                    })
-                    .map(|p| p.space)
-                    .collect::<Vec<_>>();
-                for id in sides {
-                    let _ = self.capture_space(id, false);
-                }
-                self.prepare_scene();
-            } else {
-                self.clear_flow_cache();
-            }
+            // Validate raster inputs, but keep targets for projection-only changes.
+            self.dirty_snapshots
+                .extend(self.deck.order().iter().copied());
             self.deck.snap();
             self.render();
             self.content_ready();
+            self.prepare_scene();
             self.window.set_navigation_busy(false);
             self.flow_timer.stop();
         } else if self.window.get_scroll_y().to_bits() != self.last_scroll_bits
@@ -362,9 +381,78 @@ impl App {
         self.last_scroll_bits = self.window.get_scroll_y().to_bits();
         self.schedule_prewarm();
     }
+    pub(super) fn invalidate_flow_scene(&mut self) {
+        self.window.set_stage_image(Default::default());
+        self.window.set_flow_enabled(false);
+        #[cfg(feature = "cover-flow")]
+        if let Some(flow) = &self.flow {
+            flow.invalidate_scene();
+        }
+        self.dirty_snapshots
+            .extend(self.deck.order().iter().copied());
+    }
+    fn has_current_preview(&self, id: SpaceId) -> bool {
+        self.previews.get(&id).is_some_and(|preview| {
+            preview.query == self.surface.query
+                && self
+                    .spaces
+                    .iter()
+                    .any(|s| s.id == id && s.revision == preview.revision)
+        })
+    }
+    pub(super) fn prepare_pending_inline_neighbors(&mut self, geometry: InputTargetGeometry) {
+        if !self.inline_ui.pending
+            || self.surface.visible
+            || !self.flow_allowed()
+            || self.surface.presented_query.as_deref() != Some(self.surface.query.as_str())
+            || (self.window.window().scale_factor() - geometry.dpi as f32 / 96.0).abs() > 0.01
+        {
+            return;
+        }
+        let _timing = crate::popup_timing::span("pending_side_preparation");
+        // The HWND stays hidden and unmoved while the independent input worker
+        // verifies the target. This only prepares already available card pixels;
+        // capture_panel validates the actual query, dimensions, DPI and revision
+        // again before the eventual scene may use them.
+        let saved = (
+            self.window.get_popup_card_width(),
+            self.window.get_popup_card_height(),
+            self.window.get_inline_mode(),
+            self.window.get_quick_insert(),
+        );
+        let scale = geometry.dpi.clamp(48, 768) as f32 / 96.0;
+        let width = echo_presentation::echo_tokens::PANEL_MIN_WIDTH
+            .min((geometry.work_area.width as f32 / scale - 56.0).max(120.0));
+        self.window.set_popup_card_width(width);
+        self.window.set_inline_mode(true);
+        self.window.set_quick_insert(true);
+        slint::private_unstable_api::re_exports::WindowInner::from_pub(self.window.window())
+            .ensure_tree_instantiated();
+        self.window
+            .set_popup_card_height(self.window.get_inline_content_height().clamp(180.0, 520.0));
+        let ids: Vec<_> = self
+            .flow_poses()
+            .into_iter()
+            .filter(|p| p.space != self.deck.requested)
+            .filter(|p| {
+                self.ui.side_content == SideContent::TitlesOnly || self.has_current_preview(p.space)
+            })
+            .map(|p| p.space)
+            .collect();
+        for id in ids {
+            // A speculative failure is handled by normal scene preparation with
+            // final geometry; it must not switch renderers while input is pending.
+            let _ = self.capture_space(id, false);
+        }
+        self.window.set_popup_card_width(saved.0);
+        self.window.set_popup_card_height(saved.1);
+        self.window.set_inline_mode(saved.2);
+        self.window.set_quick_insert(saved.3);
+    }
     pub(super) fn clear_flow_cache(&mut self) {
         self.window.set_stage_image(Default::default());
         self.window.set_preview_image(Default::default());
+        self.window.set_capture_rows(ModelRc::default());
         self.window.set_flow_enabled(false);
         #[cfg(feature = "cover-flow")]
         if let Some(flow) = &self.flow {
@@ -397,7 +485,7 @@ impl App {
             if !self.flow.as_ref().is_some_and(|f| f.ready()) {
                 return;
             }
-            let poses = self.deck.poses(self.window.get_panel_width());
+            let poses = self.flow_poses();
             let ids = poses.iter().map(|p| p.space.0).collect::<Vec<_>>();
             self.flow.as_ref().unwrap().retain(&ids);
             self.previews.retain(|id, _| ids.contains(&id.0));
@@ -465,13 +553,8 @@ impl App {
             return;
         }
         self.pending_previews.remove(&id);
-        if !self
-            .deck
-            .poses(self.window.get_panel_width())
-            .iter()
-            .any(|p| p.space == id)
-            || id == self.surface.space
-        {
+        crate::popup_timing::mark("preview_received");
+        if !self.flow_poses().iter().any(|p| p.space == id) || id == self.surface.space {
             return;
         }
         if let Ok(mut data) = result {
@@ -550,7 +633,7 @@ impl App {
                 } else {
                     self.previews
                         .get(&id)
-                        .filter(|p| p.revision == space.revision)
+                        .filter(|p| p.revision == space.revision && p.query == self.surface.query)
                         .map_or(&[][..], |p| p.items.as_slice())
                 };
                 let mut section = String::new();
@@ -660,7 +743,7 @@ impl App {
             } else {
                 0.0
             });
-            match flow.capture_panel(&self.window, id.0, downsample) {
+            match flow.capture_panel(&self.window, id.0, downsample, space.revision) {
                 Ok(()) => {
                     self.dirty_snapshots.remove(&id);
                     Ok(())
@@ -695,9 +778,22 @@ impl App {
                 return;
             }
             let animated = self.deck.phase == Phase::Animating;
-            let poses = self.deck.poses(self.window.get_panel_width());
+            let poses = self.flow_poses();
             let ids = poses.iter().map(|p| p.space.0).collect::<Vec<_>>();
             self.flow.as_ref().unwrap().retain(&ids);
+            if !animated {
+                let front = self.deck.requested;
+                for pose in poses.iter().filter(|p| p.space != front) {
+                    if self.has_current_preview(pose.space)
+                        || self.ui.side_content == SideContent::TitlesOnly
+                    {
+                        if let Err(error) = self.capture_space(pose.space, false) {
+                            self.motion_fallback(error);
+                            return;
+                        }
+                    }
+                }
+            }
             if animated {
                 for pose in &poses {
                     if !self.flow.as_ref().unwrap().contains(pose.space.0) {
@@ -711,8 +807,16 @@ impl App {
             let panels = poses
                 .iter()
                 .filter(|p| animated || p.space != self.deck.requested)
+                .filter(|p| {
+                    animated
+                        || !self.inline_active()
+                        || self.has_current_preview(p.space)
+                        || self.ui.side_content == SideContent::TitlesOnly
+                })
                 .map(|p| crate::cover_flow::compositor::PanelDraw {
                     id: p.space.0,
+                    origin_x: self.window.get_panel_left() + self.window.get_panel_width() / 2.0
+                        - self.window.get_stage_width() / 2.0,
                     width: self.window.get_panel_width(),
                     height: self.window.get_panel_height(),
                     x: p.x,
@@ -737,7 +841,11 @@ impl App {
             );
             match result {
                 Ok((image, changed)) => {
-                    self.window.set_stage_image(image);
+                    // WGPU images also lack value equality in the pinned runtime.
+                    // Avoid invalidating Slint's image item for an unchanged scene.
+                    if changed || !self.window.get_flow_enabled() {
+                        self.window.set_stage_image(image);
+                    }
                     self.window.set_flow_enabled(true);
                     if changed {
                         self.window.window().request_redraw();
@@ -772,13 +880,13 @@ impl App {
         let width = self.window.get_panel_width();
         let height = self.window.get_panel_height();
         let point = [
-            x - self.window.get_stage_width() / 2.0,
+            x - self.window.get_panel_left() - width / 2.0,
             y - self.window.get_panel_top() - height / 2.0,
         ];
         if point[0].abs() <= width / 2.0 && point[1].abs() <= height / 2.0 {
             return;
         }
-        let mut poses = self.deck.poses(width);
+        let mut poses = self.flow_poses();
         poses.sort_by(|a, b| b.z.total_cmp(&a.z));
         for pose in poses {
             if pose.space != self.deck.requested

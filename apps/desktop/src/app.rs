@@ -86,11 +86,20 @@ pub fn is_composing() -> bool {
 struct Images {
     cache: HashMap<String, (slint::Image, usize)>,
     order: VecDeque<String>,
+    // Bounded request identities only; hidden reclamation still releases pixels.
+    recent_main: VecDeque<String>,
     pending: HashSet<String>,
     bytes: usize,
     epoch: u64,
 }
 impl Images {
+    fn remember_main(&mut self, hash: &str) {
+        self.recent_main.retain(|key| key != hash);
+        self.recent_main.push_back(hash.to_owned());
+        while self.recent_main.len() > 8 {
+            self.recent_main.pop_front();
+        }
+    }
     fn trim_to(&mut self, limit: usize) -> bool {
         let mut changed = false;
         while self.bytes > limit {
@@ -105,6 +114,34 @@ impl Images {
         changed
     }
 }
+
+#[cfg(test)]
+mod image_reclamation_tests {
+    use super::Images;
+
+    #[test]
+    fn reclaim_pixels_preserves_only_bounded_recent_main_requests() {
+        let mut images = Images::default();
+        for index in 0..12 {
+            let key = index.to_string();
+            images.remember_main(&key);
+            images.cache.insert(key.clone(), (Default::default(), 4));
+            images.order.push_back(key);
+            images.bytes += 4;
+        }
+        images.remember_main("4");
+        images.remember_main("12");
+        assert!(images.trim_to(0));
+        assert_eq!(images.bytes, 0);
+        assert!(images.cache.is_empty());
+        assert!(images.order.is_empty());
+        assert_eq!(images.recent_main.len(), 8);
+        assert!(!images.recent_main.iter().any(|key| key == "5"));
+        assert!(images.recent_main.iter().any(|key| key == "4"));
+        assert_eq!(images.recent_main.back().map(String::as_str), Some("12"));
+    }
+}
+
 struct Preview {
     query: String,
     items: Vec<QuickInsertItem>,
@@ -131,6 +168,7 @@ pub struct App {
     activation_focus: Option<echo_windows::focus::FocusSnapshot>,
     popup_anchor: Option<echo_windows::focus::PopupAnchor>,
     popup_placement: Option<echo_windows::focus::PopupPlacement>,
+    popup_side_right: Option<bool>,
     manager_geometry: Option<(slint::PhysicalPosition, slint::PhysicalSize)>,
     quick_geometry_active: bool,
     capture_pending: bool,
@@ -158,14 +196,16 @@ pub struct App {
     navigation_us: Vec<u64>,
     window_shapes: Option<Option<Vec<shell::CardShape>>>,
     last_scroll_bits: u32,
-    geometry: (u32, u32, u32, u32, u32),
-    pending_card_region: Option<(u64, Option<Vec<shell::CardShape>>)>,
+    geometry: (u32, u32, u32, u32, u32, u32),
+    pending_card_region: Option<card_window::PendingCardFrame>,
     card_region_serial: u64,
     card_region_generation: Rc<std::cell::Cell<u64>>,
+    popup_first_frame_pending: bool,
     pending_scroll: Option<f32>,
     navigate_after_refresh: Option<SpaceId>,
     graphics: crate::graphics::GraphicsInfo,
     environment: shell::UiEnvironment,
+    native_theme: Option<(isize, bool)>,
     graphics_error: Option<String>,
     confirmation: Option<Confirmation>,
     picker: Picker,
@@ -230,6 +270,7 @@ impl App {
             activation_focus: None,
             popup_anchor: None,
             popup_placement: None,
+            popup_side_right: None,
             manager_geometry: None,
             quick_geometry_active: false,
             capture_pending: false,
@@ -257,14 +298,16 @@ impl App {
             navigation_us: Vec::new(),
             window_shapes: None,
             last_scroll_bits: 0,
-            geometry: (0, 0, 0, 0, 0),
+            geometry: (0, 0, 0, 0, 0, 0),
             pending_card_region: None,
             card_region_serial: 0,
             card_region_generation: Rc::new(std::cell::Cell::new(0)),
+            popup_first_frame_pending: false,
             pending_scroll: None,
             navigate_after_refresh: None,
             graphics,
             environment,
+            native_theme: None,
             graphics_error: None,
             confirmation: None,
             picker: Picker::Closed,
@@ -408,13 +451,13 @@ impl App {
                 if context == Context::QuickInsert && !self.session.has_target {
                     self.report("Copy only: no safe paste target was captured", false);
                 }
-                if let Err(e) = self.show_window() {
+                if let Err(e) = self.show_window_loading(true) {
                     self.report(e, true);
                 }
-                self.load(false);
                 if let Some(notice) = self.compatibility_notice.take() {
                     self.report(notice, false);
                 }
+                self.schedule_prewarm();
             }
             Event::Executed(operation, result) => self.executed(operation, result),
             Event::Mutated(serial, result) => self.mutated(serial, result),
@@ -428,6 +471,12 @@ impl App {
                 }
             },
             Event::GraphicsError(error) => {
+                if crate::popup_timing::enabled() {
+                    crate::popup_timing::event(
+                        "graphics_error",
+                        serde_json::json!({"error":error}),
+                    );
+                }
                 let lost = error.contains("device lost");
                 self.graphics_error = Some(error.clone());
                 self.flow_timer.stop();
@@ -459,7 +508,11 @@ impl App {
             ShellEvent::Quit => self.request_quit(),
             ShellEvent::Activation(args) => self.activate_args(args),
             ShellEvent::ThemeChanged => {
-                self.environment = shell::ui_environment(self.hwnd);
+                self.native_theme = None;
+                self.environment = {
+                    let _timing = crate::popup_timing::span("environment_update");
+                    shell::ui_environment(self.hwnd)
+                };
                 self.apply_theme();
                 self.viewport_changed();
             }
@@ -467,7 +520,10 @@ impl App {
                 if let Some(hwnd) = self.hwnd.filter(|_| !self.quick_geometry_active) {
                     let _ = shell::fit_window(hwnd, false, 16.0);
                 }
-                self.environment = shell::ui_environment(self.hwnd);
+                self.environment = {
+                    let _timing = crate::popup_timing::span("environment_update");
+                    shell::ui_environment(self.hwnd)
+                };
                 self.viewport_changed();
             }
             ShellEvent::Error(e) => self.report(e, true),
@@ -571,7 +627,7 @@ impl App {
         };
         self.deck.show(id, self.now());
         self.cancel_prewarm();
-        self.clear_flow_cache();
+        self.invalidate_flow_scene();
         self.window.set_route(route.into());
         self.window.set_query(query.clone().into());
         self.window.set_stale_rows(true);
@@ -608,13 +664,42 @@ impl App {
         }
     }
     fn show_window(&mut self) -> Result<(), String> {
+        self.show_window_loading(false)
+    }
+    fn show_window_loading(&mut self, load_content: bool) -> Result<(), String> {
         let first = self.hwnd.is_none();
+        if self.session.context == Context::QuickInsert && self.popup_anchor.is_some() {
+            // ShowWindow can expose the previous swapchain before RedrawRequested.
+            // Cloak before moving/resizing; the generation-bound frame commit below
+            // reveals only the new layout, without a timer or a side-switch animation.
+            if let Some(hwnd) = self.hwnd {
+                shell::cloak_card_frame(hwnd, true)?;
+            }
+            self.popup_first_frame_pending = true;
+            crate::popup_timing::mark("first_frame_hidden");
+            self.window_shapes = None;
+            self.pending_card_region = None;
+            self.card_region_generation.set(0);
+        }
         let center = self.prepare_window_geometry();
         if let Some(hook) = &self.hook {
             hook.set_inline_popup(self.inline_active())?;
         }
         self.trim_timer.stop();
+        self.surface.visible = true;
+        if load_content {
+            // Let storage work overlap visible-side rendering and HWND setup.
+            self.load(false);
+        }
+        if self.popup_first_frame_pending {
+            self.request_recent_thumbnails();
+        }
+        if self.deck.phase == Phase::Suspended {
+            self.deck.show(self.surface.space, self.now());
+        }
+        self.prepare_scene();
         self.window.show().map_err(|e| e.to_string())?;
+        crate::popup_timing::mark("show_returned");
         if first {
             let handle = self.window.window().window_handle();
             let hwnd = match handle.window_handle().map_err(|e| e.to_string())?.as_raw() {
@@ -628,6 +713,9 @@ impl App {
                 Arc::new(move |e| hub.post(Event::Shell(e))),
             )?);
             self.hwnd = Some(hwnd);
+            if self.popup_first_frame_pending {
+                shell::cloak_card_frame(hwnd, true)?;
+            }
             // Propagate the redraw. The queued command runs after winit finishes
             // this draw/present, for both GPU and software renderers.
             use slint::winit_030::{EventResult, WinitWindowAccessor};
@@ -655,12 +743,11 @@ impl App {
                 let _ = shell::focus_window(hwnd);
             }
         }
-        self.environment = shell::ui_environment(self.hwnd);
-        self.surface.visible = true;
+        self.environment = {
+            let _timing = crate::popup_timing::span("environment_update");
+            shell::ui_environment(self.hwnd)
+        };
         self.apply_theme();
-        if self.deck.phase == Phase::Suspended {
-            self.deck.show(self.surface.space, self.now());
-        }
         if self.inline_active() {
             // Keyboard focus remains in the original input.
         } else if self.window.get_route().as_str() == "history" {
@@ -671,6 +758,7 @@ impl App {
         Ok(())
     }
     fn hide_window(&mut self) {
+        crate::popup_timing::finish();
         self.remember_position();
         self.search_timer.stop();
         self.flow_timer.stop();
@@ -775,6 +863,7 @@ impl App {
         }
     }
     fn render(&mut self) {
+        let _timing = crate::popup_timing::span("main_model_update");
         if (self.surface.loading || self.surface.dirty)
             && (self.surface.presented_query.is_some() || self.model.row_count() > 0)
         {
@@ -817,9 +906,12 @@ impl App {
                 row
             })
             .collect();
-        crate::native_model::reconcile_keyed(self.model.as_ref(), rows, |row: &EntryRow| {
-            row.key.clone()
-        });
+        crate::native_model::reconcile_keyed_by(
+            self.model.as_ref(),
+            rows,
+            |row: &EntryRow| row.key.clone(),
+            crate::native_model::entry_row_equal,
+        );
         self.window
             .set_stale_rows(!self.surface.ready && self.surface.items.is_empty());
         self.window.set_loading(self.surface.loading);
@@ -901,6 +993,28 @@ impl App {
             self.schedule_prewarm();
         }
     }
+    fn request_recent_thumbnails(&mut self) {
+        if self.surface.presented_query.as_deref() != Some(self.surface.query.as_str()) {
+            return;
+        }
+        // Re-request only thumbnails previously needed by the live viewport and
+        // still present in this query. Queue reads before the first Slint render
+        // so reclamation does not force a placeholder frame on activation.
+        let keys: Vec<_> = self
+            .surface
+            .items
+            .iter()
+            .filter(|item| {
+                item.thumbnail
+                    .as_ref()
+                    .is_some_and(|t| self.images.recent_main.contains(&t.content_hash))
+            })
+            .map(|item| RowKey::of(item).to_string())
+            .collect();
+        for key in keys {
+            self.thumbnail_request(key);
+        }
+    }
     fn thumbnail_request(&mut self, key: String) {
         if !self.surface.visible || self.window.get_route().as_str() != "history" {
             return;
@@ -918,11 +1032,14 @@ impl App {
         else {
             return;
         };
+        self.images.remember_main(&hash);
         if self.images.cache.contains_key(&hash) || !self.images.pending.insert(hash.clone()) {
             return;
         }
         if !self.send(Work::Thumbnail(self.images.epoch, hash.clone())) {
             self.images.pending.remove(&hash);
+        } else {
+            crate::popup_timing::mark("main_thumbnail_requested");
         }
     }
     fn thumbnail_finished(&mut self, epoch: u64, hash: String, result: Result<PixelData, String>) {
@@ -968,6 +1085,7 @@ impl App {
                 .map(|(id, _)| *id),
         );
         self.images.cache.insert(hash, (image, bytes));
+        crate::popup_timing::mark("main_thumbnail_ready");
         if self.deck.phase != Phase::Animating {
             self.render();
         }

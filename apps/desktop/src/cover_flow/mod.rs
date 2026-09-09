@@ -5,3 +5,4 @@ pub(crate) mod budget;
 pub mod compositor;
 
 mod offscreen;
+mod snapshot;

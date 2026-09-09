@@ -7,6 +7,8 @@ pub const HARD_BUDGET: u64 = t::BUDGET_TEXTURE_HARD_MIB as u64 * 1024 * 1024;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PanelDraw {
     pub id: i64,
+    /// Screen-space camera translation, applied after perspective division.
+    pub origin_x: f32,
     pub width: f32,
     pub height: f32,
     pub x: f32,
@@ -151,6 +153,7 @@ impl Compositor {
         {
             return Err("Cover Flow texture budget exceeded".into());
         }
+        let _timing = crate::popup_timing::span("panel_allocation");
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("echo-panel-render-target"),
             size: wgpu::Extent3d {
@@ -239,6 +242,7 @@ impl Compositor {
             return Err("Cover Flow output exceeds texture budget".into());
         }
         if self.output_size != (width, height) {
+            let _timing = crate::popup_timing::span("output_allocation");
             self.output = Some(self.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("echo-cover-flow-output"),
                 size: wgpu::Extent3d {
@@ -316,7 +320,7 @@ impl Compositor {
                     t::FLOW_REFLECTION_GAP,
                     t::FLOW_EDGE_PADDING_PIXELS,
                     t::FLOW_EDGE_AA_PIXELS,
-                    0.0,
+                    pose.origin_x,
                 ];
                 let mut bytes = [0u8; 96];
                 for (slot, value) in bytes.chunks_exact_mut(4).zip(params) {

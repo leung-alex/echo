@@ -7,6 +7,38 @@ pub struct PopupPlacement {
     pub card: PhysicalRect,
     pub above: bool,
 }
+
+/// Expand around an already anchored front card. Extents are logical distances
+/// from its center for a right-hand neighbor, supplied by presentation's camera.
+/// The front card does not move to make room for the transparent canvas.
+pub fn expand_popup_stage(
+    anchor: PopupAnchor,
+    mut placement: PopupPlacement,
+    extents: [f32; 2],
+    preferred_right: bool,
+) -> (PopupPlacement, bool) {
+    let scale = anchor.geometry.dpi.clamp(48, 768) as f32 / 96.0;
+    let near = (extents[0] * scale).ceil() as i32;
+    let far = (extents[1] * scale).ceil() as i32;
+    let center = placement.card.x + placement.card.width / 2;
+    let work = anchor.geometry.work_area;
+    let fits = if preferred_right {
+        center + far <= work.x + work.width
+    } else {
+        center - far >= work.x
+    };
+    let right = if fits {
+        preferred_right
+    } else {
+        !preferred_right
+    };
+    // At the screen edge only the outer shadow may meet the work-area boundary.
+    let left = (center - if right { near } else { far }).max(work.x);
+    let end = (center + if right { far } else { near }).min(work.x + work.width);
+    placement.window.x = left;
+    placement.window.width = end - left;
+    (placement, right)
+}
 /// Layout metrics are supplied by the presentation owner, in logical pixels.
 /// The result is physical screen pixels and includes the transparent card offset.
 pub fn place_card(

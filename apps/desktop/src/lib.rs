@@ -4,6 +4,7 @@ pub mod cover_flow;
 mod favorite_icons;
 mod match_highlight;
 mod native_model;
+mod popup_timing;
 slint::include_modules!();
 #[cfg(windows)]
 mod app;

@@ -1,5 +1,43 @@
 //! Reconcile bounded native rows without resetting their accessible identities.
 use slint::{Model, VecModel};
+/// Slint 1.17's default Image is non-reflexive. Two absent thumbnails still
+/// represent identical pixels and must not invalidate every ordinary text row.
+pub(crate) fn image_equal(a: &slint::Image, b: &slint::Image) -> bool {
+    if a == b {
+        return true;
+    }
+    let (a, b) = (a.size(), b.size());
+    a.width == 0 && a.height == 0 && b.width == 0 && b.height == 0
+}
+pub(crate) fn entry_row_equal(a: &crate::EntryRow, b: &crate::EntryRow) -> bool {
+    macro_rules! fields {
+        ($($field:ident),* $(,)?) => {{
+            // Exhaustive: adding a Slint row field requires updating this comparison.
+            let crate::EntryRow { thumbnail: _, $($field: _,)* } = a;
+            image_equal(&a.thumbnail, &b.thumbnail) $(&& a.$field == b.$field)*
+        }}
+    }
+    fields!(
+        key,
+        title,
+        body,
+        kind,
+        title_rich,
+        body_rich,
+        tags_rich,
+        source_rich,
+        match_count,
+        source_label,
+        time_label,
+        section_label,
+        has_thumbnail,
+        pinned,
+        selected,
+        batch_selected,
+        icon_key,
+        tags
+    )
+}
 #[cfg(test)]
 #[derive(Debug, PartialEq, Eq)]
 pub struct Changes {
@@ -31,10 +69,19 @@ pub fn reconcile<T: Clone + PartialEq + 'static>(model: &VecModel<T>, rows: Vec<
 }
 /// Retain rows by content identity, and don't invalidate unchanged row properties.
 /// All notifications are local additions/removals/changes, never a model reset.
+#[cfg(test)]
 pub fn reconcile_keyed<T: Clone + PartialEq + 'static, K: PartialEq>(
     model: &VecModel<T>,
     rows: Vec<T>,
     key: impl Fn(&T) -> K,
+) {
+    reconcile_keyed_by(model, rows, key, |a, b| a == b);
+}
+pub fn reconcile_keyed_by<T: Clone + 'static, K: PartialEq>(
+    model: &VecModel<T>,
+    rows: Vec<T>,
+    key: impl Fn(&T) -> K,
+    equal: impl Fn(&T, &T) -> bool,
 ) {
     let mut i = 0;
     while i < model.row_count() {
@@ -50,7 +97,7 @@ pub fn reconcile_keyed<T: Clone + PartialEq + 'static, K: PartialEq>(
             .row_data(index)
             .is_some_and(|old| key(&old) == key(&row))
         {
-            if model.row_data(index).as_ref() != Some(&row) {
+            if !model.row_data(index).is_some_and(|old| equal(&old, &row)) {
                 model.set_row_data(index, row);
             }
         } else {
@@ -66,6 +113,27 @@ pub fn reconcile_keyed<T: Clone + PartialEq + 'static, K: PartialEq>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn visual_row_equality_handles_absent_and_changed_thumbnails() {
+        let row = crate::EntryRow {
+            key: "opaque-key".into(),
+            body: "unchanged text".into(),
+            ..Default::default()
+        };
+        assert!(entry_row_equal(&row, &row.clone()));
+        let mut next = row.clone();
+        next.body_rich = slint::StyledText::from_markdown("**highlight**").unwrap();
+        assert!(!entry_row_equal(&row, &next));
+        next = row.clone();
+        next.thumbnail = slint::Image::from_rgba8(slint::SharedPixelBuffer::new(2, 2));
+        assert!(!entry_row_equal(&row, &next));
+        assert!(entry_row_equal(&next, &next.clone()));
+        let mut pixels = slint::SharedPixelBuffer::new(2, 2);
+        pixels.make_mut_bytes().fill(255);
+        let mut changed = next.clone();
+        changed.thumbnail = slint::Image::from_rgba8(pixels);
+        assert!(!entry_row_equal(&next, &changed));
+    }
     #[test]
     fn repeated_refresh_reuses_all_existing_row_slots() {
         let model = VecModel::from((0..50).collect::<Vec<i32>>());

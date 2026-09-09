@@ -1,11 +1,11 @@
 //! One persistent Slint scene renders directly to a GPU texture on the shared device.
 //! No native window, focus changes, UI Automation mirror, CPU pixels, map, poll, or readback.
-use crate::{AppWindow, CardSnapshot};
+use crate::{CardSnapshot, EntryRow};
 use slint::platform::{
     femtovg_renderer::FemtoVGWGPURenderer, Renderer, WindowAdapter, WindowEvent,
 };
 use slint::wgpu_29::wgpu;
-use slint::{ComponentHandle, PhysicalSize, Window, WindowSize};
+use slint::{ComponentHandle, ModelRc, PhysicalSize, VecModel, Window, WindowSize};
 use std::{
     cell::Cell,
     rc::{Rc, Weak},
@@ -35,6 +35,8 @@ impl WindowAdapter for Adapter {
 pub struct PanelRenderer {
     component: CardSnapshot,
     adapter: Rc<Adapter>,
+    rows: Rc<VecModel<EntryRow>>,
+    geometry: Cell<Option<(u32, u32, u32)>>,
 }
 impl PanelRenderer {
     pub fn new(
@@ -55,58 +57,58 @@ impl PanelRenderer {
         component
             .global::<crate::FavoriteIconImages>()
             .on_index_for(|key| crate::favorite_icons::index(key.as_str()));
-        Ok(Self { component, adapter })
+        let rows = Rc::new(VecModel::default());
+        component.set_rows(ModelRc::from(rows.clone()));
+        Ok(Self {
+            component,
+            adapter,
+            rows,
+            geometry: Cell::new(None),
+        })
     }
     pub fn clear(&self) {
-        self.component.set_rows(slint::ModelRc::default());
+        self.rows.set_vec(Vec::new());
     }
     pub fn render(
         &self,
-        source: &AppWindow,
+        snapshot: &super::snapshot::PanelSnapshot,
         texture: &wgpu::Texture,
-        dpi: f32,
     ) -> Result<(), String> {
         let c = &self.component;
-        self.adapter
-            .window
-            .dispatch_event(WindowEvent::ScaleFactorChanged { scale_factor: dpi });
-        self.adapter.window.set_size(slint::LogicalSize::new(
-            source.get_panel_width(),
-            source.get_panel_height(),
-        ));
-        c.set_dark(source.get_dark());
-        c.set_panel_title(source.get_capture_title());
-        c.set_subtitle(source.get_capture_subtitle());
-        c.set_icon_key(source.get_capture_icon());
-        c.set_accent(source.get_capture_accent());
-        c.set_favorites(source.get_capture_favorites());
-        c.set_loading(source.get_capture_loading());
-        c.set_titles_only(source.get_capture_titles_only());
-        c.set_compact(source.get_density().as_str() == "compact");
-        c.set_rows(source.get_capture_rows());
-        c.set_scroll_y(source.get_capture_scroll());
-        c.set_query(if source.get_capture_titles_only() {
-            "".into()
-        } else {
-            source.get_capture_query()
-        });
-        c.set_navigation_label(source.get_capture_navigation_label());
-        c.set_navigation_hint(source.get_capture_navigation_hint());
-        c.set_search_focused(source.get_capture_search_focused());
-        c.set_previous_enabled(source.get_capture_previous_enabled());
-        c.set_next_enabled(source.get_capture_next_enabled());
-        c.set_has_more(source.get_capture_has_more());
-        c.set_has_previous(source.get_capture_has_previous());
-        c.set_batch(source.get_capture_batch());
-        c.set_selected_count(source.get_capture_selected_count());
-        c.set_quick_insert(source.get_capture_quick_insert());
-        c.set_inline_mode(source.get_inline_mode());
+        let geometry = (
+            snapshot.width.to_bits(),
+            snapshot.height.to_bits(),
+            snapshot.dpi.to_bits(),
+        );
+        if self.geometry.get().map(|old| old.2) != Some(geometry.2) {
+            self.adapter
+                .window
+                .dispatch_event(WindowEvent::ScaleFactorChanged {
+                    scale_factor: snapshot.dpi,
+                });
+        }
+        if self.geometry.replace(Some(geometry)) != Some(geometry) {
+            self.adapter
+                .window
+                .set_size(slint::LogicalSize::new(snapshot.width, snapshot.height));
+        }
+        {
+            let _timing = crate::popup_timing::span("offscreen_model_update");
+            snapshot.apply(c);
+            crate::native_model::reconcile_keyed_by(
+                self.rows.as_ref(),
+                snapshot.rows.clone(),
+                |row: &EntryRow| row.key.clone(),
+                crate::native_model::entry_row_equal,
+            );
+        }
+        let _timing = crate::popup_timing::span("offscreen_render");
         let result = self
             .adapter
             .renderer
             .render_to_texture(texture)
             .map_err(|e| e.to_string());
-        // Reuse the bounded last model. Clearing it on every capture rebuilt the entire item tree.
+        // Keep the same model identity until explicit hidden-memory reclamation.
         result
     }
 }

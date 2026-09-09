@@ -162,10 +162,11 @@ export component AppWindow inherits Window {
     in property <length> popup-card-width;
     in property <length> popup-card-height;
     in property <length> popup-card-top;
+    in property <length> popup-card-left;
     in property <string> empty-state-text;
     out property <length> panel-width: max(120px,min(root.stage-width - 32px,root.popup-card-width > 0px ? root.popup-card-width : min(T.panel-max-width,max(T.panel-min-width,root.stage-width * T.panel-width-ratio))));
     out property <length> panel-height: root.inline-mode && root.popup-card-height > 0px ? root.popup-card-height : max(120px,root.stage-height - 2 * T.stage-padding-y);
-    out property <length> panel-left: (root.width - root.panel-width) / 2;
+    out property <length> panel-left: root.popup-card-width > 0px ? root.popup-card-left : (root.width - root.panel-width) / 2;
     out property <length> panel-top: root.inline-mode && root.popup-card-height > 0px ? root.popup-card-top : T.stage-padding-y;
     out property <length> settings-card-width: min(T.settings-card-max-width,root.width - 48px);
     out property <length> settings-card-left: (root.width - root.settings-card-width) / 2;

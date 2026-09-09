@@ -39,6 +39,7 @@ impl App {
         }
     }
     pub(super) fn hotkey_activate(&mut self, snapshot: FocusSnapshot) {
+        crate::popup_timing::begin();
         if self.inline_active()
             && self.activation_focus.as_ref().is_some_and(|old| {
                 old.window_id == snapshot.window_id && old.process_id == snapshot.process_id
@@ -70,6 +71,7 @@ impl App {
     /// Returns whether the manager needs its initial centering. For a popup, position
     /// and size are both assigned before show(), including the visible card offset.
     pub(super) fn prepare_window_geometry(&mut self) -> bool {
+        let _timing = crate::popup_timing::span("geometry_update");
         let anchor = self.popup_anchor.filter(|_| {
             self.session.context == Context::QuickInsert
                 && (self.ui.caret_anchor || self.inline_active())
@@ -82,21 +84,24 @@ impl App {
                     .map(|_| (self.window.window().position(), self.window.window().size()));
                 self.quick_geometry_active = true;
             }
-            let scale = anchor.geometry.dpi as f32 / 96.0;
-            // A compact stage retains the same front card, native text and side-card
-            // renderer, while avoiding the manager's 1600-dip transparent canvas.
-            let width =
-                900.0_f32.min((anchor.geometry.work_area.width as f32 / scale - 24.0).max(120.0));
-            let card = (width - 32.0)
-                .min(t::PANEL_MAX_WIDTH.min(t::PANEL_MIN_WIDTH.max(width * t::PANEL_WIDTH_RATIO)))
-                .max(120.0);
+            let scale = anchor.geometry.dpi.clamp(48, 768) as f32 / 96.0;
+            // Size the readable front card independently from its transparent stage.
+            let card = t::PANEL_MIN_WIDTH
+                .min((anchor.geometry.work_area.width as f32 / scale - 56.0).max(120.0));
+            let width = card + 32.0;
+            if self.popup_placement.is_none() {
+                self.popup_side_right = None;
+            }
             self.window.set_popup_card_width(card);
             let placement = if self.inline_active() {
-                let height = if self.surface.ready && !self.surface.loading {
+                let height = if (self.surface.ready && !self.surface.loading)
+                    || self.surface.presented_query.as_deref() == Some(self.surface.query.as_str())
+                {
                     // Slint 1.17.1 materializes repeaters before its normal draw.
                     // Geometry is needed before that draw, so run the same bounded
                     // UI-thread pass here. No rendering or GPU readback is involved.
                     // Keep this pinned-runtime seam local to native composition.
+                    let _timing = crate::popup_timing::span("instantiate_main_tree");
                     slint::private_unstable_api::re_exports::WindowInner::from_pub(
                         self.window.window(),
                     )
@@ -120,6 +125,24 @@ impl App {
             } else {
                 place_card(anchor, width, card, 560.0, t::STAGE_PADDING_Y)
             };
+            let extents = echo_presentation::deck::popup_horizontal_extents(card, 560.0);
+            let preferred_right = self.popup_side_right.unwrap_or_else(|| {
+                self.deck
+                    .poses(card)
+                    .iter()
+                    .find(|p| p.offset != 0.0)
+                    .is_none_or(|p| p.offset > 0.0)
+            });
+            let (placement, right) = echo_windows::focus::expand_popup_stage(
+                anchor,
+                placement,
+                extents,
+                preferred_right,
+            );
+            let side_changed = self.popup_side_right != Some(right);
+            self.popup_side_right = Some(right);
+            self.window
+                .set_popup_card_left((placement.card.x - placement.window.x) as f32 / scale);
             let card_changed = self.popup_placement.map(|p| p.card) != Some(placement.card);
             if self.inline_active() {
                 self.window
@@ -139,8 +162,34 @@ impl App {
                     ));
                 }
                 self.popup_placement = Some(placement);
+                if crate::popup_timing::enabled() {
+                    let center = [
+                        placement.card.x as f32 + placement.card.width as f32 / 2.0,
+                        placement.card.y as f32 + placement.card.height as f32 / 2.0,
+                    ];
+                    let side_quad = self
+                        .flow_poses()
+                        .into_iter()
+                        .find(|p| p.offset != 0.0)
+                        .and_then(|pose| {
+                            echo_presentation::deck::project_panel(
+                                pose,
+                                card,
+                                placement.card.height as f32 / scale,
+                                0.0,
+                            )
+                        })
+                        .map(|q| q.map(|p| [center[0] + p[0] * scale, center[1] + p[1] * scale]));
+                    crate::popup_timing::event(
+                        "layout_ready",
+                        serde_json::json!({
+                            "card":[placement.card.x,placement.card.y,placement.card.width,placement.card.height],
+                            "side_quad":side_quad,"right":right,"dpi":anchor.geometry.dpi
+                        }),
+                    );
+                }
             }
-            if card_changed && self.surface.visible {
+            if (card_changed || side_changed) && self.surface.visible {
                 // Reflow side textures before returning to Slint's next paint.
                 self.viewport_changed();
             }
@@ -149,6 +198,8 @@ impl App {
             self.window.set_popup_card_width(0.0);
             self.window.set_popup_card_height(0.0);
             self.window.set_popup_card_top(0.0);
+            self.window.set_popup_card_left(0.0);
+            self.popup_side_right = None;
             self.quick_geometry_active = false;
             self.popup_placement = None;
             if let Some((position, size)) = self.manager_geometry.take() {
@@ -163,6 +214,83 @@ impl App {
             }
         } else {
             false
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use echo_engine::{InputTargetGeometry, PhysicalRect, SpaceId};
+    use echo_presentation::deck::{popup_horizontal_extents, project_panel, Deck};
+    use echo_windows::focus::{expand_popup_stage, place_inline_stage, AnchorSource, PopupAnchor};
+
+    #[test]
+    fn popup_anchors_front_and_contains_the_whole_neighbor_at_screen_edges() {
+        for dpi in [96, 120, 144, 192] {
+            let scale = dpi as f32 / 96.0;
+            let px = |v: f32| (v * scale).round() as i32;
+            for left in [-3840, 0] {
+                for x in [20.0, 700.0, 1880.0] {
+                    let anchor = PopupAnchor {
+                        source: AnchorSource::NativeCaret,
+                        geometry: InputTargetGeometry {
+                            dpi,
+                            work_area: PhysicalRect {
+                                x: left,
+                                y: 0,
+                                width: px(1920.0),
+                                height: px(1080.0),
+                            },
+                            target: PhysicalRect {
+                                x: left + px(x),
+                                y: px(900.0),
+                                width: 2,
+                                height: px(24.0),
+                            },
+                        },
+                    };
+                    let mut previous = None;
+                    let mut stage = None;
+                    for height in [520.0, 180.0, 300.0, 520.0] {
+                        let anchored =
+                            place_inline_stage(anchor, 552.0, 520.0, height, 24.0, Some(true));
+                        let (p, right) = expand_popup_stage(
+                            anchor,
+                            anchored,
+                            popup_horizontal_extents(520.0, 560.0),
+                            previous.unwrap_or(true),
+                        );
+                        assert_eq!(
+                            p.card, anchored.card,
+                            "the canvas must not displace the front card"
+                        );
+                        if let Some(previous) = previous {
+                            assert_eq!(right, previous);
+                        }
+                        if let Some(stage) = stage {
+                            assert_eq!(p.window, stage);
+                        }
+                        previous = Some(right);
+                        stage = Some(p.window);
+                        assert!(
+                            p.window.x >= left && p.window.x + p.window.width <= left + px(1920.0)
+                        );
+                        assert_eq!(right, x < 1880.0);
+                        let mut deck = Deck::default();
+                        deck.show(SpaceId::HISTORY, 0);
+                        for pose in deck.popup_poses(520.0, right) {
+                            for [x, _] in project_panel(pose, 520.0, height, 0.0).unwrap() {
+                                let screen =
+                                    p.card.x as f32 + p.card.width as f32 / 2.0 + x * scale;
+                                assert!(
+                                    screen >= p.window.x as f32
+                                        && screen <= (p.window.x + p.window.width) as f32
+                                );
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

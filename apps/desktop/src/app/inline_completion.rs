@@ -19,6 +19,7 @@ impl App {
         self.inline_ui.ticket.is_some() || self.inline_ui.unavailable
     }
     pub(super) fn stop_inline(&mut self) -> bool {
+        let _timing = crate::popup_timing::span("inline_retirement");
         // Retire the visual lease before permitting a new host Enter. The
         // adapter still drains any already-consumed physical key-up afterward.
         if self.inline_active() || self.inline_ui.pending {
@@ -47,6 +48,7 @@ impl App {
         epoch: u64,
         snapshot: echo_windows::focus::FocusSnapshot,
     ) {
+        crate::popup_timing::mark("target_inspection_requested");
         self.inline_ui.pending = true;
         let hub = self.hub.clone();
         self.inline_timer.start(
@@ -56,17 +58,21 @@ impl App {
                 hub.post(Event::Command(Command::InlineTimeout(epoch)));
             },
         );
+        let geometry = snapshot.anchor.geometry;
         if !self.send(Work::BeginInline(epoch, snapshot)) {
             self.dismiss();
             self.report(
                 "Input inspection is busy. Focus stayed in your input; invoke again.",
                 false,
             );
+        } else {
+            self.prepare_pending_inline_neighbors(geometry);
         }
     }
     pub(super) fn inline_event(&mut self, event: InlineEvent) {
         match event {
             InlineEvent::Started(start) => {
+                crate::popup_timing::mark("target_identified");
                 if start.ticket.session != self.session.epoch || !self.inline_ui.pending {
                     self.worker.inline.cancel(start.ticket.session);
                     return;

@@ -254,24 +254,68 @@ impl Deck {
             .into_iter()
             .filter(|(_, d)| d.abs() < 2.0)
             .take(t::BUDGET_TRANSITION_PANELS)
-            .map(|(space, d)| {
-                let d = d as f32;
-                let amount = d.abs().min(1.0);
-                let far = (d.abs() - 1.0).max(0.0);
-                Pose {
-                    space,
-                    offset: d,
-                    x: d * panel_width * t::FLOW_SIDE_X_RATIO,
-                    y: t::FLOW_SIDE_Y * amount,
-                    z: panel_width * (t::FLOW_SIDE_Z_RATIO * amount - 0.15 * far),
-                    yaw: -d.signum() * t::FLOW_SIDE_ANGLE.to_radians() * amount,
-                    scale: 1.0 - (1.0 - t::FLOW_SIDE_SCALE) * amount - 0.1 * far,
-                    opacity: (1.0 - (1.0 - t::FLOW_SIDE_OPACITY) * amount) * (1.0 - far),
-                    shade: t::FLOW_SIDE_SHADE * amount,
-                }
+            .map(|(space, d)| panel_pose(space, d as f32, panel_width))
+            .collect()
+    }
+
+    /// A caret popup has one neighboring card on its available side. Keep the
+    /// nearest two real spaces during travel; folding the travel around the front
+    /// leaves the input-adjacent card fixed without mirroring its text or identity.
+    pub fn popup_poses(&self, panel_width: f32, right: bool) -> Vec<Pose> {
+        let mut poses = self.poses(panel_width);
+        poses.sort_by(|a, b| {
+            a.offset
+                .abs()
+                .total_cmp(&b.offset.abs())
+                .then_with(|| b.offset.total_cmp(&a.offset))
+        });
+        poses.truncate(2);
+        poses
+            .into_iter()
+            .map(|p| {
+                panel_pose(
+                    p.space,
+                    p.offset.abs().min(1.0) * if right { 1.0 } else { -1.0 },
+                    panel_width,
+                )
             })
             .collect()
     }
+}
+
+fn panel_pose(space: SpaceId, d: f32, panel_width: f32) -> Pose {
+    let amount = d.abs().min(1.0);
+    let far = (d.abs() - 1.0).max(0.0);
+    Pose {
+        space,
+        offset: d,
+        x: d * panel_width * t::FLOW_SIDE_X_RATIO,
+        y: t::FLOW_SIDE_Y * amount,
+        z: panel_width * (t::FLOW_SIDE_Z_RATIO * amount - 0.15 * far),
+        yaw: -d.signum() * t::FLOW_SIDE_ANGLE.to_radians() * amount,
+        scale: 1.0 - (1.0 - t::FLOW_SIDE_SCALE) * amount - 0.1 * far,
+        opacity: (1.0 - (1.0 - t::FLOW_SIDE_OPACITY) * amount) * (1.0 - far),
+        shade: t::FLOW_SIDE_SHADE * amount,
+    }
+}
+
+/// Logical distances from the front-card center to the outside of the popup.
+/// Include the shadow/reflection envelope, not just the visible card rectangle.
+pub fn popup_horizontal_extents(width: f32, height: f32) -> [f32; 2] {
+    let padding = t::FLOW_SHADOW_MARGIN
+        .max(height * t::FLOW_REFLECTION_HEIGHT_RATIO + t::FLOW_REFLECTION_GAP);
+    let front = width / 2.0 + padding;
+    let side = project_panel(
+        panel_pose(SpaceId::FAVORITES, 1.0, width),
+        width,
+        height,
+        padding,
+    )
+    .expect("positive popup dimensions")
+    .into_iter()
+    .map(|p| p[0])
+    .fold(front, f32::max);
+    [front.ceil() + 2.0, side.ceil() + 2.0]
 }
 #[cfg(test)]
 mod tests {
@@ -426,6 +470,57 @@ pub fn project_panel(pose: Pose, width: f32, height: f32, padding: f32) -> Optio
 #[cfg(test)]
 mod cover_readability_tests {
     use super::*;
+    #[test]
+    fn popup_motion_and_shadows_fit_the_reserved_side() {
+        for width in [520.0, 740.0] {
+            let extents = popup_horizontal_extents(width, 560.0);
+            for height in [180.0, 300.0, 520.0, 560.0] {
+                let padding = t::FLOW_SHADOW_MARGIN
+                    .max(height * t::FLOW_REFLECTION_HEIGHT_RATIO + t::FLOW_REFLECTION_GAP);
+                for step in 0..=1000 {
+                    let pose = panel_pose(SpaceId::HISTORY, step as f32 / 1000.0, width);
+                    for [x, _] in project_panel(pose, width, height, padding).unwrap() {
+                        assert!(
+                            x >= -extents[0] && x <= extents[1],
+                            "{pose:?}: {x} outside {extents:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn popup_switches_real_spaces_on_the_selected_side() {
+        for count in [2, 4] {
+            for right in [false, true] {
+                let mut deck = Deck::default();
+                deck.set_order((1..=count).map(SpaceId));
+                deck.show(SpaceId::HISTORY, 0);
+                deck.ready(SpaceId::HISTORY);
+                assert!(deck.step(1, true, 0, true));
+                for now in 0..=300 {
+                    deck.tick(now, MotionSpeed::Standard, 520.0);
+                    let poses = deck.popup_poses(520.0, right);
+                    assert_eq!(poses.len(), 2);
+                    assert_ne!(poses[0].space, poses[1].space);
+                    assert!(poses
+                        .iter()
+                        .all(|p| if right { p.x >= 0.0 } else { p.x <= 0.0 }));
+                }
+                let poses = deck.popup_poses(520.0, right);
+                assert_eq!(poses[0].space, SpaceId::FAVORITES);
+                assert_eq!(poses[0].x, 0.0);
+                let side = poses[1];
+                let quad = project_panel(side, 520.0, 300.0, 0.0).unwrap();
+                let center = [
+                    quad.iter().map(|p| p[0]).sum::<f32>() / 4.0,
+                    quad.iter().map(|p| p[1]).sum::<f32>() / 4.0,
+                ];
+                assert!(hit_panel(side, center, 520.0, 300.0));
+                assert!(!hit_panel(side, [-center[0], center[1]], 520.0, 300.0));
+            }
+        }
+    }
     #[test]
     fn outer_edges_face_viewer_and_right_title_is_not_behind_center() {
         let width = 640.0;

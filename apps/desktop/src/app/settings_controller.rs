@@ -51,6 +51,7 @@ impl App {
         })
     }
     pub(super) fn render_settings(&self) {
+        let _timing = crate::popup_timing::span("settings_model_update");
         let w = &self.window;
         let c = &self.settings;
         let u = &self.ui;
@@ -181,6 +182,7 @@ impl App {
         Duration::from_micros(1_000_000 / u64::from(hz))
     }
     pub(super) fn apply_theme(&mut self) {
+        let _timing = crate::popup_timing::span("theme_update");
         let theme = if self.window.get_route().as_str() == "settings" {
             ThemeMode::parse(self.window.get_theme_mode().as_str()).unwrap_or(self.settings.theme)
         } else {
@@ -211,7 +213,15 @@ impl App {
             && std::env::var("ECHO_ACCEPTANCE_FORCE_MICA_FALLBACK").as_deref() == Ok("1");
         let _ = forced;
         if let Some(hwnd) = self.hwnd {
-            shell::apply_theme(hwnd, dark, false);
+            if self.native_theme != Some((hwnd, dark)) {
+                // DWM attributes survive hiding. Reapplying the same corner/backdrop
+                // policy on every activation synchronously invalidates native chrome.
+                // Theme notifications clear this key even when dark mode is unchanged.
+                shell::apply_theme(hwnd, dark, false);
+                if shell::apply_card_chrome(hwnd).is_ok() {
+                    self.native_theme = Some((hwnd, dark));
+                }
+            }
         }
         self.window.set_native_mica(false);
         #[cfg(feature = "cover-flow")]
@@ -223,9 +233,6 @@ impl App {
         }) {
             self.clear_flow_cache();
             self.schedule_prewarm();
-        }
-        if let Some(hwnd) = self.hwnd {
-            let _ = shell::apply_card_chrome(hwnd);
         }
         if changed && self.deck.phase == Phase::Animating {
             self.finish_motion();
@@ -327,7 +334,7 @@ impl App {
                     self.flow
                         .as_ref()
                         .unwrap()
-                        .capture_panel(&self.window, id, true)
+                        .capture_panel(&self.window, id, true, 0)
                 {
                     self.report(error, true);
                     return;
@@ -383,6 +390,7 @@ impl App {
                     let d = i as f32 - progress;
                     let amount = d.abs().min(1.0);
                     crate::cover_flow::compositor::PanelDraw {
+                        origin_x: 0.0,
                         id: -1 - i,
                         width: w,
                         height: h,

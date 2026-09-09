@@ -12,7 +12,9 @@ mod anchor;
 pub(crate) mod automation;
 mod placement;
 pub(crate) use anchor::{anchor_for_element, resolve_anchor};
-pub use placement::{place_card, place_inline, place_inline_stage, PopupPlacement};
+pub use placement::{
+    expand_popup_stage, place_card, place_inline, place_inline_stage, PopupPlacement,
+};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnchorSource {
     NativeCaret,

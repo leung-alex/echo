@@ -45,12 +45,19 @@ windows = { version = "0.62.2", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
+# Keep Echo workspace crates debuggable; render/font dependencies need optimization
+# for interactive DEV latency comparable to normal desktop use.
+[profile.dev.package."*"]
+opt-level = 3
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
 strip = "debuginfo"
 
 [patch.crates-io]
+i-slint-renderer-femtovg = { path = "vendor/i-slint-renderer-femtovg" }
+femtovg = { path = "vendor/femtovg" }
 i-slint-backend-winit = { path = "vendor/i-slint-backend-winit" }
 
 [profile.perf]

@@ -5,10 +5,66 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.IO.Compression;
+using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Web.Script.Serialization;
 public static class EchoInlineDriver {
+    static long lastInputTimestamp;
+    [DllImport("gdi32.dll",SetLastError=true)] static extern bool StretchBlt(IntPtr dest,int x,int y,int width,int height,IntPtr source,int sx,int sy,int sw,int sh,uint operation);
+    [DllImport("winmm.dll")] static extern uint timeBeginPeriod(uint period);
+    [DllImport("winmm.dll")] static extern uint timeEndPeriod(uint period);
+    static object MeasureOpen(string root, IntPtr input, string name, int duration) {
+        if(name.IndexOfAny(Path.GetInvalidFileNameChars())>=0)throw new ArgumentException("Invalid sample name");
+        duration=Math.Max(1000,Math.Min(10000,duration));
+        Guard(input);
+        var monitor=new Monitor{Size=(uint)Marshal.SizeOf(typeof(Monitor))};
+        if(!GetMonitorInfo(MonitorFromWindow(input,2),ref monitor))throw new InvalidOperationException("Monitor unavailable");
+        var r=monitor.Bounds;const int factor=4;
+        string regionFile=Path.Combine(root,"capture-region.json");
+        if(File.Exists(regionFile)) {
+            var region=Json.Deserialize<int[]>(File.ReadAllText(regionFile));
+            if(region.Length!=4)throw new ArgumentException("Invalid capture region");
+            r.Left=Math.Max(r.Left,region[0]);r.Top=Math.Max(r.Top,region[1]);
+            r.Right=Math.Min(r.Right,region[2]);r.Bottom=Math.Min(r.Bottom,region[3]);
+            if(r.Right-r.Left<64||r.Bottom-r.Top<64)throw new ArgumentException("Empty capture region");
+        }
+        int width=(r.Right-r.Left)/factor,height=(r.Bottom-r.Top)/factor;
+        var frames=new List<byte[]>();var times=new List<double[]>();
+        IntPtr desktop=GetDC(IntPtr.Zero);
+        bool timerResolution=timeBeginPeriod(1)==0;
+        try {
+        using(var scaled=new Bitmap(width,height,PixelFormat.Format32bppArgb))
+        using(var resize=Graphics.FromImage(scaled)) {
+            Action sample=()=>{
+                var dest=resize.GetHdc();
+                try { if(!StretchBlt(dest,0,0,width,height,desktop,r.Left,r.Top,r.Right-r.Left,r.Bottom-r.Top,0x00CC0020))throw new InvalidOperationException("Desktop capture failed"); }
+                finally {resize.ReleaseHdc(dest);}
+                var bits=scaled.LockBits(new Rectangle(0,0,width,height),ImageLockMode.ReadOnly,PixelFormat.Format32bppArgb);
+                try {var bytes=new byte[width*height*4];Marshal.Copy(bits.Scan0,bytes,0,bytes.Length);frames.Add(bytes);}
+                finally {scaled.UnlockBits(bits);}
+            };
+            sample();times.Add(new[]{-1.0,-1.0});
+            Hotkey(input,"Alt+V",1,null);
+            long start=lastInputTimestamp;
+            Func<double> elapsed=()=>1000.0*(Stopwatch.GetTimestamp()-start)/Stopwatch.Frequency;
+            while(elapsed()<duration) {
+                if(GetForegroundWindow()!=input)throw new InvalidOperationException("Foreground changed during timing");
+                double before=elapsed();sample();times.Add(new[]{before,elapsed()});Thread.Sleep(1);
+            }
+        }
+        } finally {if(timerResolution)timeEndPeriod(1);ReleaseDC(IntPtr.Zero,desktop);}
+        string output=Path.Combine(root,name+".bgra.gz");
+        using(var stream=new GZipStream(File.Create(output),CompressionMode.Compress))
+            foreach(var frame in frames)stream.Write(frame,0,frame.Length);
+        var result=new {name=name,width=width,height=height,origin=new[]{r.Left,r.Top},factor=factor,
+            format="BGRA32",frames=times,frequency=Stopwatch.Frequency,input_qpc=lastInputTimestamp,
+            source="desktop StretchBlt; timestamps bracket each capture; t0 immediately before SendInput(Alt+V)",file=output};
+        File.WriteAllText(Path.Combine(root,name+".frames.json"),Json.Serialize(result));
+        return new {file=output,frames=frames.Count,duration_ms=times[times.Count-1][1]};
+    }
+
     static readonly JavaScriptSerializer Json = new JavaScriptSerializer();
     static Dictionary<string,object> applicationTarget;
     [StructLayout(LayoutKind.Sequential)] struct Point { public int X,Y; }
@@ -91,15 +147,16 @@ public static class EchoInlineDriver {
     static uint[] Chord(string text) {
         uint mods=0,key=0;
         foreach(var token in text.ToUpperInvariant().Split('+')) {
-            switch(token) {case "CTRL":mods|=2;break;case "ALT":mods|=1;break;case "SHIFT":mods|=4;break;default:
+            switch(token) {case "CTRL":mods|=2;break;case "ALT":mods|=1;break;case "SHIFT":mods|=4;break;case "TAB":key=9;break;default:
                 if(token.Length==1 && Char.IsLetterOrDigit(token[0])) key=token[0];
-                else throw new ArgumentException("Integration driver only supports Ctrl/Alt/Shift plus A-Z/0-9.");break;}
+                else throw new ArgumentException("Integration driver only supports Ctrl/Alt/Shift plus A-Z/0-9 or Tab.");break;}
         }
         if(mods==0||key==0)throw new ArgumentException("Invalid test shortcut.");
         return new uint[]{mods,key};
     }
     static Input Key(uint key,bool up) {return new Input{Type=1,Data=new InputData{Keyboard=new Keyboard{Key=(ushort)key,Flags=up?2U:0U}}};}
     static void Send(List<Input> list) {
+        lastInputTimestamp = Stopwatch.GetTimestamp();
         uint sent=SendInput((uint)list.Count,list.ToArray(),Marshal.SizeOf(typeof(Input)));
         if(sent==list.Count)return;
         var pressed=new List<Keyboard>();bool mouseDown=false;
@@ -238,6 +295,39 @@ public static class EchoInlineDriver {
             throw new InvalidOperationException("Owned target lost foreground; input was not sent (expected_hwnd="+hwnd.ToInt64()+", expected_pid="+expectedPid+", actual_hwnd="+foreground.ToInt64()+", actual_pid="+actualPid+")");
         }
         foreach(var vk in new[]{0x10,0x11,0x12,0x5b,0x5c})if((GetAsyncKeyState(vk)&0x8000)!=0)throw new InvalidOperationException("A physical modifier is held; input cancelled");
+    }
+    static object ClickPoint(IntPtr hwnd, int x, int y) {
+        var point=new Point{X=x,Y=y};Rect bounds;
+        if(!GetWindowRect(hwnd,out bounds)||x<bounds.Left||x>=bounds.Right||y<bounds.Top||y>=bounds.Bottom
+            ||GetAncestor(WindowFromPoint(point),2)!=hwnd)
+            throw new InvalidOperationException("Point is not in the owned window's native input region");
+        foreach(var vk in new[]{0x01,0x02,0x10,0x11,0x12,0x5b,0x5c})
+            if((GetAsyncKeyState(vk)&0x8000)!=0)throw new InvalidOperationException("A physical button/modifier is held");
+        Point old;GetCursorPos(out old);
+        try {
+            SetCursorPos(x,y);
+            if(GetAncestor(WindowFromPoint(point),2)!=hwnd)throw new InvalidOperationException("Owned point moved before click");
+            // Bind queued clicks to the verified point before restoring the cursor.
+            int left=GetSystemMetrics(76),top=GetSystemMetrics(77),width=GetSystemMetrics(78),height=GetSystemMetrics(79);
+            if(width<1||height<1)throw new InvalidOperationException("Virtual desktop geometry unavailable");
+            int absoluteX=(int)(((long)(x-left)*65536+32768)/width),absoluteY=(int)(((long)(y-top)*65536+32768)/height);
+            var click=new[]{new Input{Type=0,Data=new InputData{Mouse=new Mouse{X=absoluteX,Y=absoluteY,Flags=0xc003}}},new Input{Type=0,Data=new InputData{Mouse=new Mouse{X=absoluteX,Y=absoluteY,Flags=0xc005}}}};
+            if(SendInput((uint)click.Length,click,Marshal.SizeOf(typeof(Input)))!=click.Length)throw new InvalidOperationException("Click failed");
+            Thread.Sleep(100);
+            return new{x=x,y=y,owner=hwnd.ToInt64()};
+        } finally {Point current;GetCursorPos(out current);if(current.X==x&&current.Y==y)SetCursorPos(old.X,old.Y);}
+    }
+    static object ScreenOwned(string root, IntPtr hwnd, string name) {
+        if(Path.GetFileName(name)!=name)throw new ArgumentException("Capture name must be local");
+        Rect r;if(!GetWindowRect(hwnd,out r)||!IsWindowVisible(hwnd))throw new InvalidOperationException("Owned window is hidden");
+        int width=r.Right-r.Left,height=r.Bottom-r.Top;
+        if(width<1||height<1||width>4096||height>4096)throw new InvalidOperationException("Capture dimensions exceed budget");
+        string path=Path.Combine(root,name);
+        using(var bitmap=new Bitmap(width,height))using(var graphics=Graphics.FromImage(bitmap)) {
+            graphics.CopyFromScreen(r.Left,r.Top,0,0,bitmap.Size,CopyPixelOperation.SourceCopy);
+            bitmap.Save(path,ImageFormat.Png);
+        }
+        return new{file=path,bounds=new[]{r.Left,r.Top,r.Right,r.Bottom},source="desktop pixels within the owned window"};
     }
     static void Text(IntPtr hwnd,string text,bool enter) {
         Guard(hwnd);if(text.Length>4096)throw new ArgumentException("Bounded synthetic text required");
@@ -405,6 +495,8 @@ public static class EchoInlineDriver {
                     case "foreign-ime-probe":result=ForeignImeProbe(hwnd);break;
                     case "activate-owned":ClickOwned(pid,title,args[4],hwnd,true);result=Geometry(hwnd);break;
                     case "click-owned":result=ClickOwned(pid,title,args[4],hwnd,false);break;
+                    case "click-point":result=ClickPoint(hwnd,Int32.Parse(args[4]),Int32.Parse(args[5]));break;
+                    case "screen-owned":result=ScreenOwned(root,hwnd,args[4]);break;
                     case "english-owned":result=EnglishOwned(hwnd);break;
                     case "close-owned":if(!PostMessageW(hwnd,0x0010,IntPtr.Zero,IntPtr.Zero))throw new InvalidOperationException("Owned close message failed");result=new{requested=true};break;
                     case "text":Text(hwnd,args[4],false);result=new{sent=true};break;
@@ -433,6 +525,7 @@ public static class EchoInlineDriver {
                         }
                         result=tree.ToString();break;
                     case "dump":result=EchoUi.Dump(pid,title);break;
+                    case "ready":result=EchoUi.Ready(pid,title);break;
                     case "sample-actions":result=SampleActions(root,hwnd,pid,title,Int32.Parse(args[4]),args[5]);break;
                     case "record-window":result=RecordWindow(root,hwnd,pid,title,Int32.Parse(args[4]),args[5],args[6]);break;
                     case "sample-headers":result=SampleHeaders(root,hwnd,pid,title,Int32.Parse(args[4]),args[5]);break;
@@ -447,9 +540,11 @@ public static class EchoInlineDriver {
                     case "focus-edit":EchoUi.Find(pid,title,args[4]).SetFocus();var wait=Stopwatch.StartNew();while(GetForegroundWindow()!=hwnd && wait.ElapsedMilliseconds<1500)Thread.Sleep(10);if(GetForegroundWindow()!=hwnd)throw new InvalidOperationException("Owned input did not obtain foreground");result=Geometry(hwnd);break;
                     case "card":var b=EchoUi.Find(pid,title,args[4]).Current.BoundingRectangle;result=new[]{b.Left,b.Top,b.Right,b.Bottom};break;
                     case "hotkey":Hotkey(hwnd,args[4],args.Length>5?Int32.Parse(args[5]):1,null);result=new{sent=true};break;
+                    case "timed-hotkey":Hotkey(hwnd,args[4],1,null);result=new{sent=true,input_qpc=lastInputTimestamp,frequency=Stopwatch.Frequency};break;
                     case "paced-hotkey":PacedHotkey(hwnd,args[4],Int32.Parse(args[5]));result=new{sent=true};break;
                     case "hotkey-enter":Hotkey(hwnd,args[4],1,null);Thread.Sleep(Math.Max(0,Math.Min(500,Int32.Parse(args[5]))));OneKey(hwnd,13,1,false);result=new{sent=true};break;
                     case "hotkey-ready":result=HotkeyReady(root,hwnd,args[4],Int32.Parse(args[5]),args[6]);break;
+                    case "measure-open":result=MeasureOpen(root,hwnd,args[4],Int32.Parse(args[5]));break;
                     case "hold-hotkey":Hotkey(hwnd,args[4],1,root);result=new{released=true};break;
                     case "move":if(!SetWindowPos(hwnd,IntPtr.Zero,Int32.Parse(args[4]),Int32.Parse(args[5]),0,0,0x0001|0x0004|0x0010))throw new InvalidOperationException("Owned window move failed.");result=Geometry(hwnd);break;
                     case "cycles":result=Cycles(root,pid,title,Int32.Parse(args[4]));break;

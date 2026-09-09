@@ -68,6 +68,23 @@ pub fn finish_card_frame(handle: isize) -> Result<(), String> {
         ))
     }
 }
+/// Keep composing the HWND while withholding its old surface from the desktop.
+/// Release only after the first frame for the new popup layout has been presented.
+pub fn cloak_card_frame(handle: isize, cloaked: bool) -> Result<(), String> {
+    let hwnd = owned(handle)?;
+    let value = i32::from(cloaked);
+    let result = unsafe {
+        DwmSetWindowAttribute(hwnd, DWMWA_CLOAK as u32, (&value as *const i32).cast(), 4)
+    };
+    if result >= 0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "Could not set popup frame visibility: 0x{:08x}",
+            result as u32
+        ))
+    }
+}
 fn set_region(handle: isize, shapes: Option<&[CardShape]>, expand: bool) -> Result<(), String> {
     let hwnd = owned(handle)?;
     if let Some(shapes) = shapes {
