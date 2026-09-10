@@ -95,6 +95,9 @@ unsafe fn writable(element: &IUIAutomationElement) -> bool {
     {
         return value.CurrentIsReadOnly().is_ok_and(|v| !v.as_bool());
     }
+    writable_text(element)
+}
+unsafe fn writable_text(element: &IUIAutomationElement) -> bool {
     let Ok(text) = element.GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId)
     else {
         return false;
@@ -110,6 +113,16 @@ unsafe fn writable(element: &IUIAutomationElement) -> bool {
     let _ = VariantClear(&mut value);
     result
 }
+// Rich chat editors can expose Group instead of Edit/Document. Quick Insert
+// needs a verified writable input, not inline completion's range replacement
+// contract. Keep this extension local to both capture and delivery revalidation.
+unsafe fn quick_insert_editable(element: &IUIAutomationElement) -> bool {
+    if element.CurrentControlType().ok() == Some(UIA_GroupControlTypeId) {
+        native::automation_element_has_input_focus(element) && writable_text(element)
+    } else {
+        native::automation_element_is_editable(element) && writable(element)
+    }
+}
 unsafe fn probe(uia: &IUIAutomation, snapshot: &FocusSnapshot, geometry: bool) -> Option<Probe> {
     if !snapshot.current() {
         return None;
@@ -118,8 +131,7 @@ unsafe fn probe(uia: &IUIAutomation, snapshot: &FocusSnapshot, geometry: bool) -
     let window = HWND(snapshot.window_id as _);
     if element.CurrentProcessId().ok()? as u32 != snapshot.process_id
         || !native::automation_element_belongs_to(uia, &element, window)
-        || !native::automation_element_is_editable(&element)
-        || !writable(&element)
+        || !quick_insert_editable(&element)
     {
         return None;
     }

@@ -289,6 +289,14 @@ impl App {
         }
     }
     pub(super) fn inline_fallback(&mut self, reason: String) {
+        // Only an initial inspection failure may fall back to ordinary paste.
+        // Retain the pre-show snapshot; never retarget a live completion session.
+        let paste_snapshot = self
+            .inline_ui
+            .pending
+            .then(|| self.activation_focus.clone())
+            .flatten()
+            .filter(echo_windows::focus::FocusSnapshot::still_current);
         // A late provider response must not pull focus away from a new editor.
         let snapshot = echo_windows::focus::FocusSnapshot::capture();
         let still_original = self.activation_focus.as_ref().is_some_and(|old| {
@@ -301,7 +309,7 @@ impl App {
         if !self.stop_inline() {
             return;
         }
-        self.activation_focus = None;
+        self.activation_focus = paste_snapshot.clone();
         if !still_original {
             self.dismiss();
             return;
@@ -316,9 +324,15 @@ impl App {
         self.pending_scroll = Some(0.0);
         let epoch = self.session.activate(Context::QuickInsert);
         self.worker.epoch.store(epoch, Ordering::Release);
-        self.compatibility_notice = Some(format!(
-            "{reason}. Browse history and copy manually; your input is unchanged."
-        ));
+        self.compatibility_notice = Some(reason);
+        if let Some(snapshot) = paste_snapshot {
+            self.capture_pending = true;
+            self.set_busy();
+            if !self.send(Work::Begin(epoch, Context::QuickInsert, Some(snapshot))) {
+                self.dismiss();
+            }
+            return;
+        }
         self.handle(Event::Activated(
             epoch,
             Context::QuickInsert,

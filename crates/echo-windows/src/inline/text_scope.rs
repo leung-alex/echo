@@ -3,6 +3,162 @@
 use windows::core::Interface;
 use windows::Win32::UI::Accessibility::*;
 
+/// Editor Kit exposes an empty composer as a read-only placeholder followed by
+/// three editable zero-width leaves. Typing removes the placeholder and puts the
+/// caret BEFORE the retained leaves. Project only this verified empty shape;
+/// literal zero-width characters in ordinary documents are never stripped.
+pub(super) unsafe fn empty_editor_kit_snapshot(
+    uia: &IUIAutomation,
+    editor: &IUIAutomationElement,
+    pattern: &IUIAutomationTextPattern,
+    doc: &IUIAutomationTextRange,
+    selected: &IUIAutomationTextRange,
+    snapshot: &echo_engine::ComposerSnapshot,
+) -> Option<echo_engine::ComposerSnapshot> {
+    if !is_editor_kit(editor) {
+        return None;
+    }
+    let walker = uia.RawViewWalker().ok()?;
+    let paragraph = walker.GetFirstChildElement(editor).ok()?;
+    if paragraph.CurrentControlType().ok()? != UIA_GroupControlTypeId
+        || walker.GetNextSiblingElement(&paragraph).is_ok()
+        || !uia
+            .CompareElements(&doc.GetEnclosingElement().ok()?, &paragraph)
+            .ok()?
+            .as_bool()
+    {
+        return None;
+    }
+    let mut child = walker.GetFirstChildElement(&paragraph).ok();
+    let mut leaves = Vec::new();
+    while let Some(e) = child {
+        if leaves.len() == 4 || e.CurrentControlType().ok()? != UIA_TextControlTypeId {
+            return None;
+        }
+        child = walker.GetNextSiblingElement(&e).ok();
+        leaves.push(e);
+    }
+    if leaves.len() != 4
+        || !leaves[0]
+            .CurrentAriaProperties()
+            .ok()?
+            .to_string()
+            .split(';')
+            .any(|p| p == "readonly=true")
+        || !uia
+            .CompareElements(&selected.GetEnclosingElement().ok()?, &leaves[1])
+            .ok()?
+            .as_bool()
+    {
+        return None;
+    }
+    let mut texts = Vec::new();
+    for leaf in &leaves {
+        texts.push(
+            pattern
+                .RangeFromChild(leaf)
+                .ok()?
+                .GetText(1024)
+                .ok()?
+                .to_vec(),
+        );
+    }
+    if texts[1..].iter().any(|t| t != &[0x200b]) {
+        return None;
+    }
+    project_empty_editor_kit(snapshot, &texts[0])
+}
+
+pub(super) unsafe fn is_editor_kit(editor: &IUIAutomationElement) -> bool {
+    editor.CurrentControlType().ok() == Some(UIA_GroupControlTypeId)
+        && editor.CurrentClassName().is_ok_and(|class| {
+            let class = class.to_string();
+            ["editor-kit-container", "innerdocbody"]
+                .iter()
+                .all(|token| class.split_whitespace().any(|c| c == *token))
+        })
+}
+
+/// Readback expectation only: the clipboard payload is never changed. Editor
+/// Kit exposes a zero-width leaf before each paragraph separator in pasted text.
+pub(super) fn editor_kit_inserted(text: &str) -> Vec<u16> {
+    text.replace("\r\n", "\n")
+        .replace('\n', "\u{200b}\n")
+        .encode_utf16()
+        .collect()
+}
+
+fn project_empty_editor_kit(
+    snapshot: &echo_engine::ComposerSnapshot,
+    placeholder: &[u16],
+) -> Option<echo_engine::ComposerSnapshot> {
+    const TAIL: [u16; 5] = [0x200b, 10, 0x200b, 10, 0x200b];
+    let caret = placeholder.len() + 2;
+    let mut raw = placeholder.to_vec();
+    raw.push(10);
+    raw.extend(TAIL);
+    if placeholder.is_empty() || snapshot.text != raw || snapshot.selection != (caret..caret) {
+        return None;
+    }
+    Some(echo_engine::ComposerSnapshot {
+        text: TAIL.to_vec(),
+        selection: 0..0,
+    })
+}
+
+#[cfg(test)]
+mod editor_kit_tests {
+    use super::*;
+    use echo_engine::{ComposerSnapshot, QueryRange};
+
+    #[test]
+    fn empty_placeholder_transition_preserves_query_and_replacement_boundaries() {
+        let placeholder: Vec<u16> = "Synthetic hint".encode_utf16().collect();
+        let mut raw = placeholder.clone();
+        raw.extend([10, 0x200b, 10, 0x200b, 10, 0x200b]);
+        let caret = placeholder.len() + 2;
+        let empty = ComposerSnapshot {
+            text: raw,
+            selection: caret..caret,
+        };
+        let projected = project_empty_editor_kit(&empty, &placeholder).unwrap();
+        let mut range = QueryRange::begin(&projected).unwrap();
+        for query in ["s", "select", "selec", "", "中文"] {
+            let mut text: Vec<u16> = query.encode_utf16().collect();
+            let end = text.len();
+            text.extend_from_slice(&projected.text);
+            let next = if query.is_empty() {
+                projected.clone()
+            } else {
+                ComposerSnapshot {
+                    text,
+                    selection: end..end,
+                }
+            };
+            range.observe(&next).unwrap();
+            assert_eq!(range.query(), query);
+            assert_eq!(range.seal(&next, range.revision()).unwrap(), 0..end);
+        }
+        let mut changed = empty.clone();
+        changed.selection = 0..0;
+        assert!(project_empty_editor_kit(&changed, &placeholder).is_none());
+        changed = empty.clone();
+        changed.text.push(65);
+        assert!(project_empty_editor_kit(&changed, &placeholder).is_none());
+        changed = empty;
+        changed.selection.end += 1;
+        assert!(project_empty_editor_kit(&changed, &placeholder).is_none());
+    }
+
+    #[test]
+    fn editor_kit_readback_keeps_literal_zero_width_characters() {
+        assert_eq!(
+            String::from_utf16(&editor_kit_inserted("a\u{200b}\r\nb\nc")).unwrap(),
+            "a\u{200b}\u{200b}\nb\u{200b}\nc"
+        );
+    }
+}
+
 unsafe fn inside(
     uia: &IUIAutomation,
     child: &IUIAutomationElement,

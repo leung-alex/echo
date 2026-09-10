@@ -645,6 +645,17 @@ mod windows_impl {
     }
 
     pub(crate) fn automation_element_is_editable(element: &IUIAutomationElement) -> bool {
+        automation_element_has_input_focus(element)
+            && unsafe {
+                element.CurrentControlType().is_ok_and(|control_type| {
+                    control_type == UIA_EditControlTypeId
+                        || control_type == UIA_DocumentControlTypeId
+                        || control_type == UIA_ComboBoxControlTypeId
+                })
+            }
+    }
+
+    pub(crate) fn automation_element_has_input_focus(element: &IUIAutomationElement) -> bool {
         unsafe {
             element
                 .CurrentIsEnabled()
@@ -658,11 +669,6 @@ mod windows_impl {
                 && element
                     .CurrentIsPassword()
                     .is_ok_and(|value| !value.as_bool())
-                && element.CurrentControlType().is_ok_and(|control_type| {
-                    control_type == UIA_EditControlTypeId
-                        || control_type == UIA_DocumentControlTypeId
-                        || control_type == UIA_ComboBoxControlTypeId
-                })
         }
     }
 

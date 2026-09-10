@@ -98,7 +98,29 @@ SendMessageTimeout; UIA-backed input uses SendInput only after verification.
 Native timeouts can be ambiguous if the other app is already processing a paste;
 check the target before retrying rather than assuming a timed-out app did nothing.
 
+Quick Insert also accepts a focused UIA Group when its TextPattern explicitly
+reports a writable document range (for example, the Feishu chat composer).
+Enabled, non-password, window ownership and runtime identity checks still apply
+at capture and delivery. Inline support additionally requires an editor-scoped
+selectable range and the normal replacement/composition checks.
+If the initial inline inspection fails, desktop retries ordinary Quick Insert
+capture using the still-current pre-show snapshot before showing the popup.
+Expired snapshots and failures of an already active completion do not authorize
+a new paste target. The fallback notice reflects whether ordinary insertion is
+available or only manual copying is possible.
+
 ## Validation
+
+`tests/native/Invoke-GroupQuickInsertAcceptance.ps1 -EvidenceRoot <new-directory>`
+requires `ECHO_WINDOWS_ACCEPTANCE=1` and runs a real TextPattern-only WPF Group
+fixture through production capture and paste. It preserves the clipboard and
+uses isolated synthetic data. The regression covers Group/Edit/Document,
+read-only and missing-pattern rejection, focus loss, changed identity and a
+destroyed target. Real Feishu compatibility must be validated separately.
+The same fixture exercises inline query observation, backspace, navigation,
+Enter replacement with preserved surrounding text, no-result Enter protection,
+out-of-query selection rejection and Escape cancellation. Its injected input
+does not establish physical Chinese IME acceptance or desktop popup behavior.
 
 Pure tests cover shortcut syntax/defaults/round trips, key mapping/stale hotkey
 messages, invalid accessibility rectangles, negative-coordinate monitors,

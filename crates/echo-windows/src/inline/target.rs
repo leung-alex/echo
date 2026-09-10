@@ -112,8 +112,7 @@ impl Target {
                     .map_err(|_| "The input does not expose its focused text element")?;
                 if element.CurrentProcessId().ok() != Some(snapshot.process_id as i32)
                     || !native::automation_element_belongs_to(uia, &element, window)
-                    || !native::automation_element_is_editable(&element)
-                    || !writable(&element)
+                    || !inline_editable(&element)
                 {
                     return Err(
                         "The input is protected, read-only, or not a verified text editor".into(),
@@ -210,8 +209,16 @@ impl Target {
             let value = a
                 .element
                 .GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
-                .and_then(|p| p.CurrentValue())
-                .map_err(|_| "Synthetic editor value cannot be verified")?;
+                .and_then(|p| p.CurrentValue());
+            let value = match value {
+                Ok(value) => value,
+                Err(_) if a.element.CurrentControlType().ok() == Some(UIA_GroupControlTypeId) => {
+                    // Group composers may expose only TextPattern. Still require
+                    // an exact explicit synthetic value before emitting ranges.
+                    BSTR::from_wide(&text(&live_document(a)?.1)?)
+                }
+                Err(_) => return Err("Synthetic editor value cannot be verified".into()),
+            };
             if value.to_string() != expected {
                 let units = value.to_vec();
                 let whitespace = units.iter().all(|u| matches!(*u, 9 | 10 | 13 | 32 | 160));
@@ -290,6 +297,33 @@ impl Target {
                 child = walker.GetNextSiblingElement(&element).ok();
             }
             let mut enclosing_chain = Vec::new();
+            let mut leaves = Vec::new();
+            if let Ok(container) = doc.GetEnclosingElement() {
+                let mut leaf = walker.GetFirstChildElement(&container).ok();
+                while let Some(e) = leaf {
+                    if leaves.len() >= 12 {
+                        break;
+                    }
+                    let r = pattern.RangeFromChild(&e).ok();
+                    leaves.push(serde_json::json!({
+                        "id": native::automation_runtime_id(&e),
+                        "role": e.CurrentControlType().ok().map(|r| r.0),
+                        "class": e.CurrentClassName().ok().map(|r| r.to_string()),
+                        "aria": e.CurrentAriaProperties().ok().map(|r| r.to_string()),
+                        "units": r.as_ref().and_then(|r| text(r).ok()).map(|s| s.len()),
+                        "readonly": r.as_ref().and_then(|r| {
+                            let mut v = r.GetAttributeValue(UIA_IsReadOnlyAttributeId).ok()?;
+                            let result = (v.Anonymous.Anonymous.vt == VT_BOOL).then(|| v.Anonymous.Anonymous.Anonymous.boolVal.0 != 0);
+                            let _ = VariantClear(&mut v);
+                            result
+                        }),
+                        "start_vs_caret": r.as_ref().and_then(|r| r.CompareEndpoints(TextPatternRangeEndpoint_Start, &selected, TextPatternRangeEndpoint_Start).ok()),
+                        "end_vs_caret": r.as_ref().and_then(|r| r.CompareEndpoints(TextPatternRangeEndpoint_End, &selected, TextPatternRangeEndpoint_End).ok()),
+                        "selection_enclosing": selected.GetEnclosingElement().is_ok_and(|s| a.uia.CompareElements(&s, &e).is_ok_and(|b| b.as_bool())),
+                    }));
+                    leaf = walker.GetNextSiblingElement(&e).ok();
+                }
+            }
             let mut ancestor = doc.GetEnclosingElement().ok();
             while let Some(element) = ancestor {
                 if enclosing_chain.len() >= 8 {
@@ -332,6 +366,7 @@ impl Target {
                 "name_matches_expected": a.element.CurrentName().is_ok_and(|s| s.to_string() == expected.trim()),
                 "help_matches_expected": a.element.CurrentHelpText().is_ok_and(|s| s.to_string() == expected.trim()),
                 "children": children,
+                "leaves": leaves,
                 "enclosing_chain": enclosing_chain,
                 "name_units": a.element.CurrentName().ok().map(|s| s.to_vec().len()),
                 "direct_child_count": a.uia.CreateTrueCondition().and_then(|c| a.element.FindAll(TreeScope_Children, &c)).and_then(|c| c.Length()).ok(),
@@ -807,7 +842,13 @@ impl Target {
         }
     }
     pub(super) fn normalize_inserted(&self, text: &str) -> Vec<u16> {
-        if self.automation.is_none() {
+        if self
+            .automation
+            .as_ref()
+            .is_some_and(|a| unsafe { super::text_scope::is_editor_kit(&a.element) })
+        {
+            super::text_scope::editor_kit_inserted(text)
+        } else if self.automation.is_none() {
             text.replace("\r\n", "\n")
                 .replace('\n', "\r\n")
                 .encode_utf16()
@@ -990,7 +1031,7 @@ unsafe fn focused_in_editor(target: &AutomationTarget) -> Option<bool> {
         if role == UIA_EditControlTypeId
             || role == UIA_ComboBoxControlTypeId
             || role == UIA_WindowControlTypeId
-            || (role == UIA_DocumentControlTypeId
+            || ((role == UIA_DocumentControlTypeId || role == UIA_GroupControlTypeId)
                 && writable(&current)
                 && current.CurrentIsKeyboardFocusable().ok()?.as_bool())
         {
@@ -1063,16 +1104,37 @@ unsafe fn automation_snapshot(target: &AutomationTarget) -> Result<ComposerSnaps
     {
         return Err("Input exposes inconsistent text and selection ranges".into());
     }
-    Ok(ComposerSnapshot {
+    let snapshot = ComposerSnapshot {
         text: all,
         selection: start..end,
-    })
+    };
+    Ok(super::text_scope::empty_editor_kit_snapshot(
+        &target.uia,
+        &target.element,
+        &pattern,
+        &doc,
+        &selected,
+        &snapshot,
+    )
+    .unwrap_or(snapshot))
+}
+unsafe fn inline_editable(element: &IUIAutomationElement) -> bool {
+    if element.CurrentControlType().ok() == Some(UIA_GroupControlTypeId) {
+        // Rich chat composers may report Group. This only admits inspection;
+        // scoped ranges, exact selection and composition are verified below.
+        native::automation_element_has_input_focus(element) && writable_text(element)
+    } else {
+        native::automation_element_is_editable(element) && writable(element)
+    }
 }
 unsafe fn writable(element: &IUIAutomationElement) -> bool {
     if let Ok(value) = element.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
     {
         return value.CurrentIsReadOnly().is_ok_and(|v| !v.as_bool());
     }
+    writable_text(element)
+}
+unsafe fn writable_text(element: &IUIAutomationElement) -> bool {
     let Ok(pattern) = element.GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId)
     else {
         return false;

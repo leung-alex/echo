@@ -3,9 +3,24 @@
 Inline Quick Insert retains focus in the external editor and replaces only the
 session's original query span. Echo has no local search field. F6 retires the
 inline session and opens unfiltered history for manual copying, with no paste
-target. Unavailable input inspection and inspection timeouts use the same
-copy-only fallback; they never replace the original input.
+target. Initial input inspection failures may retry ordinary Quick Insert using
+the still-current pre-show snapshot; an unverified target remains copy-only.
+Failures after inline activation never authorize a new ordinary paste target.
 History and Saved Items retain their distinct ownership and original payloads.
+
+Writable UIA Group composers (including Feishu chat) may enter inline mode when
+their TextPattern exposes an editor-scoped document and selectable range. Group
+is not sufficient by itself: focus, ownership, visibility, writability, range and
+composition checks all remain mandatory. The popup stays non-activating and the
+query is typed in the original composer. Selection readback still gates actual
+replacement; advertised TextPattern support is not a compatibility acceptance.
+
+Editor Kit's empty Group composer exposes a read-only placeholder plus three
+zero-width leaves. Only that verified tree and collapsed caret are projected to
+the stable empty context; literal text is not trimmed. Otherwise the disappearing
+placeholder would suspend the first query observation. Multiline paste readback
+accounts for the provider's zero-width paragraph separators without changing the
+clipboard payload or relaxing the preserved prefix/suffix checks.
 
 ## Input ownership
 

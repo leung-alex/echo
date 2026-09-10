@@ -460,7 +460,12 @@ impl App {
                     self.report(e, true);
                 }
                 if let Some(notice) = self.compatibility_notice.take() {
-                    self.report(notice, false);
+                    let action = if self.session.has_target {
+                        "Select a history item to insert."
+                    } else {
+                        "Browse history and copy manually; your input is unchanged."
+                    };
+                    self.report(format!("{notice}. {action}"), false);
                 }
                 self.schedule_prewarm();
             }
