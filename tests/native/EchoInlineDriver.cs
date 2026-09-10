@@ -15,7 +15,7 @@ public static class EchoInlineDriver {
     [DllImport("gdi32.dll",SetLastError=true)] static extern bool StretchBlt(IntPtr dest,int x,int y,int width,int height,IntPtr source,int sx,int sy,int sw,int sh,uint operation);
     [DllImport("winmm.dll")] static extern uint timeBeginPeriod(uint period);
     [DllImport("winmm.dll")] static extern uint timeEndPeriod(uint period);
-    static object MeasureOpen(string root, IntPtr input, string name, int duration) {
+    static object MeasureOpen(string root, IntPtr input, string name, int duration, bool coldStart = false) {
         if(name.IndexOfAny(Path.GetInvalidFileNameChars())>=0)throw new ArgumentException("Invalid sample name");
         duration=Math.Max(1000,Math.Min(10000,duration));
         Guard(input);
@@ -46,7 +46,23 @@ public static class EchoInlineDriver {
                 finally {scaled.UnlockBits(bits);}
             };
             sample();times.Add(new[]{-1.0,-1.0});
-            Hotkey(input,"Alt+V",1,null);
+            if(coldStart) {
+                string executable=Path.Combine(root,"echo-timing.exe");
+                if(!File.Exists(executable))throw new InvalidOperationException("Isolated timing executable missing");
+                string envelope=Json.Serialize(new {version=1, request_id=Guid.NewGuid().ToString("N"), action="echo.quick_insert", origin=(object)null, payload=new {}});
+                string activation=Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(envelope)).TrimEnd('=').Replace('+','-').Replace('/','_');
+                Guard(input);
+                lastInputTimestamp=Stopwatch.GetTimestamp();
+                // ShellExecute prevents the product from inheriting this short-lived
+                // observer's captured stdout pipe. Environment still comes from the
+                // explicitly isolated observer process.
+                using(var launched=Process.Start(new ProcessStartInfo(executable,"--echo-activate "+activation){UseShellExecute=true,WindowStyle=ProcessWindowStyle.Hidden})) {
+                    File.WriteAllText(Path.Combine(root,name+".process.json"),Json.Serialize(new {
+                        pid=launched.Id, created_utc=launched.StartTime.ToUniversalTime().ToString("o"), executable=executable,
+                        session_id=launched.SessionId, observer_session_id=Process.GetCurrentProcess().SessionId
+                    }));
+                }
+            } else Hotkey(input,"Alt+V",1,null);
             long start=lastInputTimestamp;
             Func<double> elapsed=()=>1000.0*(Stopwatch.GetTimestamp()-start)/Stopwatch.Frequency;
             while(elapsed()<duration) {
@@ -60,7 +76,7 @@ public static class EchoInlineDriver {
             foreach(var frame in frames)stream.Write(frame,0,frame.Length);
         var result=new {name=name,width=width,height=height,origin=new[]{r.Left,r.Top},factor=factor,
             format="BGRA32",frames=times,frequency=Stopwatch.Frequency,input_qpc=lastInputTimestamp,
-            source="desktop StretchBlt; timestamps bracket each capture; t0 immediately before SendInput(Alt+V)",file=output};
+            source=coldStart ? "desktop StretchBlt; t0 immediately before Process.Start(--echo-activate echo.quick_insert envelope)" : "desktop StretchBlt; timestamps bracket each capture; t0 immediately before SendInput(Alt+V)",file=output};
         File.WriteAllText(Path.Combine(root,name+".frames.json"),Json.Serialize(result));
         return new {file=output,frames=frames.Count,duration_ms=times[times.Count-1][1]};
     }
@@ -560,8 +576,14 @@ public static class EchoInlineDriver {
                     case "hotkey-enter":Hotkey(hwnd,args[4],1,null);Thread.Sleep(Math.Max(0,Math.Min(500,Int32.Parse(args[5]))));OneKey(hwnd,13,1,false);result=new{sent=true};break;
                     case "hotkey-ready":result=HotkeyReady(root,hwnd,args[4],Int32.Parse(args[5]),args[6]);break;
                     case "measure-open":result=MeasureOpen(root,hwnd,args[4],Int32.Parse(args[5]));break;
+                    case "measure-cold":result=MeasureOpen(root,hwnd,args[4],Int32.Parse(args[5]),true);break;
                     case "hold-hotkey":Hotkey(hwnd,args[4],1,root);result=new{released=true};break;
                     case "move":if(!SetWindowPos(hwnd,IntPtr.Zero,Int32.Parse(args[4]),Int32.Parse(args[5]),0,0,0x0001|0x0004|0x0010))throw new InvalidOperationException("Owned window move failed.");result=Geometry(hwnd);break;
+                    case "size-owned":
+                        int sw=Int32.Parse(args[4]),sh=Int32.Parse(args[5]);
+                        if(sw<400||sw>2400||sh<400||sh>1600)throw new ArgumentException("Invalid fixture size");
+                        if(!SetWindowPos(hwnd,IntPtr.Zero,0,0,sw,sh,0x0002|0x0004|0x0010))throw new InvalidOperationException("Owned fixture resize failed");
+                        result=Geometry(hwnd);break;
                     case "cycles":result=Cycles(root,pid,title,Int32.Parse(args[4]));break;
                     default:throw new ArgumentException("Unknown bounded integration operation.");
                 }

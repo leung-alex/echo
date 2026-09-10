@@ -1,12 +1,12 @@
 //! Typed, single-window callbacks. Clipboard identities are resolved by presentation.
 use super::*;
 use slint::{CloseRequestResponse, DataTransfer};
-fn dragged(data: &DataTransfer) -> Option<RowKey> {
+fn dragged(data: &DataTransfer) -> Option<crate::events::DragOrigin> {
     data.user_data()?
-        .downcast::<RowKey>()
+        .downcast::<crate::events::DragOrigin>()
         .ok()
         .map(|k| *k)
-        .filter(|k| k.source == QuickInsertSource::Favorite)
+        .filter(|k| k.key.source == QuickInsertSource::Favorite)
 }
 pub(super) fn connect(app: &App) {
     let window = &app.window;
@@ -75,12 +75,20 @@ pub(super) fn connect(app: &App) {
         true
     });
     window.on_ime_composing(is_composing);
-    window.on_drag_data(|key| {
+    window.on_drag_data(|key, binding| {
         let mut data = DataTransfer::default();
-        if let Some(key) =
-            resolve_key(key.as_str()).filter(|k| k.source == QuickInsertSource::Favorite)
-        {
-            data.set_user_data(Rc::new(key));
+        let origin = APP.with(|slot| {
+            let slot = slot.borrow();
+            let app = slot.as_ref()?.try_borrow().ok()?;
+            let key = app.surface.resolve_key(key.as_str())?;
+            (key.source == QuickInsertSource::Favorite).then_some(crate::events::DragOrigin {
+                frame: app.software_frame_stamp(),
+                binding,
+                key,
+            })
+        });
+        if let Some(origin) = origin {
+            data.set_user_data(Rc::new(origin));
         }
         data
     });

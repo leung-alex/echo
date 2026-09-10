@@ -847,7 +847,7 @@ func (a *app) install() error {
 }
 
 func (a *app) build(release bool) error {
-	args := []string{"build", "-p", "echo-desktop", "--locked", "--features", "cover-flow"}
+	args := []string{"build", "-p", "echo-desktop", "--locked", "--no-default-features"}
 	if release {
 		args = append(args, "--release")
 	}
@@ -855,7 +855,7 @@ func (a *app) build(release bool) error {
 }
 
 func (a *app) dev() error {
-	return a.run("cargo", "run", "-p", "echo-desktop", "--locked", "--features", "cover-flow")
+	return a.run("cargo", "run", "-p", "echo-desktop", "--locked", "--no-default-features")
 }
 
 func (a *app) smoke() error {

@@ -100,8 +100,24 @@ export component SpacePanel inherits Rectangle {
     }
     Text {
         x:T.panel-padding + (root.header-icon.width == 0 ? 14px : 34px);y:18px;
-        width:max(30px,parent.width - self.x - T.panel-padding - (root.favorites && root.clearable ? 124px : 84px));height:32px;text:root.title;
+        width:max(30px,parent.width - self.x - T.panel-padding - (root.favorites && root.clearable ? 196px : 156px));height:32px;text:root.title;
         color:EchoTheme.text;font-size:T.font-panel-title;font-weight:T.font-weight-semibold;overflow:elide;vertical-alignment:center;
+    }
+    EchoButton {
+        x: root.width - T.panel-padding - (root.favorites ? 176px : 136px); y: 18px; width: 32px; height: 32px;
+        text: "‹"; label: "Previous space"; flat: true;
+        visible: !root.capture-only && !root.titles-only;
+        enabled: root.previous-enabled && !root.modal && !root.busy;
+        take-focus-on-click: !root.inline-mode;
+        clicked => { if (!root.ime-composing()) {root.navigate(-1);} }
+    }
+    EchoButton {
+        x: root.width - T.panel-padding - (root.favorites ? 140px : 100px); y: 18px; width: 32px; height: 32px;
+        text: "›"; label: "Next space"; flat: true;
+        visible: !root.capture-only && !root.titles-only;
+        enabled: root.next-enabled && !root.modal && !root.busy;
+        take-focus-on-click: !root.inline-mode;
+        clicked => { if (!root.ime-composing()) {root.navigate(1);} }
     }
     new-content := EchoButton {
         x: root.width - T.panel-padding - 72px; y: 18px;
@@ -162,7 +178,7 @@ export component SpacePanel inherits Rectangle {
             inline-mode: root.inline-mode;
             control-focus-mode:root.control-focus-mode;
             entry:entry;favorites:root.favorites;compact:root.compact;capture-only:root.capture-only;batch:root.batch;
-            busy:root.busy;input-blocked:root.loading || root.stale;quick-insert:root.quick-insert;copy-only:root.copy-only;reorder-enabled:root.query == "";
+            busy:root.busy;input-blocked:root.loading || root.stale || root.animating;quick-insert:root.quick-insert;copy-only:root.copy-only;reorder-enabled:root.query == "";
             selected-geometry(y,height) => {
                 if (!root.capture-only && !root.animating) {
                     if (y + list.viewport-y < 0px || height > list.visible-height) {list.viewport-y = -y;}

@@ -62,8 +62,9 @@ Window close and Escape dismiss/hide surfaces. They do not stop clipboard captur
 ## Renderer and floating-card composition
 
 - Renderer feature/selection: `apps/desktop/Cargo.toml` and `apps/desktop/src/graphics.rs`
-- Shared-device offscreen rendering, texture budgets and perspective: `apps/desktop/src/cover_flow`
+- Software transition and outgoing-model ownership: `apps/desktop/src/app/software_deck.rs`; pure transition state: `crates/echo-presentation/src/slide.rs`
+- Direct software framebuffer presentation: `crates/echo-windows/src/shell/software_frame.rs`
 - Native alpha composition, hit-test clipping and chrome: `crates/echo-windows/src/shell/card_window.rs`
 - Visual tree and flat fallback: `apps/desktop/ui/app-window.slint` and `space-panel.slint`
 
-The normal build uses FemtoVG-WGPU on a shared DX12 device. The outside of the cards is transparent, not a Mica frame. Software-only builds and runtime fallback retain one native, region-clipped flat card. Moving textures are budgeted independently of full-DPI settled text. No production navigation path performs CPU screenshots or GPU readbacks; snapshots are restricted to isolated native acceptance and the diagnostic probe. See `cover-flow.md` for exact ownership and test boundaries.
+The normal build uses software rendering and a Slint component carousel with a transparent outer window. Each side card retains at most four read-only preview rows and filters its own space using the central query generation. Production navigation takes no screenshots or GPU readbacks. See `ADR-003-software-cards.md` for ownership and test boundaries.

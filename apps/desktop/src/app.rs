@@ -1,9 +1,11 @@
 //! One native window, one insertion session, and independently identified content spaces.
+#[cfg(feature = "cover-flow")]
+use crate::EntryRow;
 use crate::{
     events::{Command, Event, Hub, PixelData},
     formatting,
     service::{Mutation, Work, Worker},
-    AppWindow, EntryRow,
+    AppWindow,
 };
 use echo_engine::*;
 use echo_presentation::{
@@ -32,6 +34,8 @@ mod inline_completion;
 pub(crate) mod native_test;
 mod quick_insert_window;
 mod settings_controller;
+mod side_previews;
+mod software_deck;
 use dialogs::{Confirmation, Picker};
 thread_local! { static APP: RefCell<Option<Rc<RefCell<App>>>> = const { RefCell::new(None) }; }
 pub fn install(app: Rc<RefCell<App>>) {
@@ -46,6 +50,28 @@ pub fn deliver(event: Event) {
     let _ = APP.try_with(|slot| {
         if let Some(app) = slot.borrow().as_ref() {
             app.borrow_mut().handle(event);
+        }
+    });
+}
+/// One presentation clock updates geometry immediately before the next frame.
+/// No separate animation polling timer competes with the renderer's 60 Hz cap.
+pub fn before_software_frame() {
+    let _ = APP.try_with(|slot| {
+        let slot = slot.borrow();
+        let Some(app) = slot.as_ref() else { return };
+        let Ok(mut app) = app.try_borrow_mut() else {
+            return;
+        };
+        if !app.surface.visible || app.graphics.perspective {
+            return;
+        }
+        if app.window.get_route().as_str() == "settings" && app.preview_started.is_some() {
+            app.preview_tick();
+        } else if app.software.slide.moving() {
+            app.software_tick();
+        }
+        if app.software.slide.moving() || app.preview_started.is_some() {
+            app.window.window().request_redraw();
         }
     });
 }
@@ -142,6 +168,7 @@ mod image_reclamation_tests {
     }
 }
 
+#[cfg_attr(not(feature = "cover-flow"), allow(dead_code))]
 struct Preview {
     // A visited card retains its bounded resident page together with its scroll.
     scroll: Option<f32>,
@@ -154,7 +181,8 @@ struct Preview {
 pub struct App {
     window: AppWindow,
     surface: Surface,
-    model: Rc<VecModel<EntryRow>>,
+    model: Rc<crate::native_model::EntryModel>,
+    model_bytes: usize,
     images: Images,
     hook: Option<WindowHook>,
     hwnd: Option<isize>,
@@ -175,6 +203,8 @@ pub struct App {
     manager_geometry: Option<(slint::PhysicalPosition, slint::PhysicalSize)>,
     quick_geometry_active: bool,
     capture_pending: bool,
+    pending_reclaim: Option<(u64, u64)>,
+    hidden_generation: u64,
     inline_ui: inline_completion::InlineUi,
     inline_timer: Timer,
     compatibility_notice: Option<String>,
@@ -184,6 +214,7 @@ pub struct App {
     restart: Option<bool>,
     clock: Instant,
     deck: Deck,
+    software: software_deck::SoftwareDeck,
     spaces: Vec<Space>,
     positions: SpacePositions,
     search_timer: Timer,
@@ -234,18 +265,19 @@ impl App {
         graphics: crate::graphics::GraphicsInfo,
     ) -> Result<Rc<RefCell<Self>>, String> {
         let window = AppWindow::new().map_err(|e| e.to_string())?;
+        window.set_software_deck(!graphics.perspective);
         window.window().set_size(slint::LogicalSize::new(
             echo_presentation::echo_tokens::WINDOW_WIDTH,
             echo_presentation::echo_tokens::WINDOW_HEIGHT,
         ));
-        let model = Rc::new(VecModel::default());
+        let model = Rc::new(crate::native_model::EntryModel::default());
         window.set_rows(ModelRc::from(model.clone()));
         let bootstrap = worker.bootstrap.clone();
         let mut surface = Surface::new(QuickInsertView::History);
-        surface.row_limit = 400;
+        surface.row_limit = 40;
         let environment = shell::ui_environment(None);
         #[cfg(feature = "cover-flow")]
-        let flow = if graphics.perspective {
+        let flow = if graphics.perspective && !Self::diagnostic_no_offscreen() {
             Some(crate::cover_flow::bridge::FlowBridge::install(
                 &window,
                 hub.clone(),
@@ -258,6 +290,7 @@ impl App {
             window,
             surface,
             model,
+            model_bytes: 0,
             images: Images::default(),
             hook: None,
             hwnd: None,
@@ -278,6 +311,8 @@ impl App {
             manager_geometry: None,
             quick_geometry_active: false,
             capture_pending: false,
+            pending_reclaim: None,
+            hidden_generation: 0,
             inline_ui: Default::default(),
             inline_timer: Timer::default(),
             compatibility_notice: None,
@@ -287,6 +322,7 @@ impl App {
             restart: None,
             clock: Instant::now(),
             deck: Deck::default(),
+            software: Default::default(),
             spaces: Vec::new(),
             positions: SpacePositions::default(),
             search_timer: Timer::default(),
@@ -336,6 +372,11 @@ impl App {
     }
     fn now(&self) -> u64 {
         self.clock.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
+    }
+    #[cfg(feature = "cover-flow")]
+    fn diagnostic_no_offscreen() -> bool {
+        cfg!(feature = "memory-diagnostics")
+            && std::env::var("ECHO_MEMORY_NO_OFFSCREEN").as_deref() == Ok("1")
     }
     fn send(&mut self, work: Work) -> bool {
         if let Err(e) = self.worker.send(work) {
@@ -393,7 +434,11 @@ impl App {
                         .as_ref()
                         .err()
                         .is_some_and(|e| e.contains("outdated"));
+                let old_window = self.surface.window_start;
                 if self.surface.finish_load(ticket, result.map(|p| p.page)) {
+                    if self.surface.window_start != old_window {
+                        self.pending_scroll = Some(0.0);
+                    }
                     if let Some((revision, total)) = metadata {
                         self.surface.revision = revision;
                         self.surface.total = total;
@@ -416,10 +461,27 @@ impl App {
                 }
             }
             Event::Preview(space, epoch, result) => self.preview_loaded(space, epoch, result),
+            Event::SidePreviewCancelled(space, epoch) => {
+                if epoch == self.preview_epoch {
+                    self.pending_previews.remove(&space);
+                    self.prepare_software_neighbors();
+                }
+            }
             Event::Inspected(generation, result) => self.inspected(generation, result),
             Event::Catalog(generation, result) => self.catalog_loaded(generation, result),
             Event::Activated(epoch, context, result) => {
                 if epoch != self.session.epoch {
+                    return;
+                }
+                if self.inline_ui.unavailable
+                    && (self.worker.inline.readiness()[0] != epoch
+                        || !self
+                            .activation_focus
+                            .as_ref()
+                            .is_some_and(echo_windows::focus::FocusSnapshot::still_current))
+                {
+                    self.activation_focus = None;
+                    self.dismiss();
                     return;
                 }
                 match result {
@@ -435,6 +497,9 @@ impl App {
                             return;
                         }
                         let has_target = result.target.is_some();
+                        if self.inline_ui.unavailable && has_target && !self.stop_inline() {
+                            return;
+                        }
                         if !self.send(Work::Adopt(epoch, result.target)) {
                             self.capture_pending = false;
                             self.dismiss();
@@ -473,6 +538,27 @@ impl App {
             Event::Mutated(serial, result) => self.mutated(serial, result),
             Event::Thumbnail(epoch, hash, result) => self.thumbnail_finished(epoch, hash, result),
             Event::Invalidated => self.history_invalidated(),
+            Event::SearchCacheTrimmed(epoch, hidden_generation) => {
+                if self.pending_reclaim == Some((epoch, hidden_generation))
+                    && self.hidden_generation == hidden_generation
+                    && self.can_reclaim_hidden(epoch)
+                {
+                    self.pending_reclaim = None;
+                    crate::popup_timing::mark("hidden_reclaimed");
+                    crate::memory_trace::record(
+                        "hidden_reclaimed",
+                        serde_json::json!({
+                            "epoch":epoch, "hidden_generation":hidden_generation, "query_epoch":self.surface.query_epoch(),
+                            "rows":self.model.row_count(), "thumbnail_bytes":self.images.bytes,
+                            "panel_bytes":self.flow_stats().0, "software_frame_bytes":crate::graphics::software_frame_bytes(), "main_backend_retained":!crate::graphics::destroy_graphics_on_reclaim(),
+                        "worker_cache_acknowledged":true
+                        ,"display_queue_high_water_bytes":self.hub.data_high_water()
+                        }),
+                    );
+                } else if self.pending_reclaim == Some((epoch, hidden_generation)) {
+                    self.retry_hidden_reclaim(epoch, hidden_generation);
+                }
+            }
             Event::DiagnosticExported(result) => match result {
                 Ok(path) => self.report(format!("Diagnostics saved: {path}"), false),
                 Err(e) => {
@@ -489,6 +575,7 @@ impl App {
                 }
                 let lost = error.contains("device lost");
                 self.graphics_error = Some(error.clone());
+                self.cancel_software_slide();
                 self.flow_timer.stop();
                 self.preview_timer.stop();
                 self.deck.snap();
@@ -624,6 +711,7 @@ impl App {
         }
         self.compatibility_notice = None;
         self.remember_position();
+        self.cancel_software_slide();
         self.surface.hide();
         self.surface.set_space(id);
         self.surface.set_query(query.clone());
@@ -674,6 +762,10 @@ impl App {
         self.show_window_loading(false)
     }
     fn show_window_loading(&mut self, load_content: bool) -> Result<(), String> {
+        #[cfg(feature = "cover-flow")]
+        if let Some(flow) = &self.flow {
+            flow.resume()?;
+        }
         let first = self.hwnd.is_none();
         if self.session.context == Context::QuickInsert && self.popup_anchor.is_some() {
             // ShowWindow can expose the previous swapchain before RedrawRequested.
@@ -693,6 +785,8 @@ impl App {
             hook.set_inline_popup(self.inline_active())?;
         }
         self.trim_timer.stop();
+        self.hidden_generation = self.hidden_generation.wrapping_add(1);
+        self.pending_reclaim = None;
         self.surface.visible = true;
         if load_content {
             // Let storage work overlap visible-side rendering and HWND setup.
@@ -706,6 +800,10 @@ impl App {
         }
         self.prepare_scene();
         self.window.show().map_err(|e| e.to_string())?;
+        crate::memory_trace::record(
+            "window_shown",
+            serde_json::json!({"epoch":self.session.epoch, "query_epoch":self.surface.query_epoch()}),
+        );
         crate::popup_timing::mark("show_returned");
         if first {
             let handle = self.window.window().window_handle();
@@ -728,11 +826,22 @@ impl App {
             use slint::winit_030::{EventResult, WinitWindowAccessor};
             let generation = self.card_region_generation.clone();
             let hub = self.hub.clone();
+            let perspective = self.graphics.perspective;
+            if !perspective {
+                crate::graphics::software_card_commits(generation.clone(), hub.clone());
+            }
             self.window.window().on_winit_window_event(move |_, event| {
                 if matches!(
                     event,
                     slint::winit_030::winit::event::WindowEvent::RedrawRequested
-                ) && generation.get() != 0
+                ) {
+                    crate::memory_trace::record("frame_redraw", serde_json::Value::Null);
+                }
+                if matches!(
+                    event,
+                    slint::winit_030::winit::event::WindowEvent::RedrawRequested
+                ) && perspective
+                    && generation.get() != 0
                 {
                     hub.post(Event::Command(Command::CommitCardRegion(generation.get())));
                 }
@@ -764,7 +873,44 @@ impl App {
         }
         Ok(())
     }
+    fn can_reclaim_hidden(&self, epoch: u64) -> bool {
+        crate::memory_lifecycle::ReclaimBarrier {
+            epoch: self.session.epoch,
+            visible: self.surface.visible,
+            capture_pending: self.capture_pending,
+            inserting: self.session.busy(),
+            inline_pending: self.inline_ui.pending,
+            inline_active: self.inline_active(),
+            mutating: self.mutation.is_some(),
+            modal: self.window.get_modal(),
+        }
+        .permits(epoch)
+    }
+    fn retry_hidden_reclaim(&mut self, epoch: u64, hidden_generation: u64) {
+        // A transaction may outlive the initial timer. Retry only the same
+        // hidden session; a new activation must never inherit this timer.
+        if self.surface.visible
+            || self.session.epoch != epoch
+            || self.hidden_generation != hidden_generation
+        {
+            return;
+        }
+        let hub = self.hub.clone();
+        self.trim_timer.start(
+            TimerMode::SingleShot,
+            Duration::from_millis(100),
+            move || {
+                hub.post(Event::Command(Command::TrimHidden(
+                    epoch,
+                    hidden_generation,
+                )))
+            },
+        );
+    }
     fn hide_window(&mut self) {
+        self.cancel_software_slide();
+        self.hidden_generation = self.hidden_generation.wrapping_add(1);
+        self.pending_reclaim = None;
         crate::popup_timing::finish();
         self.remember_position();
         self.search_timer.stop();
@@ -781,17 +927,27 @@ impl App {
             for index in 0..self.model.row_count() {
                 if let Some(mut row) = self.model.row_data(index) {
                     row.thumbnail = Default::default();
-                    self.model.set_row_data(index, row);
+                    self.model
+                        .update_visual(index, |current| current.thumbnail = row.thumbnail);
                 }
             }
         }
         self.window.set_navigation_busy(false);
         let _ = self.window.hide();
-        if self.ui.trim_when_hidden {
+        crate::memory_trace::record(
+            "hidden_warm",
+            serde_json::json!({"epoch":self.session.epoch, "hidden_generation":self.hidden_generation, "query_epoch":self.surface.query_epoch()}),
+        );
+        if !self.graphics.perspective || self.ui.trim_when_hidden {
             let hub = self.hub.clone();
+            let epoch = self.session.epoch;
+            let hidden_generation = self.hidden_generation;
             self.trim_timer
                 .start(TimerMode::SingleShot, Duration::from_secs(30), move || {
-                    hub.post(Event::Command(Command::TrimHidden))
+                    hub.post(Event::Command(Command::TrimHidden(
+                        epoch,
+                        hidden_generation,
+                    )))
                 });
         }
         self.send(Work::Resume(self.surface.space));
@@ -801,15 +957,18 @@ impl App {
             return;
         }
         self.capture_pending = false;
+        // Invalidate the dismissed session before hide_window captures the
+        // reclamation epoch. Otherwise every normal close invalidates its own
+        // 30-second timer immediately after arming it.
+        self.session.dismiss();
+        self.worker
+            .epoch
+            .store(self.session.epoch, Ordering::Release);
         self.hide_window();
         if let Some(snapshot) = self.activation_focus.take() {
             echo_windows::focus::restore_after_dismiss(&snapshot);
         }
-        self.session.dismiss();
         self.window.set_paste_target_available(false);
-        self.worker
-            .epoch
-            .store(self.session.epoch, Ordering::Release);
         self.send(Work::Cancel);
         self.set_busy();
     }
@@ -826,6 +985,7 @@ impl App {
         let _ = slint::quit_event_loop();
     }
     pub fn shutdown(&mut self) {
+        crate::graphics::release_software_frame();
         self.stop_inline();
         self.quitting = true;
         self.hub.close();
@@ -882,8 +1042,6 @@ impl App {
             }
             return;
         }
-        let mut section = String::new();
-        let mut matcher = FuzzyMatcher::new(&self.surface.query);
         let selected = if self.surface.loading || self.surface.dirty {
             self.model
                 .iter()
@@ -892,32 +1050,46 @@ impl App {
         } else {
             self.surface.selection.map(|key| key.to_string())
         };
-        let rows = self
-            .surface
-            .items
-            .iter()
-            .map(|item| {
-                let mut row = formatting::row(item, &mut section);
-                if self.surface.ready && !self.surface.query.trim().is_empty() {
-                    crate::match_highlight::apply(&mut row, &mut matcher, self.window.get_dark());
-                }
-                row.selected = selected.as_deref() == Some(RowKey::of(item).to_string().as_str());
-                row.batch_selected = self.surface.selected_ids.contains(&item.id);
-                if let Some(image) = item
-                    .thumbnail
-                    .as_ref()
-                    .and_then(|t| self.images.cache.get(&t.content_hash))
-                {
-                    row.thumbnail = image.0.clone();
-                }
-                row
-            })
-            .collect();
-        crate::native_model::reconcile_keyed_by(
-            self.model.as_ref(),
-            rows,
-            |row: &EntryRow| row.key.clone(),
-            crate::native_model::entry_row_equal,
+        let rows = {
+            let mut section = String::new();
+            self.surface
+                .items
+                .iter()
+                .map(|item| {
+                    let label = formatting::row_section(item, &mut section);
+                    let (row, bytes) = echo_windows::allocation::measure_owned(|| {
+                        let mut row = formatting::row_content(item, &label);
+                        if self.surface.ready && !self.surface.query.trim().is_empty() {
+                            let mut matcher = FuzzyMatcher::new(&self.surface.query);
+                            crate::match_highlight::apply(
+                                &mut row,
+                                &mut matcher,
+                                self.window.get_dark(),
+                            );
+                        }
+                        row.selected =
+                            selected.as_deref() == Some(RowKey::of(item).to_string().as_str());
+                        row.batch_selected = self.surface.selected_ids.contains(&item.id);
+                        if let Some(image) = item
+                            .thumbnail
+                            .as_ref()
+                            .and_then(|t| self.images.cache.get(&t.content_hash))
+                        {
+                            row.thumbnail = image.0.clone();
+                        }
+                        row
+                    });
+                    crate::native_model::OwnedRow { row, bytes }
+                })
+                .collect::<Vec<_>>()
+        };
+        self.model.reconcile(rows);
+        self.window
+            .set_drag_epoch(self.window.get_drag_epoch().wrapping_add(1));
+        self.model_bytes = self.model.held_bytes();
+        crate::memory_trace::record(
+            "display_data",
+            serde_json::json!({"page_bytes":self.surface.held_item_bytes(),"row_model_bytes":self.model_bytes,"side_bytes":self.software_side_bytes(),"outgoing_bytes":self.software.outgoing_bytes,"queued_bytes":self.hub.data_bytes(),"limit":4*1024*1024}),
         );
         self.window
             .set_stale_rows(!self.surface.ready && self.surface.items.is_empty());
@@ -966,7 +1138,10 @@ impl App {
                 if row.selected != selected || row.batch_selected != batch {
                     row.selected = selected;
                     row.batch_selected = batch;
-                    self.model.set_row_data(index, row);
+                    self.model.update_visual(index, |current| {
+                        current.selected = selected;
+                        current.batch_selected = batch;
+                    });
                 }
             }
         }
@@ -1055,20 +1230,24 @@ impl App {
         }
         self.images.pending.remove(&hash);
         let Ok(pixels) = result else {
+            if !self.graphics.perspective {
+                self.software_content_ready();
+            }
             return;
         };
         let bytes = pixels.rgba.len();
-        if bytes > 8 * 1024 * 1024 {
+        if bytes > 2 * 1024 * 1024 {
             return;
         }
         if self.images.cache.contains_key(&hash) {
             return;
         }
-        if self.images.trim_to(8 * 1024 * 1024 - bytes) {
+        if self.images.trim_to(2 * 1024 * 1024 - bytes) {
             for index in 0..self.model.row_count() {
                 if let Some(mut row) = self.model.row_data(index) {
                     row.thumbnail = Default::default();
-                    self.model.set_row_data(index, row);
+                    self.model
+                        .update_visual(index, |current| current.thumbnail = row.thumbnail);
                 }
             }
             self.dirty_snapshots.extend(self.previews.keys().copied());
@@ -1092,9 +1271,16 @@ impl App {
                 .map(|(id, _)| *id),
         );
         self.images.cache.insert(hash, (image, bytes));
+        self.software.image_version = self.software.image_version.wrapping_add(1);
+        if !self.graphics.perspective && !self.software.slide.loading() {
+            self.render_software_side_previews();
+        }
         crate::popup_timing::mark("main_thumbnail_ready");
         if self.deck.phase != Phase::Animating {
             self.render();
+        }
+        if !self.graphics.perspective {
+            self.software_content_ready();
         }
         self.schedule_prewarm();
     }
@@ -1102,7 +1288,13 @@ impl App {
         match command {
             Command::InlineTimeout(epoch) => {
                 if self.session.epoch == epoch && self.inline_ui.pending {
-                    self.inline_fallback("Input inspection timed out".into());
+                    // A timed-out provider may still publish late results. Do
+                    // not expose a fallback without an acknowledged guard.
+                    self.dismiss();
+                    self.report(
+                        "Input inspection timed out; invoke again in your input",
+                        false,
+                    );
                 }
             }
             Command::Quit => self.request_quit(),
@@ -1136,6 +1328,7 @@ impl App {
                 self.deck.block_content();
                 self.cancel_prewarm();
                 // Keep side-card content until the new query snapshot is ready.
+                self.render_software_side_previews();
                 self.dirty_snapshots.insert(self.surface.space);
                 self.window.set_stale_rows(!keep_rows);
                 self.window.set_loading(true);
@@ -1184,12 +1377,66 @@ impl App {
             Command::Confirm(answer) => self.confirm(&answer),
             Command::FlowTick => self.flow_tick(),
             Command::Prewarm => self.prewarm(),
-            Command::TrimHidden => {
-                if !self.surface.visible {
-                    self.send(Work::TrimSearchCache(self.session.epoch));
+            Command::TrimHidden(epoch, hidden_generation) => {
+                if self.hidden_generation == hidden_generation && self.can_reclaim_hidden(epoch) {
+                    if self
+                        .worker
+                        .send(Work::TrimSearchCache(epoch, hidden_generation))
+                        .is_err()
+                    {
+                        self.retry_hidden_reclaim(epoch, hidden_generation);
+                        return;
+                    }
+                    self.pending_reclaim = Some((epoch, hidden_generation));
+                    self.cancel_prewarm();
+                    self.preview_epoch = self.preview_epoch.wrapping_add(1);
+                    self.pending_previews.clear();
+                    self.images.epoch = self.images.epoch.wrapping_add(1);
+                    self.images.pending.clear();
                     self.clear_flow_cache();
+                    self.surface.reclaim_hidden();
+                    self.model.clear();
+                    self.model_bytes = 0;
                     self.previews.clear();
+                    self.clear_software_side_models();
                     self.images.trim_to(0);
+                    crate::graphics::release_software_frame();
+                    #[cfg(feature = "cover-flow")]
+                    if let Some(flow) = &self.flow {
+                        if let Err(error) = flow.reclaim_hidden() {
+                            self.pending_reclaim = None;
+                            self.report(format!("Hidden GPU reclamation failed: {error}"), true);
+                            return;
+                        }
+                    }
+                    #[cfg(feature = "cover-flow")]
+                    if crate::graphics::destroy_graphics_on_reclaim() {
+                        // Drop the subclass while its HWND is still valid. Showing
+                        // again must capture and hook the newly created HWND.
+                        self.hook = None;
+                        self.hwnd = None;
+                        self.window_shapes = None;
+                        self.pending_card_region = None;
+                        self.card_region_generation.set(0);
+                        if let Err(error) =
+                            i_slint_backend_winit::echo_offscreen::suspend_hidden_window(
+                                self.window.window(),
+                            )
+                        {
+                            self.pending_reclaim = None;
+                            self.report(
+                                format!("Hidden renderer suspension failed: {error}"),
+                                true,
+                            );
+                            return;
+                        }
+                        crate::memory_trace::record(
+                            "graphics_suspended",
+                            serde_json::json!({"epoch":epoch,"hidden_generation":hidden_generation}),
+                        );
+                    }
+                } else {
+                    self.retry_hidden_reclaim(epoch, hidden_generation);
                 }
             }
             Command::ViewportChanged => {
@@ -1201,14 +1448,34 @@ impl App {
             }
             Command::StageClick(x, y) => self.stage_click(x, y),
             Command::CommitCardRegion(generation) => self.commit_card_region(generation),
+            Command::SoftwareFrameReady(stamp) => self.software_frame_ready(stamp),
             Command::StageScroll(delta) => self.stage_scroll(delta),
             Command::SaveFavorite => self.save_favorite(),
             Command::CancelEditor => self.cancel_editor(),
             Command::Clear => self.mutate(Mutation::Clear),
             Command::Create => self.new_item(),
-            Command::Reorder(source, target) => {
+            Command::Reorder(origin, target) => {
+                let source = origin.key;
                 if self.surface.query.is_empty()
+                    && self.surface.visible
                     && self.surface.ready
+                    && !self.surface.loading
+                    && !self.surface.dirty
+                    && !self.session.busy()
+                    && self.mutation.is_none()
+                    && self.deck.can_insert(self.surface.space)
+                    && origin.frame == self.software_frame_stamp()
+                    && origin.binding == self.window.get_drag_epoch()
+                    && self
+                        .surface
+                        .items
+                        .iter()
+                        .any(|item| RowKey::of(item) == source)
+                    && self
+                        .surface
+                        .items
+                        .iter()
+                        .any(|item| RowKey::of(item) == target)
                     && !self.window.get_modal()
                     && source.source == QuickInsertSource::Favorite
                     && target.source == QuickInsertSource::Favorite
@@ -1521,6 +1788,9 @@ impl App {
             || self.session.busy()
             || self.surface.space != SpaceId::HISTORY
             || !self.surface.ready
+            || self.surface.loading
+            || self.surface.dirty
+            || !self.deck.can_insert(self.surface.space)
         {
             return;
         }
@@ -1607,6 +1877,24 @@ impl App {
         }
     }
     fn keyboard(&mut self, intent: Intent) {
+        if self.window.get_route().as_str() == "history"
+            && !self.window.get_modal()
+            && (!self.surface.ready
+                || self.surface.loading
+                || self.surface.dirty
+                || !self.deck.can_insert(self.surface.space))
+            && !matches!(
+                intent,
+                Intent::None
+                    | Intent::PreventDefault
+                    | Intent::Escape
+                    | Intent::SwitchSpace(_)
+                    | Intent::SwitchPanel
+                    | Intent::FocusMode
+            )
+        {
+            return;
+        }
         match intent {
             Intent::None | Intent::PreventDefault => {}
             Intent::Escape => self.escape(),
@@ -1657,7 +1945,6 @@ impl App {
                 self.render_selection();
             }
             Intent::Primary | Intent::Copy => {
-                self.finish_motion();
                 if self.surface.ready && self.deck.can_insert(self.surface.space) {
                     if let Some(key) = self.surface.selection {
                         self.execute(

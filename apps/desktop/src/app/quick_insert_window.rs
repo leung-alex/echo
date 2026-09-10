@@ -131,13 +131,26 @@ impl App {
             } else {
                 place_card(anchor, width, card, 560.0, t::STAGE_PADDING_Y)
             };
-            let extents = echo_presentation::deck::popup_horizontal_extents(card, 560.0);
+            let extents = if self.graphics.perspective {
+                echo_presentation::deck::popup_horizontal_extents(card, 560.0)
+            } else if self.ui.view_mode == SpaceViewMode::CoverFlow {
+                [
+                    card / 2.0 + 16.0,
+                    card / 2.0 + echo_presentation::slide::side_width(card) + 28.0,
+                ]
+            } else {
+                [card / 2.0 + 16.0; 2]
+            };
             let preferred_right = self.popup_side_right.unwrap_or_else(|| {
-                self.deck
-                    .poses(card)
-                    .iter()
-                    .find(|p| p.offset != 0.0)
-                    .is_none_or(|p| p.offset > 0.0)
+                if !self.graphics.perspective {
+                    true
+                } else {
+                    self.deck
+                        .poses(card)
+                        .iter()
+                        .find(|p| p.offset != 0.0)
+                        .is_none_or(|p| p.offset > 0.0)
+                }
             });
             let (mut placement, right) = echo_windows::focus::expand_popup_stage(
                 anchor,
@@ -188,19 +201,39 @@ impl App {
                         placement.card.x as f32 + placement.card.width as f32 / 2.0,
                         placement.card.y as f32 + placement.card.height as f32 / 2.0,
                     ];
-                    let side_quad = self
-                        .flow_poses()
-                        .into_iter()
-                        .find(|p| p.offset != 0.0)
-                        .and_then(|pose| {
-                            echo_presentation::deck::project_panel(
-                                pose,
-                                card,
-                                placement.card.height as f32 / scale,
-                                0.0,
-                            )
-                        })
-                        .map(|q| q.map(|p| [center[0] + p[0] * scale, center[1] + p[1] * scale]));
+                    let side_quad = if !self.graphics.perspective {
+                        let side = echo_presentation::slide::side_width(card);
+                        let l = placement.card.x as f32
+                            + if right {
+                                placement.card.width as f32 + 12.0 * scale
+                            } else {
+                                -(side + 12.0) * scale
+                            };
+                        let top = placement.card.y as f32 + 16.0 * scale;
+                        let bottom =
+                            (placement.card.y + placement.card.height) as f32 - 16.0 * scale;
+                        (self.ui.view_mode == SpaceViewMode::CoverFlow).then_some([
+                            [l, top],
+                            [l + side * scale, top],
+                            [l + side * scale, bottom],
+                            [l, bottom],
+                        ])
+                    } else {
+                        self.flow_poses()
+                            .into_iter()
+                            .find(|p| p.offset != 0.0)
+                            .and_then(|pose| {
+                                echo_presentation::deck::project_panel(
+                                    pose,
+                                    card,
+                                    placement.card.height as f32 / scale,
+                                    0.0,
+                                )
+                            })
+                            .map(|q| {
+                                q.map(|p| [center[0] + p[0] * scale, center[1] + p[1] * scale])
+                            })
+                    };
                     crate::popup_timing::event(
                         "layout_ready",
                         serde_json::json!({

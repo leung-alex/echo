@@ -131,6 +131,7 @@ public static class EchoInlineFixture {
     [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr hwnd);
     [DllImport("user32.dll")] static extern bool AllowSetForegroundWindow(uint pid);
     [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint process);
     [DllImport("user32.dll")] static extern IntPtr SetFocus(IntPtr window);
     [DllImport("imm32.dll")] static extern IntPtr ImmGetContext(IntPtr hwnd);
     [DllImport("imm32.dll")] static extern bool ImmReleaseContext(IntPtr hwnd,IntPtr context);
@@ -205,7 +206,16 @@ public static class EchoInlineFixture {
                 selection_fault_count=owned==null?0:owned.SelectionFaultCount,
                 selection_fault_error=owned==null?"":owned.SelectionFaultError};
         }
-        return new {focus_events=focusEvents.ToArray(),window=form.Handle.ToInt64(),fields=fields,foreground=GetForegroundWindow()==form.Handle,deactivations=deactivations,pid=Process.GetCurrentProcess().Id};
+        IntPtr foregroundWindow=GetForegroundWindow();uint foregroundProcess;
+        GetWindowThreadProcessId(foregroundWindow,out foregroundProcess);
+        string foregroundName="",foregroundCreated="";
+        try {using(var process=Process.GetProcessById((int)foregroundProcess)) {
+            foregroundName=process.ProcessName;
+            foregroundCreated=process.StartTime.ToUniversalTime().ToString("o");
+        }} catch { }
+        return new {focus_events=focusEvents.ToArray(),window=form.Handle.ToInt64(),fields=fields,foreground=foregroundWindow==form.Handle,
+            foreground_hwnd=foregroundWindow.ToInt64(),foreground_pid=foregroundProcess,foreground_process=foregroundName,foreground_created_utc=foregroundCreated,
+            deactivations=deactivations,pid=Process.GetCurrentProcess().Id};
     }
     [STAThread] public static int Main(string[] args) {
         if(args.Length!=2||Environment.GetEnvironmentVariable("ECHO_WINDOWS_ACCEPTANCE")!="1")return 2;

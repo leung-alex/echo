@@ -3,6 +3,8 @@
 use std::{path::Path, sync::Arc, thread::JoinHandle};
 use windows_sys::Win32::{Foundation::*, System::Threading::*, UI::WindowsAndMessaging::*};
 mod card_window;
+mod software_frame;
+pub use software_frame::{AnimationClock, FrameOutcome, SoftwareFrame};
 mod common;
 mod hotkey;
 mod ime_mode;

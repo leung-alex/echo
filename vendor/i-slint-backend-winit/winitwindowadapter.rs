@@ -714,6 +714,11 @@ impl WinitWindowAdapter {
             }
         }
 
+        if let WinitWindowOrNone::HasWindow { frame_throttle, .. } = &*self.winit_window_or_none.borrow() {
+            frame_throttle.frame_started();
+        }
+        #[cfg(feature = "echo-software-present")]
+        crate::echo_software::before_frame();
         let renderer = self.renderer();
         if !matches!(renderer.render(self.window())?, DrawOutcome::Success) {
             // Frame was skipped (e.g. surface occluded). pending_redraw was already

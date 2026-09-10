@@ -16,6 +16,11 @@ struct Scene {
 }
 #[derive(Default)]
 struct State {
+    gpu: Option<(
+        slint::wgpu_29::wgpu::Instance,
+        slint::wgpu_29::wgpu::Device,
+        slint::wgpu_29::wgpu::Queue,
+    )>,
     compositor: Option<Compositor>,
     panel_renderer: Option<super::offscreen::PanelRenderer>,
     scene: Scene,
@@ -67,6 +72,31 @@ impl FlowBridge {
                             ..
                         } = api
                         {
+                            let actual_adapter = device.adapter_info();
+                            crate::memory_trace::record("rendering_device", serde_json::json!({
+                                "adapter":actual_adapter.name,
+                                "backend":format!("{:?}",actual_adapter.backend),
+                                "device_type":format!("{:?}",actual_adapter.device_type)
+                            }));
+                            if crate::graphics::destroy_graphics_on_reclaim() {
+                                // Automatic configuration creates a new device on
+                                // every resume; observe that live device as well.
+                                let error_hub = hub.clone();
+                                device.on_uncaptured_error(Arc::new(move |error| {
+                                    error_hub.post(Event::GraphicsError(format!(
+                                        "Graphics resource failure: {error}"
+                                    )));
+                                }));
+                                let lost_hub = hub.clone();
+                                device.set_device_lost_callback(move |reason, message| {
+                                    if !matches!(reason, slint::wgpu_29::wgpu::DeviceLostReason::Destroyed) {
+                                        lost_hub.post(Event::GraphicsError(format!(
+                                            "Graphics device lost ({reason:?}): {message}"
+                                        )));
+                                    }
+                                });
+                            }
+                            state.gpu = Some((instance.clone(), device.clone(), queue.clone()));
                             state.compositor = Some(Compositor::new(device.clone(), queue.clone()));
                             match super::offscreen::PanelRenderer::new(
                                 instance.clone(),
@@ -102,6 +132,7 @@ impl FlowBridge {
                         state.scene_revision = state.scene_revision.wrapping_add(1);
                         state.panel_renderer = None;
                         state.compositor = None;
+                        state.gpu = None;
                         state.dirty = false;
                     }
                     _ => {}
@@ -135,6 +166,22 @@ impl FlowBridge {
     pub fn ready(&self) -> bool {
         let s = self.state.borrow();
         s.compositor.is_some() && s.panel_renderer.is_some()
+    }
+    /// Rebuild only the retired offscreen owners, using the existing main backend.
+    pub fn resume(&self) -> Result<(), String> {
+        let mut state = self.state.borrow_mut();
+        if state.compositor.is_some() && state.panel_renderer.is_some() {
+            return Ok(());
+        }
+        let Some((instance, device, queue)) = state.gpu.clone() else {
+            return Ok(()); // First RenderingSetup has not happened yet.
+        };
+        let renderer =
+            super::offscreen::PanelRenderer::new(instance, device.clone(), queue.clone())?;
+        state.compositor = Some(Compositor::new(device, queue));
+        state.panel_renderer = Some(renderer);
+        state.content_revision = state.content_revision.wrapping_add(1);
+        Ok(())
     }
     pub fn scene_rendered(&self) -> bool {
         let s = self.state.borrow();
@@ -380,6 +427,17 @@ impl FlowBridge {
             (state.panel_renderer.take(), state.compositor.take())
         };
         drop(resources);
+    }
+    /// Drain already-completed GPU retirements after hidden owners have been dropped.
+    /// This never waits for the GPU and never destroys the shared main device.
+    pub fn reclaim_hidden(&self) -> Result<(), String> {
+        self.shutdown();
+        if let Some((_, device, _)) = self.state.borrow().gpu.as_ref() {
+            device
+                .poll(slint::wgpu_29::wgpu::PollType::Poll)
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
     }
     #[cfg(feature = "native-test")]
     pub fn reset_metrics(&self) {

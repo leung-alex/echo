@@ -1,5 +1,6 @@
 //! Draft settings, runtime effect policy and redacted diagnostics.
 use super::*;
+#[cfg(feature = "cover-flow")]
 use echo_presentation::echo_tokens as t;
 impl App {
     pub(super) fn read_ui_draft(&self) -> Result<UiSettings, String> {
@@ -160,10 +161,10 @@ impl App {
             && self.window.get_stage_width() >= 520.0
     }
     pub(super) fn full_motion(&self) -> bool {
-        self.flow_allowed()
+        self.ui.view_mode == SpaceViewMode::CoverFlow
+            && !self.environment.high_contrast
             && self.ui.motion == Motion::System
             && self.environment.animations
-            && self.ui.side_content != SideContent::TitlesOnly
     }
     pub(super) fn frame_interval(&self) -> Duration {
         let hz = if self.ui.frame_rate == FrameRate::Fps60
@@ -246,6 +247,30 @@ impl App {
         self.refresh_diagnostics();
     }
     pub(super) fn refresh_diagnostics(&self) {
+        if !self.graphics.perspective {
+            self.window.set_actual_mode(
+                if self.ui.view_mode == SpaceViewMode::Flat {
+                    "Actual: software rendering · static card"
+                } else if self.full_motion() {
+                    "Actual: software rendering · card carousel"
+                } else {
+                    "Actual: software rendering · instant card switching"
+                }
+                .into(),
+            );
+            self.window.set_diagnostics(
+                format!(
+                    "Renderer: {}\nAdapter: {}\nBackend: {}\nSystem animation: {}",
+                    self.graphics.renderer,
+                    self.graphics.adapter,
+                    self.graphics.backend,
+                    self.environment.animations
+                )
+                .into(),
+            );
+            self.window.set_cache_status("Display cache budget: 12 MiB\nSearch 4 MiB · Thumbnails 4 MiB · Pages and messages 4 MiB".into());
+            return;
+        }
         let reason = if self.environment.high_contrast {
             Some("Windows High Contrast")
         } else if self.window.get_stage_width() < 520.0 {
@@ -280,6 +305,20 @@ impl App {
     pub(super) fn play_preview(&mut self) {
         self.preview_timer.stop();
         self.preview_started = None;
+        if !self.graphics.perspective {
+            let draft = self.read_ui_draft().unwrap_or_else(|_| self.ui.clone());
+            self.software.clock = (draft.view_mode == SpaceViewMode::CoverFlow
+                && draft.motion == Motion::System
+                && self.environment.animations
+                && !self.environment.high_contrast)
+                .then(shell::AnimationClock::start)
+                .flatten();
+            self.preview_started = Some(Instant::now());
+            self.window.set_preview_progress(0.0);
+            self.preview_tick();
+            self.window.window().request_redraw();
+            return;
+        }
         #[cfg(feature = "cover-flow")]
         {
             if !self.flow.as_ref().is_some_and(|f| f.ready()) {
@@ -363,6 +402,28 @@ impl App {
         if self.window.get_route().as_str() != "settings" {
             self.preview_timer.stop();
             self.preview_started = None;
+            self.software.clock = None;
+            return;
+        }
+        if !self.graphics.perspective {
+            let draft = self.read_ui_draft().unwrap_or_else(|_| self.ui.clone());
+            let duration = if draft.view_mode == SpaceViewMode::CoverFlow
+                && draft.motion == Motion::System
+                && self.environment.animations
+                && !self.environment.high_contrast
+            {
+                echo_presentation::slide::duration_ms(draft.motion_speed)
+            } else {
+                0
+            };
+            let p =
+                echo_presentation::slide::progress(start.elapsed().as_millis() as u64, duration);
+            self.window.set_preview_progress(p);
+            if p >= 1.0 {
+                self.preview_timer.stop();
+                self.preview_started = None;
+                self.software.clock = None;
+            }
             return;
         }
         #[cfg(feature = "cover-flow")]

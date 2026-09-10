@@ -9,6 +9,8 @@ struct FrameStamp {
     ready: bool,
     modal: bool,
     scene: u64,
+    layout: [u32; 7],
+    sides: [bool; 3],
 }
 pub(super) struct PendingCardFrame {
     generation: u64,
@@ -33,6 +35,20 @@ impl App {
             ready: self.surface.ready && !self.surface.loading,
             modal: self.window.get_modal(),
             scene,
+            layout: [
+                self.window.get_panel_left().to_bits(),
+                self.window.get_panel_top().to_bits(),
+                self.window.get_panel_width().to_bits(),
+                self.window.get_panel_height().to_bits(),
+                self.window.get_stage_width().to_bits(),
+                self.window.get_stage_height().to_bits(),
+                self.window.window().scale_factor().to_bits(),
+            ],
+            sides: [
+                self.window.get_left_side_visible(),
+                self.window.get_right_side_visible(),
+                self.window.get_slide_moving(),
+            ],
         }
     }
     pub(super) fn update_card_region(&mut self) {
@@ -51,7 +67,9 @@ impl App {
             return;
         }
         let history = self.window.get_route().as_str() == "history";
-        let full = history && self.deck.phase == Phase::Animating && self.window.get_flow_enabled();
+        let full = history
+            && self.deck.phase == Phase::Animating
+            && (self.window.get_flow_enabled() || self.window.get_slide_moving());
         if let Some(hook) = &self.hook {
             let bounds = if full {
                 Some([0, 0, 0, 0])
@@ -76,7 +94,7 @@ impl App {
             };
             hook.set_resize_bounds(bounds);
         }
-        let shapes = if self.window.get_modal() {
+        let shapes = if self.window.get_modal() || (full && !self.graphics.perspective) {
             None
         } else {
             let [l, top, w, h] = if history {
@@ -98,7 +116,7 @@ impl App {
             let margin = if self.graphics.perspective {
                 t::FLOW_SHADOW_MARGIN
             } else {
-                0.0
+                16.0
             };
             let mut shapes = if full {
                 vec![]
@@ -138,6 +156,25 @@ impl App {
                     }
                 }
             }
+            if history && !self.graphics.perspective {
+                let side = self.window.get_side_width();
+                for (visible, left) in [
+                    (self.window.get_left_side_visible(), l - side - 12.0),
+                    (self.window.get_right_side_visible(), l + w + 12.0),
+                ] {
+                    if visible {
+                        shapes.push(shell::CardShape::Rounded {
+                            bounds: [
+                                ((left - 16.0) * dpi).round() as i32,
+                                (top * dpi).round() as i32,
+                                ((left + side + 16.0) * dpi).round() as i32,
+                                ((top + h + 4.0) * dpi).round() as i32,
+                            ],
+                            radius: ((t::PANEL_RADIUS + 16.0) * dpi).round() as i32,
+                        });
+                    }
+                }
+            }
             Some(shapes)
         };
         let stamp = self.card_frame_stamp();
@@ -167,6 +204,9 @@ impl App {
             // Expand before painting so neither complete frame can be clipped.
             // Shrink only after the matching presentation reaches DWM.
             let result = shell::expand_card_region(hwnd, shapes.as_deref());
+            if !self.graphics.perspective {
+                crate::graphics::invalidate_software_frame();
+            }
             self.window.window().request_redraw();
             result
         } else {
@@ -186,6 +226,18 @@ impl App {
             return;
         };
         if generation != pending.generation || !self.surface.visible {
+            return;
+        }
+        if !self.graphics.perspective
+            && self.popup_first_frame_pending
+            && self.window.get_route().as_str() == "history"
+            && (!self.surface.ready
+                || self.surface.loading
+                || self.surface.dirty
+                || !self.images.pending.is_empty()
+                || !self.software_neighbors_ready()
+                || !self.deck.can_insert(self.surface.space))
+        {
             return;
         }
         if !pending.matches(generation, self.card_frame_stamp()) {
@@ -234,6 +286,8 @@ mod tests {
             ready: true,
             modal: false,
             scene: 11,
+            layout: [0; 7],
+            sides: [false; 3],
         };
         let pending = PendingCardFrame {
             generation: 13,
@@ -257,6 +311,14 @@ mod tests {
                 ..stamp
             },
             FrameStamp { scene: 12, ..stamp },
+            FrameStamp {
+                layout: [1; 7],
+                ..stamp
+            },
+            FrameStamp {
+                sides: [true; 3],
+                ..stamp
+            },
             FrameStamp {
                 modal: true,
                 ..stamp

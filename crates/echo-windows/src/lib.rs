@@ -1,6 +1,9 @@
 #![cfg_attr(windows, allow(unsafe_op_in_unsafe_fn))]
 
 #[cfg(windows)]
+pub mod allocation;
+
+#[cfg(windows)]
 pub mod focus;
 #[cfg(windows)]
 pub mod inline;

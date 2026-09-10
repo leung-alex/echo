@@ -12,6 +12,8 @@ extern crate alloc;
 
 #[cfg(feature = "echo-offscreen")]
 pub mod echo_offscreen;
+#[cfg(feature = "echo-software-present")]
+pub mod echo_software;
 
 use event_loop::{CustomEvent, EventLoopState};
 use i_slint_core::api::EventLoopError;

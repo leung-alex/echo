@@ -17,11 +17,14 @@ public static class EchoComposition
     [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out Rect r);
     [DllImport("user32.dll")] static extern IntPtr WindowFromPoint(Point p);
     [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr h, uint flags);
+    [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr h, uint command);
     [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
     [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr after, int x,int y,int w,int height,uint flags);
     [DllImport("user32.dll",EntryPoint="GetWindowLongPtrW")] static extern IntPtr GetWindowLongPtr(IntPtr h,int index);
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
-    static string Describe(IntPtr h){Rect r;GetWindowRect(h,out r);return r.Left+","+r.Top+","+r.Right+","+r.Bottom+" visible="+IsWindowVisible(h)+" ex="+GetWindowLongPtr(h,-20).ToInt64().ToString("X");}
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h,out uint pid);
+    [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern int GetClassName(IntPtr h,System.Text.StringBuilder value,int count);
+    static string Describe(IntPtr h){Rect r;GetWindowRect(h,out r);uint pid;GetWindowThreadProcessId(h,out pid);var name=new System.Text.StringBuilder(256);GetClassName(h,name,256);return r.Left+","+r.Top+","+r.Right+","+r.Bottom+" visible="+IsWindowVisible(h)+" ex="+GetWindowLongPtr(h,-20).ToInt64().ToString("X")+" owner="+GetWindow(h,4)+" pid="+pid+" class="+name;}
     [DllImport("user32.dll")] static extern IntPtr GetDC(IntPtr h);
     [DllImport("user32.dll")] static extern int ReleaseDC(IntPtr h, IntPtr dc);
     [DllImport("user32.dll")] static extern int GetWindowRgn(IntPtr h, IntPtr region);
@@ -82,10 +85,19 @@ public static class EchoComposition
                     throw new InvalidOperationException("Could not stage the owned synthetic underlay.");
                 if(!SetWindowPos(echo,new IntPtr(-1),0,0,0,0,0x0013))throw new InvalidOperationException("Cannot raise the owned card above its underlay.");
                 Thread.Sleep(80);Application.DoEvents();DwmFlush();
+                // Tie ordering to the actual owned card instead of assuming two
+                // TOPMOST requests keep the underlay above every other window.
+                // NOOWNERZORDER leaves WinForms' hidden owner out of this operation.
+                if(!SetWindowPos(underlay.Handle,echo,0,0,0,0,0x0213)
+                    || !SetWindowPos(echo,new IntPtr(-1),0,0,0,0,0x0013))
+                    throw new InvalidOperationException("Cannot order the realized test surfaces.");
+                DwmFlush();
                 Rect underlayBounds;GetWindowRect(underlay.Handle,out underlayBounds);
                 dc=GetDC(IntPtr.Zero);if(dc==IntPtr.Zero)throw new InvalidOperationException("Display sampling unavailable.");
-                bool expectAlpha=Environment.GetEnvironmentVariable("ECHO_RENDERER")!="software";
+                bool expectAlpha=Environment.GetEnvironmentVariable("ECHO_RENDERER")!="software"
+                    || Environment.GetEnvironmentVariable("ECHO_SOFTWARE_ALPHA_PRESENTATION")=="1";
                 int count=0,inside=0,largest=0,occluded=0;
+                var occluders=new Dictionary<IntPtr,int>();
                 var innerSamples=new List<Point>();var outerSamples=new List<Point>();
                 for(int y=11;y<image.Height-10;y+=13)for(int x=13;x<image.Width-12;x+=13)
                 {
@@ -106,7 +118,7 @@ public static class EchoComposition
                     bool inRegion=PtInRegion(region,origin.X-window.Left+x,origin.Y-window.Top+y);
                     Point p=new Point{X=origin.X+x,Y=origin.Y+y};
                     IntPtr before=GetAncestor(WindowFromPoint(p),2);
-                    if(before!=echo && before!=underlay.Handle){occluded++;continue;}
+                    if(before!=echo && before!=underlay.Handle){occluded++;int seen;occluders.TryGetValue(before,out seen);occluders[before]=seen+1;continue;}
                     uint pixel=GetPixel(dc,p.X,p.Y);
                     IntPtr after=GetAncestor(WindowFromPoint(p),2);
                     if(after!=echo && after!=underlay.Handle)throw new InvalidOperationException("Visibility changed at "+p.X+","+p.Y+" echo=["+Describe(echo)+"] underlay=["+Describe(underlay.Handle)+"]; no pixel evidence retained.");
@@ -133,7 +145,10 @@ public static class EchoComposition
                 if(opaqueCount<12 || opaqueDifference>8)
                     throw new InvalidOperationException("Opaque card is not correctly visible above its synthetic underlay: samples="+opaqueCount+" difference="+opaqueDifference);
                 if(count<100 || (expectAlpha && inside<20) || largest>8 || occluded>samples.Count/4)
-                    throw new InvalidOperationException("Transparent composition mismatch: samples="+count+" inside-region="+inside+" max-difference="+largest+" occluded="+occluded+" underlay="+underlayBounds.Left+","+underlayBounds.Top+","+underlayBounds.Right+","+underlayBounds.Bottom+" origin="+origin.X+","+origin.Y);
+                {
+                    var owners=new List<string>();foreach(var pair in occluders)owners.Add(pair.Key+":"+pair.Value+" ["+Describe(pair.Key)+"]");
+                    throw new InvalidOperationException("Transparent composition mismatch: candidates="+innerSamples.Count+"/"+outerSamples.Count+" samples="+count+" inside-region="+inside+" max-difference="+largest+" occluded="+occluded+" owners="+String.Join(";",owners)+" underlay=["+Describe(underlay.Handle)+"] echo=["+Describe(echo)+"] origin="+origin.X+","+origin.Y);
+                }
                 return new { transparent_samples=count,inside_native_region=inside,maximum_channel_difference=largest,skipped_occluded_points=occluded,opaque_card_samples=opaqueCount,opaque_maximum_difference=opaqueDifference,
                     desktop_screenshot=false,source="Owned Echo over an owned synthetic checkerboard" };
             }

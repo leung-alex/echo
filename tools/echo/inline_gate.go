@@ -17,7 +17,7 @@ func (a *app) runInlineGate(scope string) error {
 	if runtime.GOOS != "windows" || os.Getenv("ECHO_WINDOWS_ACCEPTANCE") != "1" {
 		return fmt.Errorf("native acceptance is separately authorized; set ECHO_WINDOWS_ACCEPTANCE=1 on Windows")
 	}
-	if err := a.run("cargo", "build", "-p", "echo-desktop", "--profile", "perf", "--features", "native-test", "--locked"); err != nil {
+	if err := a.run("cargo", "build", "-p", "echo-desktop", "--profile", "perf", "--no-default-features", "--features", "native-test", "--locked"); err != nil {
 		return err
 	}
 	if err := a.run("cargo", "build", "-p", "echo-storage", "--release", "--example", "native_fixture", "--locked"); err != nil {

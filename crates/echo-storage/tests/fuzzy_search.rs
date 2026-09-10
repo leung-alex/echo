@@ -63,6 +63,7 @@ fn fuzzy_search_is_complete_paginated_and_revision_checked() {
         .unwrap();
     assert_eq!(count, 1);
     assert_eq!(one.items[0].id, special.id);
+    assert!(one.items[0].editable_text.is_none());
     assert_eq!(
         store.saved_item_payload(special.id).unwrap()[0].bytes,
         r"D:\Worktrees\echo\ui".as_bytes()
@@ -161,6 +162,40 @@ fn fuzzy_search_is_complete_paginated_and_revision_checked() {
     assert_eq!(
         store.saved_item_payload(unicode.id).unwrap()[0].bytes,
         original.as_bytes()
+    );
+    let full_body = format!("{} memory50-tail-recall", "前缀正文 ".repeat(4096));
+    let long_item = quick
+        .create_favorite(FavoriteDraft {
+            content: full_body.clone(),
+            name: Some("Long original".into()),
+            icon_key: None,
+            tags: Vec::new(),
+        })
+        .unwrap();
+    for cold in [true, false] {
+        if cold {
+            quick.release_search_cache();
+        }
+        let (page, _, count) = quick
+            .fuzzy_list_space(SpaceId::FAVORITES, "memory50-tail-recall", 17, None)
+            .unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(page.items[0].id, long_item.id);
+        assert!(page.items[0].editable_text.is_none());
+    }
+    assert_eq!(
+        store
+            .saved_item(long_item.id)
+            .unwrap()
+            .unwrap()
+            .item
+            .editable_text
+            .as_deref(),
+        Some(full_body.as_str())
+    );
+    assert_eq!(
+        store.saved_item_payload(long_item.id).unwrap()[0].bytes,
+        full_body.as_bytes()
     );
     clipboard.shutdown();
     drop(quick);

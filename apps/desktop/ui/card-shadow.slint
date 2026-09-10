@@ -1,0 +1,12 @@
+// Software-compatible static soft edge. No blur layer or cached card pixels.
+export component CardShadow inherits Rectangle {
+    in property <length> radius: 20px;
+    accessible-role: none;
+    for index in 12: Rectangle {
+        x: index * 1px; y: index * 1px;
+        width: parent.width - 2 * index * 1px; height: parent.height - 2 * index * 1px;
+        border-radius: root.radius + 16px - index * 1px;
+        background: #000000.with-alpha(0.018);
+        accessible-role: none;
+    }
+}

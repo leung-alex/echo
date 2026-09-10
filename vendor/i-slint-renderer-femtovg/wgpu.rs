@@ -178,10 +178,12 @@ impl GraphicsBackend for WGPUBackend {
     }
 
     fn clear_graphics_context(&self) {
+        self.snapshot_output.borrow_mut().take();
         self.surface_config.borrow_mut().take();
         self.surface.borrow_mut().take();
         self.queue.borrow_mut().take();
         self.device.borrow_mut().take();
+        self.instance.borrow_mut().take();
     }
 
     fn begin_surface_rendering(

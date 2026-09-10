@@ -1,8 +1,14 @@
 //! Native Slint shell for Echo. Engine, persistence and clipboard formats are unchanged.
+#[cfg(windows)]
+#[global_allocator]
+static ALLOCATOR: echo_windows::allocation::AccountedSystem =
+    echo_windows::allocation::AccountedSystem;
 #[cfg(feature = "cover-flow")]
 pub mod cover_flow;
 mod favorite_icons;
 mod match_highlight;
+mod memory_lifecycle;
+mod memory_trace;
 mod native_model;
 mod popup_timing;
 slint::include_modules!();
@@ -68,7 +74,26 @@ fn run_windows() -> Result<(), String> {
     }
     // Secondary invocations return before the single storage owner or GPU is started.
     let worker = service::Worker::start(data_dir, hub.clone(), shell.hotkeys())?;
+    memory_trace::record(
+        "core_ready",
+        serde_json::json!({"background":args == ["--background"]}),
+    );
+    if args == ["--background"] && !hub.wait_for_activation() {
+        hub.close();
+        drop(worker);
+        drop(shell);
+        memory_trace::record("stopped", serde_json::Value::Null);
+        return Ok(());
+    }
+    memory_trace::record("ui_starting", serde_json::Value::Null);
     let graphics = graphics::select(worker.bootstrap.ui.graphics, hub.clone())?;
+    memory_trace::record(
+        "graphics_selected",
+        serde_json::json!({
+            "renderer":graphics.renderer, "adapter":graphics.adapter, "backend":graphics.backend,
+            "perspective":graphics.perspective, "fallback":graphics.fallback
+        }),
+    );
     let application = app::App::new(hub.clone(), worker, args, graphics)?;
     app::install(application.clone());
     hub.activate();
@@ -80,6 +105,7 @@ fn run_windows() -> Result<(), String> {
     app::uninstall();
     drop(application);
     drop(shell);
+    memory_trace::record("stopped", serde_json::Value::Null);
     if let Some(recovery) = restart {
         restart_application(recovery)?;
     }

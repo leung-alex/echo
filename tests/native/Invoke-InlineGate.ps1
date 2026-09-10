@@ -46,7 +46,7 @@ if ($env:ECHO_INLINE_GATE_SCOPE -eq 'clipboard') {
     [IO.File]::WriteAllText("$e/clipboard-roundtrip.exit", [string]$code)
     if ($code) { exit $code }
 }
-$pythonArgs = @('tests/native/Invoke-InlineAcceptance.py', '--root', $root, '--executable', "$e/echo-acceptance.exe", '--tools', "$e/tools", '--template', "$e/fixtures/D2", '--evidence', "$e/inline-run", '--renderer', 'femtovg-wgpu', '--native-test')
+$pythonArgs = @('tests/native/Invoke-InlineAcceptance.py', '--root', $root, '--executable', "$e/echo-acceptance.exe", '--tools', "$e/tools", '--template', "$e/fixtures/D2", '--evidence', "$e/inline-run", '--renderer', 'software', '--native-test')
 if ($env:ECHO_INLINE_GATE_SCOPE -eq 'clipboard') { $pythonArgs += @('--only', 'manual-history-row-copy-retains-text') }
 python @pythonArgs *> "$e/inline-run.log"
 $code = $LASTEXITCODE

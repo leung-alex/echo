@@ -1,6 +1,27 @@
 use super::*;
 use echo_engine::InlineTicket;
 use echo_windows::inline::InlineEvent;
+#[test]
+fn background_wait_keeps_bootstrap_events_and_wakes_without_slint() {
+    let hub = Arc::new(Hub::default());
+    for _ in 0..1000 {
+        hub.post(Event::Invalidated);
+    }
+    hub.post(Event::Shell(ShellEvent::Activation(vec![
+        "--background".into()
+    ])));
+    let waiter = hub.clone();
+    let waiting = std::thread::spawn(move || waiter.wait_for_activation());
+    hub.post(Event::Shell(ShellEvent::Open));
+    assert!(waiting.join().unwrap());
+    assert_eq!(hub.take_test_events().len(), 3);
+}
+#[test]
+fn background_quit_never_requires_graphics() {
+    let hub = Arc::new(Hub::default());
+    hub.post(Event::Shell(ShellEvent::Activation(vec!["--quit".into()])));
+    assert!(!hub.wait_for_activation());
+}
 fn ticket(revision: u64) -> InlineTicket {
     InlineTicket {
         session: 7,
@@ -112,5 +133,38 @@ fn closed_hub_rejects_late_deliveries() {
     hub.post(changed(1));
     hub.close();
     hub.post(changed(2));
+    assert!(hub.take_test_events().is_empty());
+}
+#[test]
+fn display_result_backpressure_keeps_control_and_shutdown_live() {
+    use std::{sync::mpsc, time::Duration};
+    let hub = Arc::new(Hub::default());
+    let pixels = || {
+        Event::Thumbnail(
+            1,
+            "synthetic".into(),
+            Ok(super::PixelData {
+                width: 1536,
+                height: 1536,
+                rgba: vec![0; 9 * 1024 * 1024],
+            }),
+        )
+    };
+    hub.post(pixels());
+    let producer = hub.clone();
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (done_tx, done_rx) = mpsc::channel();
+    let thread = std::thread::spawn(move || {
+        entered_tx.send(()).unwrap();
+        producer.post(pixels());
+        done_tx.send(()).unwrap();
+    });
+    entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    assert!(done_rx.recv_timeout(Duration::from_millis(20)).is_err());
+    hub.post(Event::Command(super::Command::Quit));
+    assert!(!hub.wait_for_activation());
+    hub.close();
+    done_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    thread.join().unwrap();
     assert!(hub.take_test_events().is_empty());
 }

@@ -165,8 +165,35 @@ impl App {
                 if session != self.session.epoch || !self.inline_ui.pending {
                     return;
                 }
+                self.inline_timer.stop();
+                let snapshot = self
+                    .activation_focus
+                    .clone()
+                    .filter(echo_windows::focus::FocusSnapshot::still_current);
+                if snapshot.is_none() || self.worker.inline.readiness()[0] != session {
+                    self.dismiss();
+                    return;
+                }
+                // Unavailable is published only after the adapter arms its
+                // Enter/Esc/F6 guard. Keep that same session while checking an
+                // ordinary paste target; never show an unshielded copy panel.
+                self.inline_ui.pending = false;
+                self.inline_ui.unavailable = true;
                 self.popup_anchor = Some(anchor);
-                self.inline_fallback(format!("Input filtering unavailable: {reason}"));
+                self.popup_placement = None;
+                self.surface.set_space(SpaceId::HISTORY);
+                self.surface.set_query(String::new());
+                self.window.set_query("".into());
+                self.previews.clear();
+                self.deck.show(SpaceId::HISTORY, self.now());
+                self.render_navigation();
+                self.pending_scroll = Some(0.0);
+                self.compatibility_notice = Some(format!("Input filtering unavailable: {reason}"));
+                self.capture_pending = true;
+                self.set_busy();
+                if !self.send(Work::Begin(session, Context::QuickInsert, snapshot)) {
+                    self.dismiss();
+                }
             }
             InlineEvent::Changed {
                 ticket,
@@ -271,7 +298,7 @@ impl App {
             InlineEvent::Compatibility { session, reason } => {
                 if session == self.session.epoch && (self.inline_active() || self.inline_ui.pending)
                 {
-                    self.inline_fallback(reason);
+                    self.open_manual_history(reason);
                 }
             }
             InlineEvent::Suspended { session, reason } => {
@@ -288,15 +315,7 @@ impl App {
             }
         }
     }
-    pub(super) fn inline_fallback(&mut self, reason: String) {
-        // Only an initial inspection failure may fall back to ordinary paste.
-        // Retain the pre-show snapshot; never retarget a live completion session.
-        let paste_snapshot = self
-            .inline_ui
-            .pending
-            .then(|| self.activation_focus.clone())
-            .flatten()
-            .filter(echo_windows::focus::FocusSnapshot::still_current);
+    fn open_manual_history(&mut self, reason: String) {
         // A late provider response must not pull focus away from a new editor.
         let snapshot = echo_windows::focus::FocusSnapshot::capture();
         let still_original = self.activation_focus.as_ref().is_some_and(|old| {
@@ -309,7 +328,7 @@ impl App {
         if !self.stop_inline() {
             return;
         }
-        self.activation_focus = paste_snapshot.clone();
+        self.activation_focus = None;
         if !still_original {
             self.dismiss();
             return;
@@ -325,14 +344,6 @@ impl App {
         let epoch = self.session.activate(Context::QuickInsert);
         self.worker.epoch.store(epoch, Ordering::Release);
         self.compatibility_notice = Some(reason);
-        if let Some(snapshot) = paste_snapshot {
-            self.capture_pending = true;
-            self.set_busy();
-            if !self.send(Work::Begin(epoch, Context::QuickInsert, Some(snapshot))) {
-                self.dismiss();
-            }
-            return;
-        }
         self.handle(Event::Activated(
             epoch,
             Context::QuickInsert,

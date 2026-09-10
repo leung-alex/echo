@@ -1015,6 +1015,27 @@ impl<S: crate::SpaceStore> QuickInsertService<S> {
 }
 
 impl QuickInsertItem {
+    /// Bytes held by the value and its owned string/vector payloads. Allocator
+    /// bookkeeping is measured separately by process Private Bytes.
+    pub fn held_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.content_type.capacity()
+            + [
+                &self.name,
+                &self.preview_text,
+                &self.editable_text,
+                &self.source_app,
+                &self.icon_key,
+            ]
+            .into_iter()
+            .map(|s| s.as_ref().map_or(0, String::capacity))
+            .sum::<usize>()
+            + self.tags.capacity() * std::mem::size_of::<String>()
+            + self.tags.iter().map(String::capacity).sum::<usize>()
+            + self.thumbnail.as_ref().map_or(0, |t| {
+                t.source_hash.capacity() + t.content_hash.capacity() + t.mime_type.capacity()
+            })
+    }
     pub fn from_saved(item: crate::SavedItem) -> Self {
         to_item(crate::history::saved_item(item))
     }

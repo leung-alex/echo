@@ -4,7 +4,7 @@ Desktop is Echo's native Rust composition root. Read `docs/architecture/overview
 
 ## Ownership
 
-- `src/app.rs` owns UI-thread orchestration for one floating native Slint window. `src/app/deck_controller.rs` owns latest-target navigation and bounded GPU card caching; `src/cover_flow` owns GPU composition, offscreen rendering and raster budgets.
+- `src/app.rs` owns UI-thread orchestration for one floating native Slint window. `src/app/deck_controller.rs` and `src/app/software_deck.rs` own space navigation and two-panel software motion. `src/cover_flow` is the preserved optional diagnostic GPU path.
 - `src/app/bindings.rs` connects generated Slint callbacks to Rust behavior.
 - `src/service.rs` owns the background worker and its typed Rust work/result messages.
 - `src/events.rs` owns typed events delivered back to the Slint event loop.
@@ -21,6 +21,6 @@ Business policy belongs to `echo-engine`. Framework-independent presentation sta
 - Preview models are display-only. Copy and insert actions must continue through engine services that retrieve the retained original clipboard representations.
 - Target capture for Quick Insert completes before Echo windows are shown.
 - Closing or dismissing a window hides it. Explicit Quit closes the hub/event loop and allows worker, clipboard, storage, pipe, and tray shutdown.
-- The normal build includes the shared-device WGPU renderer. Preserve `--no-default-features` software-only builds and the explicit runtime software fallback. The card-only window has no global Mica/opaque outer frame. Do not enable the `native-test` feature in release packaging.
+- Normal builds and canonical commands use software rendering with `--no-default-features`. Do not enable WGPU/Skia or `native-test` in release packaging. The card-only window keeps native DPI and alpha shadows without a global opaque frame.
 
 The About view uses Slint's `AboutSlint` component. Packaging attribution and license notices must be checked against the exact Cargo-resolved Slint and other dependency versions; do not claim legal completeness from the UI string alone.

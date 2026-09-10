@@ -11,3 +11,17 @@ pub fn with_adapter<T>(adapter:Rc<dyn WindowAdapter>,create:impl FnOnce()->T)->T
     let result=create();drop(guard);result
 }
 pub(crate) fn take()->Option<Rc<dyn WindowAdapter>> {NEXT.with(|slot|slot.borrow_mut().take())}
+
+/// Retire the native window and renderer only after the application has hidden it
+/// and detached its HWND hooks. The next show recreates both through Winit.
+pub fn suspend_hidden_window(window: &i_slint_core::api::Window) -> Result<(), i_slint_core::platform::PlatformError> {
+    if window.is_visible() {
+        return Err("Cannot suspend a visible Echo window".into());
+    }
+    i_slint_core::window::WindowInner::from_pub(window)
+        .window_adapter()
+        .internal(i_slint_core::InternalToken)
+        .and_then(|wa| (wa as &dyn core::any::Any).downcast_ref::<crate::WinitWindowAdapter>())
+        .ok_or_else(|| i_slint_core::platform::PlatformError::from("Expected Winit window"))?
+        .suspend()
+}

@@ -18,29 +18,81 @@ static HOLD_THUMBNAIL: AtomicBool = AtomicBool::new(false);
 static HELD_THUMBNAIL: Mutex<Option<Event>> = Mutex::new(None);
 static THUMBNAILS_HELD: AtomicU64 = AtomicU64::new(0);
 static THUMBNAILS_RELEASED: AtomicU64 = AtomicU64::new(0);
+static THUMBNAIL_RELEASING: AtomicBool = AtomicBool::new(false);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn releasing_a_held_thumbnail_never_waits_for_ui_delivery() {
+        let hub = Arc::new(Hub::default());
+        let thumbnail = || {
+            Event::Thumbnail(
+                1,
+                "synthetic".into(),
+                Ok(crate::events::PixelData {
+                    width: 1,
+                    height: 1,
+                    rgba: vec![0; 9 * 1024 * 1024],
+                }),
+            )
+        };
+        hub.post(thumbnail());
+        configure_thumbnail(&hub, true).unwrap();
+        publish_thumbnail(&hub, thumbnail());
+        let (sent, received) = std::sync::mpsc::channel();
+        let releasing = hub.clone();
+        let ui = std::thread::spawn(move || {
+            let _ = sent.send(configure_thumbnail(&releasing, false));
+        });
+        let returned = received.recv_timeout(std::time::Duration::from_secs(2));
+        // Always unblock the worker even if the regression reappears.
+        hub.close();
+        ui.join().unwrap();
+        returned
+            .expect("UI release waited on display credits")
+            .unwrap();
+    }
+}
 
 pub(crate) fn configure_thumbnail(hub: &Arc<Hub>, hold: bool) -> Result<(), String> {
     let mut held = HELD_THUMBNAIL
         .lock()
         .map_err(|_| "Thumbnail fault state unavailable")?;
-    if hold && (held.is_some() || HOLD_THUMBNAIL.load(Ordering::Acquire)) {
+    if hold
+        && (held.is_some()
+            || HOLD_THUMBNAIL.load(Ordering::Acquire)
+            || THUMBNAIL_RELEASING.load(Ordering::Acquire))
+    {
         return Err("A thumbnail fault is already pending".into());
     }
     HOLD_THUMBNAIL.store(hold, Ordering::Release);
     if !hold {
         if let Some(event) = held.take() {
-            hub.post(event);
-            THUMBNAILS_RELEASED.fetch_add(1, Ordering::Release);
+            // Called by the UI timer: it must remain able to drain credits.
+            // At most one diagnostic release may wait on the hub. close()
+            // wakes it during shutdown; no fault mutex crosses the wait.
+            THUMBNAIL_RELEASING.store(true, Ordering::Release);
+            drop(held);
+            let hub = hub.clone();
+            std::thread::spawn(move || {
+                hub.post(event);
+                THUMBNAILS_RELEASED.fetch_add(1, Ordering::Release);
+                THUMBNAIL_RELEASING.store(false, Ordering::Release);
+            });
         }
     }
     Ok(())
 }
 
 pub(super) fn publish_thumbnail(hub: &Arc<Hub>, event: Event) {
+    let mut held = HELD_THUMBNAIL.lock().unwrap();
     if HOLD_THUMBNAIL.swap(false, Ordering::AcqRel) {
-        *HELD_THUMBNAIL.lock().unwrap() = Some(event);
+        *held = Some(event);
         THUMBNAILS_HELD.fetch_add(1, Ordering::Release);
     } else {
+        drop(held);
         hub.post(event);
     }
 }

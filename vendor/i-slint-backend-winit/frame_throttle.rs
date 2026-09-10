@@ -15,6 +15,14 @@ pub fn create_frame_throttle(
     _winit_window: &winit::window::Window,
     _is_wayland: bool,
 ) -> Box<dyn FrameThrottle> {
+    #[cfg(feature = "echo-software-present")]
+    if crate::echo_software::presenter().is_some() {
+        return Box::new(EchoFrameThrottle {
+            window_adapter,
+            timer: Timer::default(),
+            last: Rc::new(std::cell::Cell::new(None)),
+        });
+    }
     if _is_wayland {
         WinitBasedFrameThrottle::create()
     } else {
@@ -30,6 +38,37 @@ pub fn create_frame_throttle(
 
 pub trait FrameThrottle {
     fn request_throttled_redraw(&self, winit_window: &winit::window::Window);
+    fn frame_started(&self) {}
+}
+
+/// Immediate first frame, then an absolute 60 Hz deadline. A fresh timer delay
+/// on every dirty notification would add another frame to Echo's motion clock.
+#[cfg(feature = "echo-software-present")]
+struct EchoFrameThrottle {
+    window_adapter: Weak<WinitWindowAdapter>,
+    timer: Timer,
+    last: Rc<std::cell::Cell<Option<std::time::Instant>>>,
+}
+#[cfg(feature = "echo-software-present")]
+impl FrameThrottle for EchoFrameThrottle {
+    fn frame_started(&self) { self.last.set(Some(std::time::Instant::now())); }
+    fn request_throttled_redraw(&self, window: &winit::window::Window) {
+        if self.timer.running() { return; }
+        let interval = std::time::Duration::from_nanos(16_666_667);
+        let remaining = self.last.get().map_or(std::time::Duration::ZERO,
+            |last| interval.saturating_sub(last.elapsed()));
+        if remaining.is_zero() {
+            window.request_redraw();
+        } else {
+            let window = self.window_adapter.clone();
+            // Slint timers have millisecond resolution: round upward, never
+            // schedule above the ceiling. A stopped scene owns no active timer.
+            let delay = std::time::Duration::from_millis(remaining.as_micros().div_ceil(1000) as u64);
+            self.timer.start(TimerMode::SingleShot, delay, move || {
+                redraw_now(&window);
+            });
+        }
+    }
 }
 
 struct TimerBasedFrameThrottle {

@@ -34,6 +34,7 @@ pub enum Mutation {
 pub enum Work {
     List(LoadTicket, SpaceId, String),
     Preview(SpaceId, u64, String),
+    SidePreview(SpaceId, u64, String),
     Spaces,
     Inspect(u64, i64),
     Catalog(u64, String, Option<PageCursor>),
@@ -42,7 +43,7 @@ pub enum Work {
     BeginInline(u64, echo_windows::focus::FocusSnapshot),
     Adopt(u64, Option<PasteTarget>),
     Cancel,
-    TrimSearchCache(u64),
+    TrimSearchCache(u64, u64),
     RetryHotkey,
     Execute(Operation, RowKey),
     ExecuteInline(Operation, RowKey, echo_engine::InlineTicket),
@@ -56,7 +57,12 @@ pub enum Work {
 fn advance_search_generation(epoch: &AtomicU64, work: &Work) -> u64 {
     if matches!(
         work,
-        Work::List(..) | Work::Cancel | Work::Begin(..) | Work::BeginInline(..) | Work::Stop
+        Work::List(..)
+            | Work::Cancel
+            | Work::Begin(..)
+            | Work::BeginInline(..)
+            | Work::TrimSearchCache(..)
+            | Work::Stop
     ) {
         epoch.fetch_add(1, Ordering::AcqRel).wrapping_add(1)
     } else {
@@ -141,7 +147,11 @@ impl Worker {
         };
         if matches!(
             work,
-            Work::Adopt(..) | Work::Cancel | Work::Execute(..) | Work::ExecuteInline(..)
+            Work::Adopt(..)
+                | Work::Cancel
+                | Work::Execute(..)
+                | Work::ExecuteInline(..)
+                | Work::TrimSearchCache(..)
         ) {
             self.control
                 .try_send((search_generation, work))
@@ -275,6 +285,19 @@ fn run(
                 let result = scope_page(&services, space, &query, None, &cancelled);
                 hub.post(Event::Preview(space, generation, result));
             }
+            Work::SidePreview(space, generation, query) => {
+                let result = scope_page_limit(&services, space, &query, None, &cancelled, 4).map(
+                    |mut data| {
+                        data.page.items = data.page.items.into_iter().map(side_summary).collect();
+                        data
+                    },
+                );
+                if cancelled() {
+                    hub.post(Event::SidePreviewCancelled(space, generation));
+                } else {
+                    hub.post(Event::Preview(space, generation, result));
+                }
+            }
             Work::Spaces => hub.post(Event::Spaces(
                 services
                     .library
@@ -311,7 +334,13 @@ fn run(
                         items: page
                             .items
                             .into_iter()
-                            .map(QuickInsertItem::from_saved)
+                            .map(|saved| {
+                                let mut item = QuickInsertItem::from_saved(saved);
+                                // List/catalog rows are display summaries. Editing uses
+                                // Work::Inspect and execution rehydrates originals by ID.
+                                item.editable_text = None;
+                                item
+                            })
                             .collect(),
                         next_cursor: page.next_cursor,
                     })
@@ -336,9 +365,10 @@ fn run(
                 services.quick.clear_session();
                 services.quick.release_search_results();
             }
-            Work::TrimSearchCache(generation) => {
+            Work::TrimSearchCache(generation, hidden_generation) => {
                 if epoch.load(Ordering::Acquire) == generation {
                     services.quick.release_search_cache();
+                    hub.post(Event::SearchCacheTrimmed(generation, hidden_generation));
                 }
             }
             Work::RetryHotkey => {
@@ -534,6 +564,20 @@ fn reorder(ids: &mut Vec<i64>, id: i64, before: Option<i64>, delta: i32) -> Resu
     }
     Ok(())
 }
+// Matching has already scanned the complete document. This read-only projection
+// must not retain its original capacity, editor payload, tags or application data.
+fn side_summary(item: QuickInsertItem) -> QuickInsertItem {
+    QuickInsertItem {
+        name: item.name.map(|s| s.chars().take(160).collect()),
+        preview_text: item.preview_text.map(|s| s.chars().take(384).collect()),
+        content_type: item.content_type.chars().take(80).collect(),
+        editable_text: None,
+        tags: Vec::new(),
+        source_app: None,
+        icon_key: None,
+        ..item
+    }
+}
 fn thumbnail(services: &Services, hash: &str) -> Result<PixelData, String> {
     if hash.len() != 64 || !hash.bytes().all(|c| c.is_ascii_hexdigit()) {
         return Err("Invalid thumbnail identity".into());
@@ -565,6 +609,25 @@ fn thumbnail(services: &Services, hash: &str) -> Result<PixelData, String> {
 mod tests {
     use super::*;
     #[test]
+    fn side_projection_drops_large_document_capacity_after_full_query() {
+        let item: QuickInsertItem = serde_json::from_value(serde_json::json!({
+            "id": 17, "source": "favorite", "name": "名".repeat(500),
+            "preview_text": "文".repeat(1_000_000), "content_type": "text/plain",
+            "editable_text": "original".repeat(10000), "tags": ["tag".repeat(10000)],
+            "source_app": "app".repeat(10000), "updated_at": 0, "pinned_at": null,
+            "icon_key": null, "favorite_order": null, "thumbnail": null
+        }))
+        .unwrap();
+        let summary = side_summary(item);
+        assert_eq!(summary.id, 17);
+        assert_eq!(summary.name.as_ref().unwrap().chars().count(), 160);
+        assert_eq!(summary.preview_text.as_ref().unwrap().chars().count(), 384);
+        assert!(summary.held_bytes() < 4096);
+        assert!(summary.editable_text.is_none());
+        assert!(summary.tags.is_empty());
+        assert!(summary.source_app.is_none());
+    }
+    #[test]
     fn dismissal_and_activation_invalidate_running_search_before_queue_delivery() {
         let epoch = AtomicU64::new(4);
         assert_eq!(advance_search_generation(&epoch, &Work::Cancel), 5);
@@ -576,17 +639,17 @@ mod tests {
         assert_eq!(advance_search_generation(&epoch, &Work::Stop), 7);
     }
     #[test]
-    fn maintenance_does_not_cancel_a_new_search() {
+    fn trim_invalidates_queued_searches_but_resume_does_not() {
         let epoch = AtomicU64::new(8);
         assert_eq!(
-            advance_search_generation(&epoch, &Work::TrimSearchCache(1)),
-            8
+            advance_search_generation(&epoch, &Work::TrimSearchCache(1, 1)),
+            9
         );
         assert_eq!(
             advance_search_generation(&epoch, &Work::Resume(SpaceId::HISTORY)),
-            8
+            9
         );
-        assert_eq!(epoch.load(Ordering::Acquire), 8);
+        assert_eq!(epoch.load(Ordering::Acquire), 9);
     }
     #[test]
     fn reordering_keeps_every_favorite_including_unloaded_pages() {
@@ -619,15 +682,49 @@ fn scope_page(
     cursor: Option<PageCursor>,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<crate::events::LoadedPage, String> {
-    services
-        .quick
-        .fuzzy_list_space_cancellable(space, query, 50, cursor, cancelled)
-        .map(|(page, revision, total)| crate::events::LoadedPage {
-            page,
-            revision,
-            total,
-        })
-        .map_err(|e| e.to_string())
+    scope_page_limit(services, space, query, cursor, cancelled, 20)
+}
+fn scope_page_limit(
+    services: &Services,
+    space: SpaceId,
+    query: &str,
+    cursor: Option<PageCursor>,
+    cancelled: &dyn Fn() -> bool,
+    mut limit: u32,
+) -> Result<crate::events::LoadedPage, String> {
+    // Byte-bounded cursor batches keep large display pages off the UI queue.
+    // Retry with a smaller batch; never remove rows from an already-issued cursor.
+    loop {
+        let result = services
+            .quick
+            .fuzzy_list_space_cancellable(space, query, limit, cursor, cancelled)
+            .map(|(mut page, revision, total)| {
+                // The empty-query path also includes Saved Items. Display pages
+                // never need their full editor body; Inspect hydrates it by ID.
+                for item in &mut page.items {
+                    item.editable_text = None;
+                }
+                crate::events::LoadedPage {
+                    page,
+                    revision,
+                    total,
+                }
+            })
+            .map_err(|e| e.to_string());
+        if let Ok(page) = &result {
+            let bytes = page
+                .page
+                .items
+                .iter()
+                .map(QuickInsertItem::held_bytes)
+                .sum::<usize>();
+            if bytes > 128 * 1024 && page.page.items.len() > 1 && limit > 1 {
+                limit = (limit / 2).max(1);
+                continue;
+            }
+        }
+        return result;
+    }
 }
 
 fn export_diagnostics(

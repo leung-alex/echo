@@ -244,6 +244,12 @@ class Run:
             ready = ready and "No matches in this space" in dump
         return ready
 
+    def side_previews_ready(self, query):
+        value = self.metrics()
+        return value if all(not side["visible"] or
+            (side["ready"] and not side["loading"] and side["query"] == query and side["rows"] <= 4)
+            for side in value["side_previews"]) else None
+
     def manual_history_ready(self):
         if not self.d("exists"):
             return False
@@ -419,6 +425,7 @@ class Run:
         self.check("startup-manual-history-has-no-local-search", self.test_manual_history)
         self.check("f6-manual-history-preserves-query", lambda:self.test_manual_history(True))
         self.check("fuzzy-words-and-trailing-spaces-keep-actions-stable", self.test_fuzzy_words)
+        self.check("inline-query-is-scoped-and-preserved-across-spaces", self.test_scoped_query)
         self.check("transient-root-focus-preserves-original-session", self.test_root_focus)
         self.check("manual-history-row-copy-retains-text", self.test_manual_copy)
         self.check("first-popup-never-activates", self.test_first)
@@ -574,6 +581,60 @@ class Run:
         self.d("close")
         self.wait(lambda: not self.d("exists"), "manual history closed")
         return {"query_preserved": True, "local_search": False, "paste_target": False}
+
+    def test_scoped_query(self):
+        if not self.args.native_test:
+            raise NotRun("Scoped result identity requires native-test metrics")
+        marker = json.loads((self.args.template / "synthetic-fixture.json").read_text(encoding="utf-8-sig"))
+        custom = marker.get("dataset") == "S2"
+        cases = [(QUERY, 1, 0, 0), ("Echo favorite 007", 0, None, 0)]
+        if custom:
+            # Long History documents legitimately match these words as fuzzy
+            # subsequences. They are not exact-phrase search and need not be empty.
+            cases.append(("Memory50 custom space retained original content", None, 0, 1))
+        results = []
+        for query, history_rows, saved_rows, custom_rows in cases:
+            self.reset(); self.open_inline(); self.type_query(query)
+            before = self.state()["text"]
+            destinations = [(1, history_rows), (2, saved_rows)]
+            if custom:
+                destinations.append((3, custom_rows))
+            destinations.append((1, history_rows))
+            for step, (space, rows) in enumerate(destinations):
+                value = self.wait(
+                    lambda: m if (m := self.inline_ready(query)) and m["space"] == space
+                    and m["phase"] == "Idle" and m["requested"] == str(space)
+                    and m["presented"] == str(space) and m["interaction"] == str(space)
+                    and (m["snapshot_model_count"] == rows if rows is not None
+                         else m["snapshot_model_count"] > 0) else None,
+                    "query result in requested space")
+                if self.state()["text"] != before or not self.n("state")["foreground"]:
+                    raise RuntimeError("Space switching changed the original input or focus")
+                if self.args.renderer == "software":
+                    value = self.wait(lambda: self.side_previews_ready(query), "side previews use the original input query")
+                    expected = {1: history_rows, 2: saved_rows, 3: custom_rows, 4: 0}
+                    for side in value["side_previews"]:
+                        if not side["visible"]:
+                            continue
+                        count = expected.get(int(side["space"]))
+                        if (count is not None and side["rows"] != min(count, 4)) or (count is None and side["rows"] == 0):
+                            raise RuntimeError("Side preview did not filter its corresponding space: " + str(side))
+                results.append({"query": query, "space": space, "rows": value["snapshot_model_count"]})
+                if step < len(destinations) - 1:
+                    target = destinations[step + 1][0]
+                    # Fixtures may have additional metadata-only custom spaces.
+                    # Walk the actual deck rather than assume Favorites wraps to History.
+                    for _ in range(16):
+                        self.f("key", self.native, self.native_title, 9)
+                        current = self.wait(lambda: m if (m := self.inline_ready(query))
+                            and m["phase"] == "Idle" else None, "next scoped space")
+                        if current["space"] == target:
+                            break
+                    else:
+                        raise RuntimeError("Requested space was absent from the navigation deck")
+            self.f("key", self.native, self.native_title, 27)
+            self.wait(lambda: not self.d("exists"), "scoped query canceled")
+        return {"endpoint": "original native input and guarded Tab", "results": results}
 
     def test_fuzzy_words(self):
         if not self.args.native_test:
@@ -829,6 +890,9 @@ class Run:
         self.f("key", self.native, self.native_title, 117)
         self.wait(self.manual_history_ready, "manual-copy history ready")
         expected = "SELECT id, updated_at\nFROM clipboard_entries\nORDER BY updated_at DESC;\n-- fixture 0199"
+        marker = json.loads((self.args.template / "synthetic-fixture.json").read_text(encoding="utf-8-sig"))
+        if marker.get("dataset") in ("T", "M"):
+            expected = "echo-perf-text-1999 — Reusable content, available when you need it."
         self.f("activate-owned", self.echo, TITLE, expected)
         self.wait(lambda: self.n("clipboard-matches", expected=expected)["matches"], "original multiline text copied")
         state = self.state()
@@ -1240,14 +1304,32 @@ class Run:
             self.wait(lambda: "Input filtering unavailable:" in self.d("dump") and "copy manually" in self.d("dump"), "visible manual-copy compatibility notice")
             if "ControlType.Edit | Search clipboard history" in self.d("dump"):
                 raise RuntimeError("An unsupported input unexpectedly activated an Echo search field")
-            if not self.n("state")["foreground"]:
-                raise RuntimeError("An unsupported input lost foreground to Echo")
+            foreground = self.n("state")
+            if not foreground["foreground"]:
+                raise RuntimeError("Protected input lost foreground: " + repr({
+                    key: foreground.get(key) for key in
+                    ("foreground_hwnd", "foreground_pid", "foreground_process", "foreground_created_utc")
+                }))
             if self.args.native_test and self.metrics()["quick_insert"]["has_target"]:
                 raise RuntimeError("Protected input incorrectly admitted a paste target")
             if self.state(control)["text"] != before:
                 raise RuntimeError("Protected input was changed")
+            self.f("key", self.native, self.native_title, 13)
+            time.sleep(.12)
+            protected = self.state(control)
+            if protected["enter_count"] or protected["text"] != before or not self.d("exists"):
+                raise RuntimeError("Protected compatibility surface released Enter protection")
             self.shot("compatibility-" + control)
-        return "Password and read-only controls remain focused; unavailable replacement never reveals an activating search field"
+            if control == "password":
+                self.f("key", self.native, self.native_title, 117)
+                self.wait(self.manual_history_ready, "F6 retires unavailable-input protection")
+                self.wait(lambda: self.n("state").get("foreground_pid") == self.echo.pid,
+                          "explicit manual History owns keyboard focus")
+                self.f("key", self.echo, TITLE, 27)
+            else:
+                self.f("key", self.native, self.native_title, 27)
+            self.wait(lambda: not self.d("exists"), "Esc retires the protected compatibility surface")
+        return "Password/read-only controls retain focus and text; Enter is guarded and Esc dismisses without submission"
 
     def test_f6(self):
         self.reset(); self.open_inline(); self.type_query()

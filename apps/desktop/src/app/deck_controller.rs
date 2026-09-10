@@ -102,6 +102,34 @@ impl App {
                 selected: s.id == selected,
             })
             .collect::<Vec<_>>();
+        let side = |offset: i64| {
+            let count = model.len() as i64;
+            let index = self.deck.index(selected).unwrap_or(0) as i64 + offset;
+            if count < 2 || (!self.ui.loop_spaces && (index < 0 || index >= count)) {
+                return crate::SpaceVm::default();
+            }
+            model[index.rem_euclid(count) as usize].clone()
+        };
+        let left = side(-1);
+        let right = side(1);
+        let index = self.deck.index(selected).unwrap_or(0);
+        let duplicate = left.key == right.key;
+        let left = if duplicate && index == 0 {
+            Default::default()
+        } else {
+            left.clone()
+        };
+        let right = if duplicate && index != 0 {
+            Default::default()
+        } else {
+            right
+        };
+        self.window.set_requested_left_space(left.clone());
+        self.window.set_requested_right_space(right.clone());
+        if !self.software.slide.loading() {
+            self.window.set_left_space(left);
+            self.window.set_right_space(right);
+        }
         self.window.set_spaces(ModelRc::new(VecModel::from(model)));
         let index = self.deck.index(selected).unwrap_or(0);
         let count = self.deck.order().len();
@@ -169,7 +197,8 @@ impl App {
         if n < 2 || delta == 0 {
             return;
         }
-        let i = self.deck.index(self.deck.requested).unwrap_or(0) as i64;
+        let intended = self.software.slide.intent().unwrap_or(self.deck.requested);
+        let i = self.deck.index(intended).unwrap_or(0) as i64;
         let next = if self.ui.loop_spaces {
             (i + i64::from(delta)).rem_euclid(n as i64)
         } else {
@@ -189,6 +218,10 @@ impl App {
             || !self.surface.visible
             || self.deck.index(id).is_none()
         {
+            return;
+        }
+        if !self.graphics.perspective {
+            self.navigate_software_to(id);
             return;
         }
         if id == self.deck.requested && self.surface.space == id {
@@ -283,6 +316,10 @@ impl App {
         }
     }
     pub(super) fn content_ready(&mut self) {
+        if !self.graphics.perspective {
+            self.software_content_ready();
+            return;
+        }
         if self.surface.ready && !self.surface.loading && self.surface.space == self.deck.requested
         {
             crate::popup_timing::mark("content_ready");
@@ -292,6 +329,9 @@ impl App {
             .set_navigation_busy(self.deck.phase == Phase::Animating);
     }
     pub(super) fn finish_motion(&mut self) {
+        if !self.graphics.perspective {
+            self.cancel_software_slide();
+        }
         let settling = self.window.get_flow_settling();
         self.window.set_flow_settling(false);
         self.window.set_front_shadow_opacity(1.0);
@@ -301,7 +341,8 @@ impl App {
             self.render();
         }
         self.content_ready();
-        self.window.set_navigation_busy(false);
+        self.window
+            .set_navigation_busy(!self.deck.can_insert(self.surface.space));
         self.prepare_scene();
         #[cfg(feature = "cover-flow")]
         if let Some(flow) = &self.flow {
@@ -312,6 +353,10 @@ impl App {
     pub(super) fn flow_tick(&mut self) {
         if self.window.get_route().as_str() == "settings" {
             self.preview_tick();
+            return;
+        }
+        if !self.graphics.perspective {
+            self.software_tick();
             return;
         }
         if !self.surface.visible || self.window.get_route().as_str() != "history" {
@@ -365,8 +410,13 @@ impl App {
         self.prewarm_timer.stop();
         self.preview_epoch = self.preview_epoch.wrapping_add(1);
         self.pending_previews.clear();
+        self.software.side_errors.clear();
     }
     pub(super) fn schedule_prewarm(&mut self) {
+        if !self.graphics.perspective {
+            self.prepare_software_neighbors();
+            return;
+        }
         self.prepare_visible_neighbors();
         if self.inline_active()
             && (!self.surface.ready || self.surface.loading || self.surface.dirty)
@@ -428,6 +478,9 @@ impl App {
             self.window.get_panel_left().to_bits(),
         );
         if geometry != self.geometry {
+            if !self.graphics.perspective {
+                self.cancel_software_slide();
+            }
             self.geometry = geometry;
             // Validate raster inputs, but keep targets for projection-only changes.
             self.dirty_snapshots
@@ -457,7 +510,7 @@ impl App {
         self.dirty_snapshots
             .extend(self.deck.order().iter().copied());
     }
-    fn has_current_preview(&self, id: SpaceId) -> bool {
+    pub(super) fn has_current_preview(&self, id: SpaceId) -> bool {
         self.previews.get(&id).is_some_and(|preview| {
             preview.query == self.surface.query
                 && self
@@ -612,6 +665,10 @@ impl App {
         epoch: u64,
         result: Result<crate::events::LoadedPage, String>,
     ) {
+        if !self.graphics.perspective {
+            self.software_preview_loaded(id, epoch, result);
+            return;
+        }
         if epoch != self.preview_epoch
             || !self.surface.visible
             || self.ui.side_content == SideContent::TitlesOnly
@@ -671,6 +728,7 @@ impl App {
         }
         self.schedule_prewarm();
     }
+    #[cfg(feature = "cover-flow")]
     fn motion_fallback(&mut self, error: String) {
         self.graphics_error = Some(error.clone());
         self.flow_timer.stop();

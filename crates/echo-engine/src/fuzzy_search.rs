@@ -99,7 +99,7 @@ pub(crate) struct FuzzySearchCache {
     corpora: VecDeque<Corpus>,
     last_page: Option<CachedPage>,
 }
-const CACHE_BYTES: usize = 16 * 1024 * 1024;
+const CACHE_BYTES: usize = 4 * 1024 * 1024;
 impl FuzzySearchCache {
     pub(crate) fn clear_results(&mut self) {
         self.last_page = None;
@@ -196,7 +196,7 @@ impl FuzzySearchCache {
             self.corpora.push_front(corpus);
         } else {
             let mut items = Vec::new();
-            let mut bytes = 0usize;
+            let mut bytes = std::mem::size_of::<Corpus>();
             let mut cacheable = true;
             let mut order = 0u64;
             let mut page_cursor = None;
@@ -233,13 +233,13 @@ impl FuzzySearchCache {
                         .items
                         .into_iter()
                         .map(|saved| {
-                            let body = saved
+                            let mut item = QuickInsertItem::from_saved(saved);
+                            let body = item
                                 .editable_text
-                                .as_ref()
-                                .or(saved.preview_text.as_ref())
-                                .cloned()
+                                .take()
+                                .or_else(|| item.preview_text.clone())
                                 .unwrap_or_default();
-                            candidate(QuickInsertItem::from_saved(saved), body)
+                            candidate(item, body)
                         })
                         .collect::<Vec<_>>();
                     (items, page.page.next_cursor)
@@ -252,16 +252,20 @@ impl FuzzySearchCache {
                     order += 1;
                     if cacheable {
                         bytes = bytes.saturating_add(
-                            c.text.len()
-                                + c.item.preview_text.as_ref().map_or(0, String::len)
-                                + c.item.editable_text.as_ref().map_or(0, String::len)
-                                + 1024,
+                            c.text.capacity() + std::mem::size_of::<String>() + c.item.held_bytes(),
                         );
                         if bytes <= CACHE_BYTES {
                             items.push(c);
+                            let held = bytes
+                                + (items.capacity() - items.len())
+                                    * std::mem::size_of::<Candidate>();
+                            if held > CACHE_BYTES {
+                                cacheable = false;
+                                items = Vec::new();
+                            }
                         } else {
                             cacheable = false;
-                            items.clear();
+                            items = Vec::new();
                         }
                     }
                 }
@@ -284,6 +288,7 @@ impl FuzzySearchCache {
                 return Err("Search corpus is outdated; retry the current query".into());
             }
             if cacheable {
+                bytes += (items.capacity() - items.len()) * std::mem::size_of::<Candidate>();
                 while self.corpora.len() >= 3
                     || self.corpora.iter().map(|c| c.bytes).sum::<usize>() + bytes > CACHE_BYTES
                 {
@@ -331,13 +336,12 @@ impl FuzzySearchCache {
             .0
             .items
             .iter()
-            .map(|i| {
-                1024 + i.preview_text.as_ref().map_or(0, String::len)
-                    + i.editable_text.as_ref().map_or(0, String::len)
-                    + i.name.as_ref().map_or(0, String::len)
-                    + i.tags.iter().map(String::len).sum::<usize>()
-            })
-            .sum::<usize>();
+            .map(QuickInsertItem::held_bytes)
+            .sum::<usize>()
+            + (value.0.items.capacity() - value.0.items.len())
+                * std::mem::size_of::<QuickInsertItem>()
+            + normalized.capacity()
+            + std::mem::size_of::<CachedPage>();
         self.last_page = if page_bytes <= 256 * 1024 {
             while self.corpora.iter().map(|c| c.bytes).sum::<usize>() + page_bytes > CACHE_BYTES {
                 if self.corpora.pop_back().is_none() {

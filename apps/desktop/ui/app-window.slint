@@ -8,11 +8,38 @@ export { EntryRow, EchoTheme, FavoriteIconChoice, FavoriteIconImages, SpaceVm, A
 
 import { CoverFlowTokens as T } from "echo-tokens.slint";
 import { SpacePanel } from "space-panel.slint";
+import { SpaceSideCard, OutgoingPanel, CarouselCard, SidePreview, SidePreviewRow } from "software-cards.slint";
+import { CardShadow } from "card-shadow.slint";
+export { OutgoingPanel, SidePreview, SidePreviewRow }
 import { SpaceVm, ActionVm } from "space-models.slint";
 import { SettingsPage } from "settings-page.slint";
 export component AppWindow inherits Window {
     icon: @image-url("../icons/echo-taskbar-256.png");
     in property <[EntryRow]> rows;
+    in property <bool> software-deck;
+    in property <float> preview-progress: 1;
+    in property <bool> outgoing-present;
+    in property <OutgoingPanel> outgoing;
+    in property <bool> slide-moving;
+    in property <length> incoming-x;
+    in property <length> outgoing-x;
+    in property <float> carousel-progress: 1;
+    in property <float> carousel-direction: 1;
+    in property <SpaceVm> incoming-space;
+    in property <SpaceVm> outgoing-space;
+    in property <SpaceVm> departing-side;
+    in property <SpaceVm> left-space;
+    in property <SpaceVm> right-space;
+    in property <SpaceVm> requested-left-space;
+    in property <SpaceVm> requested-right-space;
+    in property <SidePreview> left-preview;
+    in property <SidePreview> right-preview;
+    in property <SidePreview> incoming-preview;
+    in property <SidePreview> outgoing-preview;
+    in property <SidePreview> departing-preview;
+    out property <length> side-width: root.panel-width * 0.7;
+    out property <bool> left-side-visible: root.software-deck && root.view-mode == "cover_flow" && root.left-space.key != "" && root.panel-left >= root.side-width + 28px;
+    out property <bool> right-side-visible: root.software-deck && root.view-mode == "cover_flow" && root.right-space.key != "" && root.stage-width - root.panel-left - root.panel-width >= root.side-width + 28px;
     in-out property <string> query;
     in property <string> active-view: "history";
     in property <string> route: "history";
@@ -73,7 +100,8 @@ export component AppWindow inherits Window {
     callback confirm-clear();
     callback create-favorite();
     callback quit();
-    pure callback drag-data(string) -> data-transfer;
+    in property <int> drag-epoch;
+    pure callback drag-data(string, int) -> data-transfer;
     callback can-drop-data(data-transfer) -> bool;
     callback drop-data(data-transfer,string) -> bool;
     in-out property <string> view-mode;
@@ -245,8 +273,43 @@ export component AppWindow inherits Window {
                     }
                 }
             }
+            if (root.route == "history" && root.left-side-visible && !root.slide-moving): CardShadow {
+                x: root.panel-left - root.side-width - 28px; y: root.panel-top + 4px; width: root.side-width + 32px; height: root.panel-height;
+            }
+            if (root.route == "history" && root.right-side-visible && !root.slide-moving): CardShadow {
+                x: root.panel-left + root.panel-width - 4px; y: root.panel-top + 4px; width: root.side-width + 32px; height: root.panel-height;
+            }
+            if (root.route == "history" && root.left-side-visible && !root.slide-moving): SpaceSideCard {
+                x: root.panel-left - root.side-width - 12px; y: root.panel-top + 16px; width: root.side-width; height: root.panel-height - 32px;
+                space: root.left-space; preview: root.left-preview; enabled: !root.busy && !root.modal;
+                chosen => { root.space-action("select",root.left-space.key); }
+            }
+            if (root.route == "history" && root.right-side-visible && !root.slide-moving): SpaceSideCard {
+                x: root.panel-left + root.panel-width + 12px; y: root.panel-top + 16px; width: root.side-width; height: root.panel-height - 32px;
+                space: root.right-space; preview: root.right-preview; enabled: !root.busy && !root.modal;
+                chosen => { root.space-action("select",root.right-space.key); }
+            }
+            if (root.route == "history" && root.slide-moving && root.departing-side.key != ""): SpaceSideCard {
+                x: root.carousel-direction > 0 ? root.panel-left - root.side-width - 12px - (root.side-width + 12px) * root.carousel-progress : root.panel-left + root.panel-width + 12px + (root.side-width + 12px) * root.carousel-progress;
+                y: root.panel-top + 16px; width: root.side-width; height: root.panel-height - 32px;
+                space: root.departing-side; preview: root.departing-preview; opacity: 1 - root.carousel-progress; enabled: false;
+            }
+            if (root.route == "history" && root.slide-moving && (root.carousel-direction > 0 ? root.right-side-visible : root.left-side-visible)): SpaceSideCard {
+                x: root.carousel-direction > 0 ? root.panel-left + root.panel-width + 12px + (root.side-width + 12px) * (1 - root.carousel-progress) : root.panel-left - root.side-width - 12px - (root.side-width + 12px) * (1 - root.carousel-progress);
+                y: root.panel-top + 16px; width: root.side-width; height: root.panel-height - 32px;
+                space: root.carousel-direction > 0 ? root.right-space : root.left-space;
+                preview: root.carousel-direction > 0 ? root.right-preview : root.left-preview; opacity: root.carousel-progress; enabled: false;
+            }
+            CarouselCard {
+                x: root.panel-left + root.incoming-x;
+                y: root.panel-top + (root.slide-moving ? 16px * (1 - root.carousel-progress) : 0px);
+                width: root.slide-moving ? root.side-width + (root.panel-width - root.side-width) * root.carousel-progress : root.panel-width;
+                height: root.panel-height - (root.slide-moving ? 32px * (1 - root.carousel-progress) : 0px);
+                content-width: root.panel-width; content-height: root.panel-height;
+                content-opacity: root.slide-moving ? max(0,min(1,root.carousel-progress * 3 - 2)) : 1;
+                space: root.incoming-space; preview: root.incoming-preview; software: root.software-deck; visible: root.route == "history";
             live-panel := SpacePanel {
-                x: root.panel-left; y: root.panel-top; width: root.panel-width; height: root.panel-height;
+                x: 0px; y: 0px; width: root.panel-width; height: root.panel-height;
                 visible: root.route == "history";
                 opacity: (root.navigation-busy || root.flow-settling) && root.flow-enabled ? 0 : 1;
                 inline-mode: root.inline-mode;
@@ -260,7 +323,7 @@ export component AppWindow inherits Window {
                 selection-index: root.selection-index; query <=> root.query; quick-insert: root.quick-insert && root.paste-target-available;
                 copy-only: root.quick-insert && !root.paste-target-available;
                 has-more: root.has-more; has-previous: root.has-previous; scroll-y <=> root.scroll-y;
-                modal: root.modal; animating: root.navigation-busy;
+                modal: root.modal; animating: root.software-deck ? root.slide-moving : root.navigation-busy;
                 navigation-label: root.navigation-label; status: root.status; status-error: root.status-error;
                 navigation-hint: root.control-focus-mode ? "F6  Quick navigation" : root.switch-shortcut == "ctrl_tab" ? "Ctrl+Tab / Ctrl+Shift+Tab" : "Tab / Shift+Tab";
                 previous-enabled: root.previous-enabled; next-enabled: root.next-enabled;
@@ -283,9 +346,37 @@ export component AppWindow inherits Window {
                 menu => { root.space-action("menu",""); }
                 add-existing => { root.space-action("add-existing",""); }
                 viewport-changed => { root.viewport-changed(); }
-                drag-data(key) => { return root.drag-data(key); }
+                drag-data(key) => { return root.drag-data(key,root.drag-epoch); }
                 can-drop-data(data) => { return root.can-drop-data(data); }
                 drop-data(data,key) => { return root.drop-data(data,key); }
+            }
+            }
+            if (root.outgoing-present && root.route == "history"): CarouselCard {
+                x: root.panel-left + root.outgoing-x;
+                y: root.panel-top + (root.slide-moving ? 16px * root.carousel-progress : 0px);
+                width: root.panel-width - (root.slide-moving ? (root.panel-width - root.side-width) * root.carousel-progress : 0px);
+                height: root.panel-height - (root.slide-moving ? 32px * root.carousel-progress : 0px);
+                content-width: root.panel-width; content-height: root.panel-height;
+                content-opacity: root.slide-moving ? max(0,1 - root.carousel-progress * 3) : 1;
+                space: root.outgoing-space; preview: root.outgoing-preview;
+            SpacePanel {
+                x: 0px; y: 0px; width: root.panel-width; height: root.panel-height;
+                inline-mode: root.inline-mode;
+                title: root.outgoing.title; subtitle: root.outgoing.subtitle;
+                icon-key: root.outgoing.icon-key; accent: root.outgoing.accent;
+                rows: root.outgoing.rows; favorites: root.outgoing.favorites; clearable: root.outgoing.clearable;
+                busy: true; modal: true; animating: true;
+                compact: root.density == "compact"; batch: root.outgoing.batch;
+                selected-count: root.outgoing.selected-count; selection-index: root.outgoing.selection-index;
+                query: root.outgoing.query; quick-insert: root.quick-insert && root.paste-target-available;
+                copy-only: root.quick-insert && !root.paste-target-available;
+                has-more: root.outgoing.has-more; has-previous: root.outgoing.has-previous;
+                scroll-y: root.outgoing.scroll-y; navigation-label: root.outgoing.navigation-label;
+                navigation-hint: root.outgoing.navigation-hint;
+                previous-enabled: root.outgoing.previous-enabled; next-enabled: root.outgoing.next-enabled;
+                status: root.outgoing.status; status-error: root.outgoing.status-error;
+                empty-state-text: root.outgoing.empty-state-text;
+            }
             }
             Rectangle {
                 visible: root.route != "history";
@@ -329,6 +420,7 @@ export component AppWindow inherits Window {
                 spaces: root.spaces; busy: root.busy || root.modal; dirty: root.settings-dirty; valid: root.settings-valid; notice: root.settings-notice;
                 restart-required: root.restart-required; error: root.settings-error; actual-mode: root.actual-mode;
                 diagnostics: root.diagnostics; cache-status: root.cache-status; preview-image: root.preview-image;
+                preview-progress: root.preview-progress;
                 edited => { root.settings-edited(); }
                 save => { root.save-settings(); }
                 cancel => { root.settings-action("cancel"); }

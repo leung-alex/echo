@@ -120,12 +120,12 @@ export component EntryView inherits Rectangle {
         }
         drop := DropArea {
             width:root.width;height:root.height;
-            enabled:root.favorites && root.reorder-enabled && !root.input-blocked;
+            enabled:root.favorites && root.reorder-enabled && !root.input-blocked && !root.busy;
             can-drop(event) => {return root.can-drop-data(event.data) ? DragAction.move : DragAction.none;}
             dropped(event) => {return root.drop-data(event.data,root.entry.key) ? DragAction.move : DragAction.none;}
             DragArea {
                 width:root.width;height:root.height;
-                enabled:root.favorites && root.reorder-enabled && !root.input-blocked;
+                enabled:root.favorites && root.reorder-enabled && !root.input-blocked && !root.busy;
                 data:root.drag-data(root.entry.key);allow-move:true;
             }
         }

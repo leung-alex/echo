@@ -288,8 +288,15 @@ impl App {
         if self.mutation.is_some() || self.session.busy() {
             return;
         }
+        if !matches!(action, "select" | "cancel")
+            && self.window.get_route().as_str() == "history"
+            && !self.deck.can_insert(self.surface.space)
+        {
+            return;
+        }
         let id = SpaceId::parse(key).unwrap_or(self.surface.space);
         match action {
+            "select" => self.navigate_to(id),
             "new" => {
                 self.finish_motion();
                 self.close_picker();
@@ -736,7 +743,14 @@ impl App {
             );
             return;
         }
-        if self.mutation.is_some() || self.session.busy() || self.window.get_modal() {
+        if self.mutation.is_some()
+            || self.session.busy()
+            || self.window.get_modal()
+            || !self.surface.ready
+            || self.surface.loading
+            || self.surface.dirty
+            || !self.deck.can_insert(self.surface.space)
+        {
             return;
         }
         self.finish_motion();

@@ -171,6 +171,12 @@ fn execute(
         .ok_or("Window is unavailable")?;
     match request.verb.as_str() {
         "ping" => Ok(serde_json::json!({"native_test":true,"pid":std::process::id()})),
+        "query" => {
+            window.set_query(request.file.clone().into());
+            app.borrow_mut()
+                .command(Command::Query(request.file.clone()));
+            Ok(serde_json::json!({"query_requested":true}))
+        }
         "pause_inline_window_events" => {
             echo_windows::inline::diagnostics::pause_window_events(request.paused)?;
             Ok(
@@ -358,12 +364,25 @@ fn execute(
                 "quick_insert":{"active":a.session.context == Context::QuickInsert,"has_target":a.session.has_target,"capture_pending":a.capture_pending,"anchor_source":a.popup_anchor.map(|anchor|anchor.source.label()),"hotkey_status":a.window.get_hotkey_status().to_string()},
                 "settings":{"dirty":a.window.get_settings_dirty(),"valid":a.window.get_settings_valid(),"error":a.window.get_settings_error().to_string(),"ui":a.ui},
                 "flow_timer":a.flow_timer.running(),"preview_timer":a.preview_timer.running(),
-                "thumbnails_bytes":a.images.bytes,"native_region":a.window_shapes.as_ref().is_some_and(|s|s.is_some()),
+                "thumbnails_bytes":a.images.bytes+a.software.outgoing_image_bytes,"native_region":a.window_shapes.as_ref().is_some_and(|s|s.is_some()),
                 "panel":[a.window.get_panel_left(),a.window.get_panel_top(),a.window.get_panel_width(),a.window.get_panel_height()],
                 "stage":[a.window.get_stage_width(),a.window.get_stage_height()],"scale_factor":a.window.window().scale_factor()});
             metrics["error"] = a.surface.error.into();
+            metrics["display_bytes"] = serde_json::json!({"page":a.surface.held_item_bytes(),"model":a.model_bytes,"outgoing":a.software.outgoing_bytes,"sides":a.software_side_bytes(),"queued":a.hub.data_bytes(),"total":a.surface.held_item_bytes()+a.model_bytes+a.software_side_bytes()+a.software.outgoing_bytes+a.hub.data_bytes()});
+            metrics["software_slide"] = serde_json::json!({"outgoing":a.window.get_outgoing_present(),"outgoing_rows":a.window.get_outgoing().rows.row_count(),"moving":a.software.slide.moving(),"loading":a.software.slide.loading(),"pending_target":a.software.slide.intent().map(|id|id.0),"incoming_x":a.window.get_incoming_x(),"outgoing_x":a.window.get_outgoing_x(),"left_visible":a.window.get_left_side_visible(),"right_visible":a.window.get_right_side_visible(),"frame_bytes":crate::graphics::software_frame_bytes()});
             metrics["status"] = a.surface.status.clone().into();
+            metrics["software_slide"]["side_width"] = a.window.get_side_width().into();
+            metrics["software_slide"]["progress"] = a.window.get_carousel_progress().into();
+            metrics["software_slide"]["direction"] = a.window.get_carousel_direction().into();
             metrics["query_epoch"] = a.surface.query_epoch().into();
+            metrics["side_previews"] = [
+                (a.window.get_left_space(), a.window.get_left_preview(), a.window.get_left_side_visible()),
+                (a.window.get_right_space(), a.window.get_right_preview(), a.window.get_right_side_visible()),
+            ].into_iter().map(|(space, preview, visible)| {
+                let id = a.spaces.iter().find(|s| s.id.to_string() == space.key.as_str()).map(|s| s.id);
+                let source = id.and_then(|id| a.previews.get(&id));
+                serde_json::json!({"space":space.key.as_str(),"visible":visible,"ready":id.is_some_and(|id|a.has_current_preview(id)),"query":source.map(|p|p.query.as_str()),"loading":preview.loading,"rows":preview.rows.row_count(),"titles":preview.rows.iter().map(|r|r.title.to_string()).collect::<Vec<_>>(),"bodies":preview.rows.iter().map(|r|r.body.to_string()).collect::<Vec<_>>()})
+            }).collect::<Vec<_>>().into();
             metrics["provider_faults"] =
                 echo_windows::inline::diagnostics::provider_fault_metrics();
             Ok(metrics)
@@ -413,7 +432,7 @@ fn trace_tick(app: &Rc<RefCell<App>>) {
         frame["panel_origin"] = serde_json::json!([a.window.get_panel_left(),a.window.get_panel_top()]);
         frame["stage_size"] = serde_json::json!([a.window.get_stage_width(),a.window.get_stage_height()]);
         frame["error"] = a.surface.error.into();
-        frame["thumbnails_bytes"] = a.images.bytes.into();
+        frame["thumbnails_bytes"] = (a.images.bytes+a.software.outgoing_image_bytes).into();
         if i % 2 == 0 && a.surface.visible {
             match a.window.window().take_snapshot() {
                 Ok(image) => {

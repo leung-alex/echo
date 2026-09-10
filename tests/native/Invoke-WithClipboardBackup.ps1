@@ -40,7 +40,20 @@ foreach ($format in $formats) {
     $backup.SetData($format, $false, $value)
 }
 $oldReady = $env:ECHO_CLIPBOARD_BACKUP_READY
-$result = [ordered]@{ schema='echo.clipboard-preservation.v1'; format_count=$formats.Count; test_exit=$null; restored=$false }
+$captureProcesses = [Collections.Generic.List[Diagnostics.Process]]::new()
+function Register-EchoCaptureProcess([Diagnostics.Process]$Process) {
+    # Keep an independent process handle so a failed child cleanup cannot expose
+    # the restored personal clipboard to the isolated capture process.
+    $ownedProcess = [Diagnostics.Process]::GetProcessById($Process.Id)
+    if ($ownedProcess.StartTime -ne $Process.StartTime -or
+        $ownedProcess.MainModule.FileName -ne $Process.MainModule.FileName) {
+        $ownedProcess.Dispose()
+        throw 'Capture process identity changed before registration'
+    }
+    $null = $ownedProcess.Handle
+    $captureProcesses.Add($ownedProcess)
+}
+$result = [ordered]@{ schema='echo.clipboard-preservation.v1'; format_count=$formats.Count; test_exit=$null; restored=$false; wrapper_sha256=(Get-FileHash -LiteralPath $PSCommandPath).Hash; registered_capture_count=0 }
 try {
     $env:ECHO_CLIPBOARD_BACKUP_READY = '1'
     $global:LASTEXITCODE = 0
@@ -54,7 +67,23 @@ catch {
 }
 finally {
     $env:ECHO_CLIPBOARD_BACKUP_READY = $oldReady
-    for ($attempt = 0; $attempt -lt 5; $attempt++) {
+    $result.registered_capture_count = $captureProcesses.Count
+    $captureStopped = $true
+    foreach ($captureProcess in $captureProcesses) {
+        try {
+            if (-not $captureProcess.HasExited) {
+                $result.test_exit = 1
+                $result.capture_cleanup = 'Forced exit of registered isolated capture process after graceful cleanup failed'
+                $captureProcess.Kill()
+                if (-not $captureProcess.WaitForExit(10000)) {throw 'Registered capture process did not exit'}
+            }
+        } catch {
+            $captureStopped = $false
+            $result.test_exit = 1
+            $result.restore_error = 'Clipboard restoration blocked: registered capture process may still be active'
+        } finally {$captureProcess.Dispose()}
+    }
+    for ($attempt = 0; $captureStopped -and $attempt -lt 5; $attempt++) {
         try {
             if ($formats.Count -eq 0) { [Windows.Forms.Clipboard]::Clear() }
             else { [Windows.Forms.Clipboard]::SetDataObject($backup, $true, 5, 100) }

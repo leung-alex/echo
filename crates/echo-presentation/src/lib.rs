@@ -8,6 +8,7 @@ pub mod deck;
 pub mod echo_tokens;
 pub mod interaction;
 pub mod session;
+pub mod slide;
 pub mod space_state;
 
 pub const PAGE_SIZE: u32 = 50;
@@ -71,6 +72,8 @@ pub struct Surface {
     pub total: u64,
     pub ready: bool,
     pub row_limit: usize,
+    /// Bounded display payload; original content remains in the engine/store.
+    pub byte_limit: usize,
     pub view: QuickInsertView,
     pub query: String,
     /// Query represented by the complete displayed snapshot, including zero rows.
@@ -103,6 +106,7 @@ impl Surface {
             total: 0,
             ready: false,
             row_limit: MAX_RESIDENT_ROWS,
+            byte_limit: 256 * 1024,
             view,
             query: String::new(),
             presented_query: None,
@@ -188,6 +192,17 @@ impl Surface {
         self.loading = false;
         self.dirty = true;
     }
+    /// Release hidden page payloads while retaining opaque selection and cursor anchors.
+    /// Bump the generation so an old load cannot repopulate the reclaimed page.
+    pub fn reclaim_hidden(&mut self) -> bool {
+        if self.visible {
+            return false;
+        }
+        self.hide();
+        self.items = Vec::new();
+        self.presented_query = None;
+        true
+    }
     pub fn begin_load(&mut self, more: bool) -> Option<LoadTicket> {
         if !self.visible || (more && (self.loading || self.next_cursor.is_none())) {
             return None;
@@ -199,7 +214,8 @@ impl Surface {
         } else {
             self.window_start
         };
-        if more && self.items.len() >= self.row_limit {
+        if more && (self.items.len() >= self.row_limit || self.held_item_bytes() >= self.byte_limit)
+        {
             self.previous_windows.push(self.window_start);
             self.window_start = cursor;
             append = false;
@@ -228,6 +244,13 @@ impl Surface {
     pub fn has_previous(&self) -> bool {
         !self.previous_windows.is_empty()
     }
+    pub fn held_item_bytes(&self) -> usize {
+        self.items
+            .iter()
+            .map(QuickInsertItem::held_bytes)
+            .sum::<usize>()
+            + (self.items.capacity() - self.items.len()) * std::mem::size_of::<QuickInsertItem>()
+    }
     /// A bounded worker rejected admission, so no completion will arrive.
     /// Undo only the paging reservation and retain the last presented content.
     pub fn retry_unqueued_load(&mut self, ticket: LoadTicket, more: bool) -> bool {
@@ -255,7 +278,26 @@ impl Surface {
             Ok(page) => {
                 self.ready = true;
                 self.presented_query = Some(self.query.clone());
-                if ticket.append {
+                let next_bytes = page
+                    .items
+                    .iter()
+                    .map(QuickInsertItem::held_bytes)
+                    .sum::<usize>();
+                let required_capacity = self.items.len() + page.items.len();
+                let extra_capacity = required_capacity.saturating_sub(self.items.capacity());
+                let next_heap =
+                    next_bytes - page.items.len() * std::mem::size_of::<QuickInsertItem>();
+                let fits = self
+                    .held_item_bytes()
+                    .saturating_add(next_heap)
+                    .saturating_add(extra_capacity * std::mem::size_of::<QuickInsertItem>())
+                    <= self.byte_limit;
+                if ticket.append && !fits {
+                    self.previous_windows.push(self.window_start);
+                    self.window_start = ticket.cursor;
+                }
+                if ticket.append && fits {
+                    self.items.reserve_exact(page.items.len());
                     for item in page.items {
                         if !self
                             .items
@@ -408,6 +450,37 @@ mod tests {
         }
     }
     #[test]
+    fn byte_limit_pages_forward_without_losing_items_or_previous_cursor() {
+        let mut s = shown();
+        let first = s.begin_load(false).unwrap();
+        s.finish_load(first, Ok(page(&[1, 2])));
+        let mut next = page(&[3, 4]);
+        next.items[0].preview_text = Some(String::with_capacity(4096));
+        let next_bytes = next
+            .items
+            .iter()
+            .map(QuickInsertItem::held_bytes)
+            .sum::<usize>();
+        s.byte_limit = s.held_item_bytes() + next_bytes - 1;
+        let cursor = PageCursor::History {
+            pinned_at: None,
+            updated_at: 10,
+            id: 2,
+        };
+        s.next_cursor = Some(cursor);
+        let ticket = s.begin_load(true).unwrap();
+        assert!(ticket.append);
+        assert!(s.finish_load(ticket, Ok(next)));
+        assert_eq!(s.items.iter().map(|i| i.id).collect::<Vec<_>>(), vec![3, 4]);
+        assert_eq!(s.items[0].preview_text.as_ref().unwrap().capacity(), 4096);
+        assert_eq!(s.window_start, Some(cursor));
+        assert!(s.previous_window());
+        assert_eq!(s.window_start, None);
+        let previous = s.begin_load(false).unwrap();
+        assert!(s.finish_load(previous, Ok(page(&[1, 2]))));
+        assert_eq!(s.items[0].id, 1);
+    }
+    #[test]
     fn stale_query_cannot_replace_current_rows() {
         let mut s = shown();
         let old = s.begin_load(false).unwrap();
@@ -473,6 +546,24 @@ mod tests {
         let next = s.begin_load(false).unwrap();
         s.finish_load(next, Ok(page(&[3])));
         assert_eq!(s.selected().unwrap().id, 3);
+    }
+    #[test]
+    fn reclaim_releases_hidden_payloads_and_rejects_old_loads() {
+        let mut s = shown();
+        let first = s.begin_load(false).unwrap();
+        assert!(s.finish_load(first, Ok(page(&[1, 2]))));
+        assert!(!s.reclaim_hidden());
+        assert_eq!(s.items.len(), 2);
+        let late = s.begin_load(false).unwrap();
+        let selected = s.selection;
+        s.hide();
+        assert!(s.reclaim_hidden());
+        assert_eq!(s.items.capacity(), 0);
+        assert_eq!(s.selection, selected);
+        assert!(!s.finish_load(late, Ok(page(&[3]))));
+        s.visible = true;
+        let fresh = s.begin_load(false).unwrap();
+        assert!(s.finish_load(fresh, Ok(page(&[1, 2]))));
     }
     #[test]
     fn hidden_surface_never_queries_or_accepts_late_results() {

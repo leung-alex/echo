@@ -257,7 +257,11 @@ public static class EchoUi
 
     public static void Key(int pid, string title, byte code, bool control, bool shift)
     {
-        if (EchoTestBridge.Enabled) { EchoTestBridge.Call(pid, "key", code, control, shift, ""); return; }
+        // The diagnostic bridge has no F10 entry. Exercise the real owned-window
+        // context-menu shortcut through the foreground-checked OS path below.
+        // All other diagnostic keys retain the restricted framework bridge.
+        bool contextMenu = code == 121 && shift && !control;
+        if (EchoTestBridge.Enabled && !contextMenu) { EchoTestBridge.Call(pid, "key", code, control, shift, ""); return; }
         Focus(pid, title);
         IntPtr hwnd = Require(pid, title, true);
         if (GetForegroundWindow() != hwnd) throw new InvalidOperationException("Foreground changed before keyboard input; input cancelled");

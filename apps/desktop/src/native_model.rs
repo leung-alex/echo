@@ -1,5 +1,108 @@
 //! Reconcile bounded native rows without resetting their accessible identities.
-use slint::{Model, VecModel};
+use slint::Model;
+#[cfg(test)]
+use slint::VecModel;
+use std::cell::RefCell;
+
+pub(crate) struct OwnedRow {
+    pub row: crate::EntryRow,
+    pub bytes: usize,
+}
+/// Charges follow the retained row, including when a new equal row is discarded.
+/// The backing capacity is known here instead of being hidden inside VecModel.
+#[derive(Default)]
+pub(crate) struct EntryModel {
+    rows: RefCell<Vec<OwnedRow>>,
+    notify: slint::ModelNotify,
+}
+impl EntryModel {
+    pub fn held_bytes(&self) -> usize {
+        let rows = self.rows.borrow();
+        std::mem::size_of::<Self>()
+            + rows.capacity() * std::mem::size_of::<OwnedRow>()
+            + rows.iter().map(|r| r.bytes).sum::<usize>()
+    }
+    pub fn clear(&self) {
+        *self.rows.borrow_mut() = Vec::new();
+        self.notify.reset();
+    }
+    // Existing callers only change selection flags or a cache-owned thumbnail.
+    pub fn update_visual(&self, index: usize, change: impl FnOnce(&mut crate::EntryRow)) {
+        let mut rows = self.rows.borrow_mut();
+        let Some(row) = rows.get_mut(index) else {
+            return;
+        };
+        change(&mut row.row);
+        drop(rows);
+        self.notify.row_changed(index);
+    }
+    pub fn reconcile(&self, incoming: Vec<OwnedRow>) {
+        let mut i = 0;
+        while i < self.row_count() {
+            let keep = incoming
+                .iter()
+                .any(|r| r.row.key == self.rows.borrow()[i].row.key);
+            if keep {
+                i += 1;
+            } else {
+                self.rows.borrow_mut().remove(i);
+                self.notify.row_removed(i, 1);
+            }
+        }
+        for (index, row) in incoming.into_iter().enumerate() {
+            let same_key = self
+                .rows
+                .borrow()
+                .get(index)
+                .is_some_and(|r| r.row.key == row.row.key);
+            if same_key {
+                if !entry_row_equal(&self.rows.borrow()[index].row, &row.row) {
+                    self.rows.borrow_mut()[index] = row;
+                    self.notify.row_changed(index);
+                }
+            } else {
+                let found = self
+                    .rows
+                    .borrow()
+                    .iter()
+                    .position(|r| r.row.key == row.row.key);
+                if let Some(found) = found {
+                    self.rows.borrow_mut().remove(found);
+                    self.notify.row_removed(found, 1);
+                }
+                self.rows.borrow_mut().insert(index, row);
+                self.notify.row_added(index, 1);
+            }
+        }
+    }
+}
+impl Model for EntryModel {
+    type Data = crate::EntryRow;
+    fn row_count(&self) -> usize {
+        self.rows.borrow().len()
+    }
+    fn row_data(&self, index: usize) -> Option<Self::Data> {
+        self.rows.borrow().get(index).map(|r| r.row.clone())
+    }
+    fn model_tracker(&self) -> &dyn slint::ModelTracker {
+        &self.notify
+    }
+}
+
+#[cfg(all(test, windows))]
+#[test]
+fn allocation_accounting_measures_capacity_and_releases_temporary_buffers() {
+    let (data, bytes) = echo_windows::allocation::measure_owned(|| {
+        let temporary = vec![0u8; 20000];
+        std::hint::black_box(&temporary);
+        let mut value = Vec::with_capacity(4096);
+        value.push(7u8);
+        value
+    });
+    assert_eq!(bytes, data.capacity());
+    let (_, clean) = echo_windows::allocation::measure_owned(|| ());
+    assert_eq!(clean, 0);
+}
 /// Slint 1.17's default Image is non-reflexive. Two absent thumbnails still
 /// represent identical pixels and must not invalidate every ordinary text row.
 pub(crate) fn image_equal(a: &slint::Image, b: &slint::Image) -> bool {
@@ -77,6 +180,7 @@ pub fn reconcile_keyed<T: Clone + PartialEq + 'static, K: PartialEq>(
 ) {
     reconcile_keyed_by(model, rows, key, |a, b| a == b);
 }
+#[cfg(test)]
 pub fn reconcile_keyed_by<T: Clone + 'static, K: PartialEq>(
     model: &VecModel<T>,
     rows: Vec<T>,
@@ -113,6 +217,26 @@ pub fn reconcile_keyed_by<T: Clone + 'static, K: PartialEq>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn retained_row_keeps_its_charge_and_backing_capacity_is_counted() {
+        let model = EntryModel::default();
+        let row = |key: &str, body: &str, bytes| OwnedRow {
+            row: crate::EntryRow {
+                key: key.into(),
+                body: body.into(),
+                ..Default::default()
+            },
+            bytes,
+        };
+        model.reconcile(vec![row("a", "same", 600), row("b", "old", 200)]);
+        let container = model.held_bytes() - 800;
+        model.reconcile(vec![row("a", "same", 10), row("b", "new", 300)]);
+        assert_eq!(model.held_bytes(), container + 900);
+        model.reconcile(vec![row("b", "new", 10)]);
+        assert_eq!(model.held_bytes(), container + 300);
+        model.clear();
+        assert_eq!(model.held_bytes(), std::mem::size_of::<EntryModel>());
+    }
     #[test]
     fn visual_row_equality_handles_absent_and_changed_thumbnails() {
         let row = crate::EntryRow {
