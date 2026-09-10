@@ -10,6 +10,7 @@ pub struct PanelDraw {
     pub shadow_opacity: f32,
     /// Screen-space camera translation, applied after perspective division.
     pub origin_x: f32,
+    pub origin_y: f32,
     pub width: f32,
     pub height: f32,
     pub x: f32,
@@ -174,7 +175,7 @@ impl Compositor {
         let view = texture.create_view(&Default::default());
         let uniform = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("echo-panel-pose"),
-            size: 96,
+            size: 112,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -322,8 +323,12 @@ impl Compositor {
                     t::FLOW_EDGE_PADDING_PIXELS,
                     t::FLOW_EDGE_AA_PIXELS,
                     pose.origin_x,
+                    pose.origin_y,
+                    0.0,
+                    0.0,
+                    0.0,
                 ];
-                let mut bytes = [0u8; 96];
+                let mut bytes = [0u8; 112];
                 for (slot, value) in bytes.chunks_exact_mut(4).zip(params) {
                     slot.copy_from_slice(&value.to_le_bytes());
                 }

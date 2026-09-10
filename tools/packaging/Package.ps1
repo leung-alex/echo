@@ -53,6 +53,9 @@ if(!$compiler){$found=Get-Command makensis.exe -ErrorAction SilentlyContinue;if(
 if(!$compiler){foreach($candidate in @('C:\Program Files (x86)\NSIS\makensis.exe','C:\Program Files\NSIS\makensis.exe')){if(Test-Path -LiteralPath $candidate){$compiler=$candidate;break}}}
 $installerStatus='NOT_BUILT: no independent NSIS compiler configured; portable application is available'
 if($compiler){
+    $appIcon=Join-Path $Root 'apps/desktop/icons/icon.ico'
+    Assert-EchoNoReparsePoint $appIcon
+    if(!(Test-Path -LiteralPath $appIcon -PathType Leaf)){throw 'Echo application icon missing'}
     Assert-EchoNoReparsePoint $compiler
     if(!(Test-Path -LiteralPath $compiler -PathType Leaf)){throw 'ECHO_NSIS_EXE is invalid'}
     function Q([string]$Text){return $Text.Replace('$','$$').Replace('"','$\"')}
@@ -70,7 +73,7 @@ if($compiler){
     $installFile=Join-Path $output 'install-files.nsh';$uninstallFile=Join-Path $output 'uninstall-files.nsh'
     [IO.File]::WriteAllLines($installFile,$install,[Text.UTF8Encoding]::new($true));[IO.File]::WriteAllLines($uninstallFile,$uninstall,[Text.UTF8Encoding]::new($true))
     $setup=Join-Path $output "Echo-$version-windows-setup.exe"
-    & $compiler '/V2' "/DVERSION=$version" "/DOUT=$setup" "/DINSTALL_FILES=$installFile" "/DUNINSTALL_FILES=$uninstallFile" (Join-Path $PSScriptRoot 'Echo.nsi') *> (Join-Path $output 'nsis.log')
+    & $compiler '/V2' "/DVERSION=$version" "/DOUT=$setup" "/DAPP_ICON=$appIcon" "/DINSTALL_FILES=$installFile" "/DUNINSTALL_FILES=$uninstallFile" (Join-Path $PSScriptRoot 'Echo.nsi') *> (Join-Path $output 'nsis.log')
     if($LASTEXITCODE -ne 0 -or !(Test-Path -LiteralPath $setup)){throw 'Independent NSIS packaging failed; see nsis.log'}
     $artifacts.Add($setup);$installerStatus='BUILT: per-user independent NSIS installer'
 }

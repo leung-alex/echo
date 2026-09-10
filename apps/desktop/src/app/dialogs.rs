@@ -11,6 +11,7 @@ pub(super) enum Confirmation {
     DeleteHistory(Vec<i64>),
     DeleteSpace(SpaceId, i64),
     ClearHistory,
+    ClearFavorites(i64),
     Restart,
 }
 #[derive(Clone, Default)]
@@ -79,6 +80,10 @@ impl App {
             Some(Confirmation::ClearHistory) => {
                 self.clear_flow_cache();
                 self.mutate(Mutation::Clear);
+            }
+            Some(Confirmation::ClearFavorites(revision)) => {
+                self.clear_flow_cache();
+                self.space_mutation_at(SpaceId::FAVORITES, revision, SpaceAction::ClearFavorites);
             }
             Some(Confirmation::DeleteSpace(id, revision)) => {
                 self.close_picker();

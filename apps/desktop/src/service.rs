@@ -401,6 +401,7 @@ fn mutate(services: &Services, mutation: Mutation) -> Result<MutationResult, Str
     let message = match mutation {
         Mutation::Space(command) => {
             editor_saved = matches!(command.action, SpaceAction::CreateItem(_));
+            let cleared_favorites = matches!(command.action, SpaceAction::ClearFavorites);
             space_result = Some(
                 services
                     .library
@@ -408,7 +409,11 @@ fn mutate(services: &Services, mutation: Mutation) -> Result<MutationResult, Str
                     .apply_space_command(command)
                     .map_err(|e| e.to_string())?,
             );
-            "Space updated"
+            if cleared_favorites {
+                "Favorites cleared; content in other spaces kept"
+            } else {
+                "Space updated"
+            }
         }
         Mutation::SettingsPatch(patch) => {
             let previous = services

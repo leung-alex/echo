@@ -143,6 +143,9 @@ mod image_reclamation_tests {
 }
 
 struct Preview {
+    // A visited card retains its bounded resident page together with its scroll.
+    scroll: Option<f32>,
+    selection: Option<RowKey>,
     query: String,
     items: Vec<QuickInsertItem>,
     revision: i64,
@@ -1234,6 +1237,16 @@ impl App {
         }
         if action == "clear-all" && self.surface.space == SpaceId::HISTORY {
             self.ask_confirmation("Clear unpinned history?", "This deletes unpinned History records. Pinned records and saved content in Favorites and custom spaces are kept.", "Clear all unpinned", true, dialogs::Confirmation::ClearHistory);
+            return;
+        }
+        if action == "clear-all" && self.surface.space == SpaceId::FAVORITES {
+            self.ask_confirmation(
+                "Clear Favorites?",
+                "This clears all of Favorites, including items outside the current search or page. Content shared with other spaces is kept there. Content only in Favorites is permanently deleted. History is kept.",
+                "Clear Favorites",
+                true,
+                dialogs::Confirmation::ClearFavorites(self.surface.revision),
+            );
             return;
         }
         let Some(key) = self.surface.resolve_key(value) else {

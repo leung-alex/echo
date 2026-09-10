@@ -104,6 +104,8 @@ pub enum SpaceAction {
     MoveSpace(i32),
     AddItems(Vec<i64>),
     RemoveItem(i64),
+    /// Clear Favorites membership, deleting only content with no other space.
+    ClearFavorites,
     ReorderItem {
         id: i64,
         before: Option<i64>,

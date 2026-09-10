@@ -9,7 +9,11 @@ use std::{
 use windows_sys::Win32::{
     Foundation::*,
     System::LibraryLoader::GetModuleHandleW,
-    UI::{Shell::*, WindowsAndMessaging::*},
+    UI::{
+        Controls::{LoadIconMetric, LIM_SMALL},
+        Shell::*,
+        WindowsAndMessaging::*,
+    },
 };
 const TRAY_MESSAGE: u32 = WM_APP + 17;
 struct Host {
@@ -30,10 +34,15 @@ unsafe fn notify(hwnd: HWND, host: &Host, operation: u32) {
     for (out, ch) in data.szTip.iter_mut().zip(wide("Echo — clipboard history")) {
         *out = ch;
     }
-    Shell_NotifyIconW(operation, &data);
+    if Shell_NotifyIconW(operation, &data) == 0 {
+        eprintln!("Echo tray notification {operation} failed: {}", error());
+        return;
+    }
     if operation == NIM_ADD {
         data.Anonymous.uVersion = NOTIFYICON_VERSION_4;
-        Shell_NotifyIconW(NIM_SETVERSION, &data);
+        if Shell_NotifyIconW(NIM_SETVERSION, &data) == 0 {
+            eprintln!("Echo tray version registration failed: {}", error());
+        }
     }
 }
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
@@ -141,16 +150,11 @@ pub(super) fn run(
             let _ = ready.send(Err(error()));
             return;
         }
-        let mut icon = LoadImageW(
-            instance,
-            1_usize as *const u16,
-            IMAGE_ICON,
-            32,
-            32,
-            LR_DEFAULTCOLOR,
-        ) as HICON;
+        let mut icon = null_mut();
+        let icon_result = LoadIconMetric(instance, 1_usize as *const u16, LIM_SMALL, &mut icon);
         let owned_icon = !icon.is_null();
         if icon.is_null() {
+            eprintln!("Echo brand tray icon resource 1 failed to load: HRESULT {icon_result:#010x}; using system fallback");
             icon = LoadIconW(null_mut(), IDI_APPLICATION);
         }
         let mut host = Box::new(Host {

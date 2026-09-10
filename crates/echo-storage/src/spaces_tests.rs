@@ -54,6 +54,177 @@ fn create(s: &mut ClipboardStore, name: &str) -> SpaceId {
     .unwrap()
 }
 #[test]
+fn clear_favorites_covers_unloaded_items_but_preserves_shared_content_and_history() {
+    let mut s = store();
+    let work = create(&mut s, "Work");
+    let shared = s
+        .create_favorite(content("shared searchable content"))
+        .unwrap();
+    command(&mut s, work, SpaceAction::AddItems(vec![shared.id]));
+    let only_work = command(&mut s, work, SpaceAction::CreateItem(content("work only")))
+        .created_item
+        .unwrap();
+    let mut exclusive = Vec::new();
+    for text in [
+        "matching exclusive",
+        "unloaded exclusive",
+        "hidden exclusive",
+    ] {
+        exclusive.push(s.create_favorite(content(text)).unwrap().id);
+    }
+    let rep = ClipboardRepresentation {
+        format: "text".into(),
+        mime_type: "text/plain;charset=utf-8".into(),
+        bytes: b"history survives".to_vec(),
+    };
+    s.record_capture(NormalizedCapture {
+        sequence: 1,
+        source: SourceContext::default(),
+        content_type: ContentType::Text,
+        preview_text: Some("history survives".into()),
+        searchable_text: Some("history survives".into()),
+        sanitized_html: None,
+        fingerprint: fingerprint(std::slice::from_ref(&rep)),
+        representations: vec![rep],
+    })
+    .unwrap();
+    let before_work = s.list_space_items(work, "", 100, None).unwrap();
+    let filtered = s
+        .list_space_items(SpaceId::FAVORITES, "matching", 1, None)
+        .unwrap();
+    assert_eq!(filtered.page.items.len(), 1);
+    let result = command(&mut s, SpaceId::FAVORITES, SpaceAction::ClearFavorites);
+    assert_eq!(result.affected_spaces, [SpaceId::FAVORITES]);
+    assert_eq!(
+        s.list_space_items(SpaceId::FAVORITES, "", 1, None)
+            .unwrap()
+            .total,
+        0
+    );
+    for id in exclusive {
+        assert!(s.saved_item(id).unwrap().is_none());
+        assert_eq!(
+            s.connection
+                .query_row(
+                    "SELECT COUNT(*) FROM saved_items_fts WHERE saved_item_id=?",
+                    [id],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
+    }
+    assert_eq!(s.spaces_for_item(shared.id).unwrap(), [work]);
+    assert_eq!(
+        s.saved_item_payload(shared.id).unwrap()[0].bytes,
+        b"shared searchable content"
+    );
+    assert!(s.saved_item(only_work).unwrap().is_some());
+    let after_work = s.list_space_items(work, "", 100, None).unwrap();
+    assert_eq!(after_work.revision, before_work.revision);
+    assert_eq!(
+        after_work
+            .page
+            .items
+            .iter()
+            .map(|i| i.id)
+            .collect::<Vec<_>>(),
+        before_work
+            .page
+            .items
+            .iter()
+            .map(|i| i.id)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        s.list_space_items(work, "shared", 100, None).unwrap().total,
+        1
+    );
+    assert_eq!(
+        s.connection
+            .query_row("SELECT COUNT(*) FROM clipboard_entries", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert!(s.maintenance_pending().unwrap());
+}
+
+#[test]
+fn clear_favorites_rejects_stale_confirmation_and_replay_never_deletes_new_content() {
+    let mut s = store();
+    let work = create(&mut s, "Work");
+    let old_revision = revision(&s, SpaceId::FAVORITES);
+    s.create_favorite(content("added after confirmation"))
+        .unwrap();
+    let mut clear = SpaceCommand {
+        space_id: Some(SpaceId::FAVORITES),
+        expected_revision: Some(old_revision),
+        request_id: "clear-favorites".into(),
+        action: SpaceAction::ClearFavorites,
+    };
+    assert!(matches!(
+        s.apply_space_command(clear.clone()),
+        Err(StorageError::Space(SpaceError::Conflict))
+    ));
+    assert_eq!(count(&s), 1);
+    clear.expected_revision = Some(revision(&s, SpaceId::FAVORITES));
+    let result = s.apply_space_command(clear.clone()).unwrap();
+    let added = s.create_favorite(content("created after clear")).unwrap();
+    assert_eq!(s.apply_space_command(clear).unwrap(), result);
+    assert!(s.saved_item(added.id).unwrap().is_some());
+    for id in [SpaceId::HISTORY, work] {
+        let request = SpaceCommand {
+            space_id: Some(id),
+            expected_revision: Some(revision(&s, id)),
+            request_id: format!("wrong-clear-{}", id.0),
+            action: SpaceAction::ClearFavorites,
+        };
+        assert!(s.apply_space_command(request).is_err());
+    }
+    command(&mut s, SpaceId::FAVORITES, SpaceAction::ClearFavorites);
+    let empty_revision = revision(&s, SpaceId::FAVORITES);
+    assert!(
+        command(&mut s, SpaceId::FAVORITES, SpaceAction::ClearFavorites)
+            .affected_spaces
+            .is_empty()
+    );
+    assert_eq!(revision(&s, SpaceId::FAVORITES), empty_revision);
+}
+
+#[test]
+fn clear_favorites_rolls_back_payload_search_and_memberships_on_failure() {
+    let mut s = store();
+    let item = s.create_favorite(content("rollback searchable")).unwrap();
+    let old_revision = revision(&s, SpaceId::FAVORITES);
+    s.connection
+        .execute_batch(
+            "CREATE TRIGGER fail_favorites_clear BEFORE DELETE ON space_memberships
+         WHEN OLD.space_id=2 BEGIN SELECT RAISE(ABORT,'synthetic failure'); END;",
+        )
+        .unwrap();
+    assert!(s
+        .apply_space_command(SpaceCommand {
+            space_id: Some(SpaceId::FAVORITES),
+            expected_revision: Some(old_revision),
+            request_id: "rollback-favorites-clear".into(),
+            action: SpaceAction::ClearFavorites,
+        })
+        .is_err());
+    assert_eq!(
+        s.saved_item_payload(item.id).unwrap()[0].bytes,
+        b"rollback searchable"
+    );
+    assert_eq!(s.spaces_for_item(item.id).unwrap(), [SpaceId::FAVORITES]);
+    assert_eq!(
+        s.list_space_items(SpaceId::FAVORITES, "rollback", 10, None)
+            .unwrap()
+            .total,
+        1
+    );
+    assert_eq!(revision(&s, SpaceId::FAVORITES), old_revision);
+}
+#[test]
 fn custom_spaces_are_not_automatically_favorites() {
     let mut s = store();
     let id = create(&mut s, "Work");

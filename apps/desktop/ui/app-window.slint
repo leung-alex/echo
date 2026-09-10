@@ -11,6 +11,7 @@ import { SpacePanel } from "space-panel.slint";
 import { SpaceVm, ActionVm } from "space-models.slint";
 import { SettingsPage } from "settings-page.slint";
 export component AppWindow inherits Window {
+    icon: @image-url("../icons/echo-taskbar-256.png");
     in property <[EntryRow]> rows;
     in-out property <string> query;
     in property <string> active-view: "history";
@@ -97,6 +98,7 @@ export component AppWindow inherits Window {
     in-out property <bool> reduce-on-battery;
     in property <[SpaceVm]> spaces;
     in property <string> space-title: "History";
+    in property <bool> space-clearable;
     in property <string> space-subtitle;
     in property <string> space-icon;
     in property <color> space-accent: EchoTheme.amber;
@@ -104,6 +106,7 @@ export component AppWindow inherits Window {
     in property <bool> previous-enabled;
     in property <bool> next-enabled;
     in property <bool> navigation-busy;
+    in property <bool> flow-settling;
     in property <float> front-shadow-opacity: 1;
     in property <length> moving-shadow-x;
     in property <length> moving-shadow-y;
@@ -207,14 +210,16 @@ export component AppWindow inherits Window {
     background: transparent;
     default-font-family: "Segoe UI"; default-font-size: T.font-body;
     FocusScope {
+        x: 0px; y: 0px; width: root.width; height: root.height;
         key-pressed(event) => { if (root.ime-composing()) { return reject; } return root.key-event(event.text,event.modifiers.control,event.modifiers.shift,"control") ? accept : reject; }
         Rectangle {
+            x: 0px; y: 0px; width: root.width; height: root.height;
             visible: !root.capture-mode; background: transparent;
             Rectangle {
                 y: 0px; width: root.stage-width; height: root.stage-height;
                 visible: root.route == "history"; clip: true;
                 Rectangle {
-                    visible: root.navigation-busy && root.flow-enabled;
+                    visible: (root.navigation-busy || root.flow-settling) && root.flow-enabled;
                     x: root.moving-shadow-x; y: root.moving-shadow-y;
                     width: root.moving-shadow-width; height: root.moving-shadow-height;
                     background: transparent; border-radius: T.panel-radius;
@@ -222,7 +227,7 @@ export component AppWindow inherits Window {
                     drop-shadow-offset-y: T.flow-shadow-offset-y;
                     drop-shadow-color: #000000.with-alpha(T.flow-shadow-opacity * root.front-shadow-opacity);
                 }
-                Image { x: 0px; y: root.panel-top + root.panel-height / 2 - root.stage-height / 2; width: parent.width; height: parent.height; source: root.stage-image; visible: root.flow-enabled; image-fit: fill; }
+                Image { x: 0px; y: 0px; width: parent.width; height: parent.height; source: root.stage-image; visible: root.flow-enabled; image-fit: fill; }
                 TouchArea {
                     enabled: !root.modal && !root.busy;
                     private property <length> start-x;
@@ -243,11 +248,11 @@ export component AppWindow inherits Window {
             live-panel := SpacePanel {
                 x: root.panel-left; y: root.panel-top; width: root.panel-width; height: root.panel-height;
                 visible: root.route == "history";
-                opacity: root.navigation-busy && root.flow-enabled ? 0 : 1;
+                opacity: (root.navigation-busy || root.flow-settling) && root.flow-enabled ? 0 : 1;
                 inline-mode: root.inline-mode;
                 control-focus-mode:root.control-focus-mode;
                 title: root.space-title; subtitle: root.space-subtitle; icon-key: root.space-icon; accent: root.space-accent;
-                rows: root.rows; favorites: root.active-view != "history"; capture-only: false;
+                rows: root.rows; favorites: root.active-view != "history"; clearable: root.space-clearable; capture-only: false;
                 loading: root.loading; stale: root.stale-rows; error: root.status-error;
                 empty-state-text: root.empty-state-text;
                 busy: root.busy || root.modal || root.navigation-busy;
@@ -333,7 +338,11 @@ export component AppWindow inherits Window {
             if (root.route == "about"): VerticalLayout {
                 x: 32px; y: 110px; width: parent.width - 64px; height: parent.height - 180px;
                 alignment: start; spacing: 24px;
-                Text { text: "Echo"; color: EchoTheme.text; font-size: 32px; font-weight: 600; }
+                HorizontalLayout {
+                    alignment: start; spacing: 16px; height: 48px;
+                    Image { source: @image-url("../icons/echo-256.png"); width: 48px; height: 48px; image-fit: contain; }
+                    Text { text: "Echo"; color: EchoTheme.text; font-size: 32px; font-weight: 600; vertical-alignment: center; }
+                }
                 Text { text: "Personal spaces for quick insertion\nRust + Slint · Windows · Version 0.1.0"; color: EchoTheme.muted; wrap: word-wrap; }
                 AboutSlint { height: 120px; }
                 Text { text: "Third-party notices are included in the application directory.\nClipboard data stays on this device."; color: EchoTheme.muted; wrap: word-wrap; min-width: 0px; }
@@ -579,6 +588,7 @@ export component CardSnapshot inherits Window {
     changed dark => {EchoTheme.dark = root.dark; Palette.color-scheme = root.dark ? ColorScheme.dark : ColorScheme.light;}
     background:transparent;default-font-family:"Segoe UI";default-font-size:T.font-body;
     SpacePanel {
+        x: 0px; y: 0px; width: root.width; height: root.height;
         inline-mode:root.inline-mode;
         title:root.panel-title;subtitle:root.subtitle;icon-key:root.icon-key;accent:root.accent;
         rows:root.rows;favorites:root.favorites;loading:root.loading;titles-only:root.titles-only;

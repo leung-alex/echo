@@ -1,6 +1,13 @@
 //! Space navigation, bounded panel snapshots, and event-driven motion.
 use super::*;
 use echo_presentation::echo_tokens as t;
+fn space_icon(space: &echo_engine::Space) -> &str {
+    match space.id {
+        SpaceId::HISTORY => "History",
+        SpaceId::FAVORITES => "Star",
+        _ => space.icon_key.as_deref().unwrap_or_default(),
+    }
+}
 pub(super) fn accent(key: &str) -> slint::Color {
     let (r, g, b) = match key {
         "blue" => (87, 146, 230),
@@ -84,7 +91,7 @@ impl App {
             .map(|s| crate::SpaceVm {
                 key: s.id.to_string().into(),
                 title: s.title.clone().into(),
-                icon_key: s.icon_key.clone().unwrap_or_default().into(),
+                icon_key: space_icon(s).into(),
                 accent: accent(if s.id.is_system() {
                     "default"
                 } else {
@@ -104,8 +111,7 @@ impl App {
             .set_next_enabled(count > 1 && (self.ui.loop_spaces || index + 1 < count));
         if let Some(space) = self.spaces.iter().find(|s| s.id == selected) {
             self.window.set_space_title(space.title.clone().into());
-            self.window
-                .set_space_icon(space.icon_key.clone().unwrap_or_default().into());
+            self.window.set_space_icon(space_icon(space).into());
             self.window
                 .set_space_accent(accent(if space.id.is_system() {
                     "default"
@@ -142,6 +148,7 @@ impl App {
                 self.window.set_space_subtitle(subtitle.into());
             }
         }
+        self.window.set_space_clearable(selected.is_system());
         self.window.set_active_view(
             if selected == SpaceId::HISTORY {
                 "history"
@@ -187,6 +194,8 @@ impl App {
         if id == self.deck.requested && self.surface.space == id {
             return;
         }
+        self.window.set_flow_settling(false);
+
         let navigation_started = Instant::now();
         self.window.set_front_shadow_opacity(1.0);
         #[cfg(feature = "cover-flow")]
@@ -194,6 +203,25 @@ impl App {
             flow.begin_transition();
         }
         self.remember_position();
+        if self.ui.remember_position
+            && self.surface.ready
+            && self.deck.phase == Phase::Idle
+            && self.ui.side_content == SideContent::Visible
+        {
+            // Do not replace a visited page with the first twelve preview rows.
+            // Its scroll is meaningful only alongside these same resident items.
+            self.previews.insert(
+                self.surface.space,
+                Preview {
+                    scroll: Some(self.window.get_scroll_y()),
+                    selection: self.surface.selection,
+                    query: self.surface.query.clone(),
+                    items: self.surface.items.clone(),
+                    revision: self.surface.revision,
+                    total: self.surface.total,
+                },
+            );
+        }
         self.search_timer.stop();
         self.inspect_intent = None;
         if self.full_motion()
@@ -264,9 +292,11 @@ impl App {
             .set_navigation_busy(self.deck.phase == Phase::Animating);
     }
     pub(super) fn finish_motion(&mut self) {
+        let settling = self.window.get_flow_settling();
+        self.window.set_flow_settling(false);
         self.window.set_front_shadow_opacity(1.0);
         self.flow_timer.stop();
-        if self.deck.phase == Phase::Animating {
+        if self.deck.phase == Phase::Animating || settling {
             self.deck.snap();
             self.render();
         }
@@ -285,9 +315,24 @@ impl App {
             return;
         }
         if !self.surface.visible || self.window.get_route().as_str() != "history" {
+            self.window.set_flow_settling(false);
             self.window.set_front_shadow_opacity(1.0);
             self.flow_timer.stop();
             return;
+        }
+        #[cfg(feature = "cover-flow")]
+        if self.window.get_flow_settling() {
+            if self
+                .flow
+                .as_ref()
+                .is_some_and(|flow| !flow.scene_rendered())
+            {
+                self.window.window().request_redraw();
+                return;
+            }
+
+            self.window.set_flow_settling(false);
+            self.render();
         }
         let was_animated = self.deck.phase == Phase::Animating;
         self.deck.tick(
@@ -296,6 +341,13 @@ impl App {
             self.window.get_panel_width(),
         );
         if was_animated && self.deck.phase != Phase::Animating {
+            #[cfg(feature = "cover-flow")]
+            if self.window.get_flow_enabled() {
+                // Render the exact resting pose before exchanging snapshot and live tree.
+                self.window.set_flow_settling(true);
+                self.prepare_scene();
+                return;
+            }
             self.render();
         }
         self.content_ready();
@@ -380,6 +432,7 @@ impl App {
             // Validate raster inputs, but keep targets for projection-only changes.
             self.dirty_snapshots
                 .extend(self.deck.order().iter().copied());
+            self.window.set_flow_settling(false);
             self.deck.snap();
             self.render();
             self.content_ready();
@@ -570,6 +623,12 @@ impl App {
         if !self.flow_poses().iter().any(|p| p.space == id) || id == self.surface.space {
             return;
         }
+        // A delayed first-page preload must not overwrite a visited card's page.
+        if self.has_current_preview(id)
+            && self.previews.get(&id).is_some_and(|p| p.scroll.is_some())
+        {
+            return;
+        }
         if let Ok(mut data) = result {
             if self
                 .spaces
@@ -591,6 +650,8 @@ impl App {
             self.previews.insert(
                 id,
                 Preview {
+                    scroll: None,
+                    selection: None,
                     query: self.surface.query.clone(),
                     items: data.page.items,
                     revision: data.revision,
@@ -614,6 +675,7 @@ impl App {
         self.graphics_error = Some(error.clone());
         self.flow_timer.stop();
         self.deck.snap();
+        self.window.set_flow_settling(false);
         self.content_ready();
         self.window.set_navigation_busy(false);
         self.clear_flow_cache();
@@ -638,6 +700,7 @@ impl App {
             } else if id == self.surface.space
                 && self.surface.ready
                 && self.deck.phase != Phase::Animating
+                && !self.window.get_flow_settling()
             {
                 self.window.get_rows()
             } else {
@@ -662,9 +725,12 @@ impl App {
                                 self.window.get_dark(),
                             );
                         }
-                        if id == self.surface.space {
-                            row.selected = self.surface.selection == Some(RowKey::of(item));
-                        }
+                        let selection = if id == self.surface.space {
+                            self.surface.selection
+                        } else {
+                            self.previews.get(&id).and_then(|p| p.selection)
+                        };
+                        row.selected = selection == Some(RowKey::of(item));
                         if let Some((image, _)) = item
                             .thumbnail
                             .as_ref()
@@ -691,8 +757,7 @@ impl App {
             } else {
                 self.surface.query.clone().into()
             });
-            self.window
-                .set_capture_icon(space.icon_key.clone().unwrap_or_default().into());
+            self.window.set_capture_icon(space_icon(space).into());
             self.window
                 .set_capture_accent(accent(if space.id.is_system() {
                     "default"
@@ -750,13 +815,17 @@ impl App {
             self.window.set_capture_loading(loading);
             self.window.set_capture_titles_only(private);
             self.window.set_capture_scroll(if id == self.surface.space {
-                if self.deck.phase == Phase::Animating {
+                if self.deck.phase == Phase::Animating || self.window.get_flow_settling() {
                     self.pending_scroll.unwrap_or(0.0)
                 } else {
                     self.window.get_scroll_y()
                 }
             } else {
-                0.0
+                self.previews
+                    .get(&id)
+                    .filter(|p| p.revision == space.revision && p.query == self.surface.query)
+                    .and_then(|p| p.scroll)
+                    .unwrap_or(0.0)
             });
             match flow.capture_panel(&self.window, id.0, downsample, space.revision) {
                 Ok(()) => {
@@ -792,7 +861,7 @@ impl App {
             if !self.flow.as_ref().is_some_and(|f| f.ready()) {
                 return;
             }
-            let animated = self.deck.phase == Phase::Animating;
+            let animated = self.deck.phase == Phase::Animating || self.window.get_flow_settling();
             let poses = self.flow_poses();
             // Drive the handoff from the incoming card's position, not a timer
             // started after arrival. Finish before the spring's final snap.
@@ -867,6 +936,8 @@ impl App {
                     },
                     origin_x: self.window.get_panel_left() + self.window.get_panel_width() / 2.0
                         - self.window.get_stage_width() / 2.0,
+                    origin_y: self.window.get_panel_top() + self.window.get_panel_height() / 2.0
+                        - self.window.get_stage_height() / 2.0,
                     width: self.window.get_panel_width(),
                     height: self.window.get_panel_height(),
                     x: p.x,

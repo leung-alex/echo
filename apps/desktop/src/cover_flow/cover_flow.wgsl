@@ -7,6 +7,7 @@ struct Params {
     appearance: vec4<f32>, // shade, edge feather, reflection alpha, reflection ratio
     shadow: vec4<f32>, // softness, expansion margin, vertical offset, alpha
     reflection: vec4<f32>, // gap, AA geometry padding px, AA coverage width px, camera offset X
+    camera: vec4<f32>, // camera offset Y, reserved
 };
 @group(0) @binding(0) var<uniform> p: Params;
 @group(0) @binding(1) var panel_image: texture_2d<f32>;
@@ -34,7 +35,7 @@ struct VOut {
     let z = -projected.x*s + p.pose.z;
     let w = max(0.01, 1.-z/p.viewport.z);
     var out: VOut;
-    out.clip = vec4(2.*(x+p.reflection.w*w)/p.viewport.x,-2.*y/p.viewport.y,0.5*w,w);
+    out.clip = vec4(2.*(x+p.reflection.w*w)/p.viewport.x,-2.*(y+p.camera.x*w)/p.viewport.y,0.5*w,w);
     out.uv=select(uv,local/p.panel.xy+vec2(0.5),kind==0u);
     out.local=local;out.kind=kind;return out;
 }

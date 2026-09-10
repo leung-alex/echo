@@ -58,7 +58,7 @@ export component EchoButton inherits Rectangle {
             source: root.icon;
             width: root.row-action ? T.row-action-icon-size : 18px;
             height: root.row-action ? T.row-action-icon-size : 18px;
-            colorize: root.row-action ? (EchoTheme.high-contrast ? (touch.has-hover ? EchoTheme.on-accent : EchoTheme.text) : T.row-action-color) : root.primary ? EchoTheme.on-accent : root.danger ? EchoTheme.danger : EchoTheme.muted;
+            colorize: root.row-action ? (EchoTheme.high-contrast ? (touch.has-hover ? EchoTheme.on-accent : EchoTheme.text) : root.danger ? EchoTheme.danger : T.row-action-color) : root.primary ? EchoTheme.on-accent : root.danger ? EchoTheme.danger : EchoTheme.muted;
         }
         if (root.text != ""): Text {
             text: root.text;

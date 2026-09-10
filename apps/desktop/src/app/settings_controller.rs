@@ -391,6 +391,7 @@ impl App {
                     crate::cover_flow::compositor::PanelDraw {
                         shadow_opacity: 1.0,
                         origin_x: 0.0,
+                        origin_y: 0.0,
                         id: -1 - i,
                         width: w,
                         height: h,

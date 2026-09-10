@@ -458,6 +458,50 @@ impl ClipboardStore {
             ..Default::default()
         })
     }
+    fn clear_favorites(&mut self, id: SpaceId, revision: i64) -> Result<SpaceMutationResult> {
+        if id != SpaceId::FAVORITES {
+            return Err(
+                SpaceError::Invalid("Only Favorites supports this clear action".into()).into(),
+            );
+        }
+        let tx = self.connection.transaction()?;
+        validate_space_tx(&tx, id, Some(revision))?;
+        let count: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM space_memberships WHERE space_id=?",
+            [id.0],
+            |row| row.get(0),
+        )?;
+        // Select the entire space in one transaction, independent of UI search
+        // and pagination. Shared payloads, memberships and ordering survive.
+        let exclusive = "SELECT m.saved_item_id FROM space_memberships m
+            WHERE m.space_id=? AND NOT EXISTS (
+                SELECT 1 FROM space_memberships other
+                WHERE other.saved_item_id=m.saved_item_id AND other.space_id<>m.space_id)";
+        tx.execute(
+            &format!("DELETE FROM saved_items_fts WHERE saved_item_id IN ({exclusive})"),
+            [id.0],
+        )?;
+        let deleted = tx.execute(
+            &format!("DELETE FROM saved_items WHERE id IN ({exclusive})"),
+            [id.0],
+        )?;
+        tx.execute("DELETE FROM space_memberships WHERE space_id=?", [id.0])?;
+        if count > 0 {
+            bump_space_tx(&tx, id)?;
+        }
+        if deleted > 0 {
+            tx.execute(
+                "INSERT INTO migration_state (key,value,completed_at) VALUES ('blob_gc_pending','1',?)
+                 ON CONFLICT(key) DO UPDATE SET value=excluded.value,completed_at=excluded.completed_at",
+                [now_millis()],
+            )?;
+        }
+        tx.commit()?;
+        Ok(SpaceMutationResult {
+            affected_spaces: if count > 0 { vec![id] } else { vec![] },
+            ..Default::default()
+        })
+    }
     fn reorder_space_item(
         &mut self,
         space: SpaceId,
@@ -598,6 +642,7 @@ impl ClipboardStore {
             SpaceAction::MoveSpace(delta) => self.move_space(id, revision, delta)?,
             SpaceAction::AddItems(items) => self.add_space_items(id, revision, &items)?,
             SpaceAction::RemoveItem(item) => self.remove_space_item(id, revision, item)?,
+            SpaceAction::ClearFavorites => self.clear_favorites(id, revision)?,
             SpaceAction::ReorderItem {
                 id: item,
                 before,

@@ -28,6 +28,8 @@ struct State {
     present_revision: u64,
     snapshots: HashMap<i64, (i64, super::snapshot::PanelSnapshot)>,
     scene_revision: u64,
+    drawn_revision: u64,
+    rendered_revision: u64,
     frame_started: Option<Instant>,
 }
 pub struct FlowBridge {
@@ -50,6 +52,7 @@ impl FlowBridge {
                 }
                 match phase {
                     RenderingState::AfterRendering => {
+                        state.rendered_revision = state.drawn_revision;
                         crate::popup_timing::mark("render_submitted");
                         if let Some(start) = state.frame_started.take() {
                             crate::popup_timing::event("slint_frame", serde_json::json!({"duration_us":start.elapsed().as_micros() as u64}));
@@ -77,6 +80,7 @@ impl FlowBridge {
                         }
                     }
                     RenderingState::BeforeRendering if state.dirty => {
+                        state.drawn_revision = state.scene_revision;
                         let _timing = crate::popup_timing::span("composite");
                         let scene = state.scene.clone();
                         state.dirty = false;
@@ -89,6 +93,8 @@ impl FlowBridge {
                         }
                     }
                     RenderingState::RenderingTeardown => {
+                        state.drawn_revision = 0;
+                        state.rendered_revision = 0;
                         crate::popup_timing::mark("rendering_teardown");
                         state.snapshots.clear();
                         state.scene = Scene::default();
@@ -129,6 +135,10 @@ impl FlowBridge {
     pub fn ready(&self) -> bool {
         let s = self.state.borrow();
         s.compositor.is_some() && s.panel_renderer.is_some()
+    }
+    pub fn scene_rendered(&self) -> bool {
+        let s = self.state.borrow();
+        s.rendered_revision == s.scene_revision && !s.dirty
     }
     pub fn scene_revision(&self) -> u64 {
         self.state.borrow().scene_revision
@@ -248,6 +258,7 @@ impl FlowBridge {
             dpi = dpi.min(1.0);
         }
         let snapshot = super::snapshot::PanelSnapshot::read(window, dpi);
+
         if crate::popup_timing::enabled() {
             if let Some((old_revision, old)) = state.snapshots.get(&id) {
                 crate::popup_timing::event(

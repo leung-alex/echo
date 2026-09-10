@@ -210,6 +210,7 @@ export component SettingsPage inherits Rectangle {
                     alignment: start; spacing: 10px;
                     EchoButton { text: "Clear motion cache"; clicked => { root.action("clear-cache"); } }
                     EchoButton { text: "Export diagnostics"; clicked => { root.action("diagnostics"); } }
+                    EchoButton { text: "About Echo"; clicked => { root.action("about"); } }
                 }
                 if (root.restart-required): EchoButton { text: "Restart Echo"; enabled: !root.dirty && !root.busy; clicked => { root.action("restart"); } }
                 Text { text: "Restart never replays a pending insert. Software mode preserves spaces and all content actions, without perspective."; color: EchoTheme.muted; wrap: word-wrap; min-width: 0px; }

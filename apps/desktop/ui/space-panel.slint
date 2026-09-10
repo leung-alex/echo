@@ -1,4 +1,4 @@
-import { ListView } from "std-widgets.slint";
+import { ScrollView } from "std-widgets.slint";
 import { EchoTheme, EchoButton } from "theme.slint";
 import { CoverFlowTokens as T } from "echo-tokens.slint";
 import { EntryRow, EntryView } from "entry-row.slint";
@@ -7,9 +7,11 @@ export component SpacePanel inherits Rectangle {
     in property <string> title;
     in property <string> subtitle;
     in property <string> icon-key;
+    private property <image> header-icon: FavoriteIconImages.image-for(root.icon-key);
     in property <color> accent: EchoTheme.amber;
     in property <[EntryRow]> rows;
     in property <bool> favorites;
+    in property <bool> clearable;
     in property <bool> capture-only;
     in property <float> shadow-opacity: 1;
     in property <bool> titles-only;
@@ -91,15 +93,15 @@ export component SpacePanel inherits Rectangle {
     TouchArea {height:58px;enabled:!root.inline-mode && !root.capture-only && !root.busy;
         pointer-event(event) => {if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {root.drag();}}
     }
-    Rectangle {x:T.panel-padding;y:20px;width:4px;height:30px;background:root.accent;border-radius:2px;}
-    if (FavoriteIconImages.image-for(root.icon-key).width > 0): Image {
-        x:T.panel-padding + 13px;y:24px;width:24px;height:24px;
-        source:FavoriteIconImages.image-for(root.icon-key);colorize:EchoTheme.text;
+    if (root.header-icon.width == 0): Rectangle {x:T.panel-padding;y:20px;width:4px;height:30px;background:root.accent;border-radius:2px;}
+    if (root.header-icon.width > 0): Image {
+        x:T.panel-padding;y:22px;width:24px;height:24px;
+        source:root.header-icon;colorize:EchoTheme.text;
     }
     Text {
-        x:T.panel-padding + (root.icon-key == "" ? 14px : 48px);y:18px;
-        width:max(30px,parent.width - self.x - T.panel-padding - (root.favorites ? 84px : 140px));height:30px;text:root.title;
-        color:EchoTheme.text;font-size:T.font-panel-title;font-weight:T.font-weight-semibold;overflow:elide;
+        x:T.panel-padding + (root.header-icon.width == 0 ? 14px : 34px);y:18px;
+        width:max(30px,parent.width - self.x - T.panel-padding - (root.favorites && root.clearable ? 124px : 84px));height:32px;text:root.title;
+        color:EchoTheme.text;font-size:T.font-panel-title;font-weight:T.font-weight-semibold;overflow:elide;vertical-alignment:center;
     }
     new-content := EchoButton {
         x: root.width - T.panel-padding - 72px; y: 18px;
@@ -119,10 +121,12 @@ export component SpacePanel inherits Rectangle {
         take-focus-on-click: !root.inline-mode;
         clicked => { if (!root.ime-composing()) {root.settings();} }
     }
-    if (!root.favorites && !root.capture-only && !root.titles-only): EchoButton {
-        x: root.width - T.panel-padding - 132px; y: 18px;
-        width: 92px; height: 32px; text: "Clear all"; label: "Clear unpinned history";
-        enabled: !root.busy && !root.loading && !root.stale && !root.modal && !root.animating;
+    if (root.clearable && !root.capture-only && !root.titles-only): EchoButton {
+        x: root.width - T.panel-padding - (root.favorites ? 112px : 72px); y: 18px;
+        width: 32px; height: 32px; row-action: true; flat: true; danger: true;
+        icon: @image-url("icons/apps-sdk/Trash.svg");
+        label: root.favorites ? "Clear Favorites" : "Clear unpinned history";
+        enabled: !root.busy && !root.loading && !root.stale && !root.error && !root.modal && !root.animating;
         take-focus-on-click: !root.inline-mode;
         clicked => { if (!root.ime-composing()) {root.action("clear-all", "");} }
     }
@@ -139,14 +143,22 @@ export component SpacePanel inherits Rectangle {
         EchoButton {text:"Pin";enabled:root.selected-count > 0 && !root.busy;clicked => {root.batch-action("pin");}}
         EchoButton {text:"Delete";danger:true;enabled:root.selected-count > 0 && !root.busy;clicked => {root.batch-action("delete");}}
     }
-    list := ListView {
+    list := ScrollView {
         vertical-scrollbar-policy: always-off;
         horizontal-scrollbar-policy: always-off;
         x:T.panel-padding;y:root.header-height + (root.batch ? 52px : 8px);
         width:parent.width - 2*T.panel-padding;
         height:max(0px,parent.height - self.y - 16px);
         viewport-y <=> root.scroll-y;visible:!root.stale && !root.titles-only;
+        // Resident pages are bounded by presentation. Use actual row heights:
+        // ListView's average-height virtual coordinates change after a card swap.
+        viewport-height: rows-layout.height;
+        viewport-width: list.visible-width;
+        rows-layout := VerticalLayout {
+            width: list.visible-width; height: self.min-height;
+            padding: 0px; spacing: 0px; alignment: start;
         for entry in root.rows: EntryView {
+            thumbnail-active: !root.animating && self.y + self.height >= -root.scroll-y && self.y <= -root.scroll-y + list.visible-height;
             inline-mode: root.inline-mode;
             control-focus-mode:root.control-focus-mode;
             entry:entry;favorites:root.favorites;compact:root.compact;capture-only:root.capture-only;batch:root.batch;
@@ -164,6 +176,7 @@ export component SpacePanel inherits Rectangle {
             drag-data(key) => {return root.drag-data(key);}
             can-drop-data(data) => {return !root.capture-only && root.can-drop-data(data);}
             drop-data(data,key) => {return !root.capture-only && root.drop-data(data,key);}
+        }
         }
     }
     if (root.rows.length == 0 || root.stale || root.titles-only): VerticalLayout {
