@@ -884,14 +884,20 @@ class Run:
                 raise RuntimeError("Root focus transition changed the host input")
         return {"transitions":4, "replacement":self.enter(expected="pre|" + PAYLOAD + " |post")}
 
-    def test_manual_copy(self):
-        self.reset(); self.open_inline()
-        self.f("key", self.native, self.native_title, 117)
-        self.wait(self.manual_history_ready, "manual-copy history ready")
+    def initial_history_text(self):
         expected = "SELECT id, updated_at\nFROM clipboard_entries\nORDER BY updated_at DESC;\n-- fixture 0199"
         marker = json.loads((self.args.template / "synthetic-fixture.json").read_text(encoding="utf-8-sig"))
         if marker.get("dataset") in ("T", "M"):
             expected = "echo-perf-text-1999 — Reusable content, available when you need it."
+        elif marker.get("dataset") != "D2":
+            raise RuntimeError("Unsupported initial History fixture: " + str(marker.get("dataset")))
+        return expected
+
+    def test_manual_copy(self):
+        self.reset(); self.open_inline()
+        self.f("key", self.native, self.native_title, 117)
+        self.wait(self.manual_history_ready, "manual-copy history ready")
+        expected = self.initial_history_text()
         self.f("activate-owned", self.echo, TITLE, expected)
         self.wait(lambda: self.n("clipboard-matches", expected=expected)["matches"], "original multiline text copied")
         state = self.state()
@@ -1028,7 +1034,9 @@ class Run:
         original = self.state()
         if original["text"] != "pre|" + QUERY + " |post":
             raise RuntimeError("Opening Echo changed the preexisting selection text")
-        direct = self.enter(expected="pre|" + PAYLOAD.replace("0013", "1999") + " |post")
+        # The owned Win32 input receives Windows line endings for multiline text.
+        initial = self.initial_history_text().replace("\n", "\r\n")
+        direct = self.enter(expected="pre|" + initial + " |post")
         self.reset(text="pre|old selected text |post", start=4, length=len("old selected text"))
         self.open_inline("")
         self.type_query()
@@ -1082,8 +1090,10 @@ class Run:
         suffix = "|中文 e\u0301 👨‍👩‍👧‍👦 / " + QUERY
         self.reset(text=prefix + QUERY + suffix, start=len(prefix.encode("utf-16-le")) // 2,
                    length=len(QUERY.encode("utf-16-le")) // 2)
-        self.open_inline(QUERY)
-        return self.enter(expected=prefix + PAYLOAD + suffix)
+        # A preexisting selection is the replacement range, not a search query.
+        self.open_inline("")
+        initial = self.initial_history_text().replace("\n", "\r\n")
+        return self.enter(expected=prefix + initial + suffix)
 
     def test_newline_ranges(self):
         results = []
@@ -1095,8 +1105,9 @@ class Run:
             self.reset("multiline", text=prefix + query + suffix,
                        start=len(prefix.encode("utf-16-le")) // 2,
                        length=len(query.encode("utf-16-le")) // 2)
-            self.open_inline(query)
-            results.append(self.enter("multiline", expected=prefix + PAYLOAD + suffix))
+            self.open_inline("")
+            initial = self.initial_history_text().replace("\n", "\r\n")
+            results.append(self.enter("multiline", expected=prefix + initial + suffix))
         return results
 
     def test_nbsp_range(self):

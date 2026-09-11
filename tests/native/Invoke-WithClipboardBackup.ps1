@@ -14,7 +14,7 @@ Add-Type -AssemblyName System.Drawing
 $source = [Windows.Forms.Clipboard]::GetDataObject()
 $backup = [Windows.Forms.DataObject]::new()
 $owned = [Collections.Generic.List[IDisposable]]::new()
-$formats = if ($null -eq $source) { @() } else { @($source.GetFormats($false)) }
+$formats = @(if ($null -ne $source) { $source.GetFormats($false) })
 # Materialize every advertised original format before allowing any mutation.
 # Payloads remain in this STA process and are never logged or written to disk.
 foreach ($format in $formats) {
