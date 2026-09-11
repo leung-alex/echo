@@ -26,6 +26,13 @@ fn native_focus_match(root: isize, expected: isize, observed: isize) -> Option<b
 }
 const WAKE: u32 = WM_APP + 61;
 const RETIRE_TIMER: usize = 62;
+const MANUAL_HISTORY_HOTKEY: i32 = 63;
+// This dedicated hook thread owns no other WM_HOTKEY registrations. Unregistering
+// does not remove already queued messages; drain them before reusing the ID.
+unsafe fn discard_manual_history_messages() {
+    let mut message: MSG = std::mem::zeroed();
+    while PeekMessageW(&mut message, null_mut(), WM_HOTKEY, WM_HOTKEY, PM_REMOVE) != 0 {}
+}
 thread_local! { static LOCAL: RefCell<Option<Local>> = const { RefCell::new(None) }; }
 // Separate from Local's borrow: reentrant callbacks must still own Enter.
 #[derive(Clone, Copy, Default)]
@@ -96,6 +103,8 @@ impl InputHook {
                         ime_window: 0,
                         session: 0,
                         retiring: false,
+                        manual_history_session: None,
+                manual_history_key_down: false,
                     })
                 });
                 let _ = ready.send(Ok(tid));
@@ -153,6 +162,20 @@ impl InputHook {
                         if stop {
                             break;
                         }
+                    } else if message.message == WM_HOTKEY && message.wParam == MANUAL_HISTORY_HOTKEY as usize {
+                        LOCAL.with(|slot| {
+                            if let Some(state) = slot.borrow_mut().as_mut() {
+                                UnregisterHotKey(null_mut(), MANUAL_HISTORY_HOTKEY);
+                                if let Some(session) = state.manual_history_session.take() {
+                                    if !state.retiring && state.session == session
+                                        && state.shared.active.load(Ordering::Acquire) == session
+                                        && state.target_match() != Some(false)
+                                    {
+                                        (state.shared.callback)(InlineEvent::Compatibility { session, reason: "Manual history browsing requested; the composer's typed query was kept".into() });
+                                    }
+                                }
+                            }
+                        });
                     } else {
                         TranslateMessage(&message);
                         DispatchMessageW(&message);
@@ -238,6 +261,8 @@ struct Local {
     ime_window: isize,
     session: u64,
     retiring: bool,
+    manual_history_session: Option<u64>,
+    manual_history_key_down: bool,
 }
 impl Local {
     unsafe fn arm(&mut self, id: u64) -> Result<(), String> {
@@ -278,6 +303,7 @@ impl Local {
         for (i, value) in self.down.iter_mut().enumerate() {
             *value = GetAsyncKeyState(i as i32) < 0;
         }
+        self.manual_history_key_down &= self.down[VK_F6 as usize];
         GUARD.with(|g| {
             let mut lease = g.get();
             lease.enter_down = self.down[VK_RETURN as usize];
@@ -326,6 +352,10 @@ impl Local {
         Ok(())
     }
     unsafe fn clear_events(&mut self) {
+        if self.manual_history_session.take().is_some() {
+            UnregisterHotKey(null_mut(), MANUAL_HISTORY_HOTKEY);
+            discard_manual_history_messages();
+        }
         for event in self.events.drain(..) {
             UnhookWinEvent(event);
         }
@@ -337,6 +367,7 @@ impl Local {
             self.hook = null_mut();
         }
         self.retiring = false;
+        self.manual_history_key_down = false;
         self.session = 0;
         GUARD.with(|g| g.set(GuardLease::default()));
     }
@@ -496,6 +527,12 @@ unsafe extern "system" fn keyboard(code: i32, w: WPARAM, l: LPARAM) -> LRESULT {
         let key = input.vkCode as usize;
         let repeat = if key == VK_RETURN as usize { enter_repeat } else { state.down[key] };
         state.down[key] = down;
+        if key == VK_F6 as usize && state.manual_history_key_down {
+            if up { state.manual_history_key_down = false; }
+            // Windows saw the registered key-down, so it must also see key-up.
+            // Only auto-repeat is suppressed while that physical sequence drains.
+            return down;
+        }
         if state.swallowed[key] {
             if up { state.swallowed[key] = false; PostThreadMessageW(GetCurrentThreadId(), WAKE, 0, 0); }
             return true;
@@ -552,6 +589,16 @@ unsafe extern "system" fn keyboard(code: i32, w: WPARAM, l: LPARAM) -> LRESULT {
             }
             if key == VK_F6 as usize {
                 state.swallowed[key] = true;
+                // Let Windows deliver this one explicit F6 as WM_HOTKEY so the
+                // process receives foreground permission. Its matching release must
+                // also reach Windows to clear the asynchronous key state.
+                discard_manual_history_messages();
+                if RegisterHotKey(null_mut(), MANUAL_HISTORY_HOTKEY, MOD_NOREPEAT, VK_F6 as u32) != 0 {
+                    state.manual_history_session = Some(session);
+                    state.manual_history_key_down = true;
+                    state.swallowed[key] = false;
+                    return false;
+                }
                 (state.shared.callback)(InlineEvent::Compatibility { session, reason: "Manual history browsing requested; the composer's typed query was kept".into() });
                 return true;
             }
@@ -707,6 +754,40 @@ unsafe extern "system" fn win_event(
 #[cfg(test)]
 mod tests {
     #[test]
+    fn reusing_manual_history_hotkey_discards_old_session_messages_only() {
+        std::thread::spawn(|| unsafe {
+            let mut message: MSG = std::mem::zeroed();
+            PeekMessageW(&mut message, null_mut(), 0, 0, PM_NOREMOVE);
+            let thread = GetCurrentThreadId();
+            assert_ne!(
+                PostThreadMessageW(thread, WM_HOTKEY, MANUAL_HISTORY_HOTKEY as usize, 0),
+                0
+            );
+            assert_ne!(PostThreadMessageW(thread, WAKE, 0, 0), 0);
+            discard_manual_history_messages();
+            assert_eq!(
+                PeekMessageW(&mut message, null_mut(), WM_HOTKEY, WM_HOTKEY, PM_REMOVE),
+                0
+            );
+            assert_ne!(
+                PeekMessageW(&mut message, null_mut(), WAKE, WAKE, PM_REMOVE),
+                0
+            );
+            // A newly delivered hotkey survives until the new session consumes it.
+            assert_ne!(
+                PostThreadMessageW(thread, WM_HOTKEY, MANUAL_HISTORY_HOTKEY as usize, 0),
+                0
+            );
+            assert_ne!(
+                PeekMessageW(&mut message, null_mut(), WM_HOTKEY, WM_HOTKEY, PM_REMOVE),
+                0
+            );
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
     fn native_focus_requires_exact_editor_and_treats_root_transition_as_unknown() {
         assert_eq!(super::native_focus_match(10, 20, 20), Some(true));
         assert_eq!(super::native_focus_match(10, 20, 10), None);
@@ -735,6 +816,8 @@ mod tests {
                 ime_window: 0,
                 session: 1,
                 retiring: false,
+                manual_history_session: None,
+                manual_history_key_down: false,
             })
         });
         GUARD.with(|g| {
@@ -752,6 +835,59 @@ mod tests {
             slot.borrow_mut().take();
         });
         GUARD.with(|g| g.set(GuardLease::default()));
+    }
+
+    #[test]
+    fn removing_hook_discards_passed_f6_lease_when_release_can_no_longer_be_observed() {
+        install_test_lease(Arc::new(|_| {}));
+        LOCAL.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let state = slot.as_mut().unwrap();
+            state.manual_history_key_down = true;
+            unsafe {
+                state.clear();
+            }
+            assert!(!state.manual_history_key_down);
+        });
+        reset_test_lease();
+    }
+
+    #[test]
+    fn registered_f6_suppresses_repeat_but_releases_windows_key_state() {
+        install_test_lease(Arc::new(|_| {
+            panic!("No new session action for a draining key")
+        }));
+        LOCAL.with(|slot| slot.borrow_mut().as_mut().unwrap().manual_history_key_down = true);
+        let event = KBDLLHOOKSTRUCT {
+            vkCode: VK_F6 as u32,
+            ..unsafe { std::mem::zeroed() }
+        };
+        unsafe {
+            assert_eq!(
+                keyboard(
+                    HC_ACTION as i32,
+                    WM_KEYDOWN as usize,
+                    &event as *const _ as isize
+                ),
+                1
+            );
+            assert_eq!(
+                keyboard(
+                    HC_ACTION as i32,
+                    WM_KEYUP as usize,
+                    &event as *const _ as isize
+                ),
+                0
+            );
+        }
+        LOCAL.with(|slot| {
+            let state = slot.borrow();
+            let state = state.as_ref().unwrap();
+            assert!(!state.manual_history_key_down);
+            assert!(!state.down[VK_F6 as usize]);
+            assert!(!state.swallowed[VK_F6 as usize]);
+        });
+        reset_test_lease();
     }
 
     #[test]
@@ -953,6 +1089,8 @@ mod tests {
                 ime_window: 0,
                 session: 1,
                 retiring: false,
+                manual_history_session: None,
+                manual_history_key_down: false,
             })
         });
         for iteration in 0..1000 {

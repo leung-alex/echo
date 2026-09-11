@@ -781,7 +781,7 @@ impl App {
                 hook.set_inline_popup(self.inline_active())?;
             }
             if !self.inline_active() {
-                let _ = shell::focus_window(hwnd);
+                shell::focus_window(hwnd)?;
             }
         }
         self.environment = {

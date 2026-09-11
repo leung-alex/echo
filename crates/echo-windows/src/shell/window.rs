@@ -434,6 +434,13 @@ unsafe extern "system" fn subclass(
         WM_STYLECHANGING if state.inline.get() && w as i32 == GWL_EXSTYLE && l != 0 => {
             (*(l as *mut STYLESTRUCT)).styleNew |= WS_EX_NOACTIVATE;
         }
+        WM_WINDOWPOSCHANGING if state.inline.get() && l != 0 => {
+            // Framework visibility/flag updates must not demote an active inline
+            // popup behind the editor that deliberately retains foreground.
+            let position = &mut *(l as *mut WINDOWPOS);
+            position.hwndInsertAfter = HWND_TOPMOST;
+            position.flags = (position.flags & !SWP_NOZORDER) | SWP_NOACTIVATE;
+        }
         WM_MOUSEACTIVATE if state.inline.get() => return MA_NOACTIVATE as LRESULT,
         WM_NCHITTEST if state.inline.get() => return HTCLIENT as LRESULT,
         WM_SYSKEYDOWN if w == 0x73 => {

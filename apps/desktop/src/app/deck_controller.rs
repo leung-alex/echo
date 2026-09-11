@@ -232,7 +232,7 @@ impl App {
         }
         self.content_ready();
         self.window
-            .set_navigation_busy(!self.deck.can_insert(self.surface.space));
+            .set_navigation_busy(self.software_navigation_busy());
 
         self.schedule_prewarm();
     }

@@ -162,6 +162,10 @@ impl App {
         }
     }
 
+    pub(super) fn software_navigation_busy(&self) -> bool {
+        self.software.slide.loading() || self.software.slide.moving()
+    }
+
     pub(super) fn software_content_ready(&mut self) {
         if !self.surface.visible {
             return;
@@ -177,12 +181,14 @@ impl App {
             || self.surface.space != self.deck.requested
             || self.surface.presented_query.as_deref() != Some(self.surface.query.as_str())
         {
-            self.window.set_navigation_busy(true);
+            self.window
+                .set_navigation_busy(self.software_navigation_busy());
             return;
         }
         self.prepare_software_neighbors();
         if !self.software_neighbors_ready() {
-            self.window.set_navigation_busy(true);
+            self.window
+                .set_navigation_busy(self.software_navigation_busy());
             return;
         }
         if self.software.slide.loading() {
@@ -231,7 +237,7 @@ impl App {
             }
         }
         self.window
-            .set_navigation_busy(!self.deck.can_insert(self.surface.space));
+            .set_navigation_busy(self.software_navigation_busy());
     }
 
     pub(super) fn software_frame_stamp(&self) -> ContentFrame {

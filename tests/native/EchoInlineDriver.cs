@@ -12,6 +12,7 @@ using System.Threading;
 using System.Web.Script.Serialization;
 public static class EchoInlineDriver {
     static long lastInputTimestamp;
+    [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr hwnd,int attribute,out int value,int size);
     [DllImport("gdi32.dll",SetLastError=true)] static extern bool StretchBlt(IntPtr dest,int x,int y,int width,int height,IntPtr source,int sx,int sy,int sw,int sh,uint operation);
     [DllImport("winmm.dll")] static extern uint timeBeginPeriod(uint period);
     [DllImport("winmm.dll")] static extern uint timeEndPeriod(uint period);
@@ -403,7 +404,8 @@ public static class EchoInlineDriver {
         Point oldPointer;GetCursorPos(out oldPointer);
         var hover=new Point{X=(int)(row.Left+row.Width/2),Y=(int)(row.Top+row.Height/2)};
         foreach(var key in new[]{0x01,0x02,0x10,0x11,0x12,0x5b,0x5c})if((GetAsyncKeyState(key)&0x8000)!=0)throw new InvalidOperationException("Physical pointer/modifier busy; hover sampling cancelled");
-        if(GetAncestor(WindowFromPoint(hover),2)!=echo||!SetCursorPos(hover.X,hover.Y))throw new InvalidOperationException("Owned action hover point unavailable");
+        int cloaked; DwmGetWindowAttribute(echo,14,out cloaked,4);
+        if(GetAncestor(WindowFromPoint(hover),2)!=echo||!SetCursorPos(hover.X,hover.Y))throw new InvalidOperationException("Owned action hover point unavailable: point="+hover.X+","+hover.Y+" expected="+echo+" actual="+GetAncestor(WindowFromPoint(hover),2)+" row="+row+" echoStyle="+GetWindowLongPtr(echo,-20).ToInt64()+" inputStyle="+GetWindowLongPtr(input,-20).ToInt64()+" cloaked="+cloaked);
         Thread.Sleep(150);
         System.Windows.Rect icon;
         try {

@@ -7,6 +7,7 @@
 - Branch: `codex/retirement`; local commits only. Other worktrees preserved.
 - Owner explicitly ended optional GPU/Skia maintenance and authorized isolated native/clipboard and ten-minute software performance verification.
 - Baseline self-check, format and verify: PASS. Toolchain: Rust/Cargo 1.97.0, Go 1.26.2.
+- Multi-DPI / multi-monitor acceptance is explicitly excluded by the user in the continuation. Earlier NOT_RUN records below remain historical.
 - Existing product animation failure is not waived. This report does not certify physical input, all applications or all displays.
 
 ## Retirement inventory
@@ -122,3 +123,34 @@ Quick Insert remaining failures:
 All 41 named cases were attempted, using fresh isolated continuations to reach cases after fail-fast exits; this is not a claim that one uninterrupted Quick Insert gate passed. Corrected fixture/range cases passed native regression. Installed Chinese IME driven by synthetic keys passed its automated case; physical keyboard/IME acceptance remains NOT_RUN. Browser/extra real-editor and stress suites were not added to this run.
 
 Native-test executable SHA256 remained `a1b653cfebb3010f3357dc37e9766cb2b0c3d670ae1824120ff7518079bc1a8c`; Release/package bytes and the earlier five-minute performance evidence are unchanged. Both focused reviews accepted the script corrections. Current self-check, format and full verify PASS (`native-retry/self-check.log`, `format.log`, `verify.log`).
+
+## Native repair continuation (2026-09-11, evening)
+
+The earlier native and performance tables are historical results for their stated executable hashes. This continuation repairs the observed failures without changing the acceptance thresholds. Multi-DPI / multi-monitor work is EXCLUDED by explicit user instruction; physical IME and additional real editors remain separate NOT_RUN boundaries.
+
+Changes:
+
+- F6 uses a one-shot Windows hotkey notification to acquire the foreground permission required by explicit manual History. The dedicated hook thread drains queued old hotkey messages before ID reuse. Registered key-down and key-up both reach Windows, auto-repeat is suppressed, and the passed-key lease is reconciled on rearm and discarded when its hook is removed. Foreground failures are now propagated to the caller.
+- Query-content readiness remains guarded by tickets, epochs, loading/dirty state and `deck.can_insert`. `navigation_busy` now describes actual software slide loading/motion, so ordinary query refresh does not disable row actions as if it were a spatial transition.
+- Full-sequence testing exposed framework updates removing TOPMOST after manual History. At the failed pointer location, the owned input fixture was hit; Echo was uncloaked and had EXSTYLE `0x080C0110`, without TOPMOST. The native inline window hook now enforces TOPMOST plus NOACTIVATE during window-position changes. Manual History and editor modes disable that hook policy. A Slint-property experiment did not fix the issue and was removed.
+- The action sampler now includes pointer coordinates, hit HWND, styles and DWM cloaking state in its existing failure. No ownership check, visual assertion or tolerance was relaxed.
+
+Regression mapping and evidence under `.local/retirement-evidence/fixes`:
+
+| Regression | Evidence / result |
+| --- | --- |
+| Stale F6 message versus reused registration | `reusing_manual_history_hotkey_discards_old_session_messages_only` |
+| Registered F6 repeat versus matching release | `registered_f6_suppresses_repeat_but_releases_windows_key_state` |
+| Hook removal before release | `removing_hook_discards_passed_f6_lease_when_release_can_no_longer_be_observed` |
+| Windows unit suite | 90 PASS, 1 ignored (`windows-tests-final.log`) |
+| Protected password and readonly F6 | PASS in `quick-insert-remaining/summary.json` |
+| Streaming filter | PASS in `quick-insert-remaining/summary.json` |
+| Manual History then fuzzy action pixels | Reproduced FAIL before the native position fix (`pixels-window-probe`); PASS after it (`pixels-windowpos-2`) |
+
+The initial focus-style experiment and failed full runs are retained. The first hotkey experiment left an unmatched synthetic F6 down; the test's held-key guard caught it, the pairing was fixed, and only that owned synthetic release was sent (`owned-f6-release.json`). One rebuild overlapped an old-binary diagnostic and failed with access denied; that attempt (`pixels-windowpos`) is not evidence for the new position fix. The successful `debug-windowpos-build-2.log` precedes `pixels-windowpos-2`.
+
+A temporary frame-scheduling probe found late timer callbacks but did not establish a complete root cause. Its 76-second diagnostic is not a five-minute acceptance run, uses a native-test executable despite the copied runner's default `native_test` field, and intentionally fails the full sample-count checks. All frame instrumentation was removed from the product. The earlier five-minute P95 failures remain valid historical evidence.
+
+Installer preparation remains blocked: no local NSIS compiler was found; two official SourceForge download attempts returned HTML rather than a ZIP. Archive validation rejected them before extraction or execution. No installer or uninstaller was run, and no installed application, shortcut, user History or runtime was removed.
+
+The final debug/native-test Quick Insert run passed all 41 canonical non-stress cases in one uninterrupted run (`quick-insert-final/summary.json`), including the installed synthetic IME case, image insertion, protected inputs, query/selection/range races, cancellation/rearm, hidden reclamation and streaming filtering. Executable SHA256: `f1ec6a0932df1c9c14349de50a072d514f316924b1f40a7e4315acfcf17e04cb`. This is real isolated Windows execution using the canonical runner, on the debug/native-test build; it is not a physical-keyboard or additional-editor certification. Current self-check, format and full verify passed (`final-self-check.log`, `final-format.log`, `final-verify.log`).
