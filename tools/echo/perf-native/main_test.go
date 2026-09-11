@@ -318,12 +318,12 @@ func TestCLIInvalidArguments(t *testing.T) {
 }
 
 func TestPreparationWhitelistIsNarrow(t *testing.T) {
-	for _, path := range []string{"apps/desktop/src/lib.rs", "Cargo.lock", "tools/echo/main.go", "tools/echo/perf-native-escape.go", "docs/migration/other.md", ".github/workflows/other.yml", " tools/echo/perf-native/main.go"} {
+	for _, path := range []string{"apps/desktop/src/lib.rs", "Cargo.lock", "tools/echo/main.go", "tools/echo/perf-native-escape.go", "docs/migration/other.md", ".github/workflows/other.yml", ".github/workflows/echo-native-perf.yml", " tools/echo/perf-native/main.go"} {
 		if preparationOnly(path) {
 			t.Fatalf("allowed unapproved change %s", path)
 		}
 	}
-	for _, path := range []string{"tools/echo/perf-native/main.go", "tools/perf-native/README.md", "docs/migration/slint/status.md", ".github/workflows/echo-native-perf.yml"} {
+	for _, path := range []string{"tools/echo/perf-native/main.go", "tools/perf-native/README.md", "docs/migration/slint/status.md"} {
 		if !preparationOnly(path) {
 			t.Fatalf("rejected M0 preparation %s", path)
 		}

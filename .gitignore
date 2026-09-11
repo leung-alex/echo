@@ -5,11 +5,6 @@
 /.local/test-tmp/echo-storage/
 /tools/echo/.local/
 /target/echo/
-/tests/verification/r1-storage-harness/Cargo.lock
-/tests/verification/r5-storage-runtime/Cargo.lock
-/tests/verification/r1-storage-harness/target/
-/tests/verification/r4-saved-item-fts/target/
-/tests/verification/r5-storage-runtime/target/
 .DS_Store
 /.local
 __pycache__/

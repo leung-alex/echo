@@ -90,3 +90,18 @@ func TestNativeGateRoutesToCurrentRunners(t *testing.T) {
 		})
 	}
 }
+
+func TestSmokeDoesNotRequireMutatingAcceptance(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows smoke")
+	}
+	t.Setenv("ECHO_WINDOWS_ACCEPTANCE", "")
+	sentinel := errors.New("build reached")
+	a := &app{root: t.TempDir(), out: io.Discard, runOverride: func(string, ...string) error { return sentinel }}
+	if err := a.smoke(); !errors.Is(err, sentinel) {
+		t.Fatalf("smoke rejected before build: %v", err)
+	}
+	if err := a.runNativeGate("obsolete"); err == nil || errors.Is(err, sentinel) {
+		t.Fatalf("unknown scope reached build: %v", err)
+	}
+}

@@ -25,6 +25,26 @@ jobs:
         with:
           go-version: '1.26.2'
           cache: false
+      - name: Record the actual CI environment
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $logs = Join-Path $env:RUNNER_TEMP 'echo-evidence-tools'
+          New-Item -ItemType Directory -Path $logs -ErrorAction Stop | Out-Null
+          $version = (& go env GOVERSION | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $version -ne 'go1.26.2') { throw 'Pinned Go toolchain is not available.' }
+          [ordered]@{
+            schema = 'echo.m0.ci-tools.v1'
+            commit = $env:GITHUB_SHA
+            runner_os = $env:RUNNER_OS
+            os_build = [Environment]::OSVersion.Version.ToString()
+            go = $version
+            powershell = $PSVersionTable.PSVersion.ToString()
+            g0 = 'NOT_RUN'
+            product_startup = 'NOT_RUN'
+            screenshots = 'NOT_RUN'
+            performance = 'NOT_RUN'
+            note = 'Synthetic evidence-tool tests only. A green workflow is not Echo native acceptance.'
+          } | ConvertTo-Json | Set-Content (Join-Path $logs 'environment.json') -Encoding utf8
       - name: Pin native compiler
         run: |
           rustup toolchain install 1.97.0 --profile minimal --component rustfmt
@@ -33,7 +53,7 @@ jobs:
           if ($LASTEXITCODE) { throw 'Rust override failed' }
       - name: Verify native ownership and tests
         run: |
-          ./echo.cmd verify
+          ./echo.cmd verify 2>&1 | Tee-Object (Join-Path $env:RUNNER_TEMP 'echo-evidence-tools/verify.log')
           if ($LASTEXITCODE) { throw 'Native verification failed' }
       - name: Verify complete large-corpus search and cancellation
         run: |
@@ -51,3 +71,28 @@ jobs:
         if: always()
         run: |
           'This CI executes real Rust/Go tests and builds the native Release executable. Physical IME, visual inspection, clipboard insertion, installation and performance require separate authorized desktop evidence.' >> $env:GITHUB_STEP_SUMMARY
+      - name: Build Windows evidence tool
+        run: |
+          go -C tools/echo build -trimpath -o (Join-Path $env:RUNNER_TEMP 'perf-native.exe') ./perf-native 2>&1 | Tee-Object (Join-Path $env:RUNNER_TEMP 'echo-evidence-tools/build.log')
+          if ($LASTEXITCODE) { throw 'Windows evidence tool build failed' }
+      - name: Test Windows collector scripts when present
+        if: ${{ hashFiles('tools/perf-native/Test-Collectors.ps1') != '' }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & ./tools/perf-native/Test-Collectors.ps1 -OutputDirectory (Join-Path $env:RUNNER_TEMP 'echo-evidence-tools/collector-tests') 2>&1 | Tee-Object (Join-Path $env:RUNNER_TEMP 'echo-evidence-tools/collectors.log')
+      - name: Explicit acceptance boundary
+        if: always()
+        run: |
+          @'
+          ## Evidence tool validation
+          Collector checks do not establish product performance or native insertion acceptance.
+          G0, real screenshots, Release startup, process-tree performance and native insertion remain NOT RUN.
+          '@ >> $env:GITHUB_STEP_SUMMARY
+      - name: Preserve tool logs even on failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: echo-evidence-tools-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/echo-evidence-tools/
+          if-no-files-found: warn
+          retention-days: 14

@@ -655,7 +655,7 @@ func (a *app) selfCheck() error {
 }
 
 func (a *app) checkNativeFixtureSources() error {
-	for _, path := range []string{"tests/native/EchoUi.cs", "tests/native/EchoDriver.cs", "tests/native/Invoke-UiAcceptance.ps1", "tests/native/Invoke-NativeGate.ps1", "tools/echo/fixture/main_windows.go", "tools/echo/fixture/target_windows.go"} {
+	for _, path := range []string{"tests/native/EchoUi.cs", "tests/native/EchoDriver.cs", "tests/native/Invoke-Smoke.ps1", "tests/native/EchoSmokeDriver.cs", "tests/native/Invoke-NativeGate.ps1", "tools/echo/fixture/main_windows.go", "tools/echo/fixture/target_windows.go"} {
 		if !fileExists(filepath.Join(a.root, filepath.FromSlash(path))) {
 			return fmt.Errorf("native fixture source is missing: %s", path)
 		}
@@ -714,7 +714,7 @@ func (a *app) checkManifestIndependence() error {
 		}
 		if entry.IsDir() {
 			n := entry.Name()
-			if n == ".git" || n == "target" || n == "node_modules" || n == ".local" || n == "dist" || filepath.ToSlash(relativeToRoot(a.root, path)) == "tests/verification" {
+			if n == ".git" || n == "target" || n == "node_modules" || n == ".local" || n == "dist" {
 				return filepath.SkipDir
 			}
 			return nil
@@ -858,12 +858,7 @@ func (a *app) dev() error {
 	return a.run("cargo", "run", "-p", "echo-desktop", "--locked", "--no-default-features")
 }
 
-func (a *app) smoke() error {
-	if os.Getenv("ECHO_WINDOWS_ACCEPTANCE") != "1" {
-		return fmt.Errorf("native startup changes desktop state; set ECHO_WINDOWS_ACCEPTANCE=1")
-	}
-	return a.runNativeGate("smoke")
-}
+func (a *app) smoke() error { return a.runNativeGate("smoke") }
 
 func (a *app) acceptanceCommand(args []string) error {
 	if len(args) != 1 || (args[0] != "clipboard" && args[0] != "quick-insert" && args[0] != "ui") {

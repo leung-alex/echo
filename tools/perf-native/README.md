@@ -75,5 +75,5 @@ Tests parse the scripts, verify no-clobber/reparse/containment behavior, collect
 an environment with a synthetic binary, and sample test-owned PowerShell sleep
 processes (live and exiting). Only those test-owned processes are stopped; Echo
 and the clipboard are never used. Test output is explicitly synthetic. The
-`Echo M0 evidence tooling` workflow runs these tests on Windows, separately from
+`Echo native Rust and Slint` workflow runs these tests on Windows, separately from
 product acceptance. A green workflow does not release G0.

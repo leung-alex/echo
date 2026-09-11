@@ -251,8 +251,7 @@ func gitRead(root string, args ...string) (string, error) {
 func preparationOnly(path string) bool {
 	return strings.HasPrefix(path, "tools/echo/perf-native/") ||
 		strings.HasPrefix(path, "tools/perf-native/") ||
-		strings.HasPrefix(path, "docs/migration/slint/") ||
-		path == ".github/workflows/echo-native-perf.yml"
+		strings.HasPrefix(path, "docs/migration/slint/")
 }
 
 func preflight(root, hostOS, authorization string) preflightReport {

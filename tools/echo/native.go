@@ -19,8 +19,8 @@ func (a *app) runNativeGate(scope string) error {
 	if runtime.GOOS != "windows" {
 		return fmt.Errorf("native acceptance requires Windows")
 	}
-	if os.Getenv("ECHO_WINDOWS_ACCEPTANCE") != "1" {
-		return fmt.Errorf("set ECHO_WINDOWS_ACCEPTANCE=1 for separately authorized native acceptance")
+	if scope != "smoke" {
+		return fmt.Errorf("unsupported native scope %q", scope)
 	}
 	if err := a.build(true); err != nil {
 		return err

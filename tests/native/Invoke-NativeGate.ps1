@@ -2,14 +2,13 @@
 param(
     [Parameter(Mandatory)][string]$Root,
     [Parameter(Mandatory)][string]$Executable,
-    [Parameter(Mandatory)][ValidateSet('smoke','clipboard','quick-insert','ui')][string]$Scope,
+    [Parameter(Mandatory)][ValidateSet('smoke')][string]$Scope,
     [Parameter(Mandatory)][string]$EvidenceRoot,
-    [ValidateSet('software','femtovg-wgpu')][string]$Renderer='software'
+    [ValidateSet('software')][string]$Renderer='software'
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-if ($env:ECHO_WINDOWS_ACCEPTANCE -ne '1') { throw 'Set ECHO_WINDOWS_ACCEPTANCE=1 to authorize native acceptance.' }
 $Root = [IO.Path]::GetFullPath($Root)
 $Executable = [IO.Path]::GetFullPath($Executable)
 $EvidenceRoot = [IO.Path]::GetFullPath($EvidenceRoot)
@@ -50,16 +49,9 @@ try {
     $framework = Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319'
     $compiler = Join-Path $framework 'csc.exe'
     if (!(Test-Path -LiteralPath $compiler)) { throw 'The .NET Framework C# compiler is required for UIAutomationClient/UIAutomationTypes.' }
-    $driver = Join-Path $tools 'EchoDriver.exe'
-    & $compiler /nologo /target:exe /out:$driver "/reference:$framework/WPF/UIAutomationClient.dll" "/reference:$framework/WPF/UIAutomationTypes.dll" "/reference:$framework/WPF/WindowsBase.dll" /reference:System.Drawing.dll /reference:System.Windows.Forms.dll /reference:System.Web.Extensions.dll (Join-Path $native 'EchoUi.cs') (Join-Path $native 'EchoDriver.cs') (Join-Path $native 'EchoBenchmarks.cs') (Join-Path $native 'EchoComposition.cs')
+    $driver = Join-Path $tools 'EchoSmokeDriver.exe'
+    & $compiler /nologo /target:exe /out:$driver "/reference:$framework/WPF/UIAutomationClient.dll" "/reference:$framework/WPF/UIAutomationTypes.dll" "/reference:$framework/WPF/WindowsBase.dll" /reference:System.Drawing.dll /reference:System.Windows.Forms.dll /reference:System.Web.Extensions.dll (Join-Path $native 'EchoUi.cs') (Join-Path $native 'EchoSmokeDriver.cs')
     if ($LASTEXITCODE -ne 0 -or !(Test-Path -LiteralPath $driver)) { throw 'EchoDriver compilation failed.' }
-
-    $fixture = $env:ECHO_ACCEPTANCE_FIXTURE_EXE
-    if ($Scope -in @('clipboard','quick-insert')) {
-        if ([string]::IsNullOrWhiteSpace($fixture)) { throw 'ECHO_ACCEPTANCE_FIXTURE_EXE must name the prebuilt Windows acceptance fixture.' }
-        $fixture = [IO.Path]::GetFullPath($fixture)
-        if (!(Test-Path -LiteralPath $fixture -PathType Leaf)) { throw "Acceptance fixture is missing: $fixture" }
-    }
 
     $templateRoot = $env:ECHO_NATIVE_FIXTURE_DIR
     if ([string]::IsNullOrWhiteSpace($templateRoot)) {
@@ -72,7 +64,7 @@ try {
         $templateRoot = $fixtureSets
     }
     $templateRoot = [IO.Path]::GetFullPath($templateRoot)
-    $dataset = if ($Scope -eq 'smoke') { 'D0' } elseif ($Scope -eq 'ui') { 'D0' } else { 'D2' }
+    $dataset = 'D0'
     $template = Join-Path $templateRoot $dataset
     if (!(Test-Path -LiteralPath (Join-Path $template 'echo.sqlite3') -PathType Leaf)) { throw "Fixture dataset is invalid: $template" }
     Copy-Item -LiteralPath $template -Destination $data -Recurse
@@ -82,7 +74,6 @@ try {
         repository_status = @(& git -C $Root status --short)
         executable = [ordered]@{ path=$Executable; sha256=(Get-FileHash -Algorithm SHA256 -LiteralPath $Executable).Hash; version=(Get-Item -LiteralPath $Executable).VersionInfo.FileVersion }
         driver = [ordered]@{ path=$driver; sha256=(Get-FileHash -Algorithm SHA256 -LiteralPath $driver).Hash }
-        fixture = if ($fixture) { [ordered]@{ path=$fixture; sha256=(Get-FileHash -Algorithm SHA256 -LiteralPath $fixture).Hash } } else { $null }
         dataset = [ordered]@{ name=$dataset; path=$template; database_sha256=(Get-FileHash -LiteralPath (Join-Path $template 'echo.sqlite3') -Algorithm SHA256).Hash }
         environment = [ordered]@{ os=[Environment]::OSVersion.VersionString; powershell=$PSVersionTable.PSVersion.ToString(); process_architecture=[Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString(); machine=$env:COMPUTERNAME; user_interactive=[Environment]::UserInteractive }
     }
@@ -92,7 +83,7 @@ try {
     [Environment]::SetEnvironmentVariable('ECHO_ACCEPTANCE_RUN_ROOT', $EvidenceRoot, 'Process')
     [Environment]::SetEnvironmentVariable('ECHO_RENDERER', $Renderer, 'Process')
 
-    & (Join-Path $native 'Invoke-UiAcceptance.ps1') -Root $Root -Executable $Executable -Driver $driver -Fixture $fixture -Scope $Scope -EvidenceRoot $EvidenceRoot
+    & (Join-Path $native 'Invoke-Smoke.ps1') -Root $Root -Executable $Executable -Driver $driver -Scope $Scope -EvidenceRoot $EvidenceRoot
     if ($LASTEXITCODE -ne 0) { throw "Native $Scope acceptance failed." }
     $detail = Get-Content -Raw -LiteralPath (Join-Path $EvidenceRoot 'checks.json') | ConvertFrom-Json
     $summary.checks = @($detail)
