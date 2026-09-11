@@ -892,6 +892,17 @@ fn observe(session: &mut Session, shared: &Shared) -> bool {
         );
         return false;
     }
+    // A later caret/provider notification cannot prove that a dispatched write
+    // did not happen. Retain the unknown-outcome notice and Enter protection
+    // until explicit cancellation; do not reinterpret the edited text as a
+    // fresh query or overwrite the warning with "nothing was replaced".
+    if shared.outcome_unknown.load(Ordering::Acquire) {
+        shared.suspend(
+            session.id,
+            "Replacement outcome is unknown. Check the input, then Esc/F6; no repeat paste is allowed in this session.",
+        );
+        return false;
+    }
     let serial = shared.input_serial.load(Ordering::Acquire);
     let snapshot = match session.backend.snapshot() {
         Ok(value) => {
@@ -932,7 +943,17 @@ fn observe(session: &mut Session, shared: &Shared) -> bool {
     } else {
         shared.range_valid.store(true, Ordering::Release);
     }
-    session.prepared = None;
+    // Providers also notify for unchanged text/caret (for example placeholder
+    // decorations). Such a notification must not erase the handoff between
+    // preflight and paste. Real input, range or composition changes invalidate
+    // it here; paste still seals the current snapshot and consumes it once.
+    if session.prepared.as_ref().is_some_and(|(ticket, _)| {
+        ticket.revision != session.range.revision()
+            || !shared.replacement_live(*ticket)
+            || composition != IME_CLEAR
+    }) {
+        session.prepared = None;
+    }
     if let Some(anchor) = session.backend.anchor() {
         session.anchor = anchor;
     }
@@ -1006,6 +1027,11 @@ fn paste(
     if prepared != ticket || !guard.live() || !shared.replacement_live(ticket) {
         return Ok(PasteDelivery::Failed(PasteDeliveryFailure::RangeChanged));
     }
+    // Reading a rich editor can itself publish redundant provider selection
+    // notifications. Guard the complete verified operation, including its first
+    // read, while physical input still invalidates the ticket independently.
+    // The request loop clears this guard on every success/error return.
+    shared.committing.store(true, Ordering::Release);
     if shared.composition(&session.backend).0 != IME_CLEAR {
         return Ok(PasteDelivery::Failed(PasteDeliveryFailure::CompositionBusy));
     }
@@ -1019,7 +1045,6 @@ fn paste(
             PasteDeliveryFailure::ClipboardChanged,
         ));
     }
-    shared.committing.store(true, Ordering::Release);
     if !guard.begin_selection() {
         return Ok(PasteDelivery::Failed(
             PasteDeliveryFailure::RangeUnavailable,
@@ -1102,6 +1127,52 @@ fn paste(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "native-test")]
+    #[test]
+    #[ignore = "requires an explicitly selected synthetic editor draft"]
+    fn authorized_provider_notification_retains_preflight() {
+        use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
+        assert_eq!(std::env::var("ECHO_WINDOWS_ACCEPTANCE").as_deref(), Ok("1"));
+        let hwnd: isize = std::env::var("ECHO_TEST_TARGET_HWND")
+            .unwrap()
+            .parse()
+            .unwrap();
+        unsafe {
+            CoInitializeEx(None, COINIT_MULTITHREADED).ok().unwrap();
+        }
+        let focus = FocusSnapshot::capture();
+        assert_eq!(focus.window_id, hwnd);
+        let automation = target::create_automation().unwrap();
+        let backend = target::Target::open(&focus, Some(&automation)).unwrap();
+        let initial = backend.snapshot().unwrap();
+        let range = QueryRange::begin(&initial).unwrap();
+        let shared = Shared::new(Arc::new(|_| {}));
+        shared.active.store(1, Ordering::Release);
+        shared.requested.store(1, Ordering::Release);
+        shared.revision.store(range.revision(), Ordering::Release);
+        shared.range_valid.store(true, Ordering::Release);
+        let ticket = shared.ticket();
+        let mut session = Session {
+            id: 1,
+            backend,
+            range,
+            _subscriptions: None,
+            prepared: Some((ticket, "synthetic".into())),
+            read_failures: 0,
+            anchor: focus.anchor,
+        };
+        observe(&mut session, &shared);
+        assert_eq!(shared.ticket(), ticket);
+        assert!(
+            session.prepared.is_some(),
+            "unchanged provider event discarded preflight"
+        );
+        drop(session);
+        drop(automation);
+        unsafe {
+            CoUninitialize();
+        }
+    }
     #[test]
     fn timeout_distinguishes_selection_from_dispatched_write() {
         let pending = Deadline::new(Duration::from_secs(1));

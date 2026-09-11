@@ -92,8 +92,12 @@ Readback can use the remaining 900 ms request budget after an acknowledged edit;
 there is no separate earlier 300 ms cutoff. This only retries observation, does
 not extend the request deadline and does not repeat an uncertain mutation.
 
-A current, verified nonempty selection can serve as the frozen query range
-directly. Some Chromium providers return shifted `FindText` endpoints after
+A current, verified nonempty selection serves as the frozen replacement range,
+but does not seed search when Alt+V opens. Only subsequent entered text becomes
+the search query; unchanged provider notifications keep the initial query empty.
+Enter without typing can still replace that original selection with the chosen
+item, and cancellation leaves it untouched.
+Some Chromium providers return shifted `FindText` endpoints after
 paragraph separators. When that search cannot prove the exact range, the adapter
 locates provider Character boundaries with bounded measurements against the
 frozen UTF-16 prefixes, then verifies the query and suffix before selection.

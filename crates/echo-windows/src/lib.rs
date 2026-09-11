@@ -511,6 +511,28 @@ mod windows_impl {
         }
     }
 
+    /// One non-text selection step. The caller verifies target identity before
+    /// dispatch and observes the exact range after each step; key counts never
+    /// authorize a paste.
+    pub(crate) fn extend_selection_left() -> Result<(), PasteDeliveryFailure> {
+        modifiers_released()?;
+        let shift = VIRTUAL_KEY(0x10);
+        let left = VIRTUAL_KEY(0x25);
+        let inputs = [
+            key_input(shift, false),
+            key_input(left, false),
+            key_input(left, true),
+            key_input(shift, true),
+        ];
+        if unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) } == inputs.len() as u32 {
+            Ok(())
+        } else {
+            let release = [key_input(left, true), key_input(shift, true)];
+            let _ = unsafe { SendInput(&release, size_of::<INPUT>() as i32) };
+            Err(PasteDeliveryFailure::KeyInjectionFailed)
+        }
+    }
+
     fn key_input(key: VIRTUAL_KEY, released: bool) -> INPUT {
         INPUT {
             r#type: INPUT_KEYBOARD,

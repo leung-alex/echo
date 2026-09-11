@@ -103,6 +103,8 @@ class Run:
         self.env = dict(os.environ, ECHO_WINDOWS_ACCEPTANCE="1", ECHO_DATA_DIR=str(self.evidence / "data"),
                         ECHO_ACCEPTANCE_RUN_ROOT=str(self.evidence), ECHO_RENDERER=args.renderer,
                         ECHO_DISABLE_GLOBAL_HOTKEY="0")
+        if not args.only or "hidden-reclaim-preserves-inline-insertion" in args.only.split(","):
+            self.env["ECHO_MEMORY_TRACE_DIR"] = str(self.evidence)
         if args.native_test:
             self.env["ECHO_NATIVE_TEST_ROOT"] = str(self.evidence)
         else:
@@ -239,7 +241,7 @@ class Run:
         dump = self.d("dump")
         ready = "History space" in dump and "ControlType.Edit | Search clipboard history" not in dump
         if query == QUERY:
-            ready = ready and ("1 matches" in dump or "1 match" in dump) and QUERY in dump
+            ready = ready and PAYLOAD in dump
         elif query and (query.startswith("not-found") or query.startswith("no-result") or query.startswith("邮箱")):
             ready = ready and "No matches in this space" in dump
         return ready
@@ -442,6 +444,7 @@ class Run:
         self.check("unknown-composition-interface-recovers", self.test_unknown_composition)
         self.check("query-backspace-and-unicode-are-observed", self.test_unicode)
         self.check("preselected-query-replaced-exactly", self.test_selection)
+        self.check("hidden-reclaim-preserves-inline-insertion", self.test_hidden_reclaim)
         self.check("selection-refusal-protects-enter-and-recovers", self.test_selection_refusal)
         self.check("native-observation-failure-protects-enter-and-recovers", self.test_read_failure)
         self.check("same-window-other-editor-never-receives-replacement", self.test_other_editor)
@@ -1023,8 +1026,43 @@ class Run:
 
     def test_selection(self):
         self.reset(text="pre|" + QUERY + " |post", start=4, length=len(QUERY))
-        self.open_inline(QUERY)
-        return self.enter(expected="pre|" + PAYLOAD + " |post")
+        self.open_inline("")
+        if self.args.native_test:
+            self.wait(lambda: self.side_previews_ready(""), "side cards ignore preexisting selection")
+        original = self.state()
+        if original["text"] != "pre|" + QUERY + " |post":
+            raise RuntimeError("Opening Echo changed the preexisting selection text")
+        direct = self.enter(expected="pre|" + PAYLOAD.replace("0013", "1999") + " |post")
+        self.reset(text="pre|old selected text |post", start=4, length=len("old selected text"))
+        self.open_inline("")
+        self.type_query()
+        if self.args.native_test:
+            self.wait(lambda: self.side_previews_ready(QUERY), "new input filters both side cards")
+        return {"direct": direct, "new_query": self.enter(expected="pre|" + PAYLOAD + " |post")}
+
+    def test_hidden_reclaim(self):
+        self.reset()
+        self.open_inline()
+        self.f("key", self.native, self.native_title, 27)
+        self.wait(lambda: not self.d("exists"), "inline popup hidden before reclamation")
+        def reclaimed():
+            events = [json.loads(line) for line in
+                (self.evidence / f"lifecycle-{self.echo.pid}.jsonl").read_text(encoding="utf-8-sig").splitlines()]
+            hidden = [e for e in events if e["state"] == "hidden_warm"][-1]
+            matches = [e for e in events if e["state"] == "hidden_reclaimed"
+                and e["details"]["epoch"] == hidden["details"]["epoch"]
+                and e["details"]["hidden_generation"] == hidden["details"]["hidden_generation"]]
+            if not matches:
+                return None
+            ack = matches[-1]
+            elapsed = (int(ack["utc_ns"]) - int(hidden["utc_ns"])) / 1e9
+            if not 30 <= elapsed <= 35 or not ack["details"]["worker_cache_acknowledged"]:
+                raise RuntimeError("Hidden reclamation contract was not satisfied")
+            return {"seconds": elapsed, "acknowledgement": ack}
+        recovery = self.wait(reclaimed, "actual hidden reclamation acknowledgement", 36)
+        self.open_inline()
+        self.type_query()
+        return {"recovery": recovery, "insertion": self.enter(expected="pre|" + PAYLOAD + " |post")}
 
     def test_pasted_query(self):
         self.reset()
@@ -1249,6 +1287,10 @@ class Run:
                 self.wait(lambda: "Check the input" in self.d("dump") or "Replacement outcome is unknown" in self.d("dump"),
                           "production unknown-outcome notice")
             before = self.state()
+            self.n("selection", control="single", start=0, length=0)
+            time.sleep(.15)
+            if self.args.native_test and "outcome is unknown" not in self.metrics()["inline"]["status"]:
+                raise RuntimeError("Unknown write outcome was overwritten by a no-replacement notice")
             self.f("key", self.native, self.native_title, 13)
             time.sleep(.15)
             after = self.state()

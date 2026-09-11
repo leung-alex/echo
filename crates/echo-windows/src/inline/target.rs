@@ -674,6 +674,21 @@ impl Target {
         if !deadline.live() || !self.current() {
             return Err("Input changed before range selection".into());
         }
+        // Readback is the proof; Select is needed only to change a range.
+        // Some UIA editors expose a valid caret but do not implement Select,
+        // while empty rich editors can lose their caret on a redundant Select.
+        // Never replace that verified existing selection with a provider action.
+        if span == expected.selection {
+            let selected = self.snapshot()?;
+            if selected.text != expected.text || selected.selection != span {
+                return Err("Insertion point moved".into());
+            }
+            return if self.current() && deadline.live() {
+                Ok(())
+            } else {
+                Err("Range selection cancelled".into())
+            };
+        }
         #[cfg(feature = "native-test")]
         let selection_fault = super::diagnostics::selection_fault();
         #[cfg(not(feature = "native-test"))]
@@ -688,17 +703,7 @@ impl Target {
             if let Some(a) = &self.automation {
                 unsafe {
                     let (pattern, doc) = live_document(a)?;
-                    let range = if span == expected.selection {
-                        let selection = single_selection(&pattern)?;
-                        let selection = super::text_scope::bounded_selection(
-                            &a.uia, &a.element, &doc, &selection,
-                        )?;
-                        let snapshot = automation_snapshot(a)?;
-                        if snapshot.selection != span || snapshot.text != expected.text {
-                            return Err("Insertion point moved".into());
-                        }
-                        selection
-                    } else {
+                    let range = {
                         let query = BSTR::from_wide(&expected.text[span.clone()]);
                         let remaining =
                             doc.Clone().map_err(|_| "Could not clone the text range")?;
@@ -765,12 +770,15 @@ impl Target {
                             TextPatternRangeEndpoint_Start,
                         )
                         .map_err(|_| "Cannot bind selection start to editor")?;
-                    editable.Select().map_err(|error| {
-                        format!(
+                    if let Err(error) = editable.Select() {
+                        if error.code() == windows::Win32::Foundation::E_NOTIMPL {
+                            return self.select_from_caret(&span, expected, deadline);
+                        }
+                        return Err(format!(
                             "Input refused exact range selection: {:#010x}",
                             error.code().0
-                        )
-                    })?;
+                        ));
+                    }
                 }
             } else {
                 message(self.control, EM_SETSEL, span.start, span.end as isize)?;
@@ -806,6 +814,52 @@ impl Target {
             }
             std::thread::sleep(Duration::from_millis(8));
         }
+    }
+    fn select_from_caret(
+        &self,
+        span: &Range<usize>,
+        expected: &ComposerSnapshot,
+        deadline: &Deadline,
+    ) -> Result<(), String> {
+        let mut previous = self.snapshot()?;
+        if previous.text != expected.text
+            || previous.selection != (span.end..span.end)
+            || span.start >= span.end
+        {
+            return Err(
+                "Unsupported selection cannot start from this caret; nothing was replaced".into(),
+            );
+        }
+        // Bounded compatibility for providers that explicitly lack Select.
+        // Observe movement instead of assuming a key equals a UTF-16 unit.
+        for _ in 0..64 {
+            if !self.current() || !deadline.live() {
+                return Err("Range selection cancelled".into());
+            }
+            native::extend_selection_left().map_err(|_| "Input did not accept a selection step")?;
+            loop {
+                if !self.current() || !deadline.live() {
+                    return Err("Range selection cancelled".into());
+                }
+                let actual = self.snapshot()?;
+                if actual.text != expected.text
+                    || actual.selection.end != span.end
+                    || actual.selection.start < span.start
+                    || actual.selection.start > previous.selection.start
+                {
+                    return Err("Input changed during selection; nothing was replaced".into());
+                }
+                if actual.selection == *span {
+                    return Ok(());
+                }
+                if actual.selection.start < previous.selection.start {
+                    previous = actual;
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(8));
+            }
+        }
+        Err("Selection exceeded the bounded compatibility budget; nothing was replaced".into())
     }
     pub(super) fn uses_native_range_replace(&self) -> bool {
         self.automation.is_none()
@@ -1154,6 +1208,107 @@ unsafe fn writable_text(element: &IUIAutomationElement) -> bool {
 #[cfg(test)]
 mod pinyin_tests {
     use super::*;
+    #[cfg(feature = "native-test")]
+    #[test]
+    #[ignore = "requires an explicitly selected empty Editor Kit draft"]
+    fn authorized_empty_editor_kit_preserves_structural_tail() {
+        assert_eq!(std::env::var("ECHO_WINDOWS_ACCEPTANCE").as_deref(), Ok("1"));
+        let hwnd: isize = std::env::var("ECHO_TEST_TARGET_HWND")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let expected = std::env::var("ECHO_TEST_TARGET_VALUE").unwrap();
+        unsafe {
+            CoInitializeEx(None, COINIT_MULTITHREADED).ok().unwrap();
+        }
+        let focus = FocusSnapshot::capture();
+        assert_eq!(focus.window_id, hwnd);
+        let automation = create_automation().unwrap();
+        let target = Target::open(&focus, Some(&automation)).unwrap();
+        target.inspect_synthetic_ranges(&expected).unwrap();
+        let actual = target.snapshot().unwrap();
+        assert_eq!(actual.text, [0x200b, 10, 0x200b, 10, 0x200b]);
+        assert_eq!(actual.selection, 0..0);
+        drop(target);
+        drop(automation);
+        unsafe {
+            CoUninitialize();
+        }
+    }
+    #[cfg(feature = "native-test")]
+    #[test]
+    #[ignore = "requires an explicitly selected synthetic GUI query"]
+    fn authorized_uia_query_selection_is_exact() {
+        assert_eq!(std::env::var("ECHO_WINDOWS_ACCEPTANCE").as_deref(), Ok("1"));
+        let hwnd: isize = std::env::var("ECHO_TEST_TARGET_HWND")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let expected = std::env::var("ECHO_TEST_TARGET_VALUE").unwrap();
+        assert_eq!(expected, "echo-perf-text-0013");
+        unsafe {
+            CoInitializeEx(None, COINIT_MULTITHREADED).ok().unwrap();
+        }
+        let focus = FocusSnapshot::capture();
+        assert_eq!(focus.window_id, hwnd);
+        let automation = create_automation().unwrap();
+        let target = Target::open(&focus, Some(&automation)).unwrap();
+        let before = target.snapshot().unwrap();
+        assert_eq!(before.text, expected.encode_utf16().collect::<Vec<_>>());
+        assert_eq!(before.selection, before.text.len()..before.text.len());
+        let guard = Deadline::new(Duration::from_millis(900));
+        assert!(guard.begin_selection());
+        target
+            .select(0..before.text.len(), &before, &guard)
+            .unwrap();
+        let after = target.snapshot().unwrap();
+        assert_eq!(after.text, before.text);
+        assert_eq!(after.selection, 0..before.text.len());
+        drop(target);
+        drop(automation);
+        unsafe {
+            CoUninitialize();
+        }
+    }
+    #[cfg(feature = "native-test")]
+    #[test]
+    #[ignore = "requires an explicitly selected empty synthetic GUI draft"]
+    fn authorized_uia_existing_caret_survives_confirmation() {
+        assert_eq!(std::env::var("ECHO_WINDOWS_ACCEPTANCE").as_deref(), Ok("1"));
+        let hwnd: isize = std::env::var("ECHO_TEST_TARGET_HWND")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let expected = std::env::var("ECHO_TEST_TARGET_VALUE").unwrap();
+        unsafe {
+            CoInitializeEx(None, COINIT_MULTITHREADED).ok().unwrap();
+        }
+        let focus = FocusSnapshot::capture();
+        assert_eq!(focus.window_id, hwnd);
+        let automation = create_automation().unwrap();
+        let target = Target::open(&focus, Some(&automation)).unwrap();
+        target.inspect_synthetic_ranges(&expected).unwrap();
+        let before = target.snapshot().unwrap();
+        assert!(before.text.is_empty());
+        assert_eq!(before.selection, 0..0);
+        let guard = Deadline::new(Duration::from_millis(900));
+        assert!(guard.begin_selection());
+        let result = target.select(0..0, &before, &guard);
+        let after = target.snapshot();
+        eprintln!(
+            "confirmation={result:?}; readback={:?}",
+            after.as_ref().map(|s| (s.text.len(), s.selection.clone()))
+        );
+        result.unwrap();
+        let after = after.unwrap();
+        assert!(after.text.is_empty());
+        assert_eq!(after.selection, 0..0);
+        drop(target);
+        drop(automation);
+        unsafe {
+            CoUninitialize();
+        }
+    }
     #[test]
     fn pinyin_full_preedit_matches_multiple_words_without_changing_source() {
         for (preedit, candidate) in [("w'he", "when"), ("e'ch", "echo"), ("p'ro", "project")] {
@@ -1161,7 +1316,8 @@ mod pinyin_tests {
                 preedit,
                 preedit.encode_utf16().count()..preedit.encode_utf16().count(),
             );
-            let range = QueryRange::begin(&snapshot(preedit, 0..current.text.len())).unwrap();
+            let mut range = QueryRange::begin(&snapshot("", 0..0)).unwrap();
+            range.observe(&current).unwrap();
             let preview = Preedit::Embedded {
                 document: current.text.clone(),
                 span: 0..current.text.len(),
@@ -1175,7 +1331,7 @@ mod pinyin_tests {
                 .highlights(candidate)
                 .is_empty());
             assert_eq!(range.query(), preedit);
-            assert_eq!(range.revision(), 1);
+            assert_eq!(range.revision(), 2);
         }
     }
     fn snapshot(text: &str, selection: Range<usize>) -> ComposerSnapshot {
@@ -1186,9 +1342,10 @@ mod pinyin_tests {
     }
     #[test]
     fn pinyin_native_preview_preserves_prefix_ticket_and_commit() {
-        let initial = snapshot("don't O'Reilly ", 0..15);
+        let initial = snapshot("", 0..0);
         let mut range = QueryRange::begin(&initial).unwrap();
         let current = snapshot("don't O'Reilly ", 15..15);
+        range.observe(&current).unwrap();
         for (input, expected) in [
             ("e", "e"),
             ("e'ch", "ech"),
@@ -1204,14 +1361,14 @@ mod pinyin_tests {
             );
         }
         assert_eq!(range.query(), "don't O'Reilly ");
-        assert_eq!(range.revision(), 1);
+        assert_eq!(range.revision(), 2);
         range
             .observe(&snapshot("don't O'Reilly echo", 19..19))
             .unwrap();
         assert_eq!(range.query(), "don't O'Reilly echo");
         assert_eq!(
             range
-                .seal(&snapshot("don't O'Reilly echo", 19..19), 2)
+                .seal(&snapshot("don't O'Reilly echo", 19..19), 3)
                 .unwrap(),
             0..19
         );
@@ -1222,9 +1379,10 @@ mod pinyin_tests {
     }
     #[test]
     fn pinyin_embedded_preview_uses_verified_span_not_current_caret() {
-        let initial = snapshot("🙂don't e'ch O'Reilly", 2..21);
-        let range = QueryRange::begin(&initial).unwrap();
+        let initial = snapshot("🙂", 2..2);
+        let mut range = QueryRange::begin(&initial).unwrap();
         let current = snapshot("🙂don't e'ch O'Reilly", 12..12);
+        range.observe(&current).unwrap();
         let preedit = Preedit::Embedded {
             document: current.text.clone(),
             span: 8..12,
@@ -1239,7 +1397,7 @@ mod pinyin_tests {
             "don't e'ch O'Reilly"
         );
         assert_eq!(range.query(), "don't e'ch O'Reilly");
-        assert_eq!(range.revision(), 1);
+        assert_eq!(range.revision(), 2);
         assert!(preedit
             .preview(&range, &snapshot("🙂don't echo O'Reilly", 12..12), true)
             .is_none());

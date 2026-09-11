@@ -3,8 +3,8 @@
 use windows::core::Interface;
 use windows::Win32::UI::Accessibility::*;
 
-/// Editor Kit exposes an empty composer as a read-only placeholder followed by
-/// three editable zero-width leaves. Typing removes the placeholder and puts the
+/// Editor Kit exposes an empty composer as read-only hints followed by
+/// three editable zero-width leaves. Typing removes the hints and puts the
 /// caret BEFORE the retained leaves. Project only this verified empty shape;
 /// literal zero-width characters in ordinary documents are never stripped.
 pub(super) unsafe fn empty_editor_kit_snapshot(
@@ -32,41 +32,57 @@ pub(super) unsafe fn empty_editor_kit_snapshot(
     let mut child = walker.GetFirstChildElement(&paragraph).ok();
     let mut leaves = Vec::new();
     while let Some(e) = child {
-        if leaves.len() == 4 || e.CurrentControlType().ok()? != UIA_TextControlTypeId {
+        if leaves.len() == 8 {
             return None;
         }
         child = walker.GetNextSiblingElement(&e).ok();
         leaves.push(e);
     }
-    if leaves.len() != 4
-        || !leaves[0]
-            .CurrentAriaProperties()
-            .ok()?
-            .to_string()
-            .split(';')
-            .any(|p| p == "readonly=true")
-        || !uia
-            .CompareElements(&selected.GetEnclosingElement().ok()?, &leaves[1])
-            .ok()?
-            .as_bool()
+    if leaves.len() < 4 {
+        return None;
+    }
+    let first_caret = leaves.len() - 3;
+    // Voice-input hints can be a readonly group beside the readonly text
+    // placeholder. Only those verified siblings may disappear on typing.
+    for hint in &leaves[..first_caret] {
+        let role = hint.CurrentControlType().ok()?;
+        if (role != UIA_TextControlTypeId && role != UIA_GroupControlTypeId)
+            || !hint
+                .CurrentAriaProperties()
+                .ok()?
+                .to_string()
+                .split(';')
+                .any(|p| p == "readonly=true")
+        {
+            return None;
+        }
+    }
+    if !uia
+        .CompareElements(&selected.GetEnclosingElement().ok()?, &leaves[first_caret])
+        .ok()?
+        .as_bool()
     {
         return None;
     }
-    let mut texts = Vec::new();
-    for leaf in &leaves {
-        texts.push(
-            pattern
-                .RangeFromChild(leaf)
-                .ok()?
-                .GetText(1024)
-                .ok()?
-                .to_vec(),
-        );
+    for leaf in &leaves[first_caret..] {
+        if leaf.CurrentControlType().ok()? != UIA_TextControlTypeId
+            || pattern.RangeFromChild(leaf).ok()?.GetText(2).ok()?.to_vec() != [0x200b]
+        {
+            return None;
+        }
     }
-    if texts[1..].iter().any(|t| t != &[0x200b]) {
-        return None;
-    }
-    project_empty_editor_kit(snapshot, &texts[0])
+    let prefix = doc.Clone().ok()?;
+    let first = pattern.RangeFromChild(&leaves[first_caret]).ok()?;
+    prefix
+        .MoveEndpointByRange(
+            TextPatternRangeEndpoint_End,
+            &first,
+            TextPatternRangeEndpoint_Start,
+        )
+        .ok()?;
+    let prefix = prefix.GetText(1024).ok()?.to_vec();
+    let placeholder = prefix.strip_suffix(&[10])?;
+    project_empty_editor_kit(snapshot, placeholder)
 }
 
 pub(super) unsafe fn is_editor_kit(editor: &IUIAutomationElement) -> bool {

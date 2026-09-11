@@ -49,6 +49,7 @@ pub struct QueryRange {
     prefix: Vec<u16>,
     suffix: Vec<u16>,
     query: Vec<u16>,
+    search_started: bool,
     revision: u64,
 }
 impl QueryRange {
@@ -60,10 +61,14 @@ impl QueryRange {
             prefix: snapshot.text[..snapshot.selection.start].to_vec(),
             suffix: snapshot.text[snapshot.selection.end..].to_vec(),
             query,
+            search_started: snapshot.selection.is_empty(),
             revision: 1,
         })
     }
     pub fn query(&self) -> String {
+        if !self.search_started {
+            return String::new();
+        }
         // begin/observe validate UTF-16 and boundaries before accepting data.
         String::from_utf16(&self.query).unwrap_or_default()
     }
@@ -98,6 +103,7 @@ impl QueryRange {
         let changed = query != self.query;
         if changed {
             self.query = query.to_vec();
+            self.search_started = true;
             self.revision = self
                 .revision
                 .checked_add(1)
@@ -227,10 +233,25 @@ mod tests {
         ));
     }
     #[test]
-    fn preexisting_selection_is_an_explicit_query_range() {
-        let q = QueryRange::begin(&snap("left email right", 5, 10)).unwrap();
-        assert_eq!(q.query(), "email");
+    fn preexisting_selection_is_only_a_replacement_range() {
+        let initial = snap("left email right", 5, 10);
+        let mut q = QueryRange::begin(&initial).unwrap();
+        assert_eq!(q.query(), "");
         assert_eq!(q.span(), 5..10);
+        assert_eq!(q.seal(&initial, q.revision()).unwrap(), 5..10);
+        q.observe(&initial).unwrap();
+        assert_eq!(
+            q.query(),
+            "",
+            "unchanged provider notifications must not seed search"
+        );
+        q.observe(&snap("left new right", 8, 8)).unwrap();
+        assert_eq!(q.query(), "new");
+        assert_eq!(q.span(), 5..8);
+        assert!(q.matches_replacement(
+            &"left result right".encode_utf16().collect::<Vec<_>>(),
+            &"result".encode_utf16().collect::<Vec<_>>()
+        ));
     }
     #[test]
     fn actual_unicode_text_not_key_counts_drives_the_query() {
