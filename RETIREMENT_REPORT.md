@@ -50,7 +50,7 @@ Historical migration docs beyond P08 remain as evidence indexes with unresolved 
 
 Cargo lock entries: 668 -> 632; surviving package versions unchanged. Full resolved Windows metadata, active tree, removed-token list and command logs are in `.local/retirement-evidence/`. Notices were generated from 357 active runtime/build packages; declared metadata and missing standalone license texts remain explicitly listed for review.
 
-Local batches: `0491079` tooling; `6f8d981` storage/smoke/CI; `baeadae` GPU/Skia retirement.
+Local batches: `0491079` tooling; `6f8d981` storage/smoke/CI; `baeadae` GPU/Skia retirement; `da8c200` documentation/notices.
 
 The notice generator also retains the OpenAI Apps SDK icon MIT notice directly from the shipped source asset license; 222 referenced Cargo license text hashes were verified.
 
@@ -66,9 +66,34 @@ Nineteen license texts newly unreferenced by the refreshed inventory were remove
 | Large-corpus complete search/cancellation | PASS; 233.06 seconds (`large-corpus.log`) |
 | Release | PASS; final source optimized build, 9m 29s (`frozen-release.log`) |
 | Windows collector checks | PASS; 10 checks (`collector-tests.log`) |
-| Native smoke / clipboard / quick-insert / ui | Pending |
-| Software T/M memory and frame timing | Pending |
-| Portable/ZIP package | Pending |
+| Native smoke | PASS; four checks including scoped reopen, acceptance flag unset (`final-smoke.log`) |
+| Clipboard / quick-insert / ui | BLOCKED before mutation; all commands exited 1 because the existing backup wrapper cannot materialize EnterpriseDataProtectionId (`final-clipboard.log`, `final-quick-insert.log`, `final-ui.log`) |
+| Software T memory / animation | PASS memory: 34,082,816 bytes peak; FAIL animation: P95 28.712 ms (`perf-T/result.json`) |
+| Software M memory / animation | PASS memory: 37,994,496 bytes peak; FAIL animation: P95 28.3254 ms (`perf-M/result.json`) |
+| Portable/ZIP package | PASS; clean source da8c200, 319 manifest hashes and exact ZIP byte identity verified; icon/version/manifest resources present (`package-inspection.json`) |
+| NSIS installer build | NOT_BUILT; independent compiler unavailable |
 | Installation/uninstallation, physical IME, extra DPI/monitors/editors | NOT_RUN |
 
 One verification attempt (`final-verify.log`) failed because the independent large-corpus test was still using its isolated temporary database. No data was deleted to hide this failure. After that test exited successfully, the full gate was rerun serially and passed (`frozen-verify.log`).
+
+## Artifact identity and native boundary
+
+- Final Release SHA256: `e66e351a6c24e9afa2b45d2ce749c3a000a0bdb0aa922a74cecefa80a15bdb27`.
+- Package: `target/echo-package/0.1.0/20260911T102131146-f3d473c0`; portable `Echo.exe` exactly matches the measured Release binary. The packaged source commit is clean `da8c200c8ca6b727c1bc1b2ec6cda8deb9c05c06`; later report-only changes do not change these executable bytes.
+- Package resources: 11 icon images, one group icon, one version resource and one manifest. This verifies resource presence, not taskbar/tray visual or installer acceptance.
+- `clipboard`, `quick-insert` and `ui` commands were actually attempted. Their raw runner status is FAIL/exit 1; acceptance is classified BLOCKED because the shared clipboard wrapper stopped at preflight before any test action. Clipboard contents were not cleared or replaced to bypass this guard. No clipboard restore claim is made because no mutation occurred.
+- The UI command stopped on the T preflight and did not run M. The independent T/M performance runner uses capture-disabled synthetic fixtures and never invokes clipboard operations; it is a separate, narrower observation.
+- Current-head image payload and anchored neighbor bounds tests remain and passed in `frozen-verify.log` (`image_only_original_is_an_insert_payload`, `popup_anchors_front_and_contains_the_whole_neighbor_at_screen_edges`). This is not a substitute for blocked native insertion acceptance.
+
+## Five-minute software performance results
+
+Both runs used the final non-native-test Release binary, one owned process and a separate copy of synthetic data (2,000 History / 200 Saved Items; T: 0 images, M: 20 images). Each completed 120 seconds visible, 120 hidden and 60 restored, with all 300 one-Hz samples valid. These are sampled Private Bytes peaks, not a claim about unsampled allocation high-water marks or compositor GPU allocations.
+
+| Dataset | Sampled peak bytes | Strict < 50,000,000 | Animation P95 | Required <= 20 ms | Reclaim acknowledgment |
+| --- | ---: | --- | ---: | --- | ---: |
+| Text T | 34,082,816 | PASS | 28.712 ms | FAIL | 30.0021818 s |
+| Mixed images M | 37,994,496 | PASS | 28.3254 ms | FAIL | 30.0010228 s |
+
+Both runs confirmed software renderer selection, complete synthetic History readiness, navigation after restoration, zero reclaimed row/thumbnail/frame bytes, worker cache acknowledgment, unchanged original-representation database signatures and normal exit. Each result contains only the animation-P95 error; thresholds were not weakened. Raw samples, lifecycle traces, actions, before/after signatures and the independent aggregate are retained in `.local/retirement-evidence/perf-T`, `perf-M` and `performance-summary.json`.
+
+**Outcome: structural cleanup PASS; animation timing FAIL. Overall product acceptance is not PASS.** Native clipboard, Quick Insert and full UI acceptance remain BLOCKED by the clipboard preservation preflight. Installation/uninstallation, physical IME, multiple DPI/monitors and additional real editors are NOT_RUN. The retained legacy direct UI assertions still need equivalent migration before their source can retire.
