@@ -1,6 +1,6 @@
 # Echo retirement report
 
-**Latest outcome (owner-revised criterion):** structural/native verification PASS; both final software performance datasets PASS at P95 <= 30ms. The final continuation below supersedes the historical native failures. Multi-DPI / multi-monitor acceptance is EXCLUDED by user request.
+**Latest outcome (owner-revised criterion):** structural/native verification PASS; both final software performance datasets PASS at P95 <= 30ms. The final continuation below supersedes the historical native failures. Clean installer/uninstaller and the expanded T/M UI gate PASS. Physical IME and multi-DPI / multi-monitor acceptance are EXCLUDED by user request. Extra real-editor acceptance and the remaining legacy assertion migration are not complete.
 
 ## Baseline and decisions
 
@@ -243,3 +243,29 @@ this is a reassessment, not a claim that the raw summaries passed. A complete
 rerun of the updated gate (`ui-migration-verified-T/M`) stopped at startup with
 `Windows did not grant foreground focus`, before mutation. That rerun remains
 BLOCKED by foreground acquisition and is not silently replaced with a PASS.
+
+## Final clean artifact
+
+Package source is clean `9580e144904f5a5a95299c568af94737b12d7319`.
+Artifact directory: `target/echo-package/0.1.0/20260911T140859267-c53d9091`.
+Installer SHA256: `950764114402edd8d894a40a1d9c6912b188bff7d410fed8e016864d39db19bc`.
+ZIP SHA256: `5c335e9d3d8bcd5eb72a42bd2d36979fae9ceff815a2c99671fea322b227e07f`.
+The packaged Release EXE remains byte-identical to the performance-tested binary.
+
+`post-acceptance/package-clean-inspection.json` PASSes all 319 manifest hashes,
+ZIP byte identity, icon/version/manifest resources and icon license. Both final
+installer modes PASS again in `post-acceptance/install-check-clean/results.json`,
+including installed smoke, native uninstall, integration cleanup and data/sentinel
+preservation. `package.json` keeps its build-time `installation_test: NOT_RUN`;
+the subsequent execution evidence above is authoritative for acceptance.
+Self-check, format and full verify PASS (`post-acceptance/final-*.log`).
+The final report-only commit does not alter the accepted executable or installer.
+
+The final updated UI gate subsequently PASSed uninterrupted for both T and M:
+`post-acceptance/ui-migration-clean-T/summary.json` and
+`post-acceptance/ui-migration-clean-M/summary.json`. Each includes all 16 native
+operation checks plus retained-original verification. The wrapper restored the
+clipboard (`post-acceptance/ui-clean-clipboard.json`). This resolves the earlier
+startup-blocked rerun for current gate acceptance; failed attempts remain intact.
+The remaining boundaries are the retained legacy assertion migration and extra
+real-editor acceptance; physical IME and multi-DPI/monitors are excluded this round.
