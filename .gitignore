@@ -12,3 +12,5 @@
 /tests/verification/r5-storage-runtime/target/
 .DS_Store
 /.local
+__pycache__/
+*.py[cod]

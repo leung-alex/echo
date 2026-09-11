@@ -109,6 +109,10 @@ def main():
         for kind,total in [('first',count),('repeat',0 if args.probe else args.repeat_count)]:
             for index in range(total):
                 if kind=='first':start_echo()
+                # Re-establish the owned fixture after a deep-hide wait. Shell
+                # notifications can change foreground during the 36-second gap;
+                # the driver still rechecks foreground immediately before input.
+                if args.idle_seconds and kind=='repeat':time.sleep(args.idle_seconds)
                 side='right' if index%2==0 else 'left'
                 x=work[0]+50 if side=='right' else work[2]-int(650*scale)
                 y=work[1]+int(220*scale)
@@ -136,7 +140,6 @@ def main():
                 left=cx-int((50 if side=='right' else 460)*scale)
                 right=cx+int((980 if side=='right' else 570)*scale)
                 atomic(root/'capture-region.json',[max(work[0],left),max(work[1],cy-int(70*scale)),min(work[2],right),min(work[3],by+int(620*scale))])
-                if args.idle_seconds and kind=='repeat':time.sleep(args.idle_seconds)
                 name=f'{args.target}-{kind}-{index:02d}-{side}'
                 before=set(root.glob('trace-*.json'))
                 if args.query_cycle:

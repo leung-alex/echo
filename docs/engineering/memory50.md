@@ -25,8 +25,8 @@ Slint backend is retained; no repeated backend selection or device destruction i
 attempted. Pending mutation/modal state prevents unsafe reclamation.
 Normal dismissal publishes the new session epoch before arming the hidden timer.
 The timer and worker acknowledgment must match both that epoch and the hidden
-generation. `check-reclaim.py` rejects a missing/late acknowledgment even when the
-window successfully hides; visibility alone cannot establish reclamation.
+generation. The current software memory gate rejects a missing/late acknowledgment
+even when the window successfully hides; visibility alone cannot establish reclamation.
 An in-progress input transaction defers reclamation and retries within the same
 hidden epoch/generation. The retry is discarded after a new activation. A busy
 transaction can still miss the 35-second deadline; that remains a measured FAIL.
@@ -67,35 +67,17 @@ diagnostic modes cannot substitute for current production acceptance.
 
 For synthetic fixtures, `ECHO_WINDOWS_ACCEPTANCE=1` plus an existing
 `ECHO_MEMORY_TRACE_DIR` enables bounded lifecycle JSONL without clipboard/query
-content. Region inventories from `tests/performance/memory-map.py` read no memory
-contents and are not allocation-stack evidence.
+content. Current maintained tools and their acceptance boundaries are listed in
+[the performance README](../../tests/performance/README.md).
 
-`tests/performance/Invoke-Memory50.ps1` orchestrates an isolated run using the
-development pack's immutable wrapper. It checks retained database content and
-semantic restore, but does not certify a complete rendered first frame. Use the
-native pixel timing observer for that separate endpoint.
-The historical GPU formal runs reject inherited renderer/diagnostic overrides and require
-the actual perspective GPU selection event. Baseline builds without that event
-remain explicitly diagnostic.
+The original GPU matrix, process-split probes, 100-cycle runner and 4K/8K stress
+runners are retired. The approved software workflow uses two five-minute T/M
+runs through `Measure-SoftwareDeck.ps1`, plus separately scoped input and UI
+regressions. The old three-session R50 GPU matrix is historical, not an additional
+requirement for that workflow. Its evidence must not be relabeled as software PASS.
 
-R50 requires three independent runs for each S0/S1/S2 fixture, with at least 300
-valid samples over at least 300 seconds after the 35-second settling interval.
-`Invoke-Memory50Soak.ps1` runs controlled capture/show/hide for 600 seconds through
-the existing clipboard-preservation wrapper. Neither short diagnostics nor a
-process exiting unexpectedly can satisfy acceptance.
-`Invoke-Memory50Cycles.ps1` exercises 100 owned-window cycles and crosses the
-reclamation threshold every twentieth cycle. `Invoke-Memory50LargeImages.ps1`
-observes isolated 4K/8K capture and repeats both images at a requested 100 ms
-sampling interval. Actual collection cost and missing samples remain observable;
-this does not prove an allocation high-water mark.
-The image check compares retained bytes to the actual Windows DIB representation
-and applies the existing size policy. It rejects partial input/measurement runs.
-Capture tests register independent owned-process handles with the clipboard
-preservation wrapper. Personal clipboard restoration requires those processes to
-have exited; forced cleanup of a failed test is recorded as a test failure.
-
-Process lifecycle subscriptions may require privileges unavailable in the current
-session. Preserve UNAVAILABLE/Access denied and independently review ownership;
-never turn missing metrics into zero or silently upgrade SAMPLED_UNVERIFIED.
-The M05 process-split decision must still be based on measured retention and a
-prototype that meets the approved latency and session-safety gates.
+Process lifecycle subscriptions may require unavailable privileges. Preserve
+UNAVAILABLE/Access denied and independently review ownership; missing metrics
+are not zero, and SAMPLED_UNVERIFIED is not PASS. Current software rendering does
+not split UI into another product process. The earlier M05 discussion is retained
+in ADR 002 as decision history, not an active test command.

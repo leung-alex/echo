@@ -10,17 +10,39 @@ param(
     [Parameter(Mandatory)][ValidateRange(1,2147483647)][int]$RootProcessId,
     [Parameter(Mandatory)][string]$OutputDirectory,
     [ValidateRange(1,86400)][int]$DurationSeconds = 300,
-    [ValidateRange(500,60000)][int]$IntervalMilliseconds = 1000
+    [ValidateRange(100,60000)][int]$IntervalMilliseconds = 1000,
+    [string[]]$ExpectedExecutable = @()
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 if (-not $IsWindows) { throw 'Run this collector on Windows with PowerShell 7+.' }
 . (Join-Path $PSScriptRoot 'Common.ps1')
-$rootInfo = Get-CimInstance Win32_Process -Filter "ProcessId = $RootProcessId"
+Add-Type -Path (Join-Path $PSScriptRoot 'ProcessSnapshot.cs')
+$rootInfo = [Echo.Performance.ProcessSnapshot]::Capture() | Where-Object ProcessId -EQ $RootProcessId
 if ($null -eq $rootInfo) { throw 'Root PID does not exist.' }
 $out = New-EchoEvidenceDirectory $OutputDirectory
 $rootCreated = ([datetime]$rootInfo.CreationDate).ToUniversalTime().Ticks
+$rootSession = $rootInfo.SessionId
+if ($rootInfo.IdentityError -ne 0 -or $rootSession -lt 0) { throw 'Root process identity could not be established.' }
+$expectedPaths = @($ExpectedExecutable | ForEach-Object { (Resolve-Path -LiteralPath $_).Path })
+if ($expectedPaths.Count -gt 0 -and $rootInfo.ExecutablePath -notin $expectedPaths) {
+    throw 'Root executable does not match the measured product allowlist.'
+}
 $logicalCpus = [Environment]::ProcessorCount
+# Initialize native and managed Process counters outside the timed window.
+# The warm-up is not a sample and cannot contribute a fabricated zero/short read.
+$null = [Echo.Performance.ProcessSnapshot]::Capture()
+$null = [Echo.Performance.ProcessSnapshot]::ReadMemory($RootProcessId, $rootCreated)
+$warmProcess = Get-Process -Id $RootProcessId -ErrorAction Stop
+try {
+    $warmProcess.Refresh()
+    $null = $warmProcess.StartTime
+    $null = $warmProcess.TotalProcessorTime
+    $null = $warmProcess.PrivateMemorySize64
+    $null = $warmProcess.WorkingSet64
+    $null = $warmProcess.HandleCount
+    $null = $warmProcess.Threads.Count
+} finally { $warmProcess.Dispose() }
 $clock = [Diagnostics.Stopwatch]::StartNew()
 $known = @{}             # PID -> identity, never trusts PID alone.
 $known[$RootProcessId] = @{ created=$rootCreated; parent=0; name=$rootInfo.Name }
@@ -35,11 +57,40 @@ $previousElapsed = 0.0
 $rootEverExited = $false
 $completed = $false
 $beginUtc = [datetime]::UtcNow.ToString('o')
+$tracePrefix = 'echo-memory-' + [guid]::NewGuid().ToString('N')
+$traceSources = @()
+$lifetimeEvents = [Collections.Generic.List[object]]::new()
+$traceError = $null
 try {
+    # Independent OS lifecycle stream complements sampled ancestry; never upgrades ownership by itself.
+    foreach ($kind in @('Start', 'Stop')) {
+        $source = "$tracePrefix-$kind"
+        try {
+            Register-CimIndicationEvent -Namespace root/cimv2 -Query "SELECT * FROM Win32_Process${kind}Trace" -SourceIdentifier $source -ErrorAction Stop | Out-Null
+            $traceSources += $source
+        } catch {
+            $traceError = $_.Exception.Message
+            break
+        }
+    }
+    $clock.Restart()
+    $beginUtc = [datetime]::UtcNow.ToString('o')
     while ($clock.Elapsed.TotalSeconds -lt $DurationSeconds) {
         $tickStart = $clock.Elapsed.TotalMilliseconds
         $elapsed = $clock.Elapsed.TotalSeconds
-        $snapshot = @(Get-CimInstance Win32_Process)
+        $snapshot = @([Echo.Performance.ProcessSnapshot]::Capture())
+        foreach ($source in $traceSources) {
+            foreach ($trace in @(Get-Event -SourceIdentifier $source -ErrorAction SilentlyContinue)) {
+                $record = $trace.SourceEventArgs.NewEvent
+                $lifetimeEvents.Add([ordered]@{
+                    kind=$(if ($source.EndsWith('-Start')) { 'start' } else { 'stop' })
+                    process_id=[int]$record.ProcessID; name=[string]$record.ProcessName
+                    observed_utc=$trace.TimeGenerated.ToUniversalTime().ToString('o')
+                    os_time=[string]$record.TIME_CREATED
+                })
+                Remove-Event -EventIdentifier $trace.EventIdentifier
+            }
+        }
         $current = @{}
         foreach ($record in $snapshot) {
             $processIdValue = [int]$record.ProcessId
@@ -72,34 +123,44 @@ try {
                 }
             }
         } while ($added)
-        if ($known.Count -eq 0) { $errors.Add("sample=$sampleIndex no live owned processes"); break }
-        $privateWs = @{}
-        try {
-            foreach ($counter in @(Get-CimInstance Win32_PerfRawData_PerfProc_Process)) {
-                if ($null -ne $counter.PSObject.Properties['WorkingSetPrivate']) {
-                    $privateWs[[int]$counter.IDProcess] = [double]$counter.WorkingSetPrivate
-                }
+        # Exact run-specific executable copies also reveal products detached from their parent.
+        foreach ($record in $snapshot) {
+            $processIdValue = [int]$record.ProcessId
+            if ($record.SessionId -eq $rootSession -and $expectedPaths.Count -gt 0 -and $record.ExecutablePath -in $expectedPaths -and -not $known.ContainsKey($processIdValue)) {
+                $known[$processIdValue] = @{ created=([datetime]$record.CreationDate).ToUniversalTime().Ticks; parent=[int]$record.ParentProcessId; name=$record.Name; detached_unverified=$true }
+                $topologyChanged = $true
             }
-        } catch { $errors.Add("sample=$sampleIndex private-working-set counters unavailable") }
+        }
+        if ($known.Count -eq 0) { $errors.Add("sample=$sampleIndex no live owned processes"); break }
         $sumPrivate = 0.0; $sumPrivateWs = 0.0; $sumWs = 0.0; $sumCpu = 0.0
         $sumHandles = 0; $sumThreads = 0; $readCount = 0
         $valid = (-not $rootEverExited); $cpuValid = ($sampleIndex -gt 0 -and -not $topologyChanged)
+        $expectedNames = @($expectedPaths | ForEach-Object { [IO.Path]::GetFileName($_) })
+        foreach ($record in $snapshot) {
+            if ($record.SessionId -eq $rootSession -and $record.Name -in $expectedNames -and $record.IdentityError -ne 0) {
+                $valid=$false; $errors.Add("sample=$sampleIndex unresolved product identity pid=$($record.ProcessId)")
+            }
+        }
         foreach ($processIdValue in @($known.Keys | Sort-Object)) {
             $identity = $known[$processIdValue]
             $key = "$processIdValue`:$($identity.created)"
-            $allIdentities[$key] = @{ process_id=$processIdValue; created_utc_ticks=$identity.created; parent_id=$identity.parent; name=$identity.name }
+            $allIdentities[$key] = @{ process_id=$processIdValue; created_utc_ticks=$identity.created; parent_id=$identity.parent; name=$identity.name; session_id=$current[$processIdValue].SessionId; executable=$current[$processIdValue].ExecutablePath }
+            if ($identity.created -lt $rootCreated -or $current[$processIdValue].IdentityError -ne 0 -or $current[$processIdValue].SessionId -ne $rootSession -or $identity.ContainsKey('detached_unverified')) {
+                $valid=$false; $errors.Add("sample=$sampleIndex unexpected or unresolved run identity pid=$processIdValue")
+            }
             try {
                 $process = Get-Process -Id $processIdValue -ErrorAction Stop
                 try {
                     $process.Refresh()
-                    # CIM timestamps can be rounded to microseconds; allow at most 1ms conversion difference.
-                    if ([Math]::Abs($process.StartTime.ToUniversalTime().Ticks - [long]$identity.created) -gt 10000) { throw 'PID identity changed during sampling.' }
-                    $bytes = [double]$process.PrivateMemorySize64
-                    $ws = [double]$process.WorkingSet64
+                    # Both native and managed timestamps use the same Windows process creation time.
+                    if ($process.StartTime.ToUniversalTime().Ticks -ne [long]$identity.created) { throw 'PID identity changed during sampling.' }
+                    $memory = [Echo.Performance.ProcessSnapshot]::ReadMemory($processIdValue, [long]$identity.created)
+                    $bytes = [double]$memory.PrivateUsage.ToUInt64()
+                    $ws = [double]$memory.WorkingSet.ToUInt64()
                     $cpuMs = $process.TotalProcessorTime.TotalMilliseconds
                     $handles = $process.HandleCount
                     $threads = $process.Threads.Count
-                    $pws = if ($privateWs.ContainsKey($processIdValue)) { $privateWs[$processIdValue] } else { $null }
+                    $pws = [double]$memory.PrivateWorkingSet.ToUInt64()
                     if ($null -eq $pws) { $valid = $false }
                     if ($previousCpu.ContainsKey($processIdValue)) {
                         $delta = $cpuMs - [double]$previousCpu[$processIdValue]
@@ -136,16 +197,26 @@ try {
     }
     $completed = ($clock.Elapsed.TotalSeconds -ge $DurationSeconds)
 } finally {
+    foreach ($source in $traceSources) {
+        Unregister-Event -SourceIdentifier $source -ErrorAction SilentlyContinue
+        foreach ($trace in @(Get-Event -SourceIdentifier $source -ErrorAction SilentlyContinue)) {
+            $record = $trace.SourceEventArgs.NewEvent
+            $lifetimeEvents.Add([ordered]@{kind=$(if ($source.EndsWith('-Start')) {'start'} else {'stop'}); process_id=[int]$record.ProcessID; name=[string]$record.ProcessName; observed_utc=$trace.TimeGenerated.ToUniversalTime().ToString('o'); os_time=[string]$record.TIME_CREATED})
+            Remove-Event -EventIdentifier $trace.EventIdentifier
+        }
+    }
+    Write-EchoJsonNew (Join-Path $out 'lifetime-events.json') ([ordered]@{schema='echo.process.lifetime.v1'; status=$(if ($null -eq $traceError) {'REVIEW_REQUIRED'} else {'UNAVAILABLE'}); error=$traceError; events=@($lifetimeEvents.ToArray()); expected_executables=$expectedPaths})
     $clock.Stop()
     $metadata = [ordered]@{
         schema='echo.process.samples.v1'; status=$(if ($completed -and $validSamples -eq $sampleIndex -and $sampleIndex -gt 0 -and -not $rootEverExited) { 'SAMPLED_UNVERIFIED' } else { 'INCOMPLETE' })
-        started_at_utc=$beginUtc; root_process_id=$RootProcessId; root_created_utc_ticks=$rootCreated
+        started_at_utc=$beginUtc; root_process_id=$RootProcessId; root_created_utc_ticks=$rootCreated; root_session_id=$rootSession
+        native_counter_sha256=(Get-FileHash -LiteralPath (Join-Path $PSScriptRoot 'ProcessSnapshot.cs') -Algorithm SHA256).Hash.ToLowerInvariant()
         requested_duration_s=$DurationSeconds; actual_duration_s=$clock.Elapsed.TotalSeconds
         interval_ms=$IntervalMilliseconds; sample_count=$sampleIndex; valid_sample_count=$validSamples
         logical_processors=$logicalCpus; root_exited=$rootEverExited
         process_set_verified=$false; gpu='NOT_RUN'; startup_ui_ready='NOT_MEASURED'
         identities=@($allIdentities.Values); errors=@($errors.ToArray())
-        notes=@('Private Bytes is commit, not resident RAM.','Working-set sum may double-count shared pages.','Polling can miss short-lived or initially orphaned descendants: independently verify WebView2 process ownership.','First/new-process CPU intervals are invalid, not zero.','CIM and per-process reads are sequential, not a single atomic snapshot; collection_duration_ms records sampling cost.','Collect observer overhead separately; this tool does not certify timing accuracy or GUI readiness.')
+        notes=@('Private Bytes is commit, not resident RAM.','Working-set sum may double-count shared pages.','Review OS lifetime events for short-lived helpers and reconcile exact executable identities; lifecycle events do not measure between-sample peaks.','First/new-process CPU intervals are invalid, not zero.','Toolhelp identity and per-process reads are sequential, not a single atomic snapshot; collection_duration_ms records sampling cost.','Collect observer overhead separately; this tool does not certify timing accuracy or GUI readiness.')
     }
     Write-EchoJsonNew (Join-Path $out 'metadata.json') $metadata
 }

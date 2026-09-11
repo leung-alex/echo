@@ -40,7 +40,7 @@ def analyze(root, row):
                 return dict(observed_ms=float(times[i,1]),lower_ms=float(max(0,times[i-1,0])),
                     upper_ms=float(times[i,1]),pixels=int(pixels.sum()),frame=i,scores=scores)
         raise RuntimeError(f'No stable appearance: {name}')
-    first=detect(main,.75);full=detect(side,.98);body_ready=detect(body,.98);side_detail=detect(side&detail,.98)
+    first=detect(main,.98);full=detect(side,.98);body_ready=detect(body,.98);side_detail=detect(side&detail,.98)
     complete=dict(lower_ms=max(first['lower_ms'],full['lower_ms'],body_ready['lower_ms'],side_detail['lower_ms']),
         upper_ms=max(first['upper_ms'],full['upper_ms'],body_ready['upper_ms'],side_detail['upper_ms']))
     stages={}
