@@ -1,8 +1,11 @@
 package main
 
 import (
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -58,5 +61,32 @@ func TestNativePlansNeverRequireBrowserTools(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestNativeGateRoutesToCurrentRunners(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows command routing")
+	}
+	t.Setenv("ECHO_WINDOWS_ACCEPTANCE", "1")
+	for _, scope := range []string{"smoke", "ui", "clipboard", "quick-insert"} {
+		t.Run(scope, func(t *testing.T) {
+			sentinel := errors.New("stop before executing build")
+			var command string
+			a := &app{root: t.TempDir(), out: io.Discard, runOverride: func(name string, args ...string) error {
+				command = name + " " + strings.Join(args, " ")
+				return sentinel
+			}}
+			if err := a.runNativeGate(scope); !errors.Is(err, sentinel) {
+				t.Fatalf("route failed: %v", err)
+			}
+			expected := "--features native-test"
+			if scope == "smoke" {
+				expected = "--release"
+			}
+			if !strings.Contains(command, expected) {
+				t.Fatalf("%s routed to %s", scope, command)
+			}
+		})
 	}
 }

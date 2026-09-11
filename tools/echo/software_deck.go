@@ -10,9 +10,9 @@ import (
 
 // UI acceptance is a separately built, optimized test executable. Distribution builds
 // never enable native-test. The bridge restricts all input/captures to owned synthetic data.
-func (a *app) runCoverFlowGate() error {
+func (a *app) runSoftwareDeckGate() error {
 	if runtime.GOOS != "windows" || os.Getenv("ECHO_WINDOWS_ACCEPTANCE") != "1" {
-		return fmt.Errorf("Cover Flow acceptance requires authorized Windows execution")
+		return fmt.Errorf("Software deck acceptance requires authorized Windows execution")
 	}
 	if err := a.run("cargo", "build", "-p", "echo-desktop", "--profile", "perf", "--no-default-features", "--features", "native-test", "--locked"); err != nil {
 		return err

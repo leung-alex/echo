@@ -14,7 +14,7 @@ func (a *app) runNativeGate(scope string) error {
 		return a.runInlineGate(scope)
 	}
 	if scope == "ui" {
-		return a.runCoverFlowGate()
+		return a.runSoftwareDeckGate()
 	}
 	if runtime.GOOS != "windows" {
 		return fmt.Errorf("native acceptance requires Windows")
@@ -34,25 +34,12 @@ func (a *app) runNativeGate(scope string) error {
 	}
 	run := filepath.Join(root, scope+"-"+time.Now().UTC().Format("20060102T150405.000000000"))
 	fmt.Fprintf(a.out, "Native evidence: %s\n", run)
-	tools := filepath.Join(root, "test-tools")
-	if err := os.MkdirAll(tools, 0o700); err != nil {
-		return err
-	}
 	overrides := map[string]string{}
 	if os.Getenv("ECHO_NATIVE_FIXTURE_DIR") == "" && os.Getenv("ECHO_NATIVE_FIXTURE_EXE") == "" {
 		if err := a.run("cargo", "build", "--release", "--locked", "-p", "echo-storage", "--example", "native_fixture"); err != nil {
 			return err
 		}
 		overrides["ECHO_NATIVE_FIXTURE_EXE"] = filepath.Join(a.root, "target", "release", "examples", "native_fixture.exe")
-	}
-	if scope == "clipboard" || scope == "quick-insert" {
-		if os.Getenv("ECHO_ACCEPTANCE_FIXTURE_EXE") == "" {
-			fixture, err := a.buildNativeFixture(tools)
-			if err != nil {
-				return err
-			}
-			overrides["ECHO_ACCEPTANCE_FIXTURE_EXE"] = fixture
-		}
 	}
 	return a.runWithEnv(overrides, "pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", filepath.Join(a.root, "tests", "native", "Invoke-NativeGate.ps1"),
 		"-Root", a.root, "-Executable", a.desktopExecutable(true), "-Scope", scope, "-EvidenceRoot", run)

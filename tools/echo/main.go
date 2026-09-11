@@ -877,20 +877,6 @@ func (a *app) acceptanceCommand(args []string) error {
 
 func (a *app) runAcceptance(owner string) error { return a.runNativeGate(owner) }
 
-func (a *app) buildNativeFixture(outputDir string) (string, error) {
-	if runtime.GOOS != "windows" {
-		return "", fmt.Errorf("native fixture requires Windows")
-	}
-	output := filepath.Join(outputDir, "echo-native-fixture.exe")
-	if err := a.run("go", "-C", "tools/echo", "build", "-trimpath", "-o", output, "./fixture"); err != nil {
-		return "", fmt.Errorf("build Echo native fixture: %w", err)
-	}
-	if !fileExists(output) {
-		return "", fmt.Errorf("native fixture executable is missing: %s", output)
-	}
-	return output, nil
-}
-
 func (a *app) packageCommand(dirOnly bool) error {
 	if err := a.build(true); err != nil {
 		return err

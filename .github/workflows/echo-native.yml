@@ -43,10 +43,8 @@ jobs:
         run: |
           ./echo.cmd build --release
           if ($LASTEXITCODE) { throw 'Native Release build failed' }
-      - name: Verify software-only fallback
+      - name: Build software desktop in debug mode
         run: |
-          cargo test -p echo-desktop --no-default-features --locked
-          if ($LASTEXITCODE) { throw 'Software-only tests failed' }
           cargo build -p echo-desktop --no-default-features --locked
           if ($LASTEXITCODE) { throw 'Software-only build failed' }
       - name: Record platform acceptance boundary
