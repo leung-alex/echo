@@ -1,6 +1,6 @@
 # Echo retirement report
 
-**Latest outcome:** structural/native verification PASS; animation timing FAIL. The final continuation below supersedes the historical native failures. Multi-DPI / multi-monitor acceptance is EXCLUDED by user request.
+**Latest outcome (owner-revised criterion):** structural/native verification PASS; both final software performance datasets PASS at P95 <= 30ms. The final continuation below supersedes the historical native failures. Multi-DPI / multi-monitor acceptance is EXCLUDED by user request.
 
 ## Baseline and decisions
 
@@ -187,3 +187,9 @@ Both final five-minute runs used this packaged, non-native-test EXE with no Carg
 Evidence: `perf-final-T`, `perf-final-M`, `performance-final-summary.json`; these sampled peaks do not claim unsampled allocation high-water proof. The prior performance failures and diagnostic experiments remain preserved.
 
 **Final outcome: structural cleanup PASS; animation timing FAIL. Overall product acceptance is not PASS.** The three previously failing Quick Insert assertions are now repaired and pass the full native run. Animation timing remains unresolved. Installer/physical-input/extra-editor boundaries above remain unaccepted, and the legacy direct UI script's unique assertions still require equivalent migration before that script can retire. R12 CSS and R14 icon aliases remain intentionally retained.
+
+## Owner-approved 30ms criterion (2026-09-11)
+
+The owner explicitly revised animation P95 acceptance from 20ms to 30ms and requested continuation of remaining acceptance. The canonical measurement gate and its current contract now use 30ms; animation durations, pacing and the strict 50,000,000-byte memory limit are unchanged.
+
+The existing complete T/M five-minute runs were independently reassessed, not rerun. Both have 300 valid samples, unchanged original signatures, normal exit and no error except the superseded 20ms criterion. T P95 28.5783ms and M P95 28.7108ms therefore **PASS** at 30ms. Exact source hashes and the revised evaluation are in `.local/retirement-evidence/post-acceptance/performance-30ms-reassessment.json`. Raw 20ms FAIL artifacts and historical report sections remain unchanged. This passes the software performance gate; the remaining acceptance boundaries are still separate.

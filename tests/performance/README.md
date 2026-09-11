@@ -13,10 +13,15 @@ All valid stable visible/restored and hidden-after-35-second samples must be
 strictly below 50,000,000 aggregate product Private Bytes. Unknown identities,
 missing samples, exits, unacknowledged reclamation and incomplete content fail.
 The renderer must be software; motion requires a prepared-frame event and P95
-presented frame intervals no greater than 20 ms. Original representation and blob
+presented frame intervals no greater than 30 ms. Original representation and blob
 hashes are checked. Raw and classified samples remain alongside the exact binary
 hash. The optional GPU observer is separate so a slow counter provider cannot
 delay memory sampling; absent counters do not mean zero GPU usage.
+
+The owner revised the P95 limit from 20 ms to 30 ms on 2026-09-11.
+This does not change animation durations, frame scheduling or the memory limit.
+Prior raw evidence retains its original threshold and verdict; reassessments must
+identify the source binary, raw results and the revised criterion.
 
 ## Supported tools
 

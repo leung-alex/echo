@@ -23,7 +23,7 @@ $psi.Environment['ECHO_DATA_DIR']=Join-Path $OutputDirectory 'data'
 $psi.Environment['ECHO_WINDOWS_ACCEPTANCE']='1';$psi.Environment['ECHO_MEMORY_TRACE_DIR']=$OutputDirectory
 foreach($name in @('ECHO_RENDERER','SLINT_BACKEND','SLINT_DESTROY_WINDOW_ON_HIDE','ECHO_NATIVE_TEST_ROOT','ECHO_MEMORY_NO_OFFSCREEN','ECHO_MEMORY_DESTROY_GRAPHICS','ECHO_ACCEPTANCE_FORCE_GRAPHICS_FALLBACK')){$psi.Environment.Remove($name)|Out-Null}
 $rows=[Collections.Generic.List[object]]::new();$errors=[Collections.Generic.List[string]]::new();$actions=[Collections.Generic.List[object]]::new()
-$result=[ordered]@{schema='echo.software-deck.memory.v1';status='RUNNING';threshold_bytes=50000000;fixture=$marker;sha256=(Get-FileHash $Executable).Hash;measurement='Private Bytes; 1 Hz sampled peaks, not allocation high-water proof';native_test=$false;gpu='No GPU renderer; compositor GPU memory is reported separately when measured';error=$null}
+$result=[ordered]@{schema='echo.software-deck.memory.v1';status='RUNNING';threshold_bytes=50000000;animation_threshold_ms=30;fixture=$marker;sha256=(Get-FileHash $Executable).Hash;measurement='Private Bytes; 1 Hz sampled peaks, not allocation high-water proof';native_test=$false;gpu='No GPU renderer; compositor GPU memory is reported separately when measured';error=$null}
 $app=$null
 function Window {
     if($app.HasExited){throw 'Root process exited'}
@@ -132,7 +132,7 @@ try{
     if($sorted.Count -lt 30){$errors.Add('Too few presented animation frames')}
     else{
         $result.animation=@{presented_intervals=$sorted.Count;p95_ms=$sorted[[Math]::Ceiling($sorted.Count*.95)-1];max_ms=$sorted[-1];render_present_max_ms=($frameCost|Measure-Object -Maximum).Maximum}
-        if($result.animation.p95_ms -gt 20){$errors.Add("Animation P95 exceeded 20ms: $($result.animation.p95_ms)")}
+        if($result.animation.p95_ms -gt 30){$errors.Add("Animation P95 exceeded 30ms: $($result.animation.p95_ms)")}
     }
     $result.status=if($errors.Count){'FAIL'}else{'PASS'}
 }catch{$result.status='FAIL';$result.error=$_.ToString()}
