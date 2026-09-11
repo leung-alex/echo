@@ -1,4 +1,5 @@
 Unicode true
+SetCompressor /SOLID lzma
 !include "LogicLib.nsh"
 !include "FileFunc.nsh"
 !include "nsDialogs.nsh"
@@ -13,7 +14,6 @@ Name "Echo"
 OutFile "${OUT}"
 RequestExecutionLevel user
 InstallDir "$LOCALAPPDATA\Programs\Echo"
-SetCompressor /SOLID lzma
 ShowInstDetails show
 ShowUninstDetails show
 VIProductVersion "${VERSION}.0"
