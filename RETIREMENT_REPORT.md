@@ -1,6 +1,6 @@
 # Echo retirement report
 
-**Latest outcome:** the remaining native/editor acceptance in the owner-approved scope PASS,
+**Latest outcome:** all required acceptance in the owner-approved scope PASS,
 including expanded T/M native UI and 30/30 actual Notepad rounds. The legacy UI
 inventory has retired with a complete mapping. Physical IME and multi-DPI/monitors
 are EXCLUDED_BY_USER. Historical sections retain earlier failures and pending
@@ -339,3 +339,19 @@ and single-file scope findings were corrected. The standards review withdrew its
 batch-entry concern after checking the guarded render paths and absence of any
 current begin action; the new mapping is now required by self-check. No remaining
 review finding is open in this completion diff.
+
+## Completed delivery artifact
+
+Final tested source commit: `fbc35a8569e47577fa11a4fd8845a761a4e829b7` (clean).
+Final package: `target/echo-package/0.1.0/20260911T145650258-f8c0a8e8`.
+- ZIP SHA256: `fa292958ec1bf2a4c05f0ac6986e48709ce7d1b793ab6e037d76818d31699f1c`.
+- Installer SHA256: `f255882bf56924a68171eaa592c0784bf63f0a5ed4926e6b301ecb45fc954ab0`.
+- Portable/ZIP inspection: PASS, all 319 file hashes, ZIP byte identity, resources and icon license (`completion/package-inspection.json`).
+- Final integrated and isolated installer modes: PASS, installed smoke, uninstall, owned integration cleanup, unchanged synthetic data and unknown sentinel preservation (`completion/install-check/results.json`).
+- Tools Go tests: PASS (`go test ./...` in `tools/echo`).
+
+All required acceptance in the explicitly agreed retirement scope is complete.
+Physical IME and multi-DPI/monitors remain EXCLUDED_BY_USER. The 30ms performance
+criterion and all original payload/memory limits remain as recorded above. The
+final report-only commit does not change these artifacts. Local main stays
+`44fc2a0a723595a3ff51ca557bfa03653147e521`; no push or merge was performed.
