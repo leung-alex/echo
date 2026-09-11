@@ -3,8 +3,6 @@
 #[global_allocator]
 static ALLOCATOR: echo_windows::allocation::AccountedSystem =
     echo_windows::allocation::AccountedSystem;
-#[cfg(feature = "cover-flow")]
-pub mod cover_flow;
 mod favorite_icons;
 mod match_highlight;
 mod memory_lifecycle;
@@ -86,12 +84,12 @@ fn run_windows() -> Result<(), String> {
         return Ok(());
     }
     memory_trace::record("ui_starting", serde_json::Value::Null);
-    let graphics = graphics::select(worker.bootstrap.ui.graphics, hub.clone())?;
+    let graphics = graphics::select()?;
     memory_trace::record(
         "graphics_selected",
         serde_json::json!({
             "renderer":graphics.renderer, "adapter":graphics.adapter, "backend":graphics.backend,
-            "perspective":graphics.perspective, "fallback":graphics.fallback
+            "perspective":false, "fallback":graphics.fallback
         }),
     );
     let application = app::App::new(hub.clone(), worker, args, graphics)?;
@@ -106,8 +104,8 @@ fn run_windows() -> Result<(), String> {
     drop(application);
     drop(shell);
     memory_trace::record("stopped", serde_json::Value::Null);
-    if let Some(recovery) = restart {
-        restart_application(recovery)?;
+    if restart {
+        restart_application()?;
     }
     result
 }
@@ -138,21 +136,12 @@ fn validate_args(args: &[String]) -> Result<(), String> {
 mod accessibility_value_regression;
 
 #[cfg(windows)]
-fn restart_application(software_recovery: bool) -> Result<(), String> {
+fn restart_application() -> Result<(), String> {
     // Only restart this executable, after all old window/storage/instance owners were dropped.
     // Never preserve an activation envelope or replay an insertion operation.
     let executable = std::env::current_exe().map_err(|e| e.to_string())?;
     let mut command = std::process::Command::new(executable);
     command.arg("--history");
-    if software_recovery {
-        command
-            .env("ECHO_RENDERER", "software")
-            .env("ECHO_GRAPHICS_RECOVERY", "1");
-    } else {
-        command
-            .env_remove("ECHO_RENDERER")
-            .env_remove("ECHO_GRAPHICS_RECOVERY");
-    }
     command
         .spawn()
         .map_err(|e| format!("Could not restart Echo: {e}"))?;

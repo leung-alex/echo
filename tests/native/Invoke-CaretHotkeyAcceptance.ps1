@@ -8,7 +8,7 @@ param(
     [Parameter(Mandatory)][string]$Template,
     [Parameter(Mandatory)][string]$EvidenceRoot,
     [ValidateSet('baseline','feature')][string]$Scope='feature',
-    [ValidateSet('software','femtovg-wgpu')][string]$Renderer='femtovg-wgpu',
+    [ValidateSet('software')][string]$Renderer='software',
     [switch]$NativeTest,
     [string]$WpfFixture=''
 )

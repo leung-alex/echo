@@ -8,17 +8,6 @@ rust-version.workspace = true
 default = []
 # Test-only owned-window input/capture bridge; never enabled in distribution builds.
 native-test = ["echo-windows/native-test"]
-# Cost attribution only. Must never be included in portable/release packaging.
-memory-diagnostics = []
-memory-diagnostics-skia = ["memory-diagnostics", "slint/renderer-skia"]
-# Backward-compatible feature name: share the WGPU device with the UI.
-gpu = ["cover-flow"]
-cover-flow = ["slint/renderer-femtovg-wgpu", "slint/unstable-wgpu-29", "slint/unstable-winit-030", "i-slint-backend-winit/echo-offscreen"]
-
-[[example]]
-name = "cover_flow_probe"
-required-features = ["cover-flow"]
-
 [lib]
 path = "src/lib.rs"
 

@@ -1,6 +1,4 @@
 //! One native window, one insertion session, and independently identified content spaces.
-#[cfg(feature = "cover-flow")]
-use crate::EntryRow;
 use crate::{
     events::{Command, Event, Hub, PixelData},
     formatting,
@@ -9,8 +7,8 @@ use crate::{
 };
 use echo_engine::*;
 use echo_presentation::{
-    deck::{Deck, Phase},
     interaction::Intent,
+    navigation::{Navigation, Phase},
     session::{Completion, Context, RecentActivations, Session},
     space_state::SpacePositions,
     RowKey, Surface,
@@ -62,7 +60,7 @@ pub fn before_software_frame() {
         let Ok(mut app) = app.try_borrow_mut() else {
             return;
         };
-        if !app.surface.visible || app.graphics.perspective {
+        if !app.surface.visible {
             return;
         }
         if app.window.get_route().as_str() == "settings" && app.preview_started.is_some() {
@@ -168,11 +166,8 @@ mod image_reclamation_tests {
     }
 }
 
-#[cfg_attr(not(feature = "cover-flow"), allow(dead_code))]
 struct Preview {
-    // A visited card retains its bounded resident page together with its scroll.
-    scroll: Option<f32>,
-    selection: Option<RowKey>,
+    // Read-only neighbor results are bounded and matched to query/revision.
     query: String,
     items: Vec<QuickInsertItem>,
     revision: i64,
@@ -211,25 +206,20 @@ pub struct App {
     mutation: Option<u64>,
     serial: u64,
     quitting: bool,
-    restart: Option<bool>,
+    restart: bool,
     clock: Instant,
-    deck: Deck,
+    deck: Navigation,
     software: software_deck::SoftwareDeck,
     spaces: Vec<Space>,
     positions: SpacePositions,
     search_timer: Timer,
-    flow_timer: Timer,
-    prewarm_timer: Timer,
     trim_timer: Timer,
     preview_timer: Timer,
     preview_started: Option<Instant>,
     preview_epoch: u64,
     previews: HashMap<SpaceId, Preview>,
     pending_previews: HashSet<SpaceId>,
-    dirty_snapshots: HashSet<SpaceId>,
-    navigation_us: Vec<u64>,
     window_shapes: Option<Option<Vec<shell::CardShape>>>,
-    last_scroll_bits: u32,
     geometry: (u32, u32, u32, u32, u32, u32),
     pending_card_region: Option<card_window::PendingCardFrame>,
     card_region_serial: u64,
@@ -240,7 +230,6 @@ pub struct App {
     graphics: crate::graphics::GraphicsInfo,
     environment: shell::UiEnvironment,
     native_theme: Option<(isize, bool)>,
-    graphics_error: Option<String>,
     confirmation: Option<Confirmation>,
     picker: Picker,
     picker_generation: u64,
@@ -254,8 +243,6 @@ pub struct App {
     inspect_intent: Option<(u64, String, RowKey)>,
     edit_created_copy: bool,
     wheel_delta: f32,
-    #[cfg(feature = "cover-flow")]
-    flow: Option<crate::cover_flow::bridge::FlowBridge>,
 }
 impl App {
     pub fn new(
@@ -265,7 +252,7 @@ impl App {
         graphics: crate::graphics::GraphicsInfo,
     ) -> Result<Rc<RefCell<Self>>, String> {
         let window = AppWindow::new().map_err(|e| e.to_string())?;
-        window.set_software_deck(!graphics.perspective);
+        window.set_software_deck(true);
         window.window().set_size(slint::LogicalSize::new(
             echo_presentation::echo_tokens::WINDOW_WIDTH,
             echo_presentation::echo_tokens::WINDOW_HEIGHT,
@@ -276,16 +263,6 @@ impl App {
         let mut surface = Surface::new(QuickInsertView::History);
         surface.row_limit = 40;
         let environment = shell::ui_environment(None);
-        #[cfg(feature = "cover-flow")]
-        let flow = if graphics.perspective && !Self::diagnostic_no_offscreen() {
-            Some(crate::cover_flow::bridge::FlowBridge::install(
-                &window,
-                hub.clone(),
-                graphics.integrated || bootstrap.ui.reduce_on_battery && environment.on_battery,
-            )?)
-        } else {
-            None
-        };
         let app = Rc::new(RefCell::new(Self {
             window,
             surface,
@@ -319,25 +296,20 @@ impl App {
             mutation: None,
             serial: 0,
             quitting: false,
-            restart: None,
+            restart: false,
             clock: Instant::now(),
-            deck: Deck::default(),
+            deck: Navigation::default(),
             software: Default::default(),
             spaces: Vec::new(),
             positions: SpacePositions::default(),
             search_timer: Timer::default(),
-            flow_timer: Timer::default(),
-            prewarm_timer: Timer::default(),
             trim_timer: Timer::default(),
             preview_timer: Timer::default(),
             preview_started: None,
             preview_epoch: 0,
             previews: HashMap::new(),
             pending_previews: HashSet::new(),
-            dirty_snapshots: HashSet::new(),
-            navigation_us: Vec::new(),
             window_shapes: None,
-            last_scroll_bits: 0,
             geometry: (0, 0, 0, 0, 0, 0),
             pending_card_region: None,
             card_region_serial: 0,
@@ -348,7 +320,6 @@ impl App {
             graphics,
             environment,
             native_theme: None,
-            graphics_error: None,
             confirmation: None,
             picker: Picker::Closed,
             picker_generation: 0,
@@ -362,8 +333,6 @@ impl App {
             inspect_intent: None,
             edit_created_copy: false,
             wheel_delta: 0.0,
-            #[cfg(feature = "cover-flow")]
-            flow,
         }));
         bindings::connect(&app.borrow());
         app.borrow().render_settings();
@@ -372,11 +341,6 @@ impl App {
     }
     fn now(&self) -> u64 {
         self.clock.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
-    }
-    #[cfg(feature = "cover-flow")]
-    fn diagnostic_no_offscreen() -> bool {
-        cfg!(feature = "memory-diagnostics")
-            && std::env::var("ECHO_MEMORY_NO_OFFSCREEN").as_deref() == Ok("1")
     }
     fn send(&mut self, work: Work) -> bool {
         if let Err(e) = self.worker.send(work) {
@@ -550,7 +514,7 @@ impl App {
                         serde_json::json!({
                             "epoch":epoch, "hidden_generation":hidden_generation, "query_epoch":self.surface.query_epoch(),
                             "rows":self.model.row_count(), "thumbnail_bytes":self.images.bytes,
-                            "panel_bytes":self.flow_stats().0, "software_frame_bytes":crate::graphics::software_frame_bytes(), "main_backend_retained":!crate::graphics::destroy_graphics_on_reclaim(),
+                            "model_bytes":self.model_bytes, "software_frame_bytes":crate::graphics::software_frame_bytes(), "main_backend_retained":true,
                         "worker_cache_acknowledged":true
                         ,"display_queue_high_water_bytes":self.hub.data_high_water()
                         }),
@@ -566,30 +530,6 @@ impl App {
                     self.report(e, true);
                 }
             },
-            Event::GraphicsError(error) => {
-                if crate::popup_timing::enabled() {
-                    crate::popup_timing::event(
-                        "graphics_error",
-                        serde_json::json!({"error":error}),
-                    );
-                }
-                let lost = error.contains("device lost");
-                self.graphics_error = Some(error.clone());
-                self.cancel_software_slide();
-                self.flow_timer.stop();
-                self.preview_timer.stop();
-                self.deck.snap();
-                self.render();
-                self.content_ready();
-                self.clear_flow_cache();
-                self.window.set_navigation_busy(false);
-                self.report(error, true);
-                self.refresh_diagnostics();
-                if lost && std::env::var("ECHO_GRAPHICS_RECOVERY").as_deref() != Ok("1") {
-                    self.restart = Some(true);
-                    self.quit();
-                }
-            }
         }
         self.inline_results_ready();
         self.update_card_region();
@@ -720,9 +660,9 @@ impl App {
         } else {
             Some(0.0)
         };
-        self.deck.show(id, self.now());
+        self.deck.show(id);
         self.cancel_prewarm();
-        self.invalidate_flow_scene();
+
         self.window.set_route(route.into());
         self.window.set_query(query.clone().into());
         self.window.set_stale_rows(true);
@@ -762,10 +702,6 @@ impl App {
         self.show_window_loading(false)
     }
     fn show_window_loading(&mut self, load_content: bool) -> Result<(), String> {
-        #[cfg(feature = "cover-flow")]
-        if let Some(flow) = &self.flow {
-            flow.resume()?;
-        }
         let first = self.hwnd.is_none();
         if self.session.context == Context::QuickInsert && self.popup_anchor.is_some() {
             // ShowWindow can expose the previous swapchain before RedrawRequested.
@@ -796,9 +732,9 @@ impl App {
             self.request_recent_thumbnails();
         }
         if self.deck.phase == Phase::Suspended {
-            self.deck.show(self.surface.space, self.now());
+            self.deck.show(self.surface.space);
         }
-        self.prepare_scene();
+
         self.window.show().map_err(|e| e.to_string())?;
         crate::memory_trace::record(
             "window_shown",
@@ -822,28 +758,17 @@ impl App {
                 shell::cloak_card_frame(hwnd, true)?;
             }
             // Propagate the redraw. The queued command runs after winit finishes
-            // this draw/present, for both GPU and software renderers.
+            // this software draw/present.
             use slint::winit_030::{EventResult, WinitWindowAccessor};
             let generation = self.card_region_generation.clone();
             let hub = self.hub.clone();
-            let perspective = self.graphics.perspective;
-            if !perspective {
-                crate::graphics::software_card_commits(generation.clone(), hub.clone());
-            }
+            crate::graphics::software_card_commits(generation, hub);
             self.window.window().on_winit_window_event(move |_, event| {
                 if matches!(
                     event,
                     slint::winit_030::winit::event::WindowEvent::RedrawRequested
                 ) {
                     crate::memory_trace::record("frame_redraw", serde_json::Value::Null);
-                }
-                if matches!(
-                    event,
-                    slint::winit_030::winit::event::WindowEvent::RedrawRequested
-                ) && perspective
-                    && generation.get() != 0
-                {
-                    hub.post(Event::Command(Command::CommitCardRegion(generation.get())));
                 }
                 EventResult::Propagate
             });
@@ -914,7 +839,6 @@ impl App {
         crate::popup_timing::finish();
         self.remember_position();
         self.search_timer.stop();
-        self.flow_timer.stop();
         self.preview_timer.stop();
         self.preview_started = None;
         self.cancel_prewarm();
@@ -938,7 +862,7 @@ impl App {
             "hidden_warm",
             serde_json::json!({"epoch":self.session.epoch, "hidden_generation":self.hidden_generation, "query_epoch":self.surface.query_epoch()}),
         );
-        if !self.graphics.perspective || self.ui.trim_when_hidden {
+        {
             let hub = self.hub.clone();
             let epoch = self.session.epoch;
             let hidden_generation = self.hidden_generation;
@@ -976,9 +900,7 @@ impl App {
         self.stop_inline();
         self.quitting = true;
         self.search_timer.stop();
-        self.flow_timer.stop();
         self.preview_timer.stop();
-        self.prewarm_timer.stop();
         self.trim_timer.stop();
         let _ = self.window.hide();
         self.hub.close();
@@ -989,16 +911,11 @@ impl App {
         self.stop_inline();
         self.quitting = true;
         self.hub.close();
-        self.window.set_stage_image(Default::default());
-        self.window.set_preview_image(Default::default());
-        #[cfg(feature = "cover-flow")]
-        if let Some(flow) = self.flow.take() {
-            flow.shutdown();
-        }
+
         self.worker.stop();
     }
-    pub fn take_restart(&mut self) -> Option<bool> {
-        self.restart.take()
+    pub fn take_restart(&mut self) -> bool {
+        std::mem::take(&mut self.restart)
     }
     fn load(&mut self, more: bool) {
         if !self.ready || !self.surface.visible {
@@ -1117,7 +1034,6 @@ impl App {
             self.window.set_empty_state_text(empty.into());
         }
         self.render_navigation();
-        self.dirty_snapshots.insert(self.surface.space);
         if self.surface.ready {
             if let Some(scroll) = self.pending_scroll.take() {
                 self.window.set_scroll_y(scroll);
@@ -1159,7 +1075,6 @@ impl App {
     }
     fn history_invalidated(&mut self) {
         self.previews.remove(&SpaceId::HISTORY);
-        self.dirty_snapshots.insert(SpaceId::HISTORY);
         if self.surface.space == SpaceId::HISTORY {
             self.surface.invalidate();
             if self.surface.visible
@@ -1230,7 +1145,7 @@ impl App {
         }
         self.images.pending.remove(&hash);
         let Ok(pixels) = result else {
-            if !self.graphics.perspective {
+            {
                 self.software_content_ready();
             }
             return;
@@ -1250,7 +1165,6 @@ impl App {
                         .update_visual(index, |current| current.thumbnail = row.thumbnail);
                 }
             }
-            self.dirty_snapshots.extend(self.previews.keys().copied());
         }
         let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
             &pixels.rgba,
@@ -1260,26 +1174,16 @@ impl App {
         let image = slint::Image::from_rgba8(buffer);
         self.images.bytes += bytes;
         self.images.order.push_back(hash.clone());
-        self.dirty_snapshots.extend(
-            self.previews
-                .iter()
-                .filter(|(_, p)| {
-                    p.items
-                        .iter()
-                        .any(|i| i.thumbnail.as_ref().is_some_and(|t| t.content_hash == hash))
-                })
-                .map(|(id, _)| *id),
-        );
         self.images.cache.insert(hash, (image, bytes));
         self.software.image_version = self.software.image_version.wrapping_add(1);
-        if !self.graphics.perspective && !self.software.slide.loading() {
+        if !self.software.slide.loading() {
             self.render_software_side_previews();
         }
         crate::popup_timing::mark("main_thumbnail_ready");
         if self.deck.phase != Phase::Animating {
             self.render();
         }
-        if !self.graphics.perspective {
+        {
             self.software_content_ready();
         }
         self.schedule_prewarm();
@@ -1329,7 +1233,6 @@ impl App {
                 self.cancel_prewarm();
                 // Keep side-card content until the new query snapshot is ready.
                 self.render_software_side_previews();
-                self.dirty_snapshots.insert(self.surface.space);
                 self.window.set_stale_rows(!keep_rows);
                 self.window.set_loading(true);
                 let hub = self.hub.clone();
@@ -1352,7 +1255,6 @@ impl App {
                     if let Some(key) = self.surface.resolve_key(&key) {
                         self.surface.select(key);
                         self.render_selection();
-                        self.dirty_snapshots.insert(self.surface.space);
                         self.schedule_prewarm();
                     }
                 }
@@ -1375,8 +1277,7 @@ impl App {
             Command::PickerMore => self.picker_more(),
             Command::PickerSelect(key) => self.picker_select(&key),
             Command::Confirm(answer) => self.confirm(&answer),
-            Command::FlowTick => self.flow_tick(),
-            Command::Prewarm => self.prewarm(),
+
             Command::TrimHidden(epoch, hidden_generation) => {
                 if self.hidden_generation == hidden_generation && self.can_reclaim_hidden(epoch) {
                     if self
@@ -1393,7 +1294,7 @@ impl App {
                     self.pending_previews.clear();
                     self.images.epoch = self.images.epoch.wrapping_add(1);
                     self.images.pending.clear();
-                    self.clear_flow_cache();
+
                     self.surface.reclaim_hidden();
                     self.model.clear();
                     self.model_bytes = 0;
@@ -1401,40 +1302,6 @@ impl App {
                     self.clear_software_side_models();
                     self.images.trim_to(0);
                     crate::graphics::release_software_frame();
-                    #[cfg(feature = "cover-flow")]
-                    if let Some(flow) = &self.flow {
-                        if let Err(error) = flow.reclaim_hidden() {
-                            self.pending_reclaim = None;
-                            self.report(format!("Hidden GPU reclamation failed: {error}"), true);
-                            return;
-                        }
-                    }
-                    #[cfg(feature = "cover-flow")]
-                    if crate::graphics::destroy_graphics_on_reclaim() {
-                        // Drop the subclass while its HWND is still valid. Showing
-                        // again must capture and hook the newly created HWND.
-                        self.hook = None;
-                        self.hwnd = None;
-                        self.window_shapes = None;
-                        self.pending_card_region = None;
-                        self.card_region_generation.set(0);
-                        if let Err(error) =
-                            i_slint_backend_winit::echo_offscreen::suspend_hidden_window(
-                                self.window.window(),
-                            )
-                        {
-                            self.pending_reclaim = None;
-                            self.report(
-                                format!("Hidden renderer suspension failed: {error}"),
-                                true,
-                            );
-                            return;
-                        }
-                        crate::memory_trace::record(
-                            "graphics_suspended",
-                            serde_json::json!({"epoch":epoch,"hidden_generation":hidden_generation}),
-                        );
-                    }
                 } else {
                     self.retry_hidden_reclaim(epoch, hidden_generation);
                 }
@@ -1446,7 +1313,7 @@ impl App {
                     self.prepare_window_geometry();
                 }
             }
-            Command::StageClick(x, y) => self.stage_click(x, y),
+
             Command::CommitCardRegion(generation) => self.commit_card_region(generation),
             Command::SoftwareFrameReady(stamp) => self.software_frame_ready(stamp),
             Command::StageScroll(delta) => self.stage_scroll(delta),
@@ -1704,7 +1571,7 @@ impl App {
                     self.settings_revision = snapshot.revision;
                     self.render_settings();
                     self.apply_theme();
-                    self.clear_flow_cache();
+
                     self.schedule_prewarm();
                 } else if let Some(settings) = result.settings {
                     self.settings = settings;
@@ -1725,7 +1592,6 @@ impl App {
                     for id in &change.affected_spaces {
                         self.previews.remove(id);
                         self.positions.remove(*id);
-                        self.dirty_snapshots.insert(*id);
                     }
                     if let Some(id) = change.created_space {
                         self.navigate_after_refresh = Some(id);
@@ -1755,7 +1621,7 @@ impl App {
                     }
                 } else {
                     self.previews.clear();
-                    self.clear_flow_cache();
+
                     self.report(result.message, false);
                 }
                 if let Some(warning) = result.settings_warning {
@@ -1818,7 +1684,6 @@ impl App {
             _ => {}
         }
         self.render_selection();
-        self.dirty_snapshots.insert(self.surface.space);
         self.schedule_prewarm();
     }
     fn interpret_key(&self, text: &str, ctrl: bool, shift: bool, target: &str) -> Intent {
@@ -1921,7 +1786,6 @@ impl App {
                     self.surface.move_selection(delta);
                     self.render_selection();
                     self.window.invoke_reveal_selection();
-                    self.dirty_snapshots.insert(self.surface.space);
                     self.schedule_prewarm();
                 }
             }
@@ -1930,7 +1794,6 @@ impl App {
                     self.surface.select_index(index);
                     self.render_selection();
                     self.window.invoke_reveal_selection();
-                    self.dirty_snapshots.insert(self.surface.space);
                     self.schedule_prewarm();
                 }
             }

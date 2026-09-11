@@ -27,7 +27,6 @@ public static class EchoDriver
                 case "composition": Require(args,4); value=EchoComposition.Check(pid,title,args[3]); break;
                 case "scroll": Require(args,4); value=EchoTestBridge.Call(pid,"scroll",Int32.Parse(args[3]),false,args.Length>4 && args[4]=="up",""); break;
                 case "metrics": value = EchoTestBridge.Call(pid,"metrics",0,false,false,""); break;
-                case "reset-metrics": value = EchoTestBridge.Call(pid,"reset_metrics",0,false,false,""); break;
                 case "ready": value = EchoUi.Ready(pid, title); break;
                 case "dump": value = EchoUi.Dump(pid, title); break;
                 case "capture": Require(args, 4); EchoUi.Capture(pid, title, args[3]); break;

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "units": "lengths are logical px / DIP; durations are ms; angles are degrees",
-  "description": "Echo floating space cards: inward-facing side covers, bounded GPU motion, native settled text. CSS/Slint/Rust share this source.",
+  "description": "Echo native software cards. CSS reference, Slint and Rust share this source.",
   "tokens": {
     "window.width": {
       "type": "length",
@@ -91,12 +91,32 @@
       "type": "length",
       "value": 28
     },
-    "row.action-size": { "type": "length", "value": 28 },
-    "row.action-icon-size": { "type": "length", "value": 20 },
-    "row.action-gap": { "type": "length", "value": 2 },
-    "row.action-radius": { "type": "length", "value": 6 },
-    "row.action-color": { "type": "color", "value": "#70757b", "dark": "#b7bdc5" },
-    "row.action-hover": { "type": "color", "value": "#0000000a", "dark": "#ffffff14" },
+    "row.action-size": {
+      "type": "length",
+      "value": 28
+    },
+    "row.action-icon-size": {
+      "type": "length",
+      "value": 20
+    },
+    "row.action-gap": {
+      "type": "length",
+      "value": 2
+    },
+    "row.action-radius": {
+      "type": "length",
+      "value": 6
+    },
+    "row.action-color": {
+      "type": "color",
+      "value": "#70757b",
+      "dark": "#b7bdc5"
+    },
+    "row.action-hover": {
+      "type": "color",
+      "value": "#0000000a",
+      "dark": "#ffffff14"
+    },
     "row.timeline-width": {
       "type": "length",
       "value": 76
@@ -193,90 +213,6 @@
       "type": "number",
       "value": 0.4
     },
-    "flow.perspective-ratio": {
-      "type": "number",
-      "value": 3.0
-    },
-    "flow.side-x-ratio": {
-      "type": "number",
-      "value": 0.88
-    },
-    "flow.side-z-ratio": {
-      "type": "number",
-      "value": -0.36
-    },
-    "flow.side-scale": {
-      "type": "number",
-      "value": 0.9
-    },
-    "flow.side-opacity": {
-      "type": "number",
-      "value": 1.0
-    },
-    "flow.side-shade": {
-      "type": "number",
-      "value": 0.06
-    },
-    "flow.edge-feather": {
-      "type": "number",
-      "value": 0.002
-    },
-    "flow.reflection-opacity": {
-      "type": "number",
-      "value": 0.07
-    },
-    "flow.reflection-height-ratio": {
-      "type": "number",
-      "value": 0.06
-    },
-    "motion.spring-omega": {
-      "type": "number",
-      "value": 40
-    },
-    "motion.settle-position-px": {
-      "type": "number",
-      "value": 0.25
-    },
-    "motion.settle-velocity-px-s": {
-      "type": "number",
-      "value": 2
-    },
-    "motion.hover-opacity": {
-      "type": "number",
-      "value": 0.045
-    },
-    "flow.side-angle": {
-      "type": "angle",
-      "value": 48
-    },
-    "flow.side-y": {
-      "type": "length",
-      "value": 8
-    },
-    "motion.max-settle": {
-      "type": "duration",
-      "value": 260
-    },
-    "motion.hover": {
-      "type": "duration",
-      "value": 100
-    },
-    "motion.reduced-fade": {
-      "type": "duration",
-      "value": 70
-    },
-    "motion.prefetch-debounce": {
-      "type": "duration",
-      "value": 80
-    },
-    "motion.snapshot-idle": {
-      "type": "duration",
-      "value": 120
-    },
-    "motion.hidden-release": {
-      "type": "duration",
-      "value": 30000
-    },
     "font.body": {
       "type": "length",
       "value": 15
@@ -356,10 +292,6 @@
     "font.mono": {
       "type": "string",
       "value": "Cascadia Code, Consolas, monospace"
-    },
-    "motion.hover-easing": {
-      "type": "string",
-      "value": "cubic-bezier(0.2, 0.8, 0.2, 1)"
     },
     "color.canvas": {
       "type": "color",
@@ -445,10 +377,6 @@
       "type": "length",
       "value": 24
     },
-    "flow.shadow-margin": {
-      "type": "length",
-      "value": 40
-    },
     "flow.shadow-offset-y": {
       "type": "length",
       "value": 12
@@ -456,26 +384,6 @@
     "flow.shadow-opacity": {
       "type": "number",
       "value": 0.27
-    },
-    "flow.reflection-gap": {
-      "type": "length",
-      "value": 2
-    },
-    "motion.snappy-omega": {
-      "type": "number",
-      "value": 50
-    },
-    "motion.relaxed-omega": {
-      "type": "number",
-      "value": 30
-    },
-    "motion.snappy-deadline": {
-      "type": "duration",
-      "value": 220
-    },
-    "motion.relaxed-deadline": {
-      "type": "duration",
-      "value": 340
     },
     "accent.amber": {
       "type": "color",
@@ -518,14 +426,6 @@
     "quality.card-raster-economical": {
       "type": "number",
       "value": 1.5
-    },
-    "flow.edge-aa-pixels": {
-      "type": "number",
-      "value": 1.0
-    },
-    "flow.edge-padding-pixels": {
-      "type": "number",
-      "value": 3.0
     },
     "row.shadow-softness": {
       "type": "length",

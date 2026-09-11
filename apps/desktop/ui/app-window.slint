@@ -6,7 +6,7 @@ import { FavoriteIconChoice, FavoriteIconPicker } from "favorite-icon-picker.sli
 import { FavoriteIconImages } from "favorite-icon-images.slint";
 export { EntryRow, EchoTheme, FavoriteIconChoice, FavoriteIconImages, SpaceVm, ActionVm }
 
-import { CoverFlowTokens as T } from "echo-tokens.slint";
+import { DesignTokens as T } from "echo-tokens.slint";
 import { SpacePanel } from "space-panel.slint";
 import { SpaceSideCard, OutgoingPanel, CarouselCard, SidePreview, SidePreviewRow } from "software-cards.slint";
 import { CardShadow } from "card-shadow.slint";
@@ -134,15 +134,6 @@ export component AppWindow inherits Window {
     in property <bool> previous-enabled;
     in property <bool> next-enabled;
     in property <bool> navigation-busy;
-    in property <bool> flow-settling;
-    in property <float> front-shadow-opacity: 1;
-    in property <length> moving-shadow-x;
-    in property <length> moving-shadow-y;
-    in property <length> moving-shadow-width;
-    in property <length> moving-shadow-height;
-    in property <bool> flow-enabled;
-    in property <image> stage-image;
-    in property <image> preview-image;
     in property <string> actual-mode;
     in property <string> diagnostics;
     in property <string> cache-status;
@@ -153,26 +144,6 @@ export component AppWindow inherits Window {
     in property <string> settings-notice;
     in-out property <bool> control-focus-mode;
     in-out property <length> scroll-y;
-    in property <bool> capture-mode;
-    in property <[EntryRow]> capture-rows;
-    in property <string> capture-title;
-    in property <string> capture-query;
-    in property <string> capture-subtitle;
-    in property <string> capture-icon;
-    in property <color> capture-accent: EchoTheme.amber;
-    in property <string> capture-navigation-label;
-    in property <string> capture-navigation-hint;
-    in property <bool> capture-previous-enabled;
-    in property <bool> capture-next-enabled;
-    in property <bool> capture-has-more;
-    in property <bool> capture-has-previous;
-    in property <bool> capture-batch;
-    in property <int> capture-selected-count;
-    in property <bool> capture-quick-insert;
-    in property <bool> capture-favorites;
-    in property <bool> capture-loading;
-    in property <bool> capture-titles-only;
-    in-out property <length> capture-scroll;
     in property <bool> space-dialog-open;
     in property <bool> space-dialog-new;
     in-out property <string> space-draft-title;
@@ -222,7 +193,6 @@ export component AppWindow inherits Window {
     callback picker-next();
     callback confirm(string);
     callback viewport-changed();
-    callback stage-clicked(float,float);
     callback stage-scrolled(float);
     public function focus-content() {live-panel.focus-content();}
     public function focus-controls() {if (root.route == "history") {live-panel.focus-controls();} else {settings-back.focus();}}
@@ -242,20 +212,10 @@ export component AppWindow inherits Window {
         key-pressed(event) => { if (root.ime-composing()) { return reject; } return root.key-event(event.text,event.modifiers.control,event.modifiers.shift,"control") ? accept : reject; }
         Rectangle {
             x: 0px; y: 0px; width: root.width; height: root.height;
-            visible: !root.capture-mode; background: transparent;
+            background: transparent;
             Rectangle {
                 y: 0px; width: root.stage-width; height: root.stage-height;
                 visible: root.route == "history"; clip: true;
-                Rectangle {
-                    visible: (root.navigation-busy || root.flow-settling) && root.flow-enabled;
-                    x: root.moving-shadow-x; y: root.moving-shadow-y;
-                    width: root.moving-shadow-width; height: root.moving-shadow-height;
-                    background: transparent; border-radius: T.panel-radius;
-                    drop-shadow-blur: T.flow-shadow-softness;
-                    drop-shadow-offset-y: T.flow-shadow-offset-y;
-                    drop-shadow-color: #000000.with-alpha(T.flow-shadow-opacity * root.front-shadow-opacity);
-                }
-                Image { x: 0px; y: 0px; width: parent.width; height: parent.height; source: root.stage-image; visible: root.flow-enabled; image-fit: fill; }
                 TouchArea {
                     enabled: !root.modal && !root.busy;
                     private property <length> start-x;
@@ -264,7 +224,6 @@ export component AppWindow inherits Window {
                         if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) { self.start-x = self.mouse-x; self.start-y = self.mouse-y; }
                         if (event.button == PointerEventButton.left && event.kind == PointerEventKind.up) {
                             if (abs(self.mouse-x - self.start-x) > 48px && abs(self.mouse-y - self.start-y) < 32px) { root.navigate-space(self.mouse-x < self.start-x ? 1 : -1); }
-                            else { root.stage-clicked(self.mouse-x / 1px,self.mouse-y / 1px); }
                         }
                     }
                     scroll-event(event) => {
@@ -311,7 +270,6 @@ export component AppWindow inherits Window {
             live-panel := SpacePanel {
                 x: 0px; y: 0px; width: root.panel-width; height: root.panel-height;
                 visible: root.route == "history";
-                opacity: (root.navigation-busy || root.flow-settling) && root.flow-enabled ? 0 : 1;
                 inline-mode: root.inline-mode;
                 control-focus-mode:root.control-focus-mode;
                 title: root.space-title; subtitle: root.space-subtitle; icon-key: root.space-icon; accent: root.space-accent;
@@ -419,7 +377,7 @@ export component AppWindow inherits Window {
                 reduce-on-battery <=> root.reduce-on-battery;
                 spaces: root.spaces; busy: root.busy || root.modal; dirty: root.settings-dirty; valid: root.settings-valid; notice: root.settings-notice;
                 restart-required: root.restart-required; error: root.settings-error; actual-mode: root.actual-mode;
-                diagnostics: root.diagnostics; cache-status: root.cache-status; preview-image: root.preview-image;
+                diagnostics: root.diagnostics; cache-status: root.cache-status;
                 preview-progress: root.preview-progress;
                 edited => { root.settings-edited(); }
                 save => { root.save-settings(); }
@@ -442,15 +400,8 @@ export component AppWindow inherits Window {
             }
         }
         }
-        if (root.capture-mode): SpacePanel {
-            x: root.panel-left; y: root.panel-top; width: root.panel-width; height: root.panel-height;
-            inline-mode: root.inline-mode;
-            title: root.capture-title; subtitle: root.capture-subtitle; icon-key: root.capture-icon; accent: root.capture-accent;
-            rows: root.capture-rows; favorites: root.capture-favorites; capture-only: true;
-            titles-only: root.capture-titles-only; loading: root.capture-loading;
-            compact: root.density == "compact"; scroll-y <=> root.capture-scroll;
-        }
-    if (root.editor-open && !root.capture-mode): Rectangle {
+
+    if (root.editor-open): Rectangle {
         background: #00000080;
         TouchArea { }
         FocusScope {
@@ -515,7 +466,7 @@ export component AppWindow inherits Window {
             }
         }
     }
-    if (root.clear-confirm-open && !root.capture-mode): Rectangle {
+    if (root.clear-confirm-open): Rectangle {
         background: #00000080;
         TouchArea { }
         FocusScope {
@@ -543,7 +494,7 @@ export component AppWindow inherits Window {
             }
         }
     }
-        if (root.space-dialog-open && !root.capture-mode): Rectangle {
+        if (root.space-dialog-open): Rectangle {
             background: #00000080; TouchArea { }
             FocusScope {
                 key-pressed(event) => { if (root.ime-composing()) { return reject; } return event.text == Key.Escape && root.key-event(event.text,event.modifiers.control,event.modifiers.shift,"control") ? accept : reject; }
@@ -577,7 +528,7 @@ export component AppWindow inherits Window {
                 }
             }
         }
-        if (root.picker-open && !root.capture-mode): Rectangle {
+        if (root.picker-open): Rectangle {
             background: #00000080; TouchArea { }
             FocusScope {
                 key-pressed(event) => { if (root.ime-composing()) { return reject; } return event.text == Key.Escape && root.key-event(event.text,event.modifiers.control,event.modifiers.shift,"control") ? accept : reject; }
@@ -616,14 +567,14 @@ export component AppWindow inherits Window {
                 }
             }
         }
-    if (root.icon-picker-open && (root.editor-open || root.space-dialog-open) && !root.capture-mode): FavoriteIconPicker {
+    if (root.icon-picker-open && (root.editor-open || root.space-dialog-open)): FavoriteIconPicker {
         choices: root.favorite-icon-choices;
         selected-key: root.picking-space-icon ? root.space-draft-icon : root.draft-icon;
         filter(query) => { root.filter-favorite-icons(query); }
         chosen(key) => { if (root.picking-space-icon) { root.space-draft-icon = key; } else { root.draft-icon = key; } root.icon-picker-open = false; }
         dismissed => { root.icon-picker-open = false; }
     }
-        if (root.confirmation-open && !root.capture-mode): Rectangle {
+        if (root.confirmation-open): Rectangle {
             background: #00000090; TouchArea { }
             FocusScope {
                 key-pressed(event) => { if (root.ime-composing()) { return reject; }

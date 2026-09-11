@@ -3,11 +3,6 @@ use crate::EntryRow;
 use chrono::{Local, TimeZone};
 use echo_engine::{ClipboardSettings, QuickInsertItem, ThemeMode};
 use echo_presentation::RowKey;
-#[cfg(feature = "cover-flow")]
-pub fn row(item: &QuickInsertItem, previous_section: &mut String) -> EntryRow {
-    let section = row_section(item, previous_section);
-    row_content(item, &section)
-}
 pub fn row_section(item: &QuickInsertItem, previous_section: &mut String) -> String {
     let time = Local.timestamp_millis_opt(item.updated_at).single();
     let date = time.map(|t| t.date_naive());

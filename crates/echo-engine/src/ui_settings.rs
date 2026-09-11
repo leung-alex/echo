@@ -141,6 +141,24 @@ pub struct SettingsPatch {
 mod tests {
     use super::*;
     #[test]
+    fn retired_graphics_preferences_round_trip_without_resetting_settings() {
+        for view in ["cover_flow", "flat"] {
+            for graphics in ["auto", "software"] {
+                let source = serde_json::json!({"version":1,"view_mode":view,"graphics":graphics,"reflections":true,"side_content":"titles_only","global_hotkey":"Ctrl+Alt+J","caret_anchor":false});
+                let settings: UiSettings = serde_json::from_value(source).unwrap();
+                settings.validate().unwrap();
+                let encoded = serde_json::to_value(&settings).unwrap();
+                assert_eq!(encoded["view_mode"], view);
+                assert_eq!(encoded["graphics"], graphics);
+                assert_eq!(encoded["reflections"], true);
+                assert_eq!(encoded["global_hotkey"], "Ctrl+Alt+J");
+                assert_eq!(encoded["caret_anchor"], false);
+                let restored: UiSettings = serde_json::from_value(encoded).unwrap();
+                assert_eq!(settings, restored);
+            }
+        }
+    }
+    #[test]
     fn old_settings_get_complete_defaults() {
         let settings: UiSettings = serde_json::from_str(r#"{"version":1}"#).unwrap();
         assert_eq!(settings, UiSettings::default());

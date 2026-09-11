@@ -1,6 +1,6 @@
 import { ScrollView, LineEdit, CheckBox, ComboBox } from "std-widgets.slint";
 import { EchoTheme, EchoButton } from "theme.slint";
-import { CoverFlowTokens as T } from "echo-tokens.slint";
+import { DesignTokens as T } from "echo-tokens.slint";
 import { SpaceVm } from "space-models.slint";
 import { EnumChoice } from "enum-choice.slint";
 import { SlidePreview } from "slide-preview.slint";
@@ -42,7 +42,6 @@ export component SettingsPage inherits Rectangle {
     in property <string> actual-mode;
     in property <string> diagnostics;
     in property <string> cache-status;
-    in property <image> preview-image;
     in property <float> preview-progress: 1;
     callback edited();
     changed history-enabled => { root.edited(); }

@@ -775,8 +775,6 @@ class Run:
     def test_streaming_filter(self):
         if not self.args.native_test: raise NotRun("Internal frame trace requires native-test")
         self.reset(); self.open_inline()
-        if self.args.renderer == "femtovg-wgpu":
-            self.wait(lambda: self.metrics()["graphics"]["stats"][1] >= 2,"side cards ready before trace",8)
         initial=self.metrics()
         recording=self.record_begin("inline-screen",self.native,self.native_title)
         pixels=self.launch(self.args.tools/"EchoInlineDriver.exe",["sample-headers",str(self.evidence),str(self.echo.pid),TITLE,str(self.native.pid),self.native_title],"header-samples")
@@ -811,8 +809,6 @@ class Run:
         if any(not f["visible"] or f["stale"] or f["rows"]==0 or f["navigation_busy"] for f in frames):
             raise RuntimeError("A query hid/blanked the existing panel")
         if any("capture_error" in f for f in frames): raise RuntimeError("Renderer snapshot failed")
-        if self.args.renderer == "femtovg-wgpu" and any(not f["flow_enabled"] for f in frames):
-            raise RuntimeError("Typing cleared the existing side-card scene")
         final=self.metrics()
         if final["snapshot_model_count"] != 1 or abs(final["panel"][3] - initial["panel"][3]) > 2:
             raise RuntimeError("Filtering did not retain the latched session height and one exact result")
@@ -1778,7 +1774,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     for name in ("root", "executable", "tools", "template", "evidence"):
         parser.add_argument("--" + name, type=Path, required=True)
-    parser.add_argument("--renderer", choices=("software", "femtovg-wgpu"), default="femtovg-wgpu")
+    parser.add_argument("--renderer", choices=("software",), default="software")
     parser.add_argument("--native-test", action="store_true")
     parser.add_argument("--record-screen", action="store_true")
     parser.add_argument("--stress", action="store_true", help="Run the explicit minimum-count native lifecycle and failure suites")

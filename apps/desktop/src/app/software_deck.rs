@@ -131,7 +131,7 @@ impl App {
         self.images.cache.clear();
         self.images.order.clear();
         self.images.bytes = 0;
-        self.deck.request(id, self.now(), false);
+        self.deck.request(id);
         self.surface.hide();
         self.surface.set_space(id);
         self.surface.visible = true;
@@ -266,7 +266,6 @@ impl App {
         self.deck.phase = Phase::Animating;
         self.deck.interaction = None;
         self.window.set_slide_moving(motion);
-        self.flow_timer.stop();
         self.window
             .set_left_space(self.window.get_requested_left_space());
         self.window
@@ -329,7 +328,6 @@ impl App {
             }
             let pending = self.software.slide.finish();
             self.release_outgoing_panel();
-            self.flow_timer.stop();
             self.software.clock = None;
             self.deck.snap();
             self.render();
@@ -345,7 +343,6 @@ impl App {
             }
             self.update_card_region();
         } else {
-            self.flow_timer.stop();
             self.software.clock = None;
         }
     }
@@ -370,7 +367,6 @@ impl App {
 
     pub(super) fn cancel_software_slide(&mut self) {
         self.software.slide.cancel();
-        self.flow_timer.stop();
         self.software.clock = None;
         self.release_outgoing_panel();
         self.clear_software_side_models();

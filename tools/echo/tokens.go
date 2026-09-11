@@ -42,7 +42,7 @@ func renderDesignTokens(data []byte) (map[string][]byte, error) {
 	var css, dark, slint, rust strings.Builder
 	css.WriteString("/* Generated from echo.tokens.json. Reference only; no browser runtime. */\n:root {\n")
 	dark.WriteString("[data-theme=\"dark\"] {\n")
-	slint.WriteString("// Generated from design/tokens/echo.tokens.json.\nexport global CoverFlowTokens {\n    in-out property <bool> dark: false;\n")
+	slint.WriteString("// Generated from design/tokens/echo.tokens.json.\nexport global DesignTokens {\n    in-out property <bool> dark: false;\n")
 	rust.WriteString("// Generated from design/tokens/echo.tokens.json.\n#![allow(dead_code)]\n")
 	for _, name := range keys {
 		token := doc.Tokens[name]

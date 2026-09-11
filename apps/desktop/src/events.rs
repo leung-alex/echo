@@ -40,11 +40,8 @@ pub enum Command {
     PickerMore,
     PickerSelect(String),
     Confirm(String),
-    StageClick(f32, f32),
     StageScroll(f32),
-    FlowTick,
     SoftwareFrameReady(echo_presentation::slide::ContentFrame),
-    Prewarm,
     TrimHidden(u64, u64),
     ViewportChanged,
     CommitCardRegion(u64),
@@ -72,8 +69,6 @@ pub enum Event {
     Spaces(Result<Vec<Space>, String>),
     Inspected(u64, Result<ItemDetails, String>),
     Catalog(u64, Result<QuickInsertPage, String>),
-    #[cfg_attr(not(feature = "cover-flow"), allow(dead_code))]
-    GraphicsError(String),
     DiagnosticExported(Result<String, String>),
     Activated(u64, Context, Result<ActivationResult, String>),
     Executed(
@@ -219,9 +214,6 @@ impl Hub {
                 }
             }
             let duplicate = match &event {
-                Event::Command(Command::FlowTick) => queue
-                    .iter()
-                    .any(|e| matches!(e, Event::Command(Command::FlowTick))),
                 Event::Command(Command::ViewportChanged) => queue
                     .iter()
                     .any(|e| matches!(e, Event::Command(Command::ViewportChanged))),
@@ -371,14 +363,12 @@ pub struct DiagnosticReport {
     pub backend: String,
     pub adapter: String,
     pub actual_mode: String,
-    pub raster_policy: &'static str,
-    pub panel_texture_limit: u64,
-    pub motion_scale_cap: f32,
-    pub motion_frame_cap: u32,
-    pub panel_texture_bytes: u64,
-    pub resident_panels: usize,
-    pub draw_count: u64,
-    pub upload_count: u64,
+    pub model_bytes: usize,
+    pub outgoing_bytes: usize,
+    pub side_bytes: usize,
+    pub cached_thumbnail_bytes: usize,
+    pub queued_bytes: usize,
+    pub software_frame_bytes: usize,
     pub scale_factor: f32,
     pub high_contrast: bool,
     pub system_animations: bool,

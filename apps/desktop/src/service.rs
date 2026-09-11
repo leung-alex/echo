@@ -33,7 +33,6 @@ pub enum Mutation {
 }
 pub enum Work {
     List(LoadTicket, SpaceId, String),
-    Preview(SpaceId, u64, String),
     SidePreview(SpaceId, u64, String),
     Spaces,
     Inspect(u64, i64),
@@ -281,10 +280,7 @@ fn run(
                 #[cfg(not(feature = "native-test"))]
                 hub.post(event);
             }
-            Work::Preview(space, generation, query) => {
-                let result = scope_page(&services, space, &query, None, &cancelled);
-                hub.post(Event::Preview(space, generation, result));
-            }
+
             Work::SidePreview(space, generation, query) => {
                 let result = scope_page_limit(&services, space, &query, None, &cancelled, 4).map(
                     |mut data| {
@@ -738,7 +734,7 @@ fn export_diagnostics(
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| e.to_string())?
         .as_millis();
-    let path = directory.join(format!("cover-flow-{now}-{}.json", std::process::id()));
+    let path = directory.join(format!("software-{now}-{}.json", std::process::id()));
     let bytes = serde_json::to_vec_pretty(&report).map_err(|e| e.to_string())?;
     let mut file = std::fs::OpenOptions::new()
         .write(true)

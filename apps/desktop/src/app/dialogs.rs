@@ -70,19 +70,16 @@ impl App {
             }
             Some(Confirmation::DeleteItem(key)) => {
                 self.close_picker();
-                self.clear_flow_cache();
+
                 self.mutate(Mutation::Delete(key));
             }
             Some(Confirmation::DeleteHistory(ids)) => {
-                self.clear_flow_cache();
                 self.mutate(Mutation::BulkDelete(ids));
             }
             Some(Confirmation::ClearHistory) => {
-                self.clear_flow_cache();
                 self.mutate(Mutation::Clear);
             }
             Some(Confirmation::ClearFavorites(revision)) => {
-                self.clear_flow_cache();
                 self.space_mutation_at(SpaceId::FAVORITES, revision, SpaceAction::ClearFavorites);
             }
             Some(Confirmation::DeleteSpace(id, revision)) => {
@@ -94,7 +91,7 @@ impl App {
                 self.space_mutation_at(id, revision, SpaceAction::Delete);
             }
             Some(Confirmation::Restart) => {
-                self.restart = Some(false);
+                self.restart = true;
                 self.quit();
             }
             None => {}
@@ -176,9 +173,6 @@ impl App {
         self.finish_motion();
         self.preview_timer.stop();
         self.preview_started = None;
-        if self.window.get_route().as_str() == "settings" && route != "settings" {
-            self.clear_flow_cache();
-        }
         self.close_picker();
         self.window.set_route(route.into());
         if route == "settings" {

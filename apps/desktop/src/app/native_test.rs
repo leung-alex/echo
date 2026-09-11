@@ -344,15 +344,12 @@ fn execute(
         }
         "metrics" => {
             let a = app.borrow();
-            #[cfg(feature = "cover-flow")]
-            let graphics = a.flow.as_ref().map(|f| f.metrics());
-            #[cfg(not(feature = "cover-flow"))]
             let graphics: Option<serde_json::Value> = None;
             let mut metrics = serde_json::json!({"space":a.surface.space.0,"phase":format!("{:?}",a.deck.phase),
                 "ready":a.surface.ready,"loading":a.surface.loading,"visible":a.surface.visible,
                 "spaces":a.spaces.iter().map(|s|serde_json::json!({"id":s.id.0,"title":s.title,"icon":s.icon_key,"accent":s.accent_key,"count":s.item_count})).collect::<Vec<_>>(),
                 "renderer":a.graphics.renderer,"adapter":a.graphics.adapter,"backend":a.graphics.backend,"actual":a.window.get_actual_mode().as_str(),
-                "graphics":graphics,"navigation_us":a.navigation_us,"snapshot_model_count":a.model.row_count(),"highlighted_rows":a.model.iter().filter(|r|r.match_count>0).count(),"match_spans":a.model.iter().map(|r|r.match_count).collect::<Vec<_>>(),"scroll_y":a.window.get_scroll_y(),"query":a.surface.query,"route":a.window.get_route().to_string(),
+                "graphics":graphics,"snapshot_model_count":a.model.row_count(),"highlighted_rows":a.model.iter().filter(|r|r.match_count>0).count(),"match_spans":a.model.iter().map(|r|r.match_count).collect::<Vec<_>>(),"scroll_y":a.window.get_scroll_y(),"query":a.surface.query,"route":a.window.get_route().to_string(),
                 "requested":a.deck.requested.to_string(),"presented":a.deck.presented.to_string(),
                 "interaction":a.deck.interaction.map(|id|id.to_string()),
                 "inline_safety":a.worker.inline.safety_status(),
@@ -363,7 +360,7 @@ fn execute(
                 "inline":{"active":a.inline_ui.ticket.is_some(),"popup":a.inline_active(),"unavailable":a.inline_ui.unavailable,"pending":a.inline_ui.pending,"composing":a.inline_ui.composing,"suspended":a.inline_ui.suspended,"provider":a.inline_ui.backend,"readiness":a.worker.inline.readiness(),"ticket":a.inline_ui.ticket.map(|t|[t.session,t.revision,t.input_serial]),"natural_height":a.window.get_inline_content_height(),"status":a.surface.status},
                 "quick_insert":{"active":a.session.context == Context::QuickInsert,"has_target":a.session.has_target,"capture_pending":a.capture_pending,"anchor_source":a.popup_anchor.map(|anchor|anchor.source.label()),"hotkey_status":a.window.get_hotkey_status().to_string()},
                 "settings":{"dirty":a.window.get_settings_dirty(),"valid":a.window.get_settings_valid(),"error":a.window.get_settings_error().to_string(),"ui":a.ui},
-                "flow_timer":a.flow_timer.running(),"preview_timer":a.preview_timer.running(),
+                "flow_timer":false,"preview_timer":a.preview_timer.running(),
                 "thumbnails_bytes":a.images.bytes+a.software.outgoing_image_bytes,"native_region":a.window_shapes.as_ref().is_some_and(|s|s.is_some()),
                 "panel":[a.window.get_panel_left(),a.window.get_panel_top(),a.window.get_panel_width(),a.window.get_panel_height()],
                 "stage":[a.window.get_stage_width(),a.window.get_stage_height()],"scale_factor":a.window.window().scale_factor()});
@@ -386,15 +383,6 @@ fn execute(
             metrics["provider_faults"] =
                 echo_windows::inline::diagnostics::provider_fault_metrics();
             Ok(metrics)
-        }
-        "reset_metrics" => {
-            let mut a = app.borrow_mut();
-            a.navigation_us.clear();
-            #[cfg(feature = "cover-flow")]
-            if let Some(flow) = &a.flow {
-                flow.reset_metrics();
-            }
-            Ok(serde_json::Value::Null)
         }
         "step" => {
             if app.borrow().session.context != Context::Manager {
@@ -423,7 +411,7 @@ fn trace_tick(app: &Rc<RefCell<App>>) {
         let i = trace.frames.len();
         let mut frame = serde_json::json!({"ms":trace.started.elapsed().as_millis(),
             "visible":a.surface.visible,"rows":a.model.row_count(),"stale":a.window.get_stale_rows(),
-            "loading":a.surface.loading,"flow_enabled":a.window.get_flow_enabled(),
+            "loading":a.surface.loading,"flow_enabled":false,
             "navigation_busy":a.window.get_navigation_busy(),"query_units":a.surface.query.chars().count(),
             "height":a.window.get_panel_height(),"width":a.window.get_panel_width(),"selected_rows":a.model.iter().filter(|r|r.selected).count(),"highlighted_rows":a.model.iter().filter(|r|r.match_count>0).count(),"busy":a.window.get_busy()});
         frame["query_epoch"] = a.surface.query_epoch().into();

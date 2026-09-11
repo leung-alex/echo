@@ -114,7 +114,6 @@ impl App {
                 hub.post(Event::Command(Command::InlineTimeout(epoch)));
             },
         );
-        let geometry = snapshot.anchor.geometry;
         if !self.send(Work::BeginInline(epoch, snapshot)) {
             self.dismiss();
             self.report(
@@ -122,7 +121,6 @@ impl App {
                 false,
             );
         } else {
-            self.prepare_pending_inline_neighbors(geometry);
         }
     }
     pub(super) fn inline_event(&mut self, event: InlineEvent) {
@@ -185,7 +183,7 @@ impl App {
                 self.surface.set_query(String::new());
                 self.window.set_query("".into());
                 self.previews.clear();
-                self.deck.show(SpaceId::HISTORY, self.now());
+                self.deck.show(SpaceId::HISTORY);
                 self.render_navigation();
                 self.pending_scroll = Some(0.0);
                 self.compatibility_notice = Some(format!("Input filtering unavailable: {reason}"));
@@ -338,7 +336,7 @@ impl App {
         self.window.set_query("".into());
         self.previews.clear();
         self.surface.set_space(SpaceId::HISTORY);
-        self.deck.show(SpaceId::HISTORY, self.now());
+        self.deck.show(SpaceId::HISTORY);
         self.render_navigation();
         self.pending_scroll = Some(0.0);
         let epoch = self.session.activate(Context::QuickInsert);

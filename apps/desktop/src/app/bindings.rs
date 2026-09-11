@@ -38,7 +38,7 @@ pub(super) fn connect(app: &App) {
     let weak = window.as_weak();
     let hub = app.hub.clone();
     window.on_thumbnail_requested(move |key| {
-        if weak.upgrade().is_some_and(|w| !w.get_capture_mode()) {
+        if weak.upgrade().is_some() {
             hub.post(Event::Command(Command::Thumbnail(key.to_string())));
         }
     });
@@ -54,11 +54,10 @@ pub(super) fn connect(app: &App) {
     let weak = window.as_weak();
     let hub = app.hub.clone();
     window.on_viewport_changed(move || {
-        if weak.upgrade().is_some_and(|w| !w.get_capture_mode()) {
+        if weak.upgrade().is_some() {
             hub.post(Event::Command(Command::ViewportChanged));
         }
     });
-    callback!(on_stage_clicked,x,y=>Command::StageClick(x,y));
     callback!(on_stage_scrolled,delta=>Command::StageScroll(delta));
     callback!(on_save_favorite,=>Command::SaveFavorite);
     callback!(on_cancel_editor,=>Command::CancelEditor);

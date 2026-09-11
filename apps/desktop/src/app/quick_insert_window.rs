@@ -131,9 +131,7 @@ impl App {
             } else {
                 place_card(anchor, width, card, 560.0, t::STAGE_PADDING_Y)
             };
-            let extents = if self.graphics.perspective {
-                echo_presentation::deck::popup_horizontal_extents(card, 560.0)
-            } else if self.ui.view_mode == SpaceViewMode::CoverFlow {
+            let extents = if self.ui.view_mode == SpaceViewMode::CoverFlow {
                 [
                     card / 2.0 + 16.0,
                     card / 2.0 + echo_presentation::slide::side_width(card) + 28.0,
@@ -141,17 +139,7 @@ impl App {
             } else {
                 [card / 2.0 + 16.0; 2]
             };
-            let preferred_right = self.popup_side_right.unwrap_or_else(|| {
-                if !self.graphics.perspective {
-                    true
-                } else {
-                    self.deck
-                        .poses(card)
-                        .iter()
-                        .find(|p| p.offset != 0.0)
-                        .is_none_or(|p| p.offset > 0.0)
-                }
-            });
+            let preferred_right = self.popup_side_right.unwrap_or(true);
             let (mut placement, right) = echo_windows::focus::expand_popup_stage(
                 anchor,
                 placement,
@@ -175,7 +163,7 @@ impl App {
             }
             let side_changed = self.popup_side_right != Some(right);
             self.popup_side_right = Some(right);
-            if side_changed && !self.graphics.perspective {
+            if side_changed {
                 self.render_navigation();
             }
             self.window
@@ -200,11 +188,7 @@ impl App {
                 }
                 self.popup_placement = Some(placement);
                 if crate::popup_timing::enabled() {
-                    let center = [
-                        placement.card.x as f32 + placement.card.width as f32 / 2.0,
-                        placement.card.y as f32 + placement.card.height as f32 / 2.0,
-                    ];
-                    let side_quad = if !self.graphics.perspective {
+                    let side_quad = {
                         let side = echo_presentation::slide::side_width(card);
                         let l = placement.card.x as f32
                             + if right {
@@ -221,21 +205,6 @@ impl App {
                             [l + side * scale, bottom],
                             [l, bottom],
                         ])
-                    } else {
-                        self.flow_poses()
-                            .into_iter()
-                            .find(|p| p.offset != 0.0)
-                            .and_then(|pose| {
-                                echo_presentation::deck::project_panel(
-                                    pose,
-                                    card,
-                                    placement.card.height as f32 / scale,
-                                    0.0,
-                                )
-                            })
-                            .map(|q| {
-                                q.map(|p| [center[0] + p[0] * scale, center[1] + p[1] * scale])
-                            })
                     };
                     crate::popup_timing::event(
                         "layout_ready",
@@ -277,8 +246,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use echo_engine::{InputTargetGeometry, PhysicalRect, SpaceId};
-    use echo_presentation::deck::{popup_horizontal_extents, project_panel, Deck};
+    use echo_engine::{InputTargetGeometry, PhysicalRect};
     use echo_windows::focus::{expand_popup_stage, place_inline_stage, AnchorSource, PopupAnchor};
 
     #[test]
@@ -314,7 +282,10 @@ mod tests {
                         let (p, right) = expand_popup_stage(
                             anchor,
                             anchored,
-                            popup_horizontal_extents(520.0, 560.0),
+                            [
+                                520.0 / 2.0 + 16.0,
+                                520.0 / 2.0 + echo_presentation::slide::side_width(520.0) + 28.0,
+                            ],
                             previous.unwrap_or(true),
                         );
                         assert_eq!(
@@ -333,18 +304,15 @@ mod tests {
                             p.window.x >= left && p.window.x + p.window.width <= left + px(1920.0)
                         );
                         assert_eq!(right, x < 1880.0);
-                        let mut deck = Deck::default();
-                        deck.show(SpaceId::HISTORY, 0);
-                        for pose in deck.popup_poses(520.0, right) {
-                            for [x, _] in project_panel(pose, 520.0, height, 0.0).unwrap() {
-                                let screen =
-                                    p.card.x as f32 + p.card.width as f32 / 2.0 + x * scale;
-                                assert!(
-                                    screen >= p.window.x as f32
-                                        && screen <= (p.window.x + p.window.width) as f32
-                                );
-                            }
-                        }
+                        let side = echo_presentation::slide::side_width(520.0);
+                        let side_left = p.card.x as f32
+                            + if right {
+                                p.card.width as f32 + 12.0 * scale
+                            } else {
+                                -(side + 12.0) * scale
+                            };
+                        assert!(side_left >= p.window.x as f32);
+                        assert!(side_left + side * scale <= (p.window.x + p.window.width) as f32);
                     }
                 }
             }

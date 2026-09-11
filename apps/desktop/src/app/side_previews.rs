@@ -34,8 +34,7 @@ impl App {
         .collect()
     }
     pub(super) fn prepare_software_neighbors(&mut self) {
-        if self.graphics.perspective
-            || !self.surface.visible
+        if !self.surface.visible
             || !self.surface.ready
             || self.surface.loading
             || self.surface.dirty
@@ -126,8 +125,6 @@ impl App {
                 self.previews.insert(
                     id,
                     Preview {
-                        scroll: None,
-                        selection: None,
                         query: self.surface.query.clone(),
                         items: data.page.items,
                         revision: data.revision,
@@ -196,7 +193,7 @@ impl App {
         })
     }
     pub(super) fn render_software_side_previews(&mut self) {
-        if self.graphics.perspective || !self.surface.visible {
+        if !self.surface.visible {
             return;
         }
         for (index, mut side) in [self.window.get_left_space(), self.window.get_right_space()]

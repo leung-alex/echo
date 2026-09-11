@@ -4,9 +4,9 @@ use echo_engine::{
     PageCursor, QuickInsertItem, QuickInsertPage, QuickInsertSource, QuickInsertView,
 };
 use std::{collections::BTreeSet, fmt, str::FromStr};
-pub mod deck;
 pub mod echo_tokens;
 pub mod interaction;
+pub mod navigation;
 pub mod session;
 pub mod slide;
 pub mod space_state;

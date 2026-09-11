@@ -24,9 +24,6 @@ impl PendingCardFrame {
 }
 impl App {
     fn card_frame_stamp(&self) -> FrameStamp {
-        #[cfg(feature = "cover-flow")]
-        let scene = self.flow.as_ref().map_or(0, |f| f.scene_revision());
-        #[cfg(not(feature = "cover-flow"))]
         let scene = 0;
         FrameStamp {
             session: self.session.epoch,
@@ -67,9 +64,8 @@ impl App {
             return;
         }
         let history = self.window.get_route().as_str() == "history";
-        let full = history
-            && self.deck.phase == Phase::Animating
-            && (self.window.get_flow_enabled() || self.window.get_slide_moving());
+        let full =
+            history && self.deck.phase == Phase::Animating && (self.window.get_slide_moving());
         if let Some(hook) = &self.hook {
             let bounds = if full {
                 Some([0, 0, 0, 0])
@@ -94,7 +90,7 @@ impl App {
             };
             hook.set_resize_bounds(bounds);
         }
-        let shapes = if self.window.get_modal() || (full && !self.graphics.perspective) {
+        let shapes = if self.window.get_modal() || (full) {
             None
         } else {
             let [l, top, w, h] = if history {
@@ -113,11 +109,7 @@ impl App {
                 ]
             };
             // Alpha is composited by DX12. Software needs an exact native binary card clip.
-            let margin = if self.graphics.perspective {
-                t::FLOW_SHADOW_MARGIN
-            } else {
-                16.0
-            };
+            let margin = { 16.0 };
             let mut shapes = if full {
                 vec![]
             } else {
@@ -131,32 +123,8 @@ impl App {
                     radius: ((t::PANEL_RADIUS + margin) * dpi).round() as i32,
                 }]
             };
-            if history && self.flow_allowed() && self.window.get_flow_enabled() {
-                let padding =
-                    margin.max(h * t::FLOW_REFLECTION_HEIGHT_RATIO + t::FLOW_REFLECTION_GAP);
-                for pose in self
-                    .flow_poses()
-                    .into_iter()
-                    .filter(|p| full || p.space != self.deck.requested)
-                {
-                    if let Some(vertices) =
-                        echo_presentation::deck::project_panel(pose, w, h, padding)
-                    {
-                        shapes.push(shell::CardShape::Polygon(
-                            vertices
-                                .into_iter()
-                                .map(|p| {
-                                    [
-                                        ((p[0] + l + w / 2.0) * dpi).round() as i32,
-                                        ((p[1] + top + h / 2.0) * dpi).round() as i32,
-                                    ]
-                                })
-                                .collect(),
-                        ));
-                    }
-                }
-            }
-            if history && !self.graphics.perspective {
+
+            if history {
                 let side = self.window.get_side_width();
                 for (visible, left) in [
                     (self.window.get_left_side_visible(), l - side - 12.0),
@@ -204,7 +172,7 @@ impl App {
             // Expand before painting so neither complete frame can be clipped.
             // Shrink only after the matching presentation reaches DWM.
             let result = shell::expand_card_region(hwnd, shapes.as_deref());
-            if !self.graphics.perspective {
+            {
                 crate::graphics::invalidate_software_frame();
             }
             self.window.window().request_redraw();
@@ -228,8 +196,7 @@ impl App {
         if generation != pending.generation || !self.surface.visible {
             return;
         }
-        if !self.graphics.perspective
-            && self.popup_first_frame_pending
+        if self.popup_first_frame_pending
             && self.window.get_route().as_str() == "history"
             && (!self.surface.ready
                 || self.surface.loading

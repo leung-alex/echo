@@ -36,7 +36,6 @@ features = [
 rustdoc-args = ["--generate-link-to-definition"]
 
 [features]
-echo-offscreen = []
 echo-software-present = []
 accessibility = [
     "dep:accesskit",
