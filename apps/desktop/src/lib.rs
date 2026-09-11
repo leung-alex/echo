@@ -147,3 +147,6 @@ fn restart_application() -> Result<(), String> {
         .map_err(|e| format!("Could not restart Echo: {e}"))?;
     Ok(())
 }
+
+#[cfg(test)]
+mod row_click_tests;

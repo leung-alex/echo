@@ -114,6 +114,8 @@ export component AppWindow inherits Window {
     in-out property <bool> inline-completion;
     in property <string> hotkey-status;
     in-out property <string> startup-space;
+    in property <[string]> startup-space-names;
+    in property <int> startup-space-index;
     in-out property <string> query-on-switch;
     in-out property <string> density;
     in-out property <string> side-content;
@@ -365,6 +367,8 @@ export component AppWindow inherits Window {
                 inline-completion <=> root.inline-completion;
                 hotkey-status: root.hotkey-status;
                 startup-space <=> root.startup-space;
+                startup-space-names: root.startup-space-names;
+                startup-space-index: root.startup-space-index;
                 query-on-switch <=> root.query-on-switch;
                 density <=> root.density;
                 side-content <=> root.side-content;

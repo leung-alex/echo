@@ -22,6 +22,8 @@ export component SettingsPage inherits Rectangle {
     in-out property <bool> inline-completion;
     in property <string> hotkey-status;
     in-out property <string> startup-space;
+    in property <[string]> startup-space-names;
+    in property <int> startup-space-index;
     in-out property <string> query-on-switch;
     in-out property <string> density;
     in-out property <string> side-content;
@@ -85,7 +87,7 @@ export component SettingsPage inherits Rectangle {
     changed section => {settings-scroll.viewport-y=0px;}
     private property <bool> narrow: root.width < 850px;
     private property <[string]> categories: ["Appearance & motion", "Spaces & content", "Keyboard & insertion", "Capture & privacy", "Storage & diagnostics"];
-    background: EchoTheme.canvas;
+    background: EchoTheme.surface;
     Text { x: 28px; y: 15px; text: "Settings"; color: EchoTheme.text; font-size: T.font-setting-title; font-weight: 600; }
     if (root.narrow): ComboBox { enabled: !root.busy;
         x: 28px; y: 62px; width: parent.width - 56px; height: 36px;
@@ -152,7 +154,14 @@ export component SettingsPage inherits Rectangle {
                 CheckBox { enabled: !root.busy; text: "Cycle from the last space back to the first"; checked <=> root.loop-spaces; }
                 CheckBox { enabled: !root.busy; text: "Remember selection and scroll position in this session"; checked <=> root.remember-position; }
                 Text { text: "Open Echo in"; color: EchoTheme.text; }
-                EnumChoice { enabled: !root.busy; model: ["history","last"]; selected-index: root.startup-space == "last" ? 1 : 0; selected(value) => { root.startup-space = value; } accessible-label: "Startup space"; }
+                EnumChoice {
+                    enabled: !root.busy; model: root.startup-space-names;
+                    selected-index: root.startup-space-index;
+                    selected(value) => {
+                        root.startup-space = self.current-index == root.spaces.length ? "last" : root.spaces[self.current-index].key;
+                    }
+                    accessible-label: "Startup space";
+                }
             }
             if (root.section == 2): VerticalLayout {
                 spacing: 16px; alignment: start;
@@ -214,7 +223,7 @@ export component SettingsPage inherits Rectangle {
         }
     }
     Rectangle {
-        y: parent.height - 78px; height: 78px; background: EchoTheme.canvas;
+        y: parent.height - 78px; height: 78px; background: EchoTheme.surface;
         Rectangle { height: 1px; background: EchoTheme.line; }
         Text { x: 28px; y: 23px; width: max(0px,parent.width - 340px); text: root.error != "" ? root.error : root.dirty ? "Unsaved changes" : root.notice != "" && root.notice != "Settings saved" ? root.notice : root.restart-required ? "Restart required for graphics changes" : "Your settings are saved"; color: root.error != "" ? EchoTheme.danger : EchoTheme.muted; overflow: elide; }
         HorizontalLayout {

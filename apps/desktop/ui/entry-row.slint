@@ -105,6 +105,16 @@ export component EntryView inherits Rectangle {
         source: root.favorite-icon;
         colorize: root.active ? EchoTheme.selected-text : EchoTheme.muted;
     }
+    // Let clicks reach the row; the drag ancestor takes over only after movement.
+        drop := DropArea {
+            width:root.width;height:root.height;
+            enabled:root.favorites && root.reorder-enabled && !root.input-blocked && !root.busy;
+            can-drop(event) => {return root.can-drop-data(event.data) ? DragAction.move : DragAction.none;}
+            dropped(event) => {return root.drop-data(event.data,root.entry.key) ? DragAction.move : DragAction.none;}
+            DragArea {
+                width:root.width;height:root.height;
+                enabled:root.favorites && root.reorder-enabled && !root.input-blocked && !root.busy;
+                data:root.drag-data(root.entry.key);allow-move:true;
     row-touch := TouchArea {
         width:root.width;height:root.height;
         enabled:!root.busy && !root.capture-only;
@@ -116,17 +126,6 @@ export component EntryView inherits Rectangle {
                 if (!root.inline-mode) {row-focus.focus();}
                 root.select(root.entry.key);
                 if ((root.quick-insert || root.copy-only) && !root.batch) {root.perform(root.copy-only ? "copy" : "insert");}
-            }
-        }
-        drop := DropArea {
-            width:root.width;height:root.height;
-            enabled:root.favorites && root.reorder-enabled && !root.input-blocked && !root.busy;
-            can-drop(event) => {return root.can-drop-data(event.data) ? DragAction.move : DragAction.none;}
-            dropped(event) => {return root.drop-data(event.data,root.entry.key) ? DragAction.move : DragAction.none;}
-            DragArea {
-                width:root.width;height:root.height;
-                enabled:root.favorites && root.reorder-enabled && !root.input-blocked && !root.busy;
-                data:root.drag-data(root.entry.key);allow-move:true;
             }
         }
     // Keep the buttons inside the row's input ancestry. Moving onto a button
@@ -192,6 +191,8 @@ export component EntryView inherits Rectangle {
         }
     }
     }
+            }
+        }
     row-focus := FocusScope {
         width: 0; enabled: !root.capture-only;
         key-pressed(event) => { return root.key-event(event.text,event.modifiers.control,event.modifiers.shift,"row") ? accept : reject; }

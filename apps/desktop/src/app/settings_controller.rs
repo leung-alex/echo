@@ -1,6 +1,29 @@
 //! Draft settings, runtime effect policy and redacted diagnostics.
 use super::*;
 impl App {
+    pub(super) fn render_startup_choices(&self) {
+        let current = self.window.get_startup_space();
+        let selected = StartupSpace::parse(current.as_str()).unwrap_or_default();
+        let index = match selected {
+            StartupSpace::Last => self.spaces.len(),
+            _ => {
+                let id = selected.resolve(None, self.spaces.iter().map(|space| space.id));
+                self.spaces
+                    .iter()
+                    .position(|space| space.id == id)
+                    .unwrap_or(0)
+            }
+        };
+        let mut names: Vec<slint::SharedString> = self
+            .spaces
+            .iter()
+            .map(|space| space.title.clone().into())
+            .collect();
+        names.push("Last used space".into());
+        self.window
+            .set_startup_space_names(ModelRc::new(VecModel::from(names)));
+        self.window.set_startup_space_index(index as i32);
+    }
     pub(super) fn read_ui_draft(&self) -> Result<UiSettings, String> {
         let w = &self.window;
         let mut value = self.ui.clone();
@@ -69,7 +92,8 @@ impl App {
         w.set_global_hotkey(u.global_hotkey.clone().into());
         w.set_caret_anchor(u.caret_anchor);
         w.set_inline_completion(u.inline_completion);
-        w.set_startup_space(u.startup_space.as_str().into());
+        w.set_startup_space(u.startup_space.key().into());
+        self.render_startup_choices();
         w.set_query_on_switch(u.query_on_switch.as_str().into());
         w.set_density(u.density.as_str().into());
         w.set_side_content(u.side_content.as_str().into());
@@ -90,6 +114,7 @@ impl App {
         if self.window.get_route().as_str() != "settings" {
             return;
         }
+        self.render_startup_choices();
         match self.read_settings_patch() {
             Ok(patch) => {
                 self.window

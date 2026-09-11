@@ -601,15 +601,10 @@ impl App {
         };
         let mut query = String::new();
         let mut route = "history";
-        let mut id = if self.ui.startup_space == StartupSpace::Last {
-            self.ui
-                .resume_last_space_id
-                .as_deref()
-                .and_then(SpaceId::parse)
-                .unwrap_or(SpaceId::HISTORY)
-        } else {
-            SpaceId::HISTORY
-        };
+        let mut id = self.ui.startup_space.resolve(
+            self.ui.resume_last_space_id.as_deref(),
+            self.spaces.iter().map(|space| space.id),
+        );
         match args.first().map(String::as_str) {
             Some("--history") => id = SpaceId::HISTORY,
             Some("--favorites") => id = SpaceId::FAVORITES,

@@ -129,6 +129,7 @@ impl App {
             self.window.set_right_space(right);
         }
         self.window.set_spaces(ModelRc::new(VecModel::from(model)));
+        self.render_startup_choices();
         let index = self.deck.index(selected).unwrap_or(0);
         let count = self.deck.order().len();
         self.window

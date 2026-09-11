@@ -19,7 +19,59 @@ setting_enum!(SpaceViewMode, CoverFlow, { CoverFlow => "cover_flow", Flat => "fl
 setting_enum!(Motion, System, { System => "system", Reduced => "reduced", Off => "off" });
 setting_enum!(MotionSpeed, Standard, { Snappy => "snappy", Standard => "standard", Relaxed => "relaxed" });
 setting_enum!(SwitchShortcut, Tab, { Tab => "tab", CtrlTab => "ctrl_tab" });
-setting_enum!(StartupSpace, History, { History => "history", Last => "last" });
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub enum StartupSpace {
+    #[default]
+    History,
+    Last,
+    Existing(crate::SpaceId),
+}
+impl StartupSpace {
+    pub fn key(self) -> String {
+        match self {
+            Self::History => "history".into(),
+            Self::Last => "last".into(),
+            Self::Existing(id) => id.to_string(),
+        }
+    }
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "history" => Some(Self::History),
+            "last" => Some(Self::Last),
+            _ => crate::SpaceId::parse(value).map(Self::Existing),
+        }
+    }
+    pub fn resolve(
+        self,
+        last: Option<&str>,
+        existing: impl IntoIterator<Item = crate::SpaceId>,
+    ) -> crate::SpaceId {
+        let requested = match self {
+            Self::History => crate::SpaceId::HISTORY,
+            Self::Last => last
+                .and_then(crate::SpaceId::parse)
+                .unwrap_or(crate::SpaceId::HISTORY),
+            Self::Existing(id) => id,
+        };
+        if existing.into_iter().any(|id| id == requested) {
+            requested
+        } else {
+            crate::SpaceId::HISTORY
+        }
+    }
+}
+impl TryFrom<String> for StartupSpace {
+    type Error = String;
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(&value).ok_or_else(|| "Invalid startup space".into())
+    }
+}
+impl From<StartupSpace> for String {
+    fn from(value: StartupSpace) -> Self {
+        value.key()
+    }
+}
 setting_enum!(QueryOnSwitch, Preserve, { Preserve => "preserve", Clear => "clear" });
 setting_enum!(Density, Comfortable, { Comfortable => "comfortable", Compact => "compact" });
 setting_enum!(SideContent, Visible, { Visible => "visible", TitlesOnly => "titles_only" });
@@ -79,6 +131,11 @@ impl Default for UiSettings {
 }
 impl UiSettings {
     pub fn validate(&self) -> Result<(), String> {
+        if let StartupSpace::Existing(id) = self.startup_space {
+            if id.0 <= 0 {
+                return Err("Invalid startup space identity".into());
+            }
+        }
         crate::GlobalShortcut::parse(&self.global_hotkey)?;
         if self.version != 1 {
             return Err("Unsupported UI settings version".into());
@@ -140,6 +197,46 @@ pub struct SettingsPatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn startup_space_accepts_existing_space_identity_and_legacy_choices() {
+        for value in ["history", "last", "2", "37", "9223372036854775807"] {
+            let source = serde_json::json!({"startup_space": value});
+            let settings: UiSettings = serde_json::from_value(source).unwrap();
+            settings.validate().unwrap();
+            assert_eq!(
+                serde_json::to_value(&settings).unwrap()["startup_space"],
+                value
+            );
+        }
+        for value in ["0", "-1", "invalid", "9223372036854775808"] {
+            assert!(serde_json::from_value::<UiSettings>(
+                serde_json::json!({"startup_space": value})
+            )
+            .is_err());
+        }
+    }
+    #[test]
+    fn startup_space_resolves_saved_choice_and_falls_back_after_deletion() {
+        use crate::SpaceId;
+        let spaces = [SpaceId::HISTORY, SpaceId::FAVORITES, SpaceId(37)];
+        assert_eq!(
+            StartupSpace::Existing(SpaceId(37)).resolve(None, spaces),
+            SpaceId(37)
+        );
+        assert_eq!(
+            StartupSpace::Existing(SpaceId::FAVORITES).resolve(None, spaces),
+            SpaceId::FAVORITES
+        );
+        assert_eq!(StartupSpace::Last.resolve(Some("37"), spaces), SpaceId(37));
+        assert_eq!(
+            StartupSpace::Existing(SpaceId(38)).resolve(None, spaces),
+            SpaceId::HISTORY
+        );
+        assert_eq!(
+            StartupSpace::Last.resolve(Some("38"), spaces),
+            SpaceId::HISTORY
+        );
+    }
     #[test]
     fn retired_graphics_preferences_round_trip_without_resetting_settings() {
         for view in ["cover_flow", "flat"] {
