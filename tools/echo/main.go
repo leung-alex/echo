@@ -624,7 +624,7 @@ func (a *app) selfCheck() error {
 	if err := requireGoVersion(); err != nil {
 		return err
 	}
-	for _, path := range []string{"echo.cmd", "Cargo.toml", "Cargo.lock", "apps/desktop/ui/app-window.slint", "apps/desktop/resources/echo.manifest", "apps/desktop/icons/icon.ico", "tools/echo/go.mod", "docs/TEST_OWNERSHIP_MAP.md"} {
+	for _, path := range []string{"echo.cmd", "Cargo.toml", "Cargo.lock", "apps/desktop/ui/app-window.slint", "apps/desktop/resources/echo.manifest", "apps/desktop/icons/icon.ico", "tools/echo/go.mod", "docs/TEST_OWNERSHIP_MAP.md", "docs/engineering/retirement-test-map.md"} {
 		if !fileExists(filepath.Join(a.root, filepath.FromSlash(path))) {
 			return fmt.Errorf("self-check expected file is missing: %s", path)
 		}

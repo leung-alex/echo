@@ -68,8 +68,8 @@ The current software gate also owns `saved-content-create-edit-icon-delete`
 fixture; the final original-content/blob signature must equal its original; only the three expected Favorites revisions and modification time may change.
 These replace the corresponding current-product portions of the old
 `history-favorite-create-edit-delete` and `batch-and-clear-cancel` checks.
-The legacy script remains an inventory until its other unique assertions have
-an explicit equivalent: native invalid settings/save/restart, About, activation
-replay/malformed envelope, and any still-supported batch-selection behavior.
-Removed local History search and independently visible Favorites-window
-assumptions are not applicable to the single-window software product.
+The remaining current-product assertions now live in software checks for invalid
+and valid settings, About, activation replay/malformed envelopes, and settings/
+deleted-item persistence after a real process restart. The old script has retired.
+The complete mapping, retained state tests and inapplicable product assumptions
+are documented in [retirement-test-map.md](engineering/retirement-test-map.md).

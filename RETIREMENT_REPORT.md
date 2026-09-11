@@ -1,6 +1,10 @@
 # Echo retirement report
 
-**Latest outcome (owner-revised criterion):** structural/native verification PASS; both final software performance datasets PASS at P95 <= 30ms. The final continuation below supersedes the historical native failures. Clean installer/uninstaller and the expanded T/M UI gate PASS. Physical IME and multi-DPI / multi-monitor acceptance are EXCLUDED by user request. Extra real-editor acceptance and the remaining legacy assertion migration are not complete.
+**Latest outcome:** the remaining native/editor acceptance in the owner-approved scope PASS,
+including expanded T/M native UI and 30/30 actual Notepad rounds. The legacy UI
+inventory has retired with a complete mapping. Physical IME and multi-DPI/monitors
+are EXCLUDED_BY_USER. Historical sections retain earlier failures and pending
+states; the completion section is the current acceptance record.
 
 ## Baseline and decisions
 
@@ -194,7 +198,10 @@ The owner explicitly revised animation P95 acceptance from 20ms to 30ms and requ
 
 The existing complete T/M five-minute runs were independently reassessed, not rerun. Both have 300 valid samples, unchanged original signatures, normal exit and no error except the superseded 20ms criterion. T P95 28.5783ms and M P95 28.7108ms therefore **PASS** at 30ms. Exact source hashes and the revised evaluation are in `.local/retirement-evidence/post-acceptance/performance-30ms-reassessment.json`. Raw 20ms FAIL artifacts and historical report sections remain unchanged. This passes the software performance gate; the remaining acceptance boundaries are still separate.
 
-## Installer and UI continuation (2026-09-11, late evening)
+## Installer and UI continuation (2026-09-11, late evening; historical snapshot)
+
+This snapshot is superseded by the completion section below. Its former remaining
+items and NOT_RUN states are retained as historical evidence, not current status.
 
 The owner's 30ms performance criterion remains PASS for both full T/M samples.
 Physical IME is now EXCLUDED_BY_USER for this round, as are multi-DPI/monitors.
@@ -269,3 +276,66 @@ clipboard (`post-acceptance/ui-clean-clipboard.json`). This resolves the earlier
 startup-blocked rerun for current gate acceptance; failed attempts remain intact.
 The remaining boundaries are the retained legacy assertion migration and extra
 real-editor acceptance; physical IME and multi-DPI/monitors are excluded this round.
+
+## Completion of remaining acceptance (2026-09-11)
+
+The final continuation adds current native checks for invalid/valid settings,
+About, repeated activation IDs, malformed activation rejection and settings plus
+saved-item deletion across a real restart. The supported History limit is 2,000;
+the old 5,001 expectation and absent tag/batch-toolbar/dual-window UI assumptions
+are explicitly mapped to current owners or retired assumptions in
+`docs/engineering/retirement-test-map.md`. The legacy `Invoke-UiAcceptance.ps1`
+is removed; canonical command names and product runtime are unchanged.
+
+Actual Windows Notepad 11.2607.14.0 passed 30 consecutive rounds of exact original
+text insertion, native Undo back to the query and restoration of the empty draft:
+`.local/retirement-evidence/completion/notepad-3/summary.json` and
+`actual-application-iterations.json`. The dedicated `Echo-retirement-editor.txt`
+was saved back to zero bytes. The clipboard preservation wrapper reports restored.
+This is real editor execution using synthetic input, not physical keyboard proof.
+
+The application driver now accepts an explicitly registered Document control with
+verifiable ValuePattern or TextPattern, alongside the existing Edit route. A
+finite exact-title list handles Notepad's leading modified marker; HWND, process
+birth/path, focused composer, draft marker and permitted synthetic content remain
+mandatory. Read-only positive and negative checks reject wrong process birth,
+marker, control type, content whitelist and a literal wildcard title
+(`completion/application-guard-checks.json`). No shared editor process is assigned
+cleanup ownership.
+
+Failed attempts remain recorded. The first stopped on the modified title. The
+second used a burst of Unicode packets and Notepad received corrupted input.
+An Echo-free control also produced wrong text (`notepad-without-echo-observed.json`):
+the observed value was `ec prf` followed by eleven spaces instead of the requested
+query. The passing run uses one Unicode character at a time and verifies each
+prefix before continuing. Existing fast-input fixture tests are unchanged.
+The first migrated T run passed all new behavior assertions but exposed a test
+cleanup reference to the disposed original process; restart now updates the
+script-owned process and creation timestamp together before final cleanup.
+
+
+Final expanded software gate PASSes T and M independently, each with 19 native
+behavior checks plus unchanged-original verification:
+`completion/ui-final-T/summary.json` and `completion/ui-final-M/summary.json`.
+Both exercise the actual restart, saved settings and deleted-item persistence.
+`completion/ui-final-clipboard.json` confirms clipboard restoration. No in-scope
+native/editor acceptance remains NOT_RUN. Physical IME and multi-DPI/monitors
+remain explicitly excluded, and no universal multi-tab/editor certification is
+claimed. The actual-editor guard is limited to the dedicated single-file window
+as documented in the test map.
+
+Current self-check, format and full verify PASS (`completion/self-check.log`,
+`completion/format.log`, `completion/verify.log`). Runtime hashes remain unchanged:
+- Native-test EXE: `f1ec6a0932df1c9c14349de50a072d514f316924b1f40a7e4315acfcf17e04cb`.
+- Release EXE: `d3d0502523c02de485c92125dbc99c78934b9d7c25085f3e479a68271839e74e`.
+
+The previously completed 41-case Quick Insert, original-format clipboard and
+five-minute T/M performance results still identify these same runtime binaries.
+No runtime dependency, database migration, renderer behavior or production code
+was changed by this final test migration.
+
+Both independent review axes are closed. The specification review's report-state
+and single-file scope findings were corrected. The standards review withdrew its
+batch-entry concern after checking the guarded render paths and absence of any
+current begin action; the new mapping is now required by self-check. No remaining
+review finding is open in this completion diff.

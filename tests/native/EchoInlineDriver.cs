@@ -123,6 +123,10 @@ public static class EchoInlineDriver {
                 long handle=Convert.ToInt64(target["hwnd"]);
                 foreach(object forbidden in (System.Collections.IEnumerable)target["forbidden_windows"])if(Convert.ToInt64(forbidden)==handle)throw new InvalidOperationException("Executing task window is forbidden.");
                 EchoUi.BindWindow(pid,title,handle);
+                if(target.ContainsKey("window_titles")) {
+                    var titles=new List<string>();foreach(object value in (System.Collections.IEnumerable)target["window_titles"])titles.Add((string)value);
+                    EchoUi.BindWindowTitles(pid,title,handle,titles.ToArray());
+                }
                 var selected=EchoUi.Window(pid,title,visible);
                 if(selected==IntPtr.Zero)throw new InvalidOperationException("Registered application HWND is unavailable.");
                 applicationTarget=target;
@@ -148,15 +152,22 @@ public static class EchoInlineDriver {
         if(applicationTarget==null)return null;
         if(operation!="hotkey"&&operation!="paced-hotkey"&&operation!="key"&&operation!="text"&&operation!="held-enter"&&operation!="geometry"&&operation!="application-state")throw new InvalidOperationException("This operation is not allowed on a shared application process.");
         Guard(EchoUi.Window(pid,title,true));
+        bool document=applicationTarget.ContainsKey("composer_control_type") && (string)applicationTarget["composer_control_type"]=="Document";
+        if(applicationTarget.ContainsKey("composer_control_type") && !document && (string)applicationTarget["composer_control_type"]!="Edit")throw new InvalidOperationException("Unsupported registered composer control type");
+        var expectedType=document ? System.Windows.Automation.ControlType.Document : System.Windows.Automation.ControlType.Edit;
         bool draft=false;System.Windows.Automation.AutomationElement editor=null;
         foreach(var element in EchoUi.Elements(pid,title)) {
             if(element.Current.ControlType==System.Windows.Automation.ControlType.Text&&element.Current.Name.Trim()==((string)applicationTarget["draft_marker"]).Trim())draft=true;
-            if(element.Current.ControlType==System.Windows.Automation.ControlType.Edit&&element.Current.Name==(string)applicationTarget["composer_name"]&&element.Current.HasKeyboardFocus) {
+            if(element.Current.ControlType==expectedType&&element.Current.Name==(string)applicationTarget["composer_name"]&&element.Current.HasKeyboardFocus) {
                 if(editor!=null)throw new InvalidOperationException("More than one focused composer.");editor=element;
             }
         }
         if(!draft||editor==null)throw new InvalidOperationException("The explicit window is not the authorized blank-draft composer with input focus (draft="+draft+", focused_editor="+(editor!=null)+"); no input sent.");
-        var value=((System.Windows.Automation.ValuePattern)editor.GetCurrentPattern(System.Windows.Automation.ValuePattern.Pattern)).Current.Value;
+        object rawPattern;
+        string value;
+        if(editor.TryGetCurrentPattern(System.Windows.Automation.ValuePattern.Pattern,out rawPattern))value=((System.Windows.Automation.ValuePattern)rawPattern).Current.Value;
+        else if(document && editor.TryGetCurrentPattern(System.Windows.Automation.TextPattern.Pattern,out rawPattern))value=((System.Windows.Automation.TextPattern)rawPattern).DocumentRange.GetText(-1);
+        else throw new InvalidOperationException("Registered composer has no verifiable text pattern");
         bool permitted=false;foreach(object expected in (System.Collections.IEnumerable)applicationTarget["allowed_values"])if((string)expected==value)permitted=true;
         if(!permitted)throw new InvalidOperationException("Composer text differs from this run's allowed synthetic values; no input sent.");
         return value;

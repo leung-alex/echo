@@ -14,11 +14,19 @@ public static class EchoUi
     static IntPtr explicitWindow;
     static int explicitPid;
     static string explicitTitle;
+    static string[] explicitTitles;
     // One command process, one explicitly registered application window. This
     // prevents two same-title Codex windows from sharing an input lookup.
     public static void BindWindow(int pid, string title, long hwnd)
     {
         explicitPid = pid; explicitTitle = title; explicitWindow = new IntPtr(hwnd);
+        explicitTitles = new[]{title};
+    }
+    public static void BindWindowTitles(int pid, string title, long hwnd, string[] titles)
+    {
+        if(titles == null || titles.Length == 0 || !titles.Contains(title) || titles.Any(String.IsNullOrEmpty))throw new ArgumentException("Explicit window titles must include the registered title");
+        BindWindow(pid,title,hwnd);
+        explicitTitles = titles;
     }
     public delegate bool EnumProc(IntPtr hwnd, IntPtr state);
     [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left, Top, Right, Bottom; }
@@ -42,7 +50,7 @@ public static class EchoUi
         {
             uint owner; GetWindowThreadProcessId(explicitWindow, out owner);
             var label = new StringBuilder(512); GetWindowText(explicitWindow, label, label.Capacity);
-            return owner == (uint)pid && label.ToString() == title && (!visible || IsWindowVisible(explicitWindow))
+            return owner == (uint)pid && explicitTitles.Contains(label.ToString()) && (!visible || IsWindowVisible(explicitWindow))
                 ? explicitWindow : IntPtr.Zero;
         }
         IntPtr found = IntPtr.Zero;

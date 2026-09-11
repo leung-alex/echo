@@ -394,7 +394,14 @@ class Run:
             query = "ec prf text 0013 "
             command("text", "e")
             self.wait(lambda: self.inline_ready("e"), "actual application first character")
-            command("text", query[1:])
+            if target.get("paced_text", False):
+                # Some real editors do not preserve a burst of VK_PACKET input. Use
+                # individually observed synthetic characters for that input route.
+                for index, character in enumerate(query[1:], 2):
+                    command("text", character)
+                    self.wait(lambda: state()["text"] == query[:index], "actual application character delivery")
+            else:
+                command("text", query[1:])
             self.wait(lambda: self.inline_ready(query), "actual application multiword query")
             if not self.args.native_test:
                 self.wait(lambda: self.inline_ready(QUERY), "one actual application candidate")

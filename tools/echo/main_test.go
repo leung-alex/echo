@@ -30,7 +30,7 @@ func TestPlanForPathsMapsOwnersDeterministically(t *testing.T) {
 	plan := planForPaths([]string{
 		"crates/echo-presentation/src/lib.rs",
 		"crates\\echo-storage\\src\\lib.rs",
-		"tests/native/Invoke-UiAcceptance.ps1",
+		"tests/native/Invoke-SoftwareDeckAcceptance.ps1",
 	})
 	want := []string{"presentation", "quick-insert", "storage", "tests"}
 	if !reflect.DeepEqual(plan.Owners, want) {

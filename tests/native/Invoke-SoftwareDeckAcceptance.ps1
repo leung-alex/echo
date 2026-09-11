@@ -63,10 +63,6 @@ function Ensure-Control([string]$Label) {
 }
 function Invoke-Ui([string]$Label) {Ui 'invoke' @($Label) | Out-Null}
 function Set-Ui([string]$Label,[string]$Value) {Ui 'value' @($Label,$Value) | Out-Null}
-function Open-ItemOptions {
-    Ui 'key' @('121','','shift') | Out-Null
-    Wait-Text 'ControlType.Group | Item options' | Out-Null
-}
 function Wait-Text([string]$Text) {
     $watch=[Diagnostics.Stopwatch]::StartNew()
     do {
@@ -321,6 +317,32 @@ try{
             if($state.settings.dirty){throw 'Settings save did not complete'}
             Invoke-Ui 'Cancel';Ready|Out-Null;Shot '07-dark-card'
         }
+        Check 'settings-invalid-valid-and-about' {
+            Invoke-Ui 'Settings';Wait-Text 'Appearance & motion'|Out-Null
+            Invoke-Ui 'Storage & diagnostics';Wait-Text 'Maximum history entries'|Out-Null
+            Set-Ui 'Maximum history entries' '0'
+            $invalid=Bridge 'metrics'
+            if($invalid.settings.valid -or !$invalid.settings.error.Contains('between 1 and 2000')){throw 'Invalid History limit was not rejected'}
+            if(!([string](Ui 'dump')).Contains('Save changes | enabled=False')){throw 'Invalid settings can be saved'}
+            Set-Ui 'Maximum history entries' '2000';Set-Ui 'Total storage MiB' '513';Set-Ui 'Maximum item MiB' '32'
+            if(!(Bridge 'metrics').settings.valid){throw 'Valid storage settings were rejected'}
+            Invoke-Ui 'Save changes'
+            $saved=[Diagnostics.Stopwatch]::StartNew()
+            do {$state=Bridge 'metrics';if(!$state.settings.dirty){break};Start-Sleep -Milliseconds 25}while($saved.ElapsedMilliseconds -lt 10000)
+            if($state.settings.dirty -or !$state.settings.valid){throw 'Valid settings did not save'}
+            Invoke-Ui 'About Echo';Wait-Text 'Rust + Slint'|Out-Null;Shot 'about-current'
+            Invoke-Ui 'Back to settings';Invoke-Ui 'Cancel';Ready|Out-Null
+        }
+        Check 'activation-replay-and-malformed-envelope' {
+            $envelope=@{version=1;request_id=[guid]::NewGuid().ToString();action='echo.open';origin=$null;payload=@{}}
+            $token=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($envelope|ConvertTo-Json -Compress))).TrimEnd('=').Replace('+','-').Replace('/','_')
+            foreach($attempt in 1..2){& $Executable --echo-activate $token|Out-Null;if($LASTEXITCODE){throw 'Valid activation failed'}}
+            Ready|Out-Null
+            & $Executable --echo-activate 'not-base64url' 2> (Join-Path $EvidenceRoot 'malformed-activation.log')|Out-Null
+            if($LASTEXITCODE -eq 0){throw 'Malformed activation accepted'}
+            if($owned.HasExited -or (Ui 'window-count') -ne 1){throw 'Activation replaced or duplicated the resident'}
+            Ready|Out-Null
+        }
         Check 'deep-hide-reclaims-models-images-and-frame' {
             Ui 'close'|Out-Null
             for($i=0;$i -lt 35;$i++){Start-Sleep -Seconds 1;if($owned.HasExited){throw 'Root exited during hidden period'}}
@@ -332,6 +354,22 @@ try{
             Open-History|Out-Null;Ui 'resize' @('1600','800')|Out-Null;Ready|Out-Null
             Shot '09-composition-history'
             Ui 'composition' @((Join-Path $EvidenceRoot '09-composition-history.png'))|ConvertTo-Json -Depth 12|Set-Content (Join-Path $EvidenceRoot 'composition.json')
+        }
+    }
+    if(!$CoreOnly){
+        Check 'settings-and-deletion-persist-after-restart' {
+            & $Executable --quit|Out-Null
+            if(!$owned.WaitForExit(10000) -or $owned.ExitCode -ne 0){throw 'First resident failed to exit'}
+            $owned.Dispose()
+            $script:owned=Start-Process -FilePath $Executable -ArgumentList '--history' -PassThru -WindowStyle Hidden -RedirectStandardError (Join-Path $EvidenceRoot 'restart-stderr.log') -RedirectStandardOutput (Join-Path $EvidenceRoot 'restart-stdout.log')
+            $script:ownedCreationTicks=$owned.StartTime.ToUniversalTime().Ticks
+            $owned.Id|Set-Content (Join-Path $EvidenceRoot 'restart-pid.txt')
+            Start-Sleep -Milliseconds 1500;Ready|Out-Null
+            Invoke-Ui 'Settings';Invoke-Ui 'Storage & diagnostics';Wait-Text 'Maximum history entries'|Out-Null
+            if((Ui 'read' @('Maximum history entries')) -ne '2000' -or (Ui 'read' @('Total storage MiB')) -ne '513' -or (Ui 'read' @('Maximum item MiB')) -ne '32'){throw 'Saved storage settings did not survive restart'}
+            Invoke-Ui 'Cancel';Open-History|Out-Null;Bridge 'step'|Out-Null;Ready|Out-Null
+            if(([string](Ui 'dump')).Contains('Echo retirement edited favorite')){throw 'Deleted saved item returned after restart'}
+            Open-History|Out-Null
         }
     }
     $success=$true
@@ -350,7 +388,7 @@ try{
     }
     if(!$originalsMatch){$success=$false;$checks.Add(@{name='retained-original-representations';status='FAIL'})}
     else{$checks.Add(@{name='retained-original-representations';status='PASS'})}
-    $stderr=Get-Content (Join-Path $EvidenceRoot 'application-stderr.log') -Raw
+    $stderr=(@(Get-ChildItem -LiteralPath $EvidenceRoot -Filter '*stderr.log' -File)|ForEach-Object {Get-Content -LiteralPath $_.FullName -Raw}) -join "`n"
     if($stderr -match 'panicked|Present software window:|Create software presentation'){$success=$false;$checks.Add(@{name='software-presentation-errors';status='FAIL'})}
     foreach($name in @('physical-ime','multiple-monitors')){Not-Run $name 'Requires a separate physical environment'}
     $checks|ConvertTo-Json -Depth 20|Set-Content (Join-Path $EvidenceRoot 'checks.json') -Encoding utf8NoBOM
