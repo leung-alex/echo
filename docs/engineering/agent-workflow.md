@@ -47,7 +47,7 @@ No gate may uninstall a system WebView2 runtime or delete user clipboard data. U
 
 ## Build and Package Reporting
 
-The default desktop build and canonical build/package commands use Slint software rendering without WGPU or Skia. The card carousel moves and resizes native Slint components; the outside of the card stage is transparent. Optional GPU features are retained only for historical diagnostics. `native-test` is restricted to the isolated acceptance executable and must never be enabled in a distribution build. Do not claim universal hardware support from compilation.
+The default desktop build and canonical build/package commands use Slint software rendering without WGPU or Skia. The card carousel moves and resizes native Slint components; the outside of the card stage is transparent. Optional GPU/Skia features are retired; ECHO_RENDERER accepts only software. `native-test` is restricted to the isolated acceptance executable and must never be enabled in a distribution build. Do not claim universal hardware support from compilation.
 
 Packaging supports portable directory/ZIP output and an optional NSIS installer. Report which output was actually produced and tested. Do not infer installer coverage or a final release-candidate pass from compilation or archive creation.
 

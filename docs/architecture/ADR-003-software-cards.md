@@ -7,8 +7,9 @@ Supersedes the production renderer choice in `cover-flow.md` and ADR 002.
 ## Decision and ownership
 
 Default desktop and canonical build/run/acceptance/package commands use Slint
-software rendering without `cover-flow`, WGPU or Skia. Old optional graphics
-features remain for preserved diagnostic work. Public activation and
+software rendering without `cover-flow`, WGPU or Skia. On 2026-09-11 the owner ended optional GPU/Skia diagnostic maintenance.
+Those implementations and developer features are retired; their last retained
+baseline is `44fc2a0a723595a3ff51ca557bfa03653147e521`. Public activation and
 `--echo-activate` are unchanged. One resident process retains the storage writer,
 reader, capture and input execution ownership.
 

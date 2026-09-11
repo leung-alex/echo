@@ -69,7 +69,7 @@ The native tray can open Echo, Favorites, or Settings and can explicitly Quit. T
 
 ## Rendering and Windows Composition
 
-The desktop uses Slint software rendering and a directly rendered alpha window buffer. A full content card and side cards with up to four real previews retain native DPI and share the current query. At most two full components participate in the carousel; cards move and expand or contract without scaling their content into images. No card screenshots, GPU textures or offscreen compositor are used in production. Static shadows and native clipping preserve the floating-card appearance. See `ADR-003-software-cards.md` for ownership, readiness and memory contracts; `cover-flow.md` records the earlier optional GPU design.
+The desktop uses Slint software rendering and a directly rendered alpha window buffer. A full content card and side cards with up to four real previews retain native DPI and share the current query. At most two full components participate in the carousel; cards move and expand or contract without scaling their content into images. No card screenshots, GPU textures or offscreen compositor are used in production. Static shadows and native clipping preserve the floating-card appearance. See `ADR-003-software-cards.md` for ownership, readiness and memory contracts; `cover-flow.md` records the retired GPU design.
 
 The UI About view embeds Slint's `AboutSlint` component. Distribution attribution and license notices must match the exact versions resolved by Cargo; the presence of the component alone does not establish notice completeness.
 

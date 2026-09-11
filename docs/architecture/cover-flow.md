@@ -1,3 +1,5 @@
+> Historical GPU design. Production behavior is defined by ADR 003; optional GPU/Skia implementations were retired on 2026-09-11. See RETIREMENT_REPORT.md at the repository root.
+
 # Space Cover Flow
 
 ## Product and identity

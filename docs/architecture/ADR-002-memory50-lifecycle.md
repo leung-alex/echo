@@ -2,7 +2,9 @@
 
 Status: single-process reclamation implemented; UI-process split not promoted.
 
-Historical GPU decision. Production rendering is superseded by
+Historical GPU decision. Optional GPU/Skia implementations were retired on
+2026-09-11; the lifecycle evidence below is preserved, not an active GPU gate.
+Production rendering is superseded by
 [ADR 003](ADR-003-software-cards.md); prior evidence below is retained.
 
 ## Contract

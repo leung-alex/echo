@@ -13,7 +13,7 @@
 | Native UI acceptance | `tests/native` | Real native Echo executable and UI Automation against isolated synthetic data for the scenarios explicitly implemented by each gate. |
 | Tooling | `tools/echo/*_test.go` | Command dispatch, flags, ownership planning, canonical storage leak-gate wiring, architecture boundaries, browser-stack retirement, bootstrap independence, packaging orchestration, and cleanup. |
 
-Gate execution status and archived evidence are recorded in `docs/migration/slint/execution-status.md`; this map defines ongoing ownership, not an automatic passing status.
+Current retirement evidence is recorded in `RETIREMENT_REPORT.md`; `docs/migration/slint/execution-status.md` preserves historical migration evidence, not the current renderer contract. This map defines ownership, not an automatic passing status.
 
 ## Ownership Boundaries
 
@@ -49,3 +49,13 @@ Portable directory/ZIP and optional NSIS packaging are separate outputs. Success
 ## Product Boundary
 
 Echo tests start only Echo-owned processes and use isolated data directories. Favorites are backed by the distinct Saved Item model; no removed reusable-content product or compatibility route is part of the active architecture. Copy and insert assertions must verify retained original clipboard representations where the scenario depends on formats, rather than accepting preview text as equivalent.
+
+## Retained retirement regressions
+
+`echo-storage/tests/retained_regressions.rs` carries the former r1 filename,
+r4 FTS-orphan deletion, and r5 maintenance-once assertions through the canonical
+storage gate. Historical database migration fixtures remain supported.
+`echo-presentation::navigation` protects space identity and insertion readiness;
+`slide` protects finite software transitions. GPU spring/projection tests are retired.
+`echo.cmd smoke` uses `Invoke-Smoke.ps1` and `EchoSmokeDriver.cs`, with no clipboard
+operations or mutating acceptance flag. The shared UIA/input drivers remain in use.

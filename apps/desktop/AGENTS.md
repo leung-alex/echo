@@ -4,7 +4,7 @@ Desktop is Echo's native Rust composition root. Read `docs/architecture/overview
 
 ## Ownership
 
-- `src/app.rs` owns UI-thread orchestration for one floating native Slint window. `src/app/deck_controller.rs` and `src/app/software_deck.rs` own space navigation and two-panel software motion. `src/cover_flow` is the preserved optional diagnostic GPU path.
+- `src/app.rs` owns UI-thread orchestration for one floating native Slint window. `src/app/deck_controller.rs` and `src/app/software_deck.rs` own space navigation and two-panel software motion. `echo-presentation::navigation` owns space identity and insertion readiness. GPU/Skia diagnostics are retired.
 - `src/app/bindings.rs` connects generated Slint callbacks to Rust behavior.
 - `src/service.rs` owns the background worker and its typed Rust work/result messages.
 - `src/events.rs` owns typed events delivered back to the Slint event loop.

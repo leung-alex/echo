@@ -146,16 +146,6 @@
     ]
   },
   {
-    "name": "ash",
-    "version": "0.38.0+1.3.281",
-    "license": "MIT OR Apache-2.0",
-    "source": "https://github.com/ash-rs/ash",
-    "license_files": [
-      "licenses/0e8a410375e1ee5c75c6198b08b534fec6e5edef766cf971bab4a404542636ab.txt",
-      "licenses/c733ccf8ab25df175a63d9d844677b98e3a5ab8f8de1c1616087e6868a7f948e.txt"
-    ]
-  },
-  {
     "name": "auto_enums",
     "version": "0.8.10",
     "license": "Apache-2.0 OR MIT",
@@ -210,26 +200,6 @@
     "license_files": [
       "licenses/0dd882e53de11566d50f8e8e2d5a651bcf3fabee4987d70f306233cf39094ba7.txt",
       "licenses/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt"
-    ]
-  },
-  {
-    "name": "bit-set",
-    "version": "0.9.1",
-    "license": "Apache-2.0 OR MIT",
-    "source": "https://github.com/contain-rs/bit-set",
-    "license_files": [
-      "licenses/6b56ddc7cd80419e5e22e075f2252d720f6cbe17e3e2c17383095ee2712bcffa.txt",
-      "licenses/8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90.txt"
-    ]
-  },
-  {
-    "name": "bit-vec",
-    "version": "0.9.1",
-    "license": "Apache-2.0 OR MIT",
-    "source": "https://github.com/contain-rs/bit-vec",
-    "license_files": [
-      "licenses/8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90.txt",
-      "licenses/f51ac2c59a222f7476ce507ca879960e2b64ea64bb2786eefdbeb7b0b538d1b7.txt"
     ]
   },
   {
@@ -395,15 +365,6 @@
     "source": "https://github.com/marmeladema/clru-rs",
     "license_files": [
       "licenses/7109978a83ec9d6932d511c224e300c430851a2d6123de5895a3531788976bee.txt"
-    ]
-  },
-  {
-    "name": "codespan-reporting",
-    "version": "0.13.1",
-    "license": "Apache-2.0",
-    "source": "https://github.com/brendanzab/codespan",
-    "license_files": [
-      "licenses/c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4.txt"
     ]
   },
   {
@@ -633,16 +594,6 @@
     ]
   },
   {
-    "name": "document-features",
-    "version": "0.2.12",
-    "license": "MIT OR Apache-2.0",
-    "source": "https://github.com/slint-ui/document-features",
-    "license_files": [
-      "licenses/074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff.txt",
-      "licenses/aa893340d14b9844625be6a50ac644169a01b52f0211cbf81b09e1874c8cd81d.txt"
-    ]
-  },
-  {
     "name": "dpi",
     "version": "0.1.2",
     "license": "Apache-2.0 AND MIT",
@@ -797,16 +748,6 @@
     ]
   },
   {
-    "name": "femtovg",
-    "version": "0.25.1",
-    "license": "MIT OR Apache-2.0",
-    "source": "https://github.com/femtovg/femtovg",
-    "license_files": [
-      "licenses/a88a993a1c7aaeb5f0d0c0aa5d206c8735eeffb153a922826d14ec92752316ee.txt",
-      "licenses/cd4eb10b20da1d85916624e0e15a8e76b0a66406996a4f9aa5afee909fecfb7e.txt"
-    ]
-  },
-  {
     "name": "field-offset",
     "version": "0.3.6",
     "license": "MIT OR Apache-2.0",
@@ -852,25 +793,6 @@
     "source": "https://github.com/mikedilger/float-cmp",
     "license_files": [
       "licenses/40be1e77825d7e49485a2e43d89bed29dfff29f8f529e71d3c683656021f0d08.txt"
-    ]
-  },
-  {
-    "name": "fnv",
-    "version": "1.0.7",
-    "license": "Apache-2.0 / MIT",
-    "source": "https://github.com/servo/rust-fnv",
-    "license_files": [
-      "licenses/65fdb6c76cd61612070c066eec9ecdb30ee74fb27859d0d9af58b9f499fd0c3e.txt",
-      "licenses/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt"
-    ]
-  },
-  {
-    "name": "foldhash",
-    "version": "0.1.5",
-    "license": "Zlib",
-    "source": "https://github.com/orlp/foldhash",
-    "license_files": [
-      "licenses/b1181a40b2a7b25cf66fd01481713bc1005df082c53ef73e851e55071b102744.txt"
     ]
   },
   {
@@ -971,57 +893,6 @@
     ]
   },
   {
-    "name": "gl_generator",
-    "version": "0.14.0",
-    "license": "Apache-2.0",
-    "source": "https://github.com/brendanzab/gl-rs/",
-    "license_files": []
-  },
-  {
-    "name": "glow",
-    "version": "0.17.0",
-    "license": "MIT OR Apache-2.0 OR Zlib",
-    "source": "https://github.com/grovesNL/glow",
-    "license_files": [
-      "licenses/636f644f1e149eb62961657c0e34953681eff64435653912e7bd19992666faa5.txt",
-      "licenses/b8601fc79bdf8d8088f0938bea861ffc63ed0eebbedf25f44ab2cf2e85bd7edc.txt",
-      "licenses/cdbd06e25b8c9c5d6019949d2de8123f56d29cee4166396423d2ba8c81700845.txt"
-    ]
-  },
-  {
-    "name": "glutin_wgl_sys",
-    "version": "0.6.1",
-    "license": "Apache-2.0",
-    "source": "https://github.com/rust-windowing/glutin",
-    "license_files": [
-      "licenses/a4445427440043e8ce6fadf7a43fb906cb0d7f6c573a560a9f142cf9f9bf8ff4.txt"
-    ]
-  },
-  {
-    "name": "gpu-allocator",
-    "version": "0.28.0",
-    "license": "MIT OR Apache-2.0",
-    "source": "https://github.com/Traverse-Research/gpu-allocator",
-    "license_files": [
-      "licenses/0178e21322b0e88aa3aeb3146f6a9611bc1f8df6d98bdfb34be28b9dd56a8107.txt",
-      "licenses/ad41be6cc6538b29b9346648f41432b5e460bad6be073b5eeaa41320ea2921dc.txt"
-    ]
-  },
-  {
-    "name": "gpu-descriptor",
-    "version": "0.3.2",
-    "license": "MIT OR Apache-2.0",
-    "source": "https://github.com/zakarumych/gpu-descriptor",
-    "license_files": []
-  },
-  {
-    "name": "gpu-descriptor-types",
-    "version": "0.2.0",
-    "license": "MIT OR Apache-2.0",
-    "source": "https://github.com/zakarumych/gpu-descriptor",
-    "license_files": []
-  },
-  {
     "name": "half",
     "version": "2.7.1",
     "license": "MIT OR Apache-2.0",
@@ -1043,16 +914,6 @@
   {
     "name": "hashbrown",
     "version": "0.14.5",
-    "license": "MIT OR Apache-2.0",
-    "source": "https://github.com/rust-lang/hashbrown",
-    "license_files": [
-      "licenses/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt",
-      "licenses/ff8f68cb076caf8cefe7a6430d4ac086ce6af2ca8ce2c4e5a2004d4552ef52a2.txt"
-    ]
-  },
-  {
-    "name": "hashbrown",
-    "version": "0.15.5",
     "license": "MIT OR Apache-2.0",
     "source": "https://github.com/rust-lang/hashbrown",
     "license_files": [
@@ -1099,13 +960,6 @@
       "licenses/7b63ecd5f1902af1b63729947373683c32745c16a10e8e6292e2e2dcd7e90ae0.txt",
       "licenses/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt"
     ]
-  },
-  {
-    "name": "hexf-parse",
-    "version": "0.2.1",
-    "license": "CC0-1.0",
-    "source": "https://github.com/lifthrasiir/hexf",
-    "license_files": []
   },
   {
     "name": "html5ever",
@@ -1187,17 +1041,6 @@
   },
   {
     "name": "i-slint-core-macros",
-    "version": "1.17.1",
-    "license": "GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0",
-    "source": "https://github.com/slint-ui/slint",
-    "license_files": [
-      "licenses/5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe.txt",
-      "licenses/a235744b92f4453fe18e081e54f29468a6a9db6a44e9a8f6364a48001ba4f10f.txt",
-      "licenses/b6a8bf63ae2c95b0aa256ee774680d7bd18f21f457da75466f7610b3b16acc4e.txt"
-    ]
-  },
-  {
-    "name": "i-slint-renderer-femtovg",
     "version": "1.17.1",
     "license": "GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0",
     "source": "https://github.com/slint-ui/slint",
@@ -1452,23 +1295,6 @@
     ]
   },
   {
-    "name": "khronos-egl",
-    "version": "6.0.0",
-    "license": "MIT/Apache-2.0",
-    "source": "https://github.com/timothee-haudebourg/khronos-egl",
-    "license_files": [
-      "licenses/23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3.txt",
-      "licenses/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt"
-    ]
-  },
-  {
-    "name": "khronos_api",
-    "version": "3.1.0",
-    "license": "Apache-2.0",
-    "source": "https://github.com/brendanzab/gl-rs/",
-    "license_files": []
-  },
-  {
     "name": "kurbo",
     "version": "0.13.1",
     "license": "Apache-2.0 OR MIT",
@@ -1505,15 +1331,6 @@
     "license_files": [
       "licenses/123a331b5dbf04c30097fa43b8f858bc85df671fe776de498d01f3d6b7c1f69e.txt",
       "licenses/62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a.txt"
-    ]
-  },
-  {
-    "name": "libloading",
-    "version": "0.8.9",
-    "license": "ISC",
-    "source": "https://github.com/nagisa/rust_libloading/",
-    "license_files": [
-      "licenses/b29f8b01452350c20dd1af16ef83b598fea3053578ccc1c7a0ef40e57be2620f.txt"
     ]
   },
   {
@@ -1570,16 +1387,6 @@
     "source": "https://github.com/unicode-org/icu4x",
     "license_files": [
       "licenses/f367c1b8e1aa262435251e442901da4607b4650e0e63a026f5044473ecfb90f2.txt"
-    ]
-  },
-  {
-    "name": "litrs",
-    "version": "1.0.0",
-    "license": "MIT OR Apache-2.0",
-    "source": "https://github.com/LukasKalbertodt/litrs",
-    "license_files": [
-      "licenses/62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a.txt",
-      "licenses/7dc1552e88f49132cb358b1b962fc5e79fa42d70bcbb88c526d33e45b8e98036.txt"
     ]
   },
   {
@@ -1731,16 +1538,6 @@
     ]
   },
   {
-    "name": "naga",
-    "version": "29.0.4",
-    "license": "MIT OR Apache-2.0",
-    "source": "https://github.com/gfx-rs/wgpu",
-    "license_files": [
-      "licenses/a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9.txt",
-      "licenses/dc0d97139e8205818c703741c7be7cb3b96888bd5917b8d6fc6133731e403c21.txt"
-    ]
-  },
-  {
     "name": "natord",
     "version": "1.0.9",
     "license": "MIT",
@@ -1784,6 +1581,15 @@
     "source": "https://github.com/lu-zero/noop_proc_macro",
     "license_files": [
       "licenses/d69f24ad84ec2ade64c0b68bdb31b41170e997b158370342056918329cc9af1e.txt"
+    ]
+  },
+  {
+    "name": "nucleo-matcher",
+    "version": "0.3.1",
+    "license": "MPL-2.0",
+    "source": "https://github.com/helix-editor/nucleo",
+    "license_files": [
+      "licenses/1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5.txt"
     ]
   },
   {
@@ -1876,15 +1682,6 @@
     "license_files": [
       "licenses/23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3.txt",
       "licenses/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt"
-    ]
-  },
-  {
-    "name": "ordered-float",
-    "version": "5.5.0",
-    "license": "MIT",
-    "source": "https://github.com/reem/rust-ordered-float",
-    "license_files": [
-      "licenses/f7715d38a3fa1b4ac97c5729740752505a39cb92ee83ab5b102aeb5eaa7cdea4.txt"
     ]
   },
   {
@@ -2130,16 +1927,6 @@
     ]
   },
   {
-    "name": "presser",
-    "version": "0.3.1",
-    "license": "MIT OR Apache-2.0",
-    "source": "https://github.com/EmbarkStudios/presser",
-    "license_files": [
-      "licenses/090a294a492ab2f41388252312a65cf2f0e423330b721a68c6665ac64766753b.txt",
-      "licenses/8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90.txt"
-    ]
-  },
-  {
     "name": "proc-macro-crate",
     "version": "3.5.0",
     "license": "MIT OR Apache-2.0",
@@ -2248,16 +2035,6 @@
     ]
   },
   {
-    "name": "range-alloc",
-    "version": "0.1.5",
-    "license": "MIT OR Apache-2.0",
-    "source": "https://github.com/gfx-rs/range-alloc",
-    "license_files": [
-      "licenses/a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9.txt",
-      "licenses/ba00052102ed87948bb8822d6e1c496260c83042887b22bb5caad922ec025a60.txt"
-    ]
-  },
-  {
     "name": "rav1e",
     "version": "0.8.1",
     "license": "BSD-2-Clause",
@@ -2342,16 +2119,6 @@
     "source": "https://github.com/sarah-ek/reborrow/",
     "license_files": [
       "licenses/bf5a93d1014429b43e01c57d45bea928748fbf37d059306145a1a0a91aec2014.txt"
-    ]
-  },
-  {
-    "name": "renderdoc-sys",
-    "version": "1.1.0",
-    "license": "MIT OR Apache-2.0",
-    "source": "https://github.com/ebkalderon/renderdoc-rs",
-    "license_files": [
-      "licenses/24b2f2eff5a7622e87162823e260f00c6dfbce0e26d585d3d28c785f1edc80ed.txt",
-      "licenses/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt"
     ]
   },
   {
@@ -2723,13 +2490,6 @@
       "licenses/23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3.txt",
       "licenses/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt"
     ]
-  },
-  {
-    "name": "spirv",
-    "version": "0.4.0+sdk-1.4.341.0",
-    "license": "Apache-2.0",
-    "source": "https://github.com/gfx-rs/rspirv",
-    "license_files": []
   },
   {
     "name": "stable_deref_trait",
@@ -3336,66 +3096,6 @@
     ]
   },
   {
-    "name": "wgpu",
-    "version": "29.0.4",
-    "license": "MIT OR Apache-2.0",
-    "source": "https://github.com/gfx-rs/wgpu",
-    "license_files": [
-      "licenses/a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9.txt",
-      "licenses/dc0d97139e8205818c703741c7be7cb3b96888bd5917b8d6fc6133731e403c21.txt"
-    ]
-  },
-  {
-    "name": "wgpu-core",
-    "version": "29.0.4",
-    "license": "MIT OR Apache-2.0",
-    "source": "https://github.com/gfx-rs/wgpu",
-    "license_files": [
-      "licenses/a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9.txt",
-      "licenses/dc0d97139e8205818c703741c7be7cb3b96888bd5917b8d6fc6133731e403c21.txt"
-    ]
-  },
-  {
-    "name": "wgpu-core-deps-windows-linux-android",
-    "version": "29.0.4",
-    "license": "MIT OR Apache-2.0",
-    "source": "https://github.com/gfx-rs/wgpu",
-    "license_files": [
-      "licenses/a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9.txt",
-      "licenses/dc0d97139e8205818c703741c7be7cb3b96888bd5917b8d6fc6133731e403c21.txt"
-    ]
-  },
-  {
-    "name": "wgpu-hal",
-    "version": "29.0.4",
-    "license": "MIT OR Apache-2.0",
-    "source": "https://github.com/gfx-rs/wgpu",
-    "license_files": [
-      "licenses/a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9.txt",
-      "licenses/dc0d97139e8205818c703741c7be7cb3b96888bd5917b8d6fc6133731e403c21.txt"
-    ]
-  },
-  {
-    "name": "wgpu-naga-bridge",
-    "version": "29.0.4",
-    "license": "MIT OR Apache-2.0",
-    "source": "https://github.com/gfx-rs/wgpu",
-    "license_files": [
-      "licenses/a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9.txt",
-      "licenses/dc0d97139e8205818c703741c7be7cb3b96888bd5917b8d6fc6133731e403c21.txt"
-    ]
-  },
-  {
-    "name": "wgpu-types",
-    "version": "29.0.4",
-    "license": "MIT OR Apache-2.0",
-    "source": "https://github.com/gfx-rs/wgpu",
-    "license_files": [
-      "licenses/a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9.txt",
-      "licenses/dc0d97139e8205818c703741c7be7cb3b96888bd5917b8d6fc6133731e403c21.txt"
-    ]
-  },
-  {
     "name": "windows",
     "version": "0.62.2",
     "license": "MIT OR Apache-2.0",
@@ -3589,15 +3289,6 @@
     "source": "https://github.com/unicode-org/icu4x",
     "license_files": [
       "licenses/f367c1b8e1aa262435251e442901da4607b4650e0e63a026f5044473ecfb90f2.txt"
-    ]
-  },
-  {
-    "name": "xml-rs",
-    "version": "0.8.29",
-    "license": "MIT",
-    "source": "https://github.com/kornelski/xml-rs",
-    "license_files": [
-      "licenses/0dc18d924dc0a5f41172a393012843a5eaaef338e795b3645da9cc3b6068220b.txt"
     ]
   },
   {

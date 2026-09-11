@@ -93,6 +93,11 @@ def main():
         if not package['license_files']:
             lines.append('  No standalone text shipped in the package; see upstream source.')
         lines.append('')
+    # Non-Cargo source assets are shipped with the application too.
+    icon_license = Path(__file__).resolve().parents[2] / 'apps/desktop/ui/icons/apps-sdk/LICENSE.txt'
+    lines += ['OpenAI Apps SDK UI icons (0f00143c7a639906f1621fe58e1b6be7b5bea46d)',
+              'Source: https://github.com/openai/apps-sdk-ui', '',
+              icon_license.read_text(encoding='utf-8').rstrip(), '']
     (destination / 'THIRD-PARTY-NOTICES.txt').write_text('\n'.join(lines), encoding='utf-8')
     print(json.dumps(dict(packages=len(inventory), standalone_text_not_shipped=missing)))
 

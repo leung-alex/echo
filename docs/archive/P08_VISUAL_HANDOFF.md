@@ -45,7 +45,7 @@ directory `test-results/p08-visual/`:
 
 ## Intentional deviations
 
-See [`docs/VISUAL_PARITY_DEVIATIONS.md`](VISUAL_PARITY_DEVIATIONS.md).
+See [`docs/VISUAL_PARITY_DEVIATIONS.md`](../VISUAL_PARITY_DEVIATIONS.md).
 `draftRecovery` remains Culsans shell-owned; backup/restore UI is not added;
 Echo's existing `record_sensitive` setting remains visible.
 

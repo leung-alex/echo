@@ -317,7 +317,7 @@ func (a *app) checkLocalityContract() error {
 func (a *app) checkHistoricalRouting() error {
 	for _, relative := range []string{
 		"docs/P06_P07_HANDOFF.md",
-		"docs/P08_VISUAL_HANDOFF.md",
+		"docs/archive/P08_VISUAL_HANDOFF.md",
 		"docs/VISUAL_PARITY_DEVIATIONS.md",
 	} {
 		content, err := os.ReadFile(filepath.Join(a.root, filepath.FromSlash(relative)))

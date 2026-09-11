@@ -47,8 +47,8 @@ The repository already includes per-patch records. Preserve these sources rather
 
 | Runtime seam | Existing record | Upgrade checks |
 | --- | --- | --- |
-| Slint 1.17.1 backend | `vendor/i-slint-backend-winit/ECHO-PATCH.md` | Accessibility values, non-activating input, offscreen adapter factory |
-| Slint 1.17.1 WGPU renderer | `vendor/i-slint-renderer-femtovg/ECHO-PATCH.md` | Frame pacing, transparent composition, actual popup pixels |
-| FemtoVG 0.25.1 | `vendor/femtovg/ECHO_PATCHES.md` | Font identity caching and retained pipeline regressions |
+| Slint 1.17.1 backend | `vendor/i-slint-backend-winit/ECHO-PATCH.md` | Accessibility values, non-activating input, software before-frame and frame acknowledgment |
+
+The optional GPU vendor patches were retired with the GPU/Skia route; their historical source remains in Git before the retirement commits. See [retirement report](../../RETIREMENT_REPORT.md).
 
 `private_unstable_api` remains version-pinned. No runtime upgrade or speculative renderer rewrite is included in this correctness repair.

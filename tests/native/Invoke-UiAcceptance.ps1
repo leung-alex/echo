@@ -1,3 +1,5 @@
+# Legacy assertion inventory; not a canonical runner. Retained pending equivalent current-UI coverage.
+# Use echo.cmd smoke or echo.cmd acceptance clipboard/quick-insert/ui. See RETIREMENT_REPORT.md.
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$Root,

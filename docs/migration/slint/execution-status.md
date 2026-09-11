@@ -22,6 +22,6 @@ The current tested native binary SHA256 is `81e38187230443f9763a14a5f92ca3025cb1
 
 ## Explicit acceptance boundaries
 
-Physical Chinese IME, a hardware mixed-DPI/multi-monitor matrix, GPU renderer benchmarking, boot-cold startup, and an eight-hour soak must not be marked as passed without actual runs. The default renderer is software with an opaque theme fallback; Mica is conditional on a compatible optional GPU backend and Windows settings. Screenshot inspection is not a claim of pixel-identical rendering to the former browser implementation.
+Physical Chinese IME, a hardware mixed-DPI/multi-monitor matrix, boot-cold startup, and an eight-hour soak must not be marked as passed without actual runs. The supported renderer is software with an opaque theme fallback. The optional GPU/Skia route and its Mica experiment are retired; see [retirement report](../../../RETIREMENT_REPORT.md). Screenshot inspection is not a claim of pixel-identical rendering to the former browser implementation.
 
 The installed Remote Desktop Commander terminal/file interface is functioning and was used for all current local builds and desktop acceptance. Earlier M0-only notes about its unavailable interface are historical and no longer apply.

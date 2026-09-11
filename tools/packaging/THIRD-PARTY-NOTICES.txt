@@ -98,12 +98,6 @@ as-slice 0.2.1
   Text: licenses/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt
   Text: licenses/c986bcdb83103d4ddf58aeb7b5302359782e54dc4eea14a0cc27c62dcbd50729.txt
 
-ash 0.38.0+1.3.281
-  Declared: MIT OR Apache-2.0
-  Source: https://github.com/ash-rs/ash
-  Text: licenses/0e8a410375e1ee5c75c6198b08b534fec6e5edef766cf971bab4a404542636ab.txt
-  Text: licenses/c733ccf8ab25df175a63d9d844677b98e3a5ab8f8de1c1616087e6868a7f948e.txt
-
 auto_enums 0.8.10
   Declared: Apache-2.0 OR MIT
   Source: https://github.com/taiki-e/auto_enums
@@ -136,18 +130,6 @@ base64 0.22.1
   Source: https://github.com/marshallpierce/rust-base64
   Text: licenses/0dd882e53de11566d50f8e8e2d5a651bcf3fabee4987d70f306233cf39094ba7.txt
   Text: licenses/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt
-
-bit-set 0.9.1
-  Declared: Apache-2.0 OR MIT
-  Source: https://github.com/contain-rs/bit-set
-  Text: licenses/6b56ddc7cd80419e5e22e075f2252d720f6cbe17e3e2c17383095ee2712bcffa.txt
-  Text: licenses/8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90.txt
-
-bit-vec 0.9.1
-  Declared: Apache-2.0 OR MIT
-  Source: https://github.com/contain-rs/bit-vec
-  Text: licenses/8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90.txt
-  Text: licenses/f51ac2c59a222f7476ce507ca879960e2b64ea64bb2786eefdbeb7b0b538d1b7.txt
 
 bit_field 0.10.3
   Declared: Apache-2.0/MIT
@@ -247,11 +229,6 @@ clru 0.6.3
   Declared: MIT
   Source: https://github.com/marmeladema/clru-rs
   Text: licenses/7109978a83ec9d6932d511c224e300c430851a2d6123de5895a3531788976bee.txt
-
-codespan-reporting 0.13.1
-  Declared: Apache-2.0
-  Source: https://github.com/brendanzab/codespan
-  Text: licenses/c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4.txt
 
 color_quant 1.1.0
   Declared: MIT
@@ -387,12 +364,6 @@ displaydoc 0.2.7
   Text: licenses/23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3.txt
   Text: licenses/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt
 
-document-features 0.2.12
-  Declared: MIT OR Apache-2.0
-  Source: https://github.com/slint-ui/document-features
-  Text: licenses/074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff.txt
-  Text: licenses/aa893340d14b9844625be6a50ac644169a01b52f0211cbf81b09e1874c8cd81d.txt
-
 dpi 0.1.2
   Declared: Apache-2.0 AND MIT
   Source: https://github.com/rust-windowing/winit
@@ -483,12 +454,6 @@ fdeflate 0.3.7
   Text: licenses/0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594.txt
   Text: licenses/c77a4cf9da729987d0fe7ccd811e3bd27393914ddf3d23467c18cc22954513b3.txt
 
-femtovg 0.25.1
-  Declared: MIT OR Apache-2.0
-  Source: https://github.com/femtovg/femtovg
-  Text: licenses/a88a993a1c7aaeb5f0d0c0aa5d206c8735eeffb153a922826d14ec92752316ee.txt
-  Text: licenses/cd4eb10b20da1d85916624e0e15a8e76b0a66406996a4f9aa5afee909fecfb7e.txt
-
 field-offset 0.3.6
   Declared: MIT OR Apache-2.0
   Source: https://github.com/Diggsey/rust-field-offset
@@ -516,17 +481,6 @@ float-cmp 0.9.0
   Declared: MIT
   Source: https://github.com/mikedilger/float-cmp
   Text: licenses/40be1e77825d7e49485a2e43d89bed29dfff29f8f529e71d3c683656021f0d08.txt
-
-fnv 1.0.7
-  Declared: Apache-2.0 / MIT
-  Source: https://github.com/servo/rust-fnv
-  Text: licenses/65fdb6c76cd61612070c066eec9ecdb30ee74fb27859d0d9af58b9f499fd0c3e.txt
-  Text: licenses/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt
-
-foldhash 0.1.5
-  Declared: Zlib
-  Source: https://github.com/orlp/foldhash
-  Text: licenses/b1181a40b2a7b25cf66fd01481713bc1005df082c53ef73e851e55071b102744.txt
 
 foldhash 0.2.0
   Declared: Zlib
@@ -585,39 +539,6 @@ gif 0.14.2
   Text: licenses/769f80b5bcb42ed0af4e4d2fd74e1ac9bf843cb80c5a29219d1ef3544428a6bb.txt
   Text: licenses/77257f3d2181236b1aee78920238062ae64efe13c5d858b2db126e79c9e1b14f.txt
 
-gl_generator 0.14.0
-  Declared: Apache-2.0
-  Source: https://github.com/brendanzab/gl-rs/
-  No standalone text shipped in the package; see upstream source.
-
-glow 0.17.0
-  Declared: MIT OR Apache-2.0 OR Zlib
-  Source: https://github.com/grovesNL/glow
-  Text: licenses/636f644f1e149eb62961657c0e34953681eff64435653912e7bd19992666faa5.txt
-  Text: licenses/b8601fc79bdf8d8088f0938bea861ffc63ed0eebbedf25f44ab2cf2e85bd7edc.txt
-  Text: licenses/cdbd06e25b8c9c5d6019949d2de8123f56d29cee4166396423d2ba8c81700845.txt
-
-glutin_wgl_sys 0.6.1
-  Declared: Apache-2.0
-  Source: https://github.com/rust-windowing/glutin
-  Text: licenses/a4445427440043e8ce6fadf7a43fb906cb0d7f6c573a560a9f142cf9f9bf8ff4.txt
-
-gpu-allocator 0.28.0
-  Declared: MIT OR Apache-2.0
-  Source: https://github.com/Traverse-Research/gpu-allocator
-  Text: licenses/0178e21322b0e88aa3aeb3146f6a9611bc1f8df6d98bdfb34be28b9dd56a8107.txt
-  Text: licenses/ad41be6cc6538b29b9346648f41432b5e460bad6be073b5eeaa41320ea2921dc.txt
-
-gpu-descriptor 0.3.2
-  Declared: MIT OR Apache-2.0
-  Source: https://github.com/zakarumych/gpu-descriptor
-  No standalone text shipped in the package; see upstream source.
-
-gpu-descriptor-types 0.2.0
-  Declared: MIT OR Apache-2.0
-  Source: https://github.com/zakarumych/gpu-descriptor
-  No standalone text shipped in the package; see upstream source.
-
 half 2.7.1
   Declared: MIT OR Apache-2.0
   Source: https://github.com/VoidStarKat/half-rs
@@ -630,12 +551,6 @@ harfrust 0.8.4
   Text: licenses/3a7c3f0b887abb7c638faf022d29257418458614c6724b120ceeffb279f9c7d2.txt
 
 hashbrown 0.14.5
-  Declared: MIT OR Apache-2.0
-  Source: https://github.com/rust-lang/hashbrown
-  Text: licenses/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt
-  Text: licenses/ff8f68cb076caf8cefe7a6430d4ac086ce6af2ca8ce2c4e5a2004d4552ef52a2.txt
-
-hashbrown 0.15.5
   Declared: MIT OR Apache-2.0
   Source: https://github.com/rust-lang/hashbrown
   Text: licenses/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt
@@ -664,11 +579,6 @@ heck 0.5.0
   Source: https://github.com/withoutboats/heck
   Text: licenses/7b63ecd5f1902af1b63729947373683c32745c16a10e8e6292e2e2dcd7e90ae0.txt
   Text: licenses/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt
-
-hexf-parse 0.2.1
-  Declared: CC0-1.0
-  Source: https://github.com/lifthrasiir/hexf
-  No standalone text shipped in the package; see upstream source.
 
 html5ever 0.39.0
   Declared: MIT OR Apache-2.0
@@ -721,13 +631,6 @@ i-slint-core 1.17.1
   Text: licenses/b6a8bf63ae2c95b0aa256ee774680d7bd18f21f457da75466f7610b3b16acc4e.txt
 
 i-slint-core-macros 1.17.1
-  Declared: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
-  Source: https://github.com/slint-ui/slint
-  Text: licenses/5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe.txt
-  Text: licenses/a235744b92f4453fe18e081e54f29468a6a9db6a44e9a8f6364a48001ba4f10f.txt
-  Text: licenses/b6a8bf63ae2c95b0aa256ee774680d7bd18f21f457da75466f7610b3b16acc4e.txt
-
-i-slint-renderer-femtovg 1.17.1
   Declared: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
   Source: https://github.com/slint-ui/slint
   Text: licenses/5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe.txt
@@ -876,17 +779,6 @@ keyboard-types 0.7.0
   Text: licenses/31dbbab009f1b2e59a1622d5955dfafc38ebe834000215b49d954c6f85fe927c.txt
   Text: licenses/769f80b5bcb42ed0af4e4d2fd74e1ac9bf843cb80c5a29219d1ef3544428a6bb.txt
 
-khronos-egl 6.0.0
-  Declared: MIT/Apache-2.0
-  Source: https://github.com/timothee-haudebourg/khronos-egl
-  Text: licenses/23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3.txt
-  Text: licenses/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt
-
-khronos_api 3.1.0
-  Declared: Apache-2.0
-  Source: https://github.com/brendanzab/gl-rs/
-  No standalone text shipped in the package; see upstream source.
-
 kurbo 0.13.1
   Declared: Apache-2.0 OR MIT
   Source: https://github.com/linebender/kurbo
@@ -909,11 +801,6 @@ libc 0.2.189
   Source: https://github.com/rust-lang/libc
   Text: licenses/123a331b5dbf04c30097fa43b8f858bc85df671fe776de498d01f3d6b7c1f69e.txt
   Text: licenses/62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a.txt
-
-libloading 0.8.9
-  Declared: ISC
-  Source: https://github.com/nagisa/rust_libloading/
-  Text: licenses/b29f8b01452350c20dd1af16ef83b598fea3053578ccc1c7a0ef40e57be2620f.txt
 
 libm 0.2.16
   Declared: MIT
@@ -946,12 +833,6 @@ litemap 0.8.3
   Declared: Unicode-3.0
   Source: https://github.com/unicode-org/icu4x
   Text: licenses/f367c1b8e1aa262435251e442901da4607b4650e0e63a026f5044473ecfb90f2.txt
-
-litrs 1.0.0
-  Declared: MIT OR Apache-2.0
-  Source: https://github.com/LukasKalbertodt/litrs
-  Text: licenses/62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a.txt
-  Text: licenses/7dc1552e88f49132cb358b1b962fc5e79fa42d70bcbb88c526d33e45b8e98036.txt
 
 lock_api 0.4.14
   Declared: MIT OR Apache-2.0
@@ -1045,12 +926,6 @@ muda 0.19.3
   Text: licenses/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt
   Text: licenses/b99f9d43803f2ac979c50949df630bd8eeaf2fcd1b9fdb9093710d70f5dfb63d.txt
 
-naga 29.0.4
-  Declared: MIT OR Apache-2.0
-  Source: https://github.com/gfx-rs/wgpu
-  Text: licenses/a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9.txt
-  Text: licenses/dc0d97139e8205818c703741c7be7cb3b96888bd5917b8d6fc6133731e403c21.txt
-
 natord 1.0.9
   Declared: MIT
   Source: https://github.com/lifthrasiir/rust-natord
@@ -1076,6 +951,11 @@ noop_proc_macro 0.3.0
   Declared: MIT
   Source: https://github.com/lu-zero/noop_proc_macro
   Text: licenses/d69f24ad84ec2ade64c0b68bdb31b41170e997b158370342056918329cc9af1e.txt
+
+nucleo-matcher 0.3.1
+  Declared: MPL-2.0
+  Source: https://github.com/helix-editor/nucleo
+  Text: licenses/1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5.txt
 
 num-bigint 0.4.8
   Declared: MIT OR Apache-2.0
@@ -1132,11 +1012,6 @@ once_cell 1.21.4
   Source: https://github.com/matklad/once_cell
   Text: licenses/23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3.txt
   Text: licenses/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt
-
-ordered-float 5.5.0
-  Declared: MIT
-  Source: https://github.com/reem/rust-ordered-float
-  Text: licenses/f7715d38a3fa1b4ac97c5729740752505a39cb92ee83ab5b102aeb5eaa7cdea4.txt
 
 parking_lot 0.12.5
   Declared: MIT OR Apache-2.0
@@ -1280,12 +1155,6 @@ precomputed-hash 0.1.1
   Source: https://github.com/emilio/precomputed-hash
   Text: licenses/7ca6700600dfa9c9497bf5556365067daa802c871ea78239f129309c7a2048f7.txt
 
-presser 0.3.1
-  Declared: MIT OR Apache-2.0
-  Source: https://github.com/EmbarkStudios/presser
-  Text: licenses/090a294a492ab2f41388252312a65cf2f0e423330b721a68c6665ac64766753b.txt
-  Text: licenses/8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90.txt
-
 proc-macro-crate 3.5.0
   Declared: MIT OR Apache-2.0
   Source: https://github.com/bkchr/proc-macro-crate
@@ -1352,12 +1221,6 @@ quote 1.0.47
   Text: licenses/23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3.txt
   Text: licenses/62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a.txt
 
-range-alloc 0.1.5
-  Declared: MIT OR Apache-2.0
-  Source: https://github.com/gfx-rs/range-alloc
-  Text: licenses/a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9.txt
-  Text: licenses/ba00052102ed87948bb8822d6e1c496260c83042887b22bb5caad922ec025a60.txt
-
 rav1e 0.8.1
   Declared: BSD-2-Clause
   Source: https://github.com/xiph/rav1e/
@@ -1408,12 +1271,6 @@ reborrow 0.5.5
   Declared: MIT
   Source: https://github.com/sarah-ek/reborrow/
   Text: licenses/bf5a93d1014429b43e01c57d45bea928748fbf37d059306145a1a0a91aec2014.txt
-
-renderdoc-sys 1.1.0
-  Declared: MIT OR Apache-2.0
-  Source: https://github.com/ebkalderon/renderdoc-rs
-  Text: licenses/24b2f2eff5a7622e87162823e260f00c6dfbce0e26d585d3d28c785f1edc80ed.txt
-  Text: licenses/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt
 
 resvg 0.47.0
   Declared: Apache-2.0 OR MIT
@@ -1636,11 +1493,6 @@ spin_on 0.1.1
   Source: registry+https://github.com/rust-lang/crates.io-index
   Text: licenses/23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3.txt
   Text: licenses/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt
-
-spirv 0.4.0+sdk-1.4.341.0
-  Declared: Apache-2.0
-  Source: https://github.com/gfx-rs/rspirv
-  No standalone text shipped in the package; see upstream source.
 
 stable_deref_trait 1.2.1
   Declared: MIT OR Apache-2.0
@@ -2004,42 +1856,6 @@ weezl 0.1.12
   Text: licenses/573f5227db835cd30bbdd3aed3f82615f80119a4d5c82b4daf642dbfe2b6afde.txt
   Text: licenses/769f80b5bcb42ed0af4e4d2fd74e1ac9bf843cb80c5a29219d1ef3544428a6bb.txt
 
-wgpu 29.0.4
-  Declared: MIT OR Apache-2.0
-  Source: https://github.com/gfx-rs/wgpu
-  Text: licenses/a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9.txt
-  Text: licenses/dc0d97139e8205818c703741c7be7cb3b96888bd5917b8d6fc6133731e403c21.txt
-
-wgpu-core 29.0.4
-  Declared: MIT OR Apache-2.0
-  Source: https://github.com/gfx-rs/wgpu
-  Text: licenses/a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9.txt
-  Text: licenses/dc0d97139e8205818c703741c7be7cb3b96888bd5917b8d6fc6133731e403c21.txt
-
-wgpu-core-deps-windows-linux-android 29.0.4
-  Declared: MIT OR Apache-2.0
-  Source: https://github.com/gfx-rs/wgpu
-  Text: licenses/a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9.txt
-  Text: licenses/dc0d97139e8205818c703741c7be7cb3b96888bd5917b8d6fc6133731e403c21.txt
-
-wgpu-hal 29.0.4
-  Declared: MIT OR Apache-2.0
-  Source: https://github.com/gfx-rs/wgpu
-  Text: licenses/a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9.txt
-  Text: licenses/dc0d97139e8205818c703741c7be7cb3b96888bd5917b8d6fc6133731e403c21.txt
-
-wgpu-naga-bridge 29.0.4
-  Declared: MIT OR Apache-2.0
-  Source: https://github.com/gfx-rs/wgpu
-  Text: licenses/a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9.txt
-  Text: licenses/dc0d97139e8205818c703741c7be7cb3b96888bd5917b8d6fc6133731e403c21.txt
-
-wgpu-types 29.0.4
-  Declared: MIT OR Apache-2.0
-  Source: https://github.com/gfx-rs/wgpu
-  Text: licenses/a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9.txt
-  Text: licenses/dc0d97139e8205818c703741c7be7cb3b96888bd5917b8d6fc6133731e403c21.txt
-
 windows 0.62.2
   Declared: MIT OR Apache-2.0
   Source: https://github.com/microsoft/windows-rs
@@ -2156,11 +1972,6 @@ writeable 0.6.4
   Source: https://github.com/unicode-org/icu4x
   Text: licenses/f367c1b8e1aa262435251e442901da4607b4650e0e63a026f5044473ecfb90f2.txt
 
-xml-rs 0.8.29
-  Declared: MIT
-  Source: https://github.com/kornelski/xml-rs
-  Text: licenses/0dc18d924dc0a5f41172a393012843a5eaaef338e795b3645da9cc3b6068220b.txt
-
 xmlwriter 0.1.0
   Declared: MIT
   Source: https://github.com/RazrFalcon/xmlwriter
@@ -2258,6 +2069,7 @@ zune-jpeg 0.5.15
 
 OpenAI Apps SDK UI icons (0f00143c7a639906f1621fe58e1b6be7b5bea46d)
 Source: https://github.com/openai/apps-sdk-ui
+
 Copyright 2025 OpenAI
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of
