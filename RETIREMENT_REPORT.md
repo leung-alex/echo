@@ -1,5 +1,7 @@
 # Echo retirement report
 
+**Latest outcome:** structural/native verification PASS; animation timing FAIL. The final continuation below supersedes the historical native failures. Multi-DPI / multi-monitor acceptance is EXCLUDED by user request.
+
 ## Baseline and decisions
 
 - Audit package: `.local/devpacks/echo-retirement-audit-c0e8732` (audit SHA `c0e8732`).
@@ -151,6 +153,37 @@ The initial focus-style experiment and failed full runs are retained. The first 
 
 A temporary frame-scheduling probe found late timer callbacks but did not establish a complete root cause. Its 76-second diagnostic is not a five-minute acceptance run, uses a native-test executable despite the copied runner's default `native_test` field, and intentionally fails the full sample-count checks. All frame instrumentation was removed from the product. The earlier five-minute P95 failures remain valid historical evidence.
 
-Installer preparation remains blocked: no local NSIS compiler was found; two official SourceForge download attempts returned HTML rather than a ZIP. Archive validation rejected them before extraction or execution. No installer or uninstaller was run, and no installed application, shortcut, user History or runtime was removed.
+Installer preparation remains blocked: no local NSIS compiler was found; official SourceForge download attempts returned HTML rather than a ZIP; a session-preserving automatic-redirect attempt also failed with transport EOF. Archive validation rejected the HTML files before extraction or execution. No installer or uninstaller was run, and no installed application, shortcut, user History or runtime was removed.
 
 The final debug/native-test Quick Insert run passed all 41 canonical non-stress cases in one uninterrupted run (`quick-insert-final/summary.json`), including the installed synthetic IME case, image insertion, protected inputs, query/selection/range races, cancellation/rearm, hidden reclamation and streaming filtering. Executable SHA256: `f1ec6a0932df1c9c14349de50a072d514f316924b1f40a7e4315acfcf17e04cb`. This is real isolated Windows execution using the canonical runner, on the debug/native-test build; it is not a physical-keyboard or additional-editor certification. Current self-check, format and full verify passed (`final-self-check.log`, `final-format.log`, `final-verify.log`).
+
+## Final continuation results and delivery
+
+Product source commit: `c44b328059adffb45b210b7741379f31b8220840` on `codex/retirement`. Local `main` remains `44fc2a0a723595a3ff51ca557bfa03653147e521`; no push or merge was performed. Subsequent report-only commits do not change executable contents.
+
+| Check | Final result / evidence under `.local/retirement-evidence/fixes` |
+| --- | --- |
+| Self-check, format, verify | PASS (`final-self-check.log`, `final-format.log`, `final-verify.log`) |
+| Windows feature graph and toolchain | Recorded (`windows-features-final.txt`, `toolchain-final.txt`) |
+| Quick Insert | PASS, 41/41 in one run (`quick-insert-final/summary.json`); debug/native-test executable identified above |
+| Clipboard | PASS, original format/exclusion gate and History row copy; clipboard restored (`clipboard-final/summary.json`, `clipboard-final/clipboard-preservation.json`) |
+| Software UI | PASS for T and M (`ui-final-T/summary.json`, `ui-final-M/summary.json`) |
+| Final Release | PASS (`release-final-build.log`); package command rebuilt after reverted diagnostic files changed timestamps (`package-final.log`) |
+| Packaged EXE smoke | PASS, acceptance flag unset (`smoke-final-2/summary.json`); first attempt stopped before launch because its fixture-generator environment was missing |
+| Portable/ZIP | PASS, 319 manifest file hashes, full ZIP byte identity, icon/version/manifest resources and icon license (`package-inspection-final.json`) |
+| Installer build | NOT_BUILT; NSIS unavailable |
+| Install/uninstall, physical IME, extra real editors | NOT_RUN |
+| Multi-DPI / multi-monitor | EXCLUDED by user request |
+
+The actual portable artifact is `target/echo-package/0.1.0/20260911T132939748-833d36d9`, built from clean source `c44b328`. Packaged `Echo.exe` exactly matches `target/release/echo-desktop.exe`, SHA256 `d3d0502523c02de485c92125dbc99c78934b9d7c25085f3e479a68271839e74e`. Resource verification found 11 icon entries, one group icon, one version entry and one manifest. This remains portable/ZIP acceptance, not installation or visual branding acceptance.
+
+Both final five-minute runs used this packaged, non-native-test EXE with no Cargo/rustc build running. Each had 300 valid one-Hz samples: 120 visible, 120 hidden, 60 restored. Each preserved the original-representation signature, confirmed software selection and reclamation, restored complete History/navigation, and exited normally. Each result has exactly one error: animation P95 above the unchanged 20ms limit.
+
+| Dataset | Sampled peak bytes | Strict < 50,000,000 | Animation P95 | <= 20ms | Reclaim |
+| --- | ---: | --- | ---: | --- | ---: |
+| Text T | 35,467,264 | PASS | 28.5783ms | FAIL | 30.0003828s |
+| Mixed images M | 34,762,752 | PASS | 28.7108ms | FAIL | 30.0015087s |
+
+Evidence: `perf-final-T`, `perf-final-M`, `performance-final-summary.json`; these sampled peaks do not claim unsampled allocation high-water proof. The prior performance failures and diagnostic experiments remain preserved.
+
+**Final outcome: structural cleanup PASS; animation timing FAIL. Overall product acceptance is not PASS.** The three previously failing Quick Insert assertions are now repaired and pass the full native run. Animation timing remains unresolved. Installer/physical-input/extra-editor boundaries above remain unaccepted, and the legacy direct UI script's unique assertions still require equivalent migration before that script can retire. R12 CSS and R14 icon aliases remain intentionally retained.
