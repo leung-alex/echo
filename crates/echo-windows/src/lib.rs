@@ -1044,8 +1044,61 @@ mod windows_impl {
         Some(bmp)
     }
 
+    pub(crate) fn inline_image_fingerprint(bmp: &[u8]) -> Option<(u32, usize, [u8; 32])> {
+        use sha2::{Digest, Sha256};
+        if bmp.len() >= 54 && &bmp[..2] == b"BM" {
+            Some((8, bmp.len() - 14, Sha256::digest(&bmp[14..]).into()))
+        } else if bmp.starts_with(b"\x89PNG\r\n\x1a\n") {
+            // Validate the retained original PNG, which PreparedClipboard also
+            // publishes. Avoid decoding a second full frame just to hash it.
+            Some((
+                register_format("PNG").ok()?,
+                bmp.len(),
+                Sha256::digest(bmp).into(),
+            ))
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn validate_inline_image(sequence: u64, expected: &(u32, usize, [u8; 32])) -> bool {
+        use sha2::{Digest, Sha256};
+        let Ok(_guard) = ClipboardGuard::open() else {
+            return false;
+        };
+        if u64::from(unsafe { GetClipboardSequenceNumber() }) != sequence {
+            return false;
+        }
+        let Ok(size) = ClipboardGuard::global_size(expected.0) else {
+            return false;
+        };
+        if size < expected.1 || size > expected.1.saturating_add(16) {
+            return false;
+        }
+        let Ok(bytes) = ClipboardGuard::read_global(expected.0) else {
+            return false;
+        };
+        let actual: [u8; 32] = Sha256::digest(&bytes[..expected.1]).into();
+        actual == expected.2 && u64::from(unsafe { GetClipboardSequenceNumber() }) == sequence
+    }
+
     fn bmp_to_dib(bmp: &[u8]) -> Option<Vec<u8>> {
         (bmp.len() >= 54 && &bmp[..2] == b"BM").then(|| bmp[14..].to_vec())
+    }
+
+    fn image_to_dib(bytes: &[u8]) -> Option<Vec<u8>> {
+        if let Some(dib) = bmp_to_dib(bytes) {
+            return Some(dib);
+        }
+        if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+            return None;
+        }
+        let decoded = image::load_from_memory_with_format(bytes, image::ImageFormat::Png).ok()?;
+        let mut bmp = std::io::Cursor::new(Vec::new());
+        decoded
+            .write_to(&mut bmp, image::ImageOutputFormat::Bmp)
+            .ok()?;
+        bmp_to_dib(bmp.get_ref())
     }
 
     fn platform_error(error: windows::core::Error) -> PlatformError {

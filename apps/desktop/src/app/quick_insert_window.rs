@@ -175,6 +175,9 @@ impl App {
             }
             let side_changed = self.popup_side_right != Some(right);
             self.popup_side_right = Some(right);
+            if side_changed && !self.graphics.perspective {
+                self.render_navigation();
+            }
             self.window
                 .set_popup_card_left((placement.card.x - placement.window.x) as f32 / scale);
             let card_changed = self.popup_placement.map(|p| p.card) != Some(placement.card);

@@ -18,6 +18,7 @@ mod ime_observer;
 mod ime_window;
 mod key_policy;
 mod keyboard;
+mod payload;
 mod subscriptions;
 mod target;
 mod text_scope;
@@ -364,7 +365,7 @@ pub(super) enum Request {
     Cancel(u64),
     Check(
         InlineTicket,
-        String,
+        payload::InsertPayload,
         Arc<Deadline>,
         SyncSender<Result<(), String>>,
     ),
@@ -516,15 +517,7 @@ impl InlineController {
         ticket: InlineTicket,
         payload: &[ClipboardRepresentation],
     ) -> Result<(), String> {
-        let text = payload.iter().find(|r| r.format == "text")
-            .ok_or("This item has no plain-text representation. Use Copy or manual copying; the query was not deleted.")?;
-        let text = String::from_utf8(text.bytes.clone())
-            .map_err(|_| "Original text is not valid UTF-8")?;
-        if text.encode_utf16().count() > echo_engine::MAX_COMPOSER_UNITS || text.contains('\0') {
-            return Err(
-                "Item is too large for verified inline replacement; use manual copying".into(),
-            );
-        }
+        let text = payload::InsertPayload::retain(payload)?;
         let guard = Deadline::new(Duration::from_millis(600));
         let (reply, response) = mpsc::sync_channel(1);
         self.inner
@@ -591,7 +584,7 @@ struct Session {
     backend: target::Target,
     range: QueryRange,
     _subscriptions: Option<subscriptions::Subscription>,
-    prepared: Option<(InlineTicket, String)>,
+    prepared: Option<(InlineTicket, payload::InsertPayload)>,
     read_failures: u8,
     anchor: PopupAnchor,
 }
@@ -703,11 +696,16 @@ fn run(
                 hook.disarm(id);
             }
             Ok(Request::Check(ticket, text, deadline, reply)) => {
+                // Composition/range reads can emit redundant provider changes,
+                // just like the selection read in Paste. The fresh snapshot
+                // still seals the exact range; physical input is never masked.
+                shared.committing.store(true, Ordering::Release);
                 let result = session
                     .as_mut()
                     .filter(|s| s.id == ticket.session)
                     .ok_or_else(|| "Inline session ended".to_string())
                     .and_then(|s| preflight(s, &shared, ticket, text, &deadline));
+                shared.committing.store(false, Ordering::Release);
                 if result.is_err()
                     && session
                         .as_ref()
@@ -986,7 +984,7 @@ fn preflight(
     session: &mut Session,
     shared: &Shared,
     ticket: InlineTicket,
-    text: String,
+    text: payload::InsertPayload,
     guard: &Deadline,
 ) -> Result<(), String> {
     if shared.outcome_unknown.load(Ordering::Acquire) {
@@ -1010,6 +1008,9 @@ fn preflight(
         .map_err(str::to_string)?;
     if !guard.live() || !shared.replacement_live(ticket) {
         return Err("The query changed during validation; nothing was replaced".into());
+    }
+    if matches!(text, payload::InsertPayload::Image(_)) {
+        session.backend.image_objects()?;
     }
     session.prepared = Some((ticket, text));
     Ok(())
@@ -1040,7 +1041,7 @@ fn paste(
         .range
         .seal(&snapshot, ticket.revision)
         .map_err(str::to_string)?;
-    if !crate::windows_impl::validate_inline_clipboard(sequence, &inserted) {
+    if !inserted.clipboard_matches(sequence) {
         return Ok(PasteDelivery::Failed(
             PasteDeliveryFailure::ClipboardChanged,
         ));
@@ -1063,11 +1064,53 @@ fn paste(
     if !guard.live() || !shared.replacement_live(ticket) {
         return Ok(PasteDelivery::Failed(PasteDeliveryFailure::RangeChanged));
     }
-    if !crate::windows_impl::validate_inline_clipboard(sequence, &inserted) {
+    if !inserted.clipboard_matches(sequence) {
         return Ok(PasteDelivery::Failed(
             PasteDeliveryFailure::ClipboardChanged,
         ));
     }
+    if matches!(inserted, payload::InsertPayload::Image(_)) {
+        let before = session.backend.image_objects()?;
+        if !guard.live()
+            || !shared.replacement_live(ticket)
+            || !inserted.clipboard_matches(sequence)
+        {
+            return Ok(PasteDelivery::Failed(PasteDeliveryFailure::RangeChanged));
+        }
+        if !guard.dispatch_write() {
+            return Ok(PasteDelivery::Failed(
+                PasteDeliveryFailure::SelectionUnconfirmed,
+            ));
+        }
+        if session.backend.paste_image().is_err() {
+            return Ok(PasteDelivery::Failed(
+                PasteDeliveryFailure::ReplacementUnconfirmed,
+            ));
+        }
+        // Never retry the paste. An exact embedded-object replacement, or a
+        // new attachment plus preserved surrounding text, acknowledges receipt.
+        while guard.live() && shared.accepts(ticket) {
+            if let (Ok(actual), Ok(after)) =
+                (session.backend.snapshot(), session.backend.image_objects())
+            {
+                let embedded = session
+                    .range
+                    .matches_replacement(&actual.text, session.backend.embedded_image_text());
+                let attachment = session.range.matches_replacement(&actual.text, &[])
+                    && after.adds_one_to(&before);
+                if embedded || attachment {
+                    return Ok(PasteDelivery::Pasted);
+                }
+            }
+            std::thread::sleep(Duration::from_millis(15));
+        }
+        return Ok(PasteDelivery::Failed(
+            PasteDeliveryFailure::ReplacementUnconfirmed,
+        ));
+    }
+    let payload::InsertPayload::Text(inserted) = inserted else {
+        unreachable!()
+    };
     // No mutation was performed before exact selection and all identities were
     // rechecked. Standard Edit uses its native range operation; rich editors
     // retain native clipboard paste. Neither route separately deletes the query.
@@ -1127,6 +1170,35 @@ fn paste(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn image_receipt_requires_one_new_attachment_in_the_original_container() {
+        fn observed(scope: i32, images: &[i32]) -> target::ImageObservation {
+            target::ImageObservation {
+                scope: vec![scope],
+                objects: images.iter().map(|id| vec![*id]).collect(),
+            }
+        }
+        let before = observed(1, &[10]);
+        assert!(observed(1, &[10, 11]).adds_one_to(&before));
+        assert!(!observed(2, &[10, 11]).adds_one_to(&before));
+        assert!(!observed(1, &[10]).adds_one_to(&before));
+        assert!(!observed(1, &[11]).adds_one_to(&before));
+        assert!(!observed(1, &[10, 11, 12]).adds_one_to(&before));
+    }
+    #[test]
+    fn validation_guard_preserves_physical_input_invalidation() {
+        let s = Shared::new(Arc::new(|_| {}));
+        s.active.store(1, Ordering::Relaxed);
+        s.requested.store(1, Ordering::Relaxed);
+        s.range_valid.store(true, Ordering::Relaxed);
+        let ticket = s.ticket();
+        let (sender, _receiver) = mpsc::sync_channel(2);
+        s.committing.store(true, Ordering::Relaxed);
+        s.dirty(&sender, 1);
+        assert!(s.replacement_live(ticket));
+        s.input_changed(&sender, 1);
+        assert!(!s.replacement_live(ticket));
+    }
     #[cfg(feature = "native-test")]
     #[test]
     #[ignore = "requires an explicitly selected synthetic editor draft"]
@@ -1157,7 +1229,7 @@ mod tests {
             backend,
             range,
             _subscriptions: None,
-            prepared: Some((ticket, "synthetic".into())),
+            prepared: Some((ticket, payload::InsertPayload::Text("synthetic".into()))),
             read_failures: 0,
             anchor: focus.anchor,
         };

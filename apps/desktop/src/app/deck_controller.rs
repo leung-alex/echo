@@ -124,6 +124,16 @@ impl App {
         } else {
             right
         };
+        let (left, right) = if self.graphics.perspective {
+            (left, right)
+        } else {
+            let (left, right) = echo_presentation::slide::popup_neighbors(
+                (!left.key.is_empty()).then_some(left),
+                (!right.key.is_empty()).then_some(right),
+                self.popup_side_right.filter(|_| self.quick_geometry_active),
+            );
+            (left.unwrap_or_default(), right.unwrap_or_default())
+        };
         self.window.set_requested_left_space(left.clone());
         self.window.set_requested_right_space(right.clone());
         if !self.software.slide.loading() {

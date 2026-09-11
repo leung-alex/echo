@@ -1345,6 +1345,7 @@ name = "echo-windows"
 version = "0.1.0"
 dependencies = [
  "echo-engine",
+ "image 0.24.9",
  "serde_json",
  "sha2",
  "windows",

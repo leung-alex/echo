@@ -104,6 +104,11 @@ pub(super) fn editor_kit_inserted(text: &str) -> Vec<u16> {
         .collect()
 }
 
+// Editor Kit exposes an inserted image as a block between two editable
+// paragraph boundaries. Match this exact insertion; never strip zero-width
+// characters or newlines from the surrounding user's document.
+pub(super) const EDITOR_KIT_IMAGE_BLOCK: &[u16] = &[0x200b, 10, 0xfffc, 10, 0x200b, 10];
+
 fn project_empty_editor_kit(
     snapshot: &echo_engine::ComposerSnapshot,
     placeholder: &[u16],
@@ -126,6 +131,24 @@ fn project_empty_editor_kit(
 mod editor_kit_tests {
     use super::*;
     use echo_engine::{ComposerSnapshot, QueryRange};
+    #[test]
+    fn image_block_readback_preserves_original_suffix_and_literal_characters() {
+        let initial = ComposerSnapshot {
+            text: vec![0x200b, 10, 0x200b, 10, 0x200b],
+            selection: 0..0,
+        };
+        let range = QueryRange::begin(&initial).unwrap();
+        let actual = [
+            0x200b, 10, 0xfffc, 10, 0x200b, 10, 0x200b, 10, 0x200b, 10, 0x200b,
+        ];
+        assert!(range.matches_replacement(&actual, EDITOR_KIT_IMAGE_BLOCK));
+        assert!(!range.matches_replacement(&actual[..10], EDITOR_KIT_IMAGE_BLOCK));
+        let mut changed = actual.to_vec();
+        changed[8] = 65;
+        assert!(!range.matches_replacement(&changed, EDITOR_KIT_IMAGE_BLOCK));
+        changed[2] = 65;
+        assert!(!range.matches_replacement(&changed, EDITOR_KIT_IMAGE_BLOCK));
+    }
 
     #[test]
     fn empty_placeholder_transition_preserves_query_and_replacement_boundaries() {

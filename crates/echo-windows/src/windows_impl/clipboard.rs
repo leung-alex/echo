@@ -258,11 +258,15 @@ impl PreparedClipboard {
                     register_format("Rich Text Format")?,
                     nul_terminated(&item.bytes),
                 ),
-                "image" => (
-                    8,
-                    bmp_to_dib(&item.bytes)
-                        .ok_or_else(|| PlatformError("Image representation is not a BMP".into()))?,
-                ),
+                "image" => {
+                    let dib = image_to_dib(&item.bytes).ok_or_else(|| {
+                        PlatformError("Image representation is not a supported BMP or PNG".into())
+                    })?;
+                    if item.bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+                        prepared.push((register_format("PNG")?, OwnedGlobal::new(&item.bytes)?));
+                    }
+                    (8, dib)
+                }
                 "files" => (15, ClipboardGuard::file_bytes(&item.bytes)?),
                 _ => continue,
             };

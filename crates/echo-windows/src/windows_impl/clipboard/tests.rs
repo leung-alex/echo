@@ -1,4 +1,22 @@
 use super::*;
+
+#[test]
+fn png_original_prepares_native_dib_without_changing_pixels() {
+    let original = image::RgbaImage::from_pixel(2, 3, image::Rgba([20, 70, 130, 255]));
+    let mut encoded = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(original.clone())
+        .write_to(&mut encoded, image::ImageOutputFormat::Png)
+        .unwrap();
+    let png = encoded.into_inner();
+    let prepared = PreparedClipboard::new(&[representation("image", &png)]).unwrap();
+    assert_eq!(prepared.0.len(), 2, "retain PNG and offer a native DIB");
+    assert_eq!(prepared.0[0].0, register_format("PNG").unwrap());
+    assert_eq!(prepared.0[1].0, 8);
+    let dib = image_to_dib(&png).unwrap();
+    let bmp = dib_to_bmp(&dib).unwrap();
+    assert_eq!(image::load_from_memory(&bmp).unwrap().to_rgba8(), original);
+    assert!(inline_image_fingerprint(&png).is_some());
+}
 fn representation(format: &str, bytes: &[u8]) -> ClipboardRepresentation {
     ClipboardRepresentation {
         format: format.into(),

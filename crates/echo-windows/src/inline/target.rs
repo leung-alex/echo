@@ -36,6 +36,22 @@ struct AutomationTarget {
     element: IUIAutomationElement,
     edit: Option<IUIAutomationTextEditPattern>,
 }
+pub(super) struct ImageObservation {
+    pub scope: Vec<i32>,
+    pub objects: Vec<Vec<i32>>,
+}
+impl ImageObservation {
+    pub(super) fn adds_one_to(&self, before: &Self) -> bool {
+        self.scope == before.scope
+            && self
+                .objects
+                .iter()
+                .filter(|id| !before.objects.contains(id))
+                .count()
+                == 1
+            && before.objects.iter().all(|id| self.objects.contains(id))
+    }
+}
 enum Preedit {
     // Standard EDIT excludes preedit from its snapshot; insert at selection.
     Native(String),
@@ -866,6 +882,96 @@ impl Target {
             && matches!(&self.paste_target.focused_control,
                 Some(PasteControlIdentity::NativeWindow { class_name, .. })
                     if plain_edit_class(class_name))
+    }
+    pub(super) fn image_objects(&self) -> Result<ImageObservation, String> {
+        if !self.current() {
+            return Err("Image target focus changed".into());
+        }
+        let a = self
+            .automation
+            .as_ref()
+            .ok_or("This input cannot confirm image receipt; nothing was replaced")?;
+        unsafe {
+            let walker = a
+                .uia
+                .ControlViewWalker()
+                .map_err(|_| "Image scope unavailable")?;
+            // Attachment previews may be siblings of the editable surface. Keep
+            // observation local to its immediate container and same process.
+            let parent = walker
+                .GetParentElement(&a.element)
+                .map_err(|_| "Image container unavailable")?;
+            let parent_pid = parent
+                .CurrentProcessId()
+                .map_err(|_| "Image container process unavailable")?;
+            let editor_pid = a
+                .element
+                .CurrentProcessId()
+                .map_err(|_| "Image editor process unavailable")?;
+            if parent_pid <= 0 || parent_pid != editor_pid {
+                return Err("Image container identity changed".into());
+            }
+            let condition = a
+                .uia
+                .CreatePropertyCondition(
+                    UIA_ControlTypePropertyId,
+                    &VARIANT::from(UIA_ImageControlTypeId.0),
+                )
+                .map_err(|_| "Image observation unavailable")?;
+            let elements = parent
+                .FindAll(TreeScope_Descendants, &condition)
+                .map_err(|_| "Image observation failed")?;
+            let count = elements
+                .Length()
+                .map_err(|_| "Image observation incomplete")?;
+            if count > 64 {
+                return Err("Image container is too broad for verified insertion".into());
+            }
+            let mut ids = Vec::new();
+            for index in 0..count {
+                let element = elements
+                    .GetElement(index)
+                    .map_err(|_| "Image disappeared during observation")?;
+                let rect = element
+                    .CurrentBoundingRectangle()
+                    .map_err(|_| "Image bounds unavailable")?;
+                // UIA labels toolbar glyphs as images too. Only substantial
+                // previews acknowledge an attachment; changing a send/stop icon
+                // neither proves receipt nor means an old attachment was lost.
+                let dpi = windows_sys::Win32::UI::HiDpi::GetDpiForWindow(self.control as _).max(96);
+                let minimum = (32 * dpi / 96) as i32;
+                if rect.right - rect.left < minimum || rect.bottom - rect.top < minimum {
+                    continue;
+                }
+                ids.push(
+                    native::automation_runtime_id(&element).ok_or("Image identity unavailable")?,
+                );
+            }
+            Ok(ImageObservation {
+                scope: native::automation_runtime_id(&parent)
+                    .ok_or("Image container identity unavailable")?,
+                objects: ids,
+            })
+        }
+    }
+    pub(super) fn paste_image(&self) -> Result<(), String> {
+        if !self.current() || self.automation.is_none() {
+            return Err("Image input changed before paste".into());
+        }
+        native::modifiers_released()
+            .map_err(|_| "Release held modifiers before image insertion")?;
+        native::send_paste_shortcut().map_err(|_| "Windows did not accept image paste".into())
+    }
+    pub(super) fn embedded_image_text(&self) -> &'static [u16] {
+        if self
+            .automation
+            .as_ref()
+            .is_some_and(|a| unsafe { super::text_scope::is_editor_kit(&a.element) })
+        {
+            super::text_scope::EDITOR_KIT_IMAGE_BLOCK
+        } else {
+            &[0xfffc]
+        }
     }
     pub(super) fn paste_selected(&self, retained_text: &str) -> Result<(), String> {
         if !self.current() {

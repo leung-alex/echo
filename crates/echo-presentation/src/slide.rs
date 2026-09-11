@@ -2,6 +2,32 @@
 //! This owns no models, timers, renderer resources or native input state.
 use echo_engine::{MotionSpeed, SpaceId};
 
+/// Map logical neighbors into the physical slot of an anchored popup.
+pub fn popup_neighbors<T>(
+    left: Option<T>,
+    right: Option<T>,
+    side_right: Option<bool>,
+) -> (Option<T>, Option<T>) {
+    match side_right {
+        Some(true) => (None, right.or(left)),
+        Some(false) => (left.or(right), None),
+        None => (left, right),
+    }
+}
+
+#[cfg(test)]
+mod popup_neighbor_tests {
+    use super::popup_neighbors;
+
+    #[test]
+    fn carousel_keeps_other_space_in_available_slot() {
+        assert_eq!(popup_neighbors(Some(1), None, Some(true)), (None, Some(1)));
+        assert_eq!(popup_neighbors(None, Some(2), Some(false)), (Some(2), None));
+        assert_eq!(popup_neighbors(Some(1), Some(3), None), (Some(1), Some(3)));
+        assert_eq!(popup_neighbors(None::<u8>, None, Some(true)), (None, None));
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ContentFrame {
     pub preparation: u64,

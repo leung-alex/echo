@@ -1621,9 +1621,9 @@ impl App {
                     if !self.stop_inline() {
                         return;
                     }
-                    self.activation_focus = None;
-                    self.hide_window();
                 }
+                self.activation_focus = None;
+                self.hide_window();
                 self.report("Inserted", false);
             }
             Completion::Copied => self.report(
