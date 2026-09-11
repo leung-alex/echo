@@ -277,6 +277,37 @@ try{
             Bridge 'key' 33|Out-Null;$back=Ready
             if($back.selection -ne $first.selection){throw 'Previous page did not restore the original cursor'}
         }
+        Check 'saved-content-create-edit-icon-delete' {
+            Open-History|Out-Null;Bridge 'step'|Out-Null;Ready|Out-Null
+            Invoke-Ui 'New content';Wait-Text 'Create favorite'|Out-Null
+            Set-Ui 'Favorite name (required)' 'Echo retirement synthetic favorite'
+            Set-Ui 'Favorite content' 'echo-retirement-synthetic-content'
+            Invoke-Ui 'Choose icon';Set-Ui 'Search favorite icons' 'mAiL'
+            Wait-Text 'Icon Mail'|Out-Null;Invoke-Ui 'Icon Mail'
+            if((Ui 'read' @('Favorite icon')) -ne 'Mail'){throw 'Icon picker did not retain the Mail key'}
+            Invoke-Ui 'Save favorite';Ready|Out-Null;Wait-Text 'Echo retirement synthetic favorite'|Out-Null
+            Ui 'select' @('Echo retirement synthetic favorite: echo-retirement-synthetic-content')|Out-Null
+            Invoke-Ui 'Edit saved content';Wait-Text 'Edit favorite'|Out-Null
+            if((Ui 'read' @('Favorite icon')) -ne 'Mail' -or (Ui 'read' @('Favorite content')) -ne 'echo-retirement-synthetic-content'){throw 'Saved content/icon did not persist'}
+            Set-Ui 'Favorite name (required)' 'Echo retirement edited favorite'
+            Set-Ui 'Favorite content' 'echo-retirement-synthetic-updated'
+            Invoke-Ui 'Save favorite';Ready|Out-Null;Wait-Text 'Echo retirement edited favorite'|Out-Null
+            Ui 'select' @('Echo retirement edited favorite: echo-retirement-synthetic-updated')|Out-Null
+            Invoke-Ui 'Edit saved content';Wait-Text 'Edit favorite'|Out-Null
+            if((Ui 'read' @('Favorite content')) -ne 'echo-retirement-synthetic-updated'){throw 'Edited content did not persist'}
+            Invoke-Ui 'Cancel';Ready|Out-Null
+            Ui 'select' @('Echo retirement edited favorite: echo-retirement-synthetic-updated')|Out-Null
+            Invoke-Ui 'Delete everywhere…';Wait-Text 'Delete saved content everywhere?'|Out-Null
+            Invoke-Ui 'Delete everywhere';Ready|Out-Null
+            if(([string](Ui 'dump')).Contains('Echo retirement edited favorite')){throw 'Deleted favorite is still visible'}
+            Open-History|Out-Null
+        }
+        Check 'history-clear-cancel-retains-content' {
+            Open-History|Out-Null
+            Invoke-Ui 'Clear unpinned history';Wait-Text 'Clear unpinned history?'|Out-Null
+            Invoke-Ui 'Cancel';Ready|Out-Null
+            if(!([string](Ui 'dump')).Contains('echo-perf-text-1999')){throw 'Cancel lost the synthetic History page'}
+        }
         Check 'settings-light-dark-and-software-preview' {
             Invoke-Ui 'Settings';Wait-Text 'Appearance & motion'|Out-Null
             Ui 'theme' @('light')|Out-Null;Shot '05-settings-light'
@@ -312,7 +343,12 @@ try{
         if(!$owned.WaitForExit(10000) -or $owned.ExitCode -ne 0){$success=$false;$checks.Add(@{name='graceful-exit';status='FAIL'})}
     }
     python (Join-Path $Root 'tests/performance/database-signature.py') (Join-Path $EvidenceRoot 'data/echo.sqlite3')|Set-Content (Join-Path $EvidenceRoot 'original-after.json')
-    if($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $EvidenceRoot 'original-before.json') -Raw) -ne (Get-Content (Join-Path $EvidenceRoot 'original-after.json') -Raw)){$success=$false;$checks.Add(@{name='retained-original-representations';status='FAIL'})}
+    $originalsMatch=$LASTEXITCODE -eq 0 -and (Get-Content (Join-Path $EvidenceRoot 'original-before.json') -Raw) -eq (Get-Content (Join-Path $EvidenceRoot 'original-after.json') -Raw)
+    if(!$CoreOnly -and @($checks|Where-Object {$_.name -eq 'saved-content-create-edit-icon-delete' -and $_.status -eq 'PASS'}).Count -eq 1){
+        python (Join-Path $Root 'tests/native/verify-software-originals.py') $Template $EvidenceRoot|Set-Content (Join-Path $EvidenceRoot 'mutation-originals-verification.json')
+        $originalsMatch=$LASTEXITCODE -eq 0
+    }
+    if(!$originalsMatch){$success=$false;$checks.Add(@{name='retained-original-representations';status='FAIL'})}
     else{$checks.Add(@{name='retained-original-representations';status='PASS'})}
     $stderr=Get-Content (Join-Path $EvidenceRoot 'application-stderr.log') -Raw
     if($stderr -match 'panicked|Present software window:|Create software presentation'){$success=$false;$checks.Add(@{name='software-presentation-errors';status='FAIL'})}

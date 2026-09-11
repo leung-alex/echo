@@ -10,7 +10,7 @@
 - Owner explicitly ended optional GPU/Skia maintenance and authorized isolated native/clipboard and ten-minute software performance verification.
 - Baseline self-check, format and verify: PASS. Toolchain: Rust/Cargo 1.97.0, Go 1.26.2.
 - Multi-DPI / multi-monitor acceptance is explicitly excluded by the user in the continuation. Earlier NOT_RUN records below remain historical.
-- Existing product animation failure is not waived. This report does not certify physical input, all applications or all displays.
+- Animation is accepted at the owner-revised 30ms criterion below. This report does not certify physical input, all applications or all displays.
 
 ## Retirement inventory
 
@@ -193,3 +193,53 @@ Evidence: `perf-final-T`, `perf-final-M`, `performance-final-summary.json`; thes
 The owner explicitly revised animation P95 acceptance from 20ms to 30ms and requested continuation of remaining acceptance. The canonical measurement gate and its current contract now use 30ms; animation durations, pacing and the strict 50,000,000-byte memory limit are unchanged.
 
 The existing complete T/M five-minute runs were independently reassessed, not rerun. Both have 300 valid samples, unchanged original signatures, normal exit and no error except the superseded 20ms criterion. T P95 28.5783ms and M P95 28.7108ms therefore **PASS** at 30ms. Exact source hashes and the revised evaluation are in `.local/retirement-evidence/post-acceptance/performance-30ms-reassessment.json`. Raw 20ms FAIL artifacts and historical report sections remain unchanged. This passes the software performance gate; the remaining acceptance boundaries are still separate.
+
+## Installer and UI continuation (2026-09-11, late evening)
+
+The owner's 30ms performance criterion remains PASS for both full T/M samples.
+Physical IME is now EXCLUDED_BY_USER for this round, as are multi-DPI/monitors.
+The historical NOT_RUN/20ms FAIL records above are retained unchanged.
+
+The NSIS blocker was resolved using the winget hash-verified NSIS 3.12 download,
+extracted into the isolated evidence directory without installing the compiler.
+The first real installer build failed because `SetCompressor` followed `Icon`,
+which had already changed the NSIS header. Moving compressor selection directly
+after `Unicode true` fixed the real canonical build. No runtime code changed.
+
+Actual per-user integrated and `/NOINTEGRATION=1` installs both PASS:
+319 installed file hashes, installed-EXE isolated smoke, shortcut/registration
+ownership, native uninstaller exit, removal of managed files, preservation of an
+unknown sentinel and unchanged separate synthetic data. The original evidence is
+`post-acceptance/install-check/results.json`; the clean final artifact and its
+repeat acceptance are recorded in the final artifact section below.
+
+New software gate assertions migrate favorite create/edit/reopen/Mail-icon/delete
+and History clear cancellation from the retained legacy UI inventory. The final
+original-content verification permits exactly three Favorites revision increments
+and a nondecreasing modification time, while checking every other space field,
+original payload/blob signature, identity and membership unchanged. The shared
+read-only signature generator remains unchanged. A positive control and injected
+payload, title and unexpected-revision failures are in `signature-checks-v2.json`.
+Earlier failures are preserved: stale row labels, duplicate disabled menu controls,
+a reused dark-settings fixture and the old whole-database signature assumption.
+
+The remaining legacy inventory includes native invalid settings/save/restart,
+About, activation replay/malformed envelope and supported batch-selection behavior.
+Those assertions have not all been equivalently migrated; the legacy script is
+therefore retained. `docs/TEST_OWNERSHIP_MAP.md` records the exact partial mapping.
+
+Extra real editor: Windows Notepad opened an empty draft, but the computer-use
+surface returned no accessibility/focus metadata and no verified inline session
+was established. No insertion was performed. This remains NOT_RUN, not a product
+compatibility PASS or FAIL (`post-acceptance/notepad/result.json`). The isolated
+Echo process exited and the ordinary clipboard wrapper restored its saved state.
+No physical IME run, user History mutation, push or main merge was performed.
+
+UI evidence detail: `ui-migration-final-T` and `ui-migration-final-M` passed all
+16 native operation checks. Their raw summaries retain FAIL because the old
+whole-database signature included the three expected Favorites revisions.
+The dedicated read-only verifier subsequently PASSed both retained datasets;
+this is a reassessment, not a claim that the raw summaries passed. A complete
+rerun of the updated gate (`ui-migration-verified-T/M`) stopped at startup with
+`Windows did not grant foreground focus`, before mutation. That rerun remains
+BLOCKED by foreground acquisition and is not silently replaced with a PASS.

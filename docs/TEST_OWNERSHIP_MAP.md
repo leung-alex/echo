@@ -59,3 +59,17 @@ storage gate. Historical database migration fixtures remain supported.
 `slide` protects finite software transitions. GPU spring/projection tests are retired.
 `echo.cmd smoke` uses `Invoke-Smoke.ps1` and `EchoSmokeDriver.cs`, with no clipboard
 operations or mutating acceptance flag. The shared UIA/input drivers remain in use.
+
+## UI retirement assertion migration (2026-09-11)
+
+The current software gate also owns `saved-content-create-edit-icon-delete`
+(create, persisted content/name/Mail icon, edit, reopen, delete) and
+`history-clear-cancel-retains-content`. Each runs against a fresh synthetic
+fixture; the final original-content/blob signature must equal its original; only the three expected Favorites revisions and modification time may change.
+These replace the corresponding current-product portions of the old
+`history-favorite-create-edit-delete` and `batch-and-clear-cancel` checks.
+The legacy script remains an inventory until its other unique assertions have
+an explicit equivalent: native invalid settings/save/restart, About, activation
+replay/malformed envelope, and any still-supported batch-selection behavior.
+Removed local History search and independently visible Favorites-window
+assumptions are not applicable to the single-window software product.
