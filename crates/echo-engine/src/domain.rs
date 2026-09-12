@@ -83,7 +83,6 @@ pub struct ClipboardSnapshot {
 pub struct SourceContext {
     pub app_name: Option<String>,
     pub executable: Option<String>,
-    pub window_title: Option<String>,
     pub is_source_verified: bool,
     pub is_sensitivity_verified: bool,
     pub is_password_input: bool,

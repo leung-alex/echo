@@ -1,5 +1,6 @@
 //! Schema-v6 space queries and transactional collection mutations.
 use super::*;
+use echo_engine::DeleteSpaceContents;
 use echo_engine::{
     SettingsPatch, SettingsSnapshot, Space, SpaceAction, SpaceCommand, SpaceDraft, SpaceError,
     SpaceId, SpaceKind, SpaceMutationResult, SpacePage, SpaceStore,
@@ -32,7 +33,48 @@ fn map_space(row: &Row<'_>) -> rusqlite::Result<Space> {
         item_count: row.get::<_, i64>(10)?.max(0) as u64,
     })
 }
+// Copy the immutable original representations and metadata, never the preview text.
+fn copy_item_tx(tx: &Transaction<'_>, item: i64) -> Result<i64> {
+    let order = super::saved_order::prepend_key_tx(tx)?;
+    let copied = tx.execute("INSERT INTO saved_items(source_history_id,created_at,updated_at,name,content_type,editable_text,
+        source_app,source_executable,preview_text,byte_size,icon_key,favorite_order,is_independent)
+        SELECT NULL,created_at,updated_at,name,content_type,editable_text,source_app,source_executable,
+        preview_text,byte_size,icon_key,?,1 FROM saved_items WHERE id=?", params![order,item])?;
+    if copied == 0 {
+        return Err(SpaceError::NotFound.into());
+    }
+    let copy = tx.last_insert_rowid();
+    tx.execute("INSERT INTO saved_item_representations(saved_item_id,format,mime_type,inline_data,blob_hash,content_hash,byte_size)
+        SELECT ?,format,mime_type,inline_data,blob_hash,content_hash,byte_size FROM saved_item_representations WHERE saved_item_id=?", params![copy,item])?;
+    tx.execute("INSERT INTO saved_item_tags(saved_item_id,tag_id) SELECT ?,tag_id FROM saved_item_tags WHERE saved_item_id=?", params![copy,item])?;
+    refresh_saved_search_tx(tx, copy)?;
+    Ok(copy)
+}
+
 impl ClipboardStore {
+    pub(super) fn migrate_schema_v9(&mut self) -> Result<()> {
+        let tx = self.connection.transaction()?;
+        let links = {
+            let mut statement = tx.prepare("SELECT space_id,saved_item_id FROM space_memberships
+                WHERE (space_id,saved_item_id) NOT IN (SELECT MIN(space_id),saved_item_id FROM space_memberships GROUP BY saved_item_id)
+                ORDER BY space_id,sort_key,saved_item_id")?;
+            let rows =
+                statement.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        for (space, item) in links {
+            Self::verify_saved_representations_tx(&tx, &self.blobs_dir, item)?;
+            let copy = copy_item_tx(&tx, item)?;
+            tx.execute(
+                "UPDATE space_memberships SET saved_item_id=? WHERE space_id=? AND saved_item_id=?",
+                params![copy, space, item],
+            )?;
+        }
+        tx.execute_batch(include_str!("../migrations/v9.sql"))?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub(super) fn migrate_schema_v6(&mut self) -> Result<()> {
         let tx = self
             .connection
@@ -137,8 +179,7 @@ impl ClipboardStore {
         values.push(Value::Integer(i64::from(size) + 1));
         let sql = format!(
             "SELECT s.id,s.source_history_id,s.created_at,s.updated_at,s.name,
-            s.content_type,s.editable_text,s.source_app,s.source_executable,s.source_window_title,
-            s.preview_text,s.byte_size,s.icon_key,m.sort_key {join} WHERE {filter}
+            s.content_type,s.editable_text,s.source_app,s.source_executable,s.preview_text,s.byte_size,s.icon_key,m.sort_key {join} WHERE {filter}
             ORDER BY m.sort_key,m.saved_item_id LIMIT ?"
         );
         let mut items = {
@@ -313,32 +354,53 @@ impl ClipboardStore {
             ..Default::default()
         })
     }
-    fn delete_space(&mut self, id: SpaceId, revision: i64) -> Result<SpaceMutationResult> {
+    fn delete_space(
+        &mut self,
+        id: SpaceId,
+        revision: i64,
+        contents: DeleteSpaceContents,
+    ) -> Result<SpaceMutationResult> {
         if id.is_system() {
             return Err(SpaceError::SystemSpace.into());
         }
         let tx = self.connection.transaction()?;
         validate_space_tx(&tx, id, Some(revision))?;
-        let orphans = {
-            let mut s=tx.prepare("SELECT m.saved_item_id FROM space_memberships m WHERE m.space_id=?
-            AND NOT EXISTS(SELECT 1 FROM space_memberships other WHERE other.saved_item_id=m.saved_item_id AND other.space_id<>m.space_id)
-            ORDER BY m.sort_key,m.saved_item_id")?;
-            let rows = s.query_map([id.0], |r| r.get::<_, i64>(0))?;
+        let items = {
+            let mut statement = tx.prepare("SELECT saved_item_id FROM space_memberships WHERE space_id=? ORDER BY sort_key,saved_item_id")?;
+            let rows = statement.query_map([id.0], |r| r.get::<_, i64>(0))?;
             rows.collect::<std::result::Result<Vec<_>, _>>()?
         };
-        for item in &orphans {
-            add_membership_tx(&tx, SpaceId::FAVORITES, *item, false)?;
+        let mut affected = vec![id];
+        match contents {
+            DeleteSpaceContents::MoveToFavorites => {
+                // Detach first: each saved item has exactly one owning space.
+                tx.execute("DELETE FROM space_memberships WHERE space_id=?", [id.0])?;
+                for item in &items {
+                    add_membership_tx(&tx, SpaceId::FAVORITES, *item, false)?;
+                }
+                if !items.is_empty() {
+                    bump_space_tx(&tx, SpaceId::FAVORITES)?;
+                    affected.push(SpaceId::FAVORITES);
+                }
+            }
+            DeleteSpaceContents::Delete => {
+                tx.execute("DELETE FROM saved_items_fts WHERE saved_item_id IN (SELECT saved_item_id FROM space_memberships WHERE space_id=?)", [id.0])?;
+                tx.execute("DELETE FROM saved_items WHERE id IN (SELECT saved_item_id FROM space_memberships WHERE space_id=?)", [id.0])?;
+                if !items.is_empty() {
+                    tx.execute("INSERT INTO migration_state(key,value,completed_at) VALUES ('blob_gc_pending','1',?)
+                        ON CONFLICT(key) DO UPDATE SET value=excluded.value,completed_at=excluded.completed_at", [now_millis()])?;
+                }
+            }
         }
         tx.execute("DELETE FROM spaces WHERE id=?", [id.0])?;
-        let mut affected = vec![id];
-        if !orphans.is_empty() {
-            bump_space_tx(&tx, SpaceId::FAVORITES)?;
-            affected.push(SpaceId::FAVORITES);
-        }
         tx.commit()?;
         Ok(SpaceMutationResult {
             affected_spaces: affected,
-            migrated_count: orphans.len(),
+            migrated_count: if contents == DeleteSpaceContents::MoveToFavorites {
+                items.len()
+            } else {
+                0
+            },
             ..Default::default()
         })
     }
@@ -402,8 +464,18 @@ impl ClipboardStore {
         let tx = self.connection.transaction()?;
         validate_space_tx(&tx, id, Some(revision))?;
         let mut changed = false;
+        let mut seen = std::collections::HashSet::new();
         for item in items {
-            changed |= add_membership_tx(&tx, id, *item, false)?;
+            if !seen.insert(*item) {
+                continue;
+            }
+            let already_here: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM space_memberships WHERE space_id=? AND saved_item_id=?)",params![id.0,item],|r|r.get(0))?;
+            if already_here {
+                continue;
+            }
+            Self::verify_saved_representations_tx(&tx, &self.blobs_dir, *item)?;
+            let copy = copy_item_tx(&tx, *item)?;
+            changed |= add_membership_tx(&tx, id, copy, false)?;
         }
         if changed {
             bump_space_tx(&tx, id)?;
@@ -442,6 +514,10 @@ impl ClipboardStore {
                 )
                 .into());
             }
+            tx.execute(
+                "DELETE FROM space_memberships WHERE space_id=? AND saved_item_id=?",
+                params![id.0, item],
+            )?;
             add_membership_tx(&tx, SpaceId::FAVORITES, item, false)?;
             bump_space_tx(&tx, SpaceId::FAVORITES)?;
             affected.push(SpaceId::FAVORITES);
@@ -601,9 +677,9 @@ impl ClipboardStore {
         let now = now_millis();
         let order = super::saved_order::prepend_key_tx(&tx)?;
         tx.execute("INSERT INTO saved_items(source_history_id,created_at,updated_at,name,content_type,editable_text,
-            source_app,source_executable,source_window_title,preview_text,byte_size,icon_key,favorite_order,is_independent)
+            source_app,source_executable,preview_text,byte_size,icon_key,favorite_order,is_independent)
             SELECT NULL,?,?,name || ' copy',content_type,editable_text,source_app,source_executable,
-            source_window_title,preview_text,byte_size,icon_key,?,1 FROM saved_items WHERE id=?",params![now,now,order,item])?;
+            preview_text,byte_size,icon_key,?,1 FROM saved_items WHERE id=?",params![now,now,order,item])?;
         let copy = tx.last_insert_rowid();
         tx.execute("INSERT INTO saved_item_representations(saved_item_id,format,mime_type,inline_data,blob_hash,content_hash,byte_size)
             SELECT ?,format,mime_type,inline_data,blob_hash,content_hash,byte_size FROM saved_item_representations WHERE saved_item_id=?",
@@ -638,7 +714,7 @@ impl ClipboardStore {
         let result = match command.action {
             SpaceAction::Create(draft) => self.create_space(draft)?,
             SpaceAction::Update(draft) => self.update_space(id, revision, draft)?,
-            SpaceAction::Delete => self.delete_space(id, revision)?,
+            SpaceAction::Delete(contents) => self.delete_space(id, revision, contents)?,
             SpaceAction::MoveSpace(delta) => self.move_space(id, revision, delta)?,
             SpaceAction::AddItems(items) => self.add_space_items(id, revision, &items)?,
             SpaceAction::RemoveItem(item) => self.remove_space_item(id, revision, item)?,

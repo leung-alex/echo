@@ -16,12 +16,40 @@ use windows_sys::Win32::{
     },
 };
 const TRAY_MESSAGE: u32 = WM_APP + 17;
+const LABELS_CHANGED: u32 = WM_APP + 18;
+#[derive(Clone, Debug)]
+pub struct TrayLabels {
+    pub tooltip: String,
+    pub menu: [String; 4],
+}
+impl Default for TrayLabels {
+    fn default() -> Self {
+        Self {
+            tooltip: "Echo — clipboard history".into(),
+            menu: ["Open Echo", "Favorites", "Settings", "Quit Echo"].map(String::from),
+        }
+    }
+}
+#[derive(Clone)]
+pub struct TrayController {
+    pub(super) hwnd: isize,
+    pub(super) labels: std::sync::Arc<std::sync::Mutex<TrayLabels>>,
+}
+impl TrayController {
+    pub fn set_labels(&self, labels: TrayLabels) {
+        *self.labels.lock().unwrap_or_else(|e| e.into_inner()) = labels;
+        unsafe {
+            PostMessageW(self.hwnd as HWND, LABELS_CHANGED, 0, 0);
+        }
+    }
+}
 struct Host {
     handler: EventHandler,
     icon: HICON,
     owned_icon: bool,
     taskbar: u32,
     hotkeys: super::hotkey::Host,
+    labels: std::sync::Arc<std::sync::Mutex<TrayLabels>>,
 }
 unsafe fn notify(hwnd: HWND, host: &Host, operation: u32) {
     let mut data: NOTIFYICONDATAW = std::mem::zeroed();
@@ -31,7 +59,12 @@ unsafe fn notify(hwnd: HWND, host: &Host, operation: u32) {
     data.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     data.uCallbackMessage = TRAY_MESSAGE;
     data.hIcon = host.icon;
-    for (out, ch) in data.szTip.iter_mut().zip(wide("Echo — clipboard history")) {
+    let labels = host
+        .labels
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    for (out, ch) in data.szTip.iter_mut().take(127).zip(wide(&labels.tooltip)) {
         *out = ch;
     }
     if Shell_NotifyIconW(operation, &data) == 0 {
@@ -58,6 +91,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
             return 0;
         }
         match msg {
+            LABELS_CHANGED => {
+                notify(hwnd, host, NIM_MODIFY);
+                return 0;
+            }
             super::hotkey::MESSAGE => {
                 host.hotkeys.drain(hwnd, &host.handler);
                 return 0;
@@ -84,13 +121,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
                     if menu.is_null() {
                         return 0;
                     }
-                    for (id, label) in [
-                        (1, "Open Echo"),
-                        (2, "Favorites"),
-                        (3, "Settings"),
-                        (4, "Quit Echo"),
-                    ] {
-                        AppendMenuW(menu, MF_STRING, id, wide(label).as_ptr());
+                    let labels = host
+                        .labels
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .clone();
+                    for (index, label) in labels.menu.iter().enumerate() {
+                        AppendMenuW(menu, MF_STRING, index + 1, wide(label).as_ptr());
                     }
                     let mut point: POINT = std::mem::zeroed();
                     GetCursorPos(&mut point);
@@ -138,6 +175,7 @@ pub(super) fn run(
     handler: EventHandler,
     ready: SyncSender<Result<isize, String>>,
     hotkey_rx: std::sync::mpsc::Receiver<super::hotkey::Request>,
+    labels: std::sync::Arc<std::sync::Mutex<TrayLabels>>,
 ) {
     unsafe {
         let instance = GetModuleHandleW(null());
@@ -163,6 +201,7 @@ pub(super) fn run(
             owned_icon,
             taskbar: RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()),
             hotkeys: super::hotkey::Host::new(hotkey_rx),
+            labels,
         });
         // A hidden top-level host, not HWND_MESSAGE: Explorer restart broadcasts must reach it.
         let hwnd = CreateWindowExW(

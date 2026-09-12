@@ -71,6 +71,39 @@ impl App {
     /// Returns whether the manager needs its initial centering. For a popup, position
     /// and size are both assigned before show(), including the visible card offset.
     pub(super) fn prepare_window_geometry(&mut self) -> bool {
+        let settings = matches!(self.window.get_route().as_str(), "settings" | "about");
+        if settings {
+            if self.settings_geometry.active() {
+                return false;
+            }
+            let monitor_position = self.window.window().position();
+            // Retire the caret-sized host before saving the ordinary History geometry.
+            self.prepare_content_geometry();
+            let current = self.hwnd.map(|_| self.current_geometry());
+            if let Some(geometry) = self.settings_geometry.enter(current) {
+                self.apply_geometry(geometry);
+                return false;
+            }
+            // Center on the monitor we entered from, even when leaving a caret popup.
+            self.window.window().set_position(monitor_position);
+            return true;
+        }
+        let mut center = false;
+        if self.settings_geometry.active() {
+            let current = self.current_geometry();
+            if let Some(geometry) = self.settings_geometry.leave(current) {
+                self.apply_geometry(geometry);
+            } else {
+                self.window
+                    .window()
+                    .set_size(slint::LogicalSize::new(t::WINDOW_WIDTH, t::WINDOW_HEIGHT));
+                center = true;
+            }
+        }
+        let content_center = self.prepare_content_geometry();
+        !self.quick_geometry_active && (center || content_center)
+    }
+    fn prepare_content_geometry(&mut self) -> bool {
         let _timing = crate::popup_timing::span("geometry_update");
         let anchor = self.popup_anchor.filter(|_| {
             self.session.context == Context::QuickInsert
@@ -131,13 +164,11 @@ impl App {
             } else {
                 place_card(anchor, width, card, 560.0, t::STAGE_PADDING_Y)
             };
-            let extents = if self.ui.view_mode == SpaceViewMode::CoverFlow {
+            let extents = {
                 [
                     card / 2.0 + 16.0,
                     card / 2.0 + echo_presentation::slide::side_width(card) + 28.0,
                 ]
-            } else {
-                [card / 2.0 + 16.0; 2]
             };
             let preferred_right = self.popup_side_right.unwrap_or(true);
             let (mut placement, right) = echo_windows::focus::expand_popup_stage(
@@ -199,7 +230,7 @@ impl App {
                         let top = placement.card.y as f32 + 16.0 * scale;
                         let bottom =
                             (placement.card.y + placement.card.height) as f32 - 16.0 * scale;
-                        (self.ui.view_mode == SpaceViewMode::CoverFlow).then_some([
+                        Some([
                             [l, top],
                             [l + side * scale, top],
                             [l + side * scale, bottom],

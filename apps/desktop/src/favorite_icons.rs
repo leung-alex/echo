@@ -798,6 +798,7 @@ pub fn choices(query: &str) -> ModelRc<FavoriteIconChoice> {
                 query.is_empty()
                     || key.to_lowercase().contains(&query)
                     || label.to_lowercase().contains(&query)
+                    || crate::i18n::text(echo_engine::Language::Chinese, label).contains(&query)
             })
             .take(limit)
             .map(|(key, label)| FavoriteIconChoice {
@@ -825,6 +826,15 @@ mod tests {
         assert_eq!(choices("").row_count(), 18);
         assert!(choices("a").row_count() <= 48);
         assert!(choices("mAiL").iter().any(|r| r.key == "Mail"));
+        assert!(choices("邮件").iter().any(|r| r.key == "Mail"));
+        let catalog: std::collections::BTreeMap<String, String> =
+            serde_json::from_str(include_str!("../i18n/zh-CN.json")).unwrap();
+        for (_, label) in KEYS {
+            assert!(
+                catalog.contains_key(*label),
+                "missing icon translation: {label}"
+            );
+        }
         assert_eq!(choices("__not_an_icon__").row_count(), 0);
     }
 }

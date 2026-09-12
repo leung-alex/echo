@@ -32,6 +32,7 @@ mod inline_completion;
 pub(crate) mod native_test;
 mod quick_insert_window;
 mod settings_controller;
+mod settings_geometry;
 mod side_previews;
 mod software_deck;
 use dialogs::{Confirmation, Picker};
@@ -63,12 +64,10 @@ pub fn before_software_frame() {
         if !app.surface.visible {
             return;
         }
-        if app.window.get_route().as_str() == "settings" && app.preview_started.is_some() {
-            app.preview_tick();
-        } else if app.software.slide.moving() {
+        if app.software.slide.moving() {
             app.software_tick();
         }
-        if app.software.slide.moving() || app.preview_started.is_some() {
+        if app.software.slide.moving() {
             app.window.window().request_redraw();
         }
     });
@@ -196,6 +195,7 @@ pub struct App {
     popup_placement: Option<echo_windows::focus::PopupPlacement>,
     popup_side_right: Option<bool>,
     manager_geometry: Option<(slint::PhysicalPosition, slint::PhysicalSize)>,
+    settings_geometry: settings_geometry::SettingsGeometry,
     quick_geometry_active: bool,
     capture_pending: bool,
     pending_reclaim: Option<(u64, u64)>,
@@ -214,8 +214,6 @@ pub struct App {
     positions: SpacePositions,
     search_timer: Timer,
     trim_timer: Timer,
-    preview_timer: Timer,
-    preview_started: Option<Instant>,
     preview_epoch: u64,
     previews: HashMap<SpaceId, Preview>,
     pending_previews: HashSet<SpaceId>,
@@ -229,6 +227,8 @@ pub struct App {
     navigate_after_refresh: Option<SpaceId>,
     graphics: crate::graphics::GraphicsInfo,
     environment: shell::UiEnvironment,
+    tray: shell::TrayController,
+    active_language: Option<Language>,
     native_theme: Option<(isize, bool)>,
     confirmation: Option<Confirmation>,
     picker: Picker,
@@ -250,8 +250,14 @@ impl App {
         worker: Worker,
         args: Vec<String>,
         graphics: crate::graphics::GraphicsInfo,
+        tray: shell::TrayController,
     ) -> Result<Rc<RefCell<Self>>, String> {
         let window = AppWindow::new().map_err(|e| e.to_string())?;
+        window
+            .global::<crate::I18n>()
+            .on_translate(|language, source| {
+                crate::i18n::text(Language::parse(&language).unwrap_or_default(), &source).into()
+            });
         window.set_software_deck(true);
         window.window().set_size(slint::LogicalSize::new(
             echo_presentation::echo_tokens::WINDOW_WIDTH,
@@ -286,6 +292,7 @@ impl App {
             popup_placement: None,
             popup_side_right: None,
             manager_geometry: None,
+            settings_geometry: Default::default(),
             quick_geometry_active: false,
             capture_pending: false,
             pending_reclaim: None,
@@ -304,8 +311,6 @@ impl App {
             positions: SpacePositions::default(),
             search_timer: Timer::default(),
             trim_timer: Timer::default(),
-            preview_timer: Timer::default(),
-            preview_started: None,
             preview_epoch: 0,
             previews: HashMap::new(),
             pending_previews: HashSet::new(),
@@ -319,6 +324,8 @@ impl App {
             navigate_after_refresh: None,
             graphics,
             environment,
+            tray,
+            active_language: None,
             native_theme: None,
             confirmation: None,
             picker: Picker::Closed,
@@ -537,7 +544,15 @@ impl App {
     fn shell_event(&mut self, event: ShellEvent) {
         match event {
             ShellEvent::QuickInsert(snapshot) => self.hotkey_activate(snapshot),
-            ShellEvent::HotkeyStatus(status) => self.window.set_hotkey_status(status.into()),
+            ShellEvent::HotkeyStatus(status) => {
+                let previous = self.window.get_hotkey_status();
+                if !formatting::hotkey_status_is_informational(&status) {
+                    self.window.set_settings_error(status.clone().into());
+                } else if self.window.get_settings_error() == previous {
+                    self.window.set_settings_error("".into());
+                }
+                self.window.set_hotkey_status(status.into());
+            }
             ShellEvent::FocusLost => self.external_focus_lost(),
             ShellEvent::Open => self.activate_args(Vec::new()),
             ShellEvent::Favorites => self.activate_args(vec!["--favorites".into()]),
@@ -562,6 +577,7 @@ impl App {
                     shell::ui_environment(self.hwnd)
                 };
                 self.viewport_changed();
+                self.remember_settings_geometry();
             }
             ShellEvent::Error(e) => self.report(e, true),
         }
@@ -828,14 +844,13 @@ impl App {
         );
     }
     fn hide_window(&mut self) {
+        self.remember_settings_geometry();
         self.cancel_software_slide();
         self.hidden_generation = self.hidden_generation.wrapping_add(1);
         self.pending_reclaim = None;
         crate::popup_timing::finish();
         self.remember_position();
         self.search_timer.stop();
-        self.preview_timer.stop();
-        self.preview_started = None;
         self.cancel_prewarm();
         self.deck.hide();
         self.surface.hide();
@@ -895,7 +910,6 @@ impl App {
         self.stop_inline();
         self.quitting = true;
         self.search_timer.stop();
-        self.preview_timer.stop();
         self.trim_timer.stop();
         let _ = self.window.hide();
         self.hub.close();
@@ -1376,7 +1390,7 @@ impl App {
         if action == "clear-all" && self.surface.space == SpaceId::FAVORITES {
             self.ask_confirmation(
                 "Clear Favorites?",
-                "This clears all of Favorites, including items outside the current search or page. Content shared with other spaces is kept there. Content only in Favorites is permanently deleted. History is kept.",
+                "This permanently clears all of Favorites, including items outside the current search or page. Other spaces and History are kept.",
                 "Clear Favorites",
                 true,
                 dialogs::Confirmation::ClearFavorites(self.surface.revision),
@@ -1560,7 +1574,9 @@ impl App {
                 if let Some(snapshot) = result.snapshot {
                     self.cancel_prewarm();
                     self.previews.clear();
-                    self.positions.clear();
+                    if self.ui.remember_position != snapshot.ui.remember_position {
+                        self.positions.clear();
+                    }
                     self.settings = snapshot.clipboard;
                     self.ui = snapshot.ui;
                     self.settings_revision = snapshot.revision;
@@ -1723,7 +1739,6 @@ impl App {
                 text_edit: true,
                 batch: self.surface.batch,
             },
-            self.ui.switch_shortcut,
             !self.window.get_control_focus_mode(),
             self.window.get_modal(),
             self.window.get_route().as_str() != "history",

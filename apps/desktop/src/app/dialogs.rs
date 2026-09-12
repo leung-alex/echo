@@ -1,5 +1,6 @@
 //! Native content management dialogs. Data changes require explicit confirmation.
 use super::*;
+use echo_engine::DeleteSpaceContents;
 #[derive(Clone)]
 pub(super) enum Confirmation {
     Hide,
@@ -33,12 +34,19 @@ impl App {
         danger: bool,
         action: Confirmation,
     ) {
+        self.window
+            .set_confirmation_space_delete(matches!(&action, Confirmation::DeleteSpace(..)));
+        self.window.set_space_delete_mode(0);
         self.window.set_confirmation_title(title.into());
         self.window.set_confirmation_body(body.into());
         self.window.set_confirmation_button(button.into());
         self.window.set_confirmation_danger(danger);
         self.confirmation = Some(action);
         self.window.set_confirmation_open(true);
+        // Materialize the dialog and its initial focus before AccessKit builds
+        // its tree. Lazy focus during that build re-enters the borrowed adapter.
+        slint::private_unstable_api::re_exports::WindowInner::from_pub(self.window.window())
+            .ensure_tree_instantiated();
     }
     pub(super) fn confirm(&mut self, answer: &str) {
         if self.mutation.is_some() || self.session.busy() {
@@ -88,7 +96,12 @@ impl App {
                     self.navigate_to(SpaceId::FAVORITES);
                     self.finish_motion();
                 }
-                self.space_mutation_at(id, revision, SpaceAction::Delete);
+                let contents = if self.window.get_space_delete_mode() == 1 {
+                    DeleteSpaceContents::MoveToFavorites
+                } else {
+                    DeleteSpaceContents::Delete
+                };
+                self.space_mutation_at(id, revision, SpaceAction::Delete(contents));
             }
             Some(Confirmation::Restart) => {
                 self.restart = true;
@@ -171,8 +184,6 @@ impl App {
         }
         self.remember_position();
         self.finish_motion();
-        self.preview_timer.stop();
-        self.preview_started = None;
         self.close_picker();
         self.window.set_route(route.into());
         if route == "settings" {
@@ -350,7 +361,7 @@ impl App {
                     return;
                 }
                 self.ask_confirmation(&format!("Delete ‘{}’ space?",space.title),
-                    "Items used only in this space will move to Favorites. Shared items remain in their other spaces. No saved content is deleted.",
+                    "Choose what happens to the content in this space. Other spaces are not affected.",
                     "Delete space",true,Confirmation::DeleteSpace(id,space.revision));
             }
             "up" | "down" => self.space_mutation(
@@ -382,8 +393,18 @@ impl App {
                     .iter()
                     .map(|s| crate::ActionVm {
                         key: s.id.to_string().into(),
-                        label: s.title.clone().into(),
-                        detail: format!("{} items", s.item_count).into(),
+                        label: if s.id.is_system() {
+                            crate::i18n::text(self.active_language.unwrap_or_default(), &s.title)
+                                .into()
+                        } else {
+                            s.title.clone().into()
+                        },
+                        detail: crate::i18n::message(
+                            self.active_language.unwrap_or_default(),
+                            "{} items",
+                            &[("", &s.item_count.to_string())],
+                        )
+                        .into(),
                         danger: false,
                         enabled: true,
                     })
@@ -480,7 +501,8 @@ impl App {
                 .into_iter()
                 .map(|(key, label, danger)| crate::ActionVm {
                     key: key.into(),
-                    label: label.into(),
+                    label: crate::i18n::text(self.active_language.unwrap_or_default(), label)
+                        .into(),
                     detail: Default::default(),
                     danger,
                     enabled: true,
@@ -498,10 +520,10 @@ impl App {
             ]
         } else {
             vec![
-                ("share", "Add to another space…", false),
-                ("duplicate", "Create an independent copy", false),
+                ("copy-to-space", "Copy to another space…", false),
+                ("duplicate", "Duplicate content", false),
                 ("remove", "Remove from this space", false),
-                ("delete", "Delete everywhere…", true),
+                ("delete", "Delete content…", true),
             ]
         };
         if key.source == QuickInsertSource::Favorite {
@@ -534,7 +556,11 @@ impl App {
             .filter(|s| s.id != SpaceId::HISTORY)
             .map(|s| crate::ActionVm {
                 key: s.id.to_string().into(),
-                label: s.title.clone().into(),
+                label: if s.id.is_system() {
+                    crate::i18n::text(self.active_language.unwrap_or_default(), &s.title).into()
+                } else {
+                    s.title.clone().into()
+                },
                 detail: Default::default(),
                 danger: false,
                 enabled: true,
@@ -544,7 +570,7 @@ impl App {
             if key.source == QuickInsertSource::History {
                 "Move history into a space"
             } else {
-                "Add shared content to a space"
+                "Copy content to a space"
             },
             actions,
             false,
@@ -586,7 +612,7 @@ impl App {
                     self.close_picker();
                     self.action(key, &item.to_string());
                 }
-                "move" | "share" => self.target_picker(item),
+                "move" | "copy-to-space" => self.target_picker(item),
                 "duplicate" => {
                     self.edit_created_copy = true;
                     self.space_mutation(self.surface.space, SpaceAction::DuplicateItem(item.id));
@@ -722,10 +748,10 @@ impl App {
         }
         match result {
             Ok(details)=>match action.as_str() {
-                "edit"=>{self.close_picker();self.open_editor(Some(details.item),details.spaces.len());},
-                "delete"=>self.ask_confirmation("Delete saved content everywhere?",
-                    &format!("This item is used in {} space(s). Its saved content and all memberships will be removed. This cannot be undone.",details.spaces.len()),
-                    "Delete everywhere",true,Confirmation::DeleteItem(key)),_=>{},
+                "edit"=>{self.close_picker();self.open_editor(Some(details.item));},
+                "delete"=>self.ask_confirmation("Delete saved content?",
+                    "This permanently deletes the content from this space. Other spaces are not affected.",
+                    "Delete content",true,Confirmation::DeleteItem(key)),_=>{},
             },Err(e)=>self.report(e,true),
         }
     }
@@ -748,9 +774,9 @@ impl App {
             return;
         }
         self.finish_motion();
-        self.open_editor(None, 1);
+        self.open_editor(None);
     }
-    fn open_editor(&mut self, item: Option<QuickInsertItem>, memberships: usize) {
+    fn open_editor(&mut self, item: Option<QuickInsertItem>) {
         self.window.set_editor_new(item.is_none());
         self.editor_key = item.as_ref().map(RowKey::of);
         self.window.set_editing_key(
@@ -780,7 +806,6 @@ impl App {
         );
         self.window
             .set_content_editable(item.as_ref().is_none_or(|i| i.editable_text.is_some()));
-        self.window.set_editor_sharing(if memberships>1 {format!("Used in {memberships} spaces. Edits update all of them. Use Item options → Independent copy to edit separately.").into()}else{"".into()});
         self.editor_original = Some(self.editor_values());
         self.report("", false);
         self.window.set_editor_open(true);

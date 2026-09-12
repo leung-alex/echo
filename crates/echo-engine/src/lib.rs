@@ -18,12 +18,12 @@ mod spaces;
 mod ui_settings;
 pub use global_shortcut::{GlobalShortcut, ShortcutKey};
 pub use spaces::{
-    Space, SpaceAction, SpaceCommand, SpaceDraft, SpaceError, SpaceId, SpaceKind,
-    SpaceMutationResult, SpacePage, SpaceStore,
+    DeleteSpaceContents, Space, SpaceAction, SpaceCommand, SpaceDraft, SpaceError, SpaceId,
+    SpaceKind, SpaceMutationResult, SpacePage, SpaceStore,
 };
 pub use ui_settings::{
-    Density, FrameRate, GraphicsMode, Motion, MotionSpeed, QueryOnSwitch, SettingsPatch,
-    SettingsSnapshot, SideContent, SpaceViewMode, StartupSpace, SwitchShortcut, UiSettings,
+    FrameRate, GraphicsMode, Language, QueryOnSwitch, SettingsPatch, SettingsSnapshot, SideContent,
+    StartupSpace, UiSettings,
 };
 
 pub use domain::{
@@ -54,4 +54,6 @@ pub use saved_items::{
     is_text_like, normalize_icon_key, normalize_name, normalize_optional_name, normalize_tags,
     FavoriteDraft, FavoriteUpdate, SavedItem, SavedItemDraft, SavedItemValidationError,
 };
-pub use settings::{ClipboardSettings, ThemeMode, MAX_HISTORY_ENTRIES};
+pub use settings::{
+    ClipboardSettings, ThemeMode, MAX_HISTORY_ENTRIES, MAX_ITEM_BYTES, MAX_STORAGE_BYTES,
+};

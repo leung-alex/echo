@@ -1,0 +1,34 @@
+import { EchoTheme } from "theme.slint";
+
+export component ShortcutRow inherits Rectangle {
+    in property <string> title;
+    in property <[string]> keys;
+    in property <string> key-label;
+    min-height: max(36px, action-label.preferred-height + 12px);
+    accessible-role: text;
+    accessible-label: root.title + ": " + root.key-label;
+    HorizontalLayout {
+        spacing: 24px; padding-right: 12px; alignment: stretch;
+        action-label := Text {
+            text: root.title; color: EchoTheme.text; font-size: 14px;
+            min-width: 0px; horizontal-stretch: 1;
+            wrap: word-wrap; vertical-alignment: center;
+            accessible-role: none;
+        }
+        HorizontalLayout {
+            spacing: 5px; alignment: end; horizontal-stretch: 0;
+            for key in root.keys: Rectangle {
+                width: max(28px, key-text.preferred-width + 16px);
+                height: 26px; vertical-stretch: 0;
+                border-radius: 5px; border-width: 1px;
+                border-color: EchoTheme.line; background: EchoTheme.elevated;
+                accessible-role: none;
+                key-text := Text {
+                    text: key; color: EchoTheme.text; font-size: 12px;
+                    horizontal-alignment: center; vertical-alignment: center;
+                    accessible-role: none;
+                }
+            }
+        }
+    }
+}

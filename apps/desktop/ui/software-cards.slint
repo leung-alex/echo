@@ -1,3 +1,4 @@
+import { I18n } from "i18n.slint";
 import { EchoTheme } from "theme.slint";
 import { FavoriteIconImages } from "favorite-icon-images.slint";
 import { EntryRow } from "entry-row.slint";
@@ -26,7 +27,7 @@ export component SpaceSideCard inherits Rectangle {
     background: area.has-hover && root.enabled ? EchoTheme.elevated : EchoTheme.surface;
     border-radius: 20px; border-width: 1px; border-color: EchoTheme.line;
     accessible-role: button;
-    accessible-label: "Switch to " + root.space.title + " · " + root.space.count + " items";
+    accessible-label: @tr("Switch to ") + root.space.title + " · " + root.space.count + @tr(" items");
     accessible-enabled: root.enabled;
     accessible-action-default => { if (root.enabled) { root.chosen(); } }
     Image {
@@ -43,7 +44,7 @@ export component SpaceSideCard inherits Rectangle {
     }
     Text {
         x: 20px; y: 62px; width: parent.width - 40px; height: 24px;
-        text: root.space.count + " items"; color: EchoTheme.muted; font-size: 12px;
+        text: root.space.count + @tr(" items"); color: EchoTheme.muted; font-size: 12px;
         overflow: elide; accessible-role: none;
     }
     Rectangle {
@@ -66,7 +67,7 @@ export component SpaceSideCard inherits Rectangle {
                 }
             }
             if (root.preview.loading || root.preview.rows.length == 0): Text {
-                text: root.preview.loading ? "Filtering…" : root.preview.message;
+                text: root.preview.loading ? @tr("Filtering…") : I18n.message(root.preview.message);
                 color: EchoTheme.muted; font-size: 13px; wrap: word-wrap; min-height: 40px;
             }
         }

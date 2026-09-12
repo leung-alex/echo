@@ -87,7 +87,6 @@ impl ContentType {
 pub struct CaptureSettings {
     pub history_enabled: bool,
     pub record_sensitive: bool,
-    pub store_window_titles: bool,
 }
 
 impl Default for CaptureSettings {
@@ -95,7 +94,6 @@ impl Default for CaptureSettings {
         Self {
             history_enabled: true,
             record_sensitive: false,
-            store_window_titles: false,
         }
     }
 }
@@ -105,7 +103,6 @@ impl From<&ClipboardSettings> for CaptureSettings {
         Self {
             history_enabled: settings.history_enabled,
             record_sensitive: settings.record_sensitive,
-            store_window_titles: settings.store_window_titles,
         }
     }
 }
@@ -793,9 +790,6 @@ fn normalize_with_policy(
     if !source.is_source_verified {
         source.app_name = None;
         source.executable = None;
-        source.window_title = None;
-    } else if !settings.store_window_titles {
-        source.window_title = None;
     }
     let mut plain_text = None;
     let mut sanitized_html = None;

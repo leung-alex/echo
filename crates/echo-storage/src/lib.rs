@@ -32,10 +32,10 @@ use uuid::Uuid;
 
 const INLINE_LIMIT: usize = 64 * 1024;
 const DEFAULT_MAX_ENTRIES: u32 = echo_engine::MAX_HISTORY_ENTRIES;
-const DEFAULT_MAX_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
-const DEFAULT_MAX_ITEM_BYTES: u64 = 32 * 1024 * 1024;
+const DEFAULT_MAX_TOTAL_BYTES: u64 = echo_engine::MAX_STORAGE_BYTES;
+const DEFAULT_MAX_ITEM_BYTES: u64 = echo_engine::MAX_ITEM_BYTES;
 const SEARCH_FTS_SCHEMA_KEY: &str = "search_fts_schema";
-const CURRENT_SCHEMA_VERSION: i32 = 6;
+const CURRENT_SCHEMA_VERSION: i32 = 10;
 const THEME_COLUMN_DEFINITION: &str =
     "TEXT NOT NULL DEFAULT 'system' CHECK (theme IN ('system', 'light', 'dark'))";
 
@@ -218,6 +218,10 @@ impl ClipboardStore {
                 4 => self.ensure_search_schema()?,
                 5 => self.migrate_schema_v5()?,
                 6 => self.migrate_schema_v6()?,
+                7 => self.migrate_schema_v7()?,
+                8 => self.migrate_schema_v8()?,
+                9 => self.migrate_schema_v9()?,
+                10 => self.migrate_schema_v10()?,
                 _ => unreachable!("schema version is bounded above"),
             }
             self.connection
@@ -823,67 +827,42 @@ impl ClipboardStore {
     }
 
     pub fn settings(&self) -> Result<ClipboardSettings> {
-        let (
-            history_enabled,
-            record_sensitive,
-            store_window_titles,
-            max_entries,
-            max_total_bytes,
-            max_item_bytes,
-            theme_value,
-        ): (bool, bool, bool, i64, i64, i64, String) = self
-            .connection
+        self.connection
             .query_row(
-                "SELECT history_enabled, record_sensitive, store_window_titles,
-                        max_entries, max_total_bytes, max_item_bytes, theme
-                 FROM clipboard_settings WHERE id = 1",
+                "SELECT history_enabled,record_sensitive,theme FROM clipboard_settings WHERE id=1",
                 [],
                 |row| {
                     Ok((
-                        row.get::<_, i64>(0)? != 0,
-                        row.get::<_, i64>(1)? != 0,
-                        row.get::<_, i64>(2)? != 0,
-                        row.get(3)?,
-                        row.get(4)?,
-                        row.get(5)?,
-                        row.get(6)?,
+                        row.get::<_, bool>(0)?,
+                        row.get::<_, bool>(1)?,
+                        row.get::<_, String>(2)?,
                     ))
                 },
             )
-            .map_err(StorageError::from)?;
-        let theme = ThemeMode::parse(&theme_value).ok_or_else(|| {
-            StorageError::Invalid(format!(
-                "clipboard settings contain invalid theme mode {theme_value:?}"
-            ))
-        })?;
-        Ok(ClipboardSettings {
-            history_enabled,
-            record_sensitive,
-            store_window_titles,
-            max_entries: u32::try_from(max_entries)
-                .unwrap_or(DEFAULT_MAX_ENTRIES)
-                .min(DEFAULT_MAX_ENTRIES),
-            max_total_bytes: max_total_bytes
-                .try_into()
-                .unwrap_or(DEFAULT_MAX_TOTAL_BYTES),
-            max_item_bytes: max_item_bytes.try_into().unwrap_or(DEFAULT_MAX_ITEM_BYTES),
-            theme,
-        })
+            .map_err(StorageError::from)
+            .and_then(|(history_enabled, record_sensitive, theme)| {
+                Ok(ClipboardSettings {
+                    history_enabled,
+                    record_sensitive,
+                    theme: ThemeMode::parse(&theme)
+                        .ok_or_else(|| StorageError::Invalid("Invalid theme setting".into()))?,
+                    ..ClipboardSettings::default()
+                })
+            })
     }
 
     pub fn update_settings(&mut self, settings: &ClipboardSettings) -> Result<()> {
         self.connection.execute(
             "UPDATE clipboard_settings SET history_enabled = ?, record_sensitive = ?,
-             store_window_titles = ?, max_entries = ?, max_total_bytes = ?, max_item_bytes = ?,
+             max_entries = ?, max_total_bytes = ?, max_item_bytes = ?,
              theme = ?, settings_revision = settings_revision + 1
              WHERE id = 1",
             params![
                 settings.history_enabled as i64,
                 settings.record_sensitive as i64,
-                settings.store_window_titles as i64,
-                i64::from(settings.max_entries.min(DEFAULT_MAX_ENTRIES)),
-                i64::try_from(settings.max_total_bytes).unwrap_or(i64::MAX),
-                i64::try_from(settings.max_item_bytes).unwrap_or(i64::MAX),
+                i64::from(DEFAULT_MAX_ENTRIES),
+                DEFAULT_MAX_TOTAL_BYTES as i64,
+                DEFAULT_MAX_ITEM_BYTES as i64,
                 settings.theme.as_str(),
             ],
         )?;
@@ -1002,14 +981,13 @@ impl ClipboardStore {
         let (id, duplicate) = if let Some(id) = existing {
             tx.execute(
                 "UPDATE clipboard_entries SET updated_at = ?, source_app = ?,
-                 source_executable = ?, source_window_title = ?, content_type = ?,
+                 source_executable = ?, content_type = ?,
                  preview_text = ?, searchable_text = ?, sanitized_html = ?, byte_size = ?
                  WHERE id = ?",
                 params![
                     now,
                     capture.source.app_name,
                     capture.source.executable,
-                    capture.source.window_title,
                     capture.content_type.as_str(),
                     capture.preview_text,
                     capture.searchable_text,
@@ -1028,16 +1006,14 @@ impl ClipboardStore {
         } else {
             tx.execute(
                 "INSERT INTO clipboard_entries
-                 (created_at, updated_at, source_app, source_executable, source_window_title,
-                   content_type, preview_text, searchable_text, sanitized_html, fingerprint,
+                 (created_at, updated_at, source_app, source_executable, content_type, preview_text, searchable_text, sanitized_html, fingerprint,
                    byte_size)
-                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 params![
                     now,
                     now,
                     capture.source.app_name,
                     capture.source.executable,
-                    capture.source.window_title,
                     capture.content_type.as_str(),
                     capture.preview_text,
                     capture.searchable_text,
@@ -1299,13 +1275,18 @@ impl ClipboardStore {
         Ok(())
     }
 
-    // Apply the hard ceiling to existing databases without changing byte limits.
+    // Normalize retired user limits; opening does not evict for the byte budget.
     fn enforce_history_ceiling(&mut self) -> Result<()> {
         let tx = self.connection.transaction()?;
         tx.execute(
-            "UPDATE clipboard_settings SET max_entries=?, settings_revision=settings_revision+1
-             WHERE id=1 AND (max_entries>? OR max_entries<0)",
-            params![DEFAULT_MAX_ENTRIES, DEFAULT_MAX_ENTRIES],
+            "UPDATE clipboard_settings SET max_entries=?1,max_total_bytes=?2,max_item_bytes=?3,
+             settings_revision=settings_revision+1 WHERE id=1 AND
+             (max_entries!=?1 OR max_total_bytes!=?2 OR max_item_bytes!=?3)",
+            params![
+                DEFAULT_MAX_ENTRIES,
+                DEFAULT_MAX_TOTAL_BYTES as i64,
+                DEFAULT_MAX_ITEM_BYTES as i64
+            ],
         )?;
         Self::enforce_capacity_tx(
             &tx,
@@ -1389,7 +1370,7 @@ impl ClipboardStore {
                          e.id DESC";
             let sql = format!(
                 "SELECT e.id, e.created_at, e.updated_at, e.source_app, e.source_executable,
-                        e.source_window_title, e.content_type, e.preview_text, e.searchable_text,
+                        e.content_type, e.preview_text, e.searchable_text,
                         e.sanitized_html, e.fingerprint, e.history_pinned_at,
                         e.byte_size
                  FROM (SELECT e.id FROM clipboard_entries e
@@ -1422,7 +1403,7 @@ impl ClipboardStore {
             let pattern = format!("%{}%", escape_like_pattern(&query_lower));
             let sql = format!(
                 "SELECT e.id, e.created_at, e.updated_at, e.source_app, e.source_executable,
-                        e.source_window_title, e.content_type, e.preview_text, e.searchable_text,
+                        e.content_type, e.preview_text, e.searchable_text,
                         e.sanitized_html, e.fingerprint, e.history_pinned_at, e.byte_size,
                         {short_rank} AS relevance
                  FROM clipboard_entries e
@@ -1446,7 +1427,7 @@ impl ClipboardStore {
             values.push(Value::Integer(fetch_limit));
             let mut statement = self.connection.prepare(&sql)?;
             let rows = statement.query_map(params_from_iter(values), |row| {
-                Ok((map_entry(row)?, row.get::<_, i64>(13)?))
+                Ok((map_entry(row)?, row.get::<_, i64>(12)?))
             })?;
             for row in rows {
                 let (entry, relevance) = row?;
@@ -1462,7 +1443,7 @@ impl ClipboardStore {
             )?;
             let sql = format!(
                 "SELECT e.id, e.created_at, e.updated_at, e.source_app, e.source_executable,
-                        e.source_window_title, e.content_type, e.preview_text, e.searchable_text,
+                        e.content_type, e.preview_text, e.searchable_text,
                         e.sanitized_html, e.fingerprint, e.history_pinned_at, e.byte_size,
                         CAST((-bm25(clipboard_fts)) * 1000000 AS INTEGER) AS relevance
                  FROM clipboard_entries e
@@ -1478,7 +1459,7 @@ impl ClipboardStore {
             values.push(Value::Integer(fetch_limit));
             let mut statement = self.connection.prepare(&sql)?;
             let rows = statement.query_map(params_from_iter(values), |row| {
-                Ok((map_entry(row)?, row.get::<_, i64>(13)?))
+                Ok((map_entry(row)?, row.get::<_, i64>(12)?))
             })?;
             for row in rows {
                 let (entry, relevance) = row?;
@@ -1530,7 +1511,7 @@ impl ClipboardStore {
             .connection
             .query_row(
                 "SELECT id, created_at, updated_at, source_app, source_executable,
-                        source_window_title, content_type, preview_text, searchable_text,
+                        content_type, preview_text, searchable_text,
                         sanitized_html, fingerprint, history_pinned_at, byte_size
                  FROM clipboard_entries WHERE id = ?",
                 [id],
@@ -1772,9 +1753,9 @@ impl ClipboardStore {
                 tx.execute(
                     "INSERT INTO saved_items
                      (source_history_id, created_at, updated_at, name, content_type, editable_text,
-                      source_app, source_executable, source_window_title, preview_text, byte_size,
+                      source_app, source_executable, preview_text, byte_size,
                       icon_key, favorite_order, is_independent)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
                     params![
                         entry.id,
                         draft.created_at,
@@ -1784,7 +1765,6 @@ impl ClipboardStore {
                         draft.editable_text,
                         draft.source_app,
                         draft.source_executable,
-                        draft.source_window_title,
                         draft.preview_text,
                         i64::try_from(entry.byte_size).unwrap_or(i64::MAX),
                         draft.icon_key,
@@ -1867,9 +1847,9 @@ impl ClipboardStore {
         tx.execute(
             "INSERT INTO saved_items
              (source_history_id, created_at, updated_at, name, content_type, editable_text,
-              source_app, source_executable, source_window_title, preview_text, byte_size,
+              source_app, source_executable, preview_text, byte_size,
               icon_key, favorite_order, is_independent)
-             VALUES (NULL, ?, ?, ?, 'text', ?, NULL, NULL, NULL, ?, ?, ?, ?, 1)",
+             VALUES (NULL, ?, ?, ?, 'text', ?, NULL, NULL, ?, ?, ?, ?, 1)",
             params![
                 now,
                 now,
@@ -2134,7 +2114,7 @@ impl ClipboardStore {
         let trimmed = query.trim();
         let select = "SELECT s.id, s.source_history_id, s.created_at, s.updated_at, s.name,
                     s.content_type, s.editable_text, s.source_app, s.source_executable,
-                    s.source_window_title, s.preview_text, s.byte_size, s.icon_key,
+                    s.preview_text, s.byte_size, s.icon_key,
                     s.favorite_order
              FROM saved_items s";
         let mut items = Vec::new();
@@ -2171,7 +2151,7 @@ impl ClipboardStore {
             let sql = format!(
                 "SELECT s.id, s.source_history_id, s.created_at, s.updated_at, s.name,
                         s.content_type, s.editable_text, s.source_app, s.source_executable,
-                        s.source_window_title, s.preview_text, s.byte_size, s.icon_key,
+                        s.preview_text, s.byte_size, s.icon_key,
                         s.favorite_order, {short_rank} AS relevance
                  FROM saved_items s
                  JOIN saved_items_fts f ON CAST(f.saved_item_id AS INTEGER) = s.id
@@ -2187,7 +2167,7 @@ impl ClipboardStore {
             values.push(Value::Integer(fetch_limit));
             let mut statement = self.connection.prepare(&sql)?;
             let rows = statement.query_map(params_from_iter(values), |row| {
-                Ok((map_saved_item(row)?, row.get::<_, i64>(14)?))
+                Ok((map_saved_item(row)?, row.get::<_, i64>(13)?))
             })?;
             for row in rows {
                 let (item, relevance) = row?;
@@ -2204,7 +2184,7 @@ impl ClipboardStore {
             let sql = format!(
                 "SELECT s.id, s.source_history_id, s.created_at, s.updated_at, s.name,
                         s.content_type, s.editable_text, s.source_app, s.source_executable,
-                        s.source_window_title, s.preview_text, s.byte_size, s.icon_key,
+                        s.preview_text, s.byte_size, s.icon_key,
                         s.favorite_order,
                         CAST((-bm25(saved_items_fts)) * 1000000 AS INTEGER) AS relevance
                  FROM saved_items s
@@ -2217,7 +2197,7 @@ impl ClipboardStore {
             values.push(Value::Integer(fetch_limit));
             let mut statement = self.connection.prepare(&sql)?;
             let rows = statement.query_map(params_from_iter(values), |row| {
-                Ok((map_saved_item(row)?, row.get::<_, i64>(14)?))
+                Ok((map_saved_item(row)?, row.get::<_, i64>(13)?))
             })?;
             for row in rows {
                 let (item, relevance) = row?;
@@ -2265,8 +2245,7 @@ impl ClipboardStore {
             .connection
             .query_row(
                 "SELECT id, source_history_id, created_at, updated_at, name, content_type,
-                        editable_text, source_app, source_executable, source_window_title,
-                        preview_text, byte_size, icon_key, favorite_order
+                        editable_text, source_app, source_executable, preview_text, byte_size, icon_key, favorite_order
                  FROM saved_items WHERE id = ?",
                 [id],
                 |row| {
@@ -2280,12 +2259,11 @@ impl ClipboardStore {
                         editable_text: row.get(6)?,
                         source_app: row.get(7)?,
                         source_executable: row.get(8)?,
-                        source_window_title: row.get(9)?,
-                        preview_text: row.get(10)?,
-                        byte_size: row.get::<_, i64>(11)?.try_into().unwrap_or(0),
+                        preview_text: row.get(9)?,
+                        byte_size: row.get::<_, i64>(10)?.try_into().unwrap_or(0),
                         tags: Vec::new(),
-                        icon_key: row.get(12)?,
-                        favorite_order: row.get(13)?,
+                        icon_key: row.get(11)?,
+                        favorite_order: row.get(12)?,
                         thumbnail: None,
                     })
                 },
@@ -3606,14 +3584,13 @@ fn map_entry(row: &Row<'_>) -> rusqlite::Result<ClipboardEntry> {
         updated_at: row.get(2)?,
         source_app: row.get(3)?,
         source_executable: row.get(4)?,
-        source_window_title: row.get(5)?,
-        content_type: row.get(6)?,
-        preview_text: row.get(7)?,
-        searchable_text: row.get(8)?,
-        sanitized_html: row.get(9)?,
-        fingerprint: row.get(10)?,
-        pinned_at: row.get(11)?,
-        byte_size: row.get::<_, i64>(12)?.try_into().unwrap_or(0),
+        content_type: row.get(5)?,
+        preview_text: row.get(6)?,
+        searchable_text: row.get(7)?,
+        sanitized_html: row.get(8)?,
+        fingerprint: row.get(9)?,
+        pinned_at: row.get(10)?,
+        byte_size: row.get::<_, i64>(11)?.try_into().unwrap_or(0),
         thumbnail: None,
     })
 }
@@ -3629,12 +3606,11 @@ fn map_saved_item(row: &Row<'_>) -> rusqlite::Result<SavedItem> {
         editable_text: row.get(6)?,
         source_app: row.get(7)?,
         source_executable: row.get(8)?,
-        source_window_title: row.get(9)?,
-        preview_text: row.get(10)?,
-        byte_size: row.get::<_, i64>(11)?.try_into().unwrap_or(0),
+        preview_text: row.get(9)?,
+        byte_size: row.get::<_, i64>(10)?.try_into().unwrap_or(0),
         tags: Vec::new(),
-        icon_key: row.get(12)?,
-        favorite_order: row.get(13)?,
+        icon_key: row.get(11)?,
+        favorite_order: row.get(12)?,
         thumbnail: None,
     })
 }
@@ -3780,6 +3756,130 @@ mod tests {
             sanitized_html: None,
             fingerprint: fingerprint(std::slice::from_ref(&representation)),
             representations: vec![representation],
+        }
+    }
+
+    #[test]
+    fn storage_limits_are_fixed_across_legacy_reads_and_all_settings_writes() {
+        let root = disk_tempdir();
+        let mut store = ClipboardStore::open(root.path()).unwrap();
+        store
+            .connection
+            .execute(
+                "UPDATE clipboard_settings SET max_entries=3,max_total_bytes=4,max_item_bytes=2",
+                [],
+            )
+            .unwrap();
+        let check = |s: &ClipboardSettings| {
+            assert_eq!(s.max_entries, 2000);
+            assert_eq!(s.max_total_bytes, 512 * 1024 * 1024);
+            assert_eq!(s.max_item_bytes, 32 * 1024 * 1024);
+        };
+        check(&store.settings().unwrap());
+        check(&store.settings_snapshot().unwrap().clipboard);
+        let mut attempted = store.settings().unwrap();
+        attempted.max_entries = 1;
+        attempted.max_total_bytes = 2;
+        attempted.max_item_bytes = 1;
+        attempted.theme = ThemeMode::Dark;
+        store.update_settings(&attempted).unwrap();
+        check(&store.settings().unwrap());
+        let snapshot = store.settings_snapshot().unwrap();
+        let saved = store
+            .save_settings_patch(echo_engine::SettingsPatch {
+                expected_revision: snapshot.revision,
+                clipboard: attempted,
+                ui: snapshot.ui,
+            })
+            .unwrap();
+        check(&saved.clipboard);
+        assert_eq!(saved.clipboard.theme, ThemeMode::Dark);
+        let history = store
+            .record_capture(text_capture("retained", 1))
+            .unwrap()
+            .id;
+        store
+            .connection
+            .execute(
+                "UPDATE clipboard_settings SET max_entries=1,max_total_bytes=2,max_item_bytes=1",
+                [],
+            )
+            .unwrap();
+        drop(store);
+        let store = ClipboardStore::open(root.path()).unwrap();
+        check(&store.settings().unwrap());
+        let raw: (i64, i64, i64) = store
+            .connection
+            .query_row(
+                "SELECT max_entries,max_total_bytes,max_item_bytes FROM clipboard_settings",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(raw, (2000, 512 * 1024 * 1024, 32 * 1024 * 1024));
+        assert!(store.entry(history).unwrap().is_some());
+    }
+
+    #[test]
+    fn v8_retires_titles_preserving_payloads_identity_and_settings() {
+        let root = disk_tempdir();
+        let mut store = ClipboardStore::open(root.path()).unwrap();
+        let mut capture = text_capture("中文 history payload", 1);
+        capture.source.app_name = Some("Source app".into());
+        capture.source.executable = Some("C:\\apps\\source.exe".into());
+        let history = store.record_capture(capture).unwrap().id;
+        let moved = store
+            .record_capture(text_capture("favorite original", 2))
+            .unwrap()
+            .id;
+        let favorite = store.move_history_to_favorite(moved).unwrap();
+        let before_entry = store.entry(history).unwrap().unwrap();
+        let before_payload = store.saved_item_payload(favorite.id).unwrap();
+        let before_spaces = store.list_spaces().unwrap();
+        let before_memberships = store.spaces_for_item(favorite.id).unwrap();
+        let mut patch = store.settings_snapshot().unwrap();
+        patch.clipboard.theme = ThemeMode::Dark;
+        patch.ui.language = echo_engine::Language::English;
+        let before_settings = store
+            .save_settings_patch(echo_engine::SettingsPatch {
+                expected_revision: patch.revision,
+                clipboard: patch.clipboard,
+                ui: patch.ui,
+            })
+            .unwrap();
+        store.connection.execute_batch("
+            ALTER TABLE clipboard_settings ADD COLUMN store_window_titles INTEGER NOT NULL DEFAULT 1;
+            ALTER TABLE clipboard_entries ADD COLUMN source_window_title TEXT;
+            ALTER TABLE saved_items ADD COLUMN source_window_title TEXT;
+            UPDATE clipboard_entries SET source_window_title='private document title';
+            UPDATE saved_items SET source_window_title='private favorite title';
+            PRAGMA user_version=7;
+        ").unwrap();
+        drop(store);
+        for _ in 0..2 {
+            let store = ClipboardStore::open(root.path()).unwrap();
+            for (table, column) in [
+                ("clipboard_settings", "store_window_titles"),
+                ("clipboard_entries", "source_window_title"),
+                ("saved_items", "source_window_title"),
+            ] {
+                assert!(!has_column(&store.connection, table, column).unwrap());
+            }
+            assert_eq!(store.entry(history).unwrap().unwrap(), before_entry);
+            assert_eq!(
+                store.saved_item_payload(favorite.id).unwrap(),
+                before_payload
+            );
+            assert_eq!(
+                store.saved_item(favorite.id).unwrap().unwrap().item,
+                favorite
+            );
+            assert_eq!(store.list_spaces().unwrap(), before_spaces);
+            assert_eq!(
+                store.spaces_for_item(favorite.id).unwrap(),
+                before_memberships
+            );
+            assert_eq!(store.settings_snapshot().unwrap(), before_settings);
         }
     }
 
@@ -4445,21 +4545,19 @@ mod tests {
 
         let mut settings = store.settings().unwrap();
         settings.max_entries = 1;
-        store.update_settings(&settings).unwrap();
         store.record_capture(text_capture("fourth", 4)).unwrap();
+        let tx = store.connection.transaction().unwrap();
+        ClipboardStore::enforce_capacity_tx(&tx, &settings).unwrap();
+        tx.commit().unwrap();
         assert_eq!(store.list_entries("", 20).unwrap().len(), 1);
         assert_eq!(store.list_entries("", 20).unwrap()[0].id, first);
         assert_eq!(store.clear_unpinned_history().unwrap(), 0);
         assert!(store.entry(first).unwrap().is_some());
         settings.max_entries = 0;
-        store.update_settings(&settings).unwrap();
-        store
-            .record_capture(text_capture("over target", 5))
-            .unwrap();
-        assert!(store
-            .metrics_snapshot()
-            .iter()
-            .any(|metric| metric.operation == "capacity_over_target"));
+        let tx = store.connection.transaction().unwrap();
+        let (_, over_target) = ClipboardStore::enforce_capacity_tx(&tx, &settings).unwrap();
+        assert!(over_target);
+        tx.commit().unwrap();
         assert_eq!(store.delete_entry(first).unwrap(), true);
         assert!(store.list_entries("", 20).unwrap().is_empty());
     }
@@ -4527,7 +4625,7 @@ mod tests {
     fn theme_setting_defaults_round_trips_and_reopens_from_clipboard_settings() {
         let root = disk_tempdir();
         let mut store = ClipboardStore::open(root.path()).unwrap();
-        assert_eq!(store.settings().unwrap().theme, ThemeMode::System);
+        assert_eq!(store.settings().unwrap().theme, ThemeMode::Light);
         assert_eq!(
             store
                 .connection
@@ -4537,10 +4635,10 @@ mod tests {
                     |row| row.get::<_, String>(0),
                 )
                 .unwrap(),
-            "system"
+            "light"
         );
 
-        for mode in [ThemeMode::Light, ThemeMode::Dark, ThemeMode::System] {
+        for mode in [ThemeMode::Light, ThemeMode::Dark, ThemeMode::Light] {
             let mut settings = store.settings().unwrap();
             settings.theme = mode;
             store.update_settings(&settings).unwrap();
@@ -4549,7 +4647,7 @@ mod tests {
 
         drop(store);
         let reopened = ClipboardStore::open(root.path()).unwrap();
-        assert_eq!(reopened.settings().unwrap().theme, ThemeMode::System);
+        assert_eq!(reopened.settings().unwrap().theme, ThemeMode::Light);
     }
 
     #[test]
@@ -4584,12 +4682,14 @@ mod tests {
                  INSERT INTO clipboard_settings
                      (id, history_enabled, record_sensitive, store_window_titles,
                       max_entries, max_total_bytes, max_item_bytes)
-                 SELECT id, history_enabled, record_sensitive, store_window_titles,
+                 SELECT id, history_enabled, record_sensitive, 0,
                         max_entries, max_total_bytes, max_item_bytes
                  FROM clipboard_settings_with_theme;
                  DROP TABLE clipboard_settings_with_theme;
                  DROP TABLE space_memberships;
                  DROP TABLE spaces;
+                 ALTER TABLE clipboard_entries ADD COLUMN source_window_title TEXT;
+                 ALTER TABLE saved_items ADD COLUMN source_window_title TEXT;
                  PRAGMA user_version = 5;
                  PRAGMA foreign_keys = ON;",
             )
@@ -4597,7 +4697,7 @@ mod tests {
         drop(connection);
 
         let reopened = ClipboardStore::open(root.path()).unwrap();
-        assert_eq!(reopened.settings().unwrap().theme, ThemeMode::System);
+        assert_eq!(reopened.settings().unwrap().theme, ThemeMode::Light);
         assert_eq!(
             reopened
                 .connection
@@ -4920,7 +5020,7 @@ mod tests {
                 .query_row("PRAGMA user_version", [], |row| row.get(0))
                 .unwrap();
             assert_eq!(version, CURRENT_SCHEMA_VERSION);
-            assert_eq!(store.settings().unwrap().theme, ThemeMode::System);
+            assert_eq!(store.settings().unwrap().theme, ThemeMode::Light);
             assert_eq!(
                 store
                     .connection
@@ -4930,7 +5030,7 @@ mod tests {
                         |row| row.get::<_, String>(0),
                     )
                     .unwrap(),
-                "system"
+                "light"
             );
             assert_eq!(store.list_entries("", 20).unwrap().len(), entries);
             let saved = store.list_saved_items("", 20).unwrap();
@@ -4944,7 +5044,7 @@ mod tests {
                 .query_row("PRAGMA user_version", [], |row| row.get(0))
                 .unwrap();
             assert_eq!(reopened_version, CURRENT_SCHEMA_VERSION);
-            assert_eq!(reopened.settings().unwrap().theme, ThemeMode::System);
+            assert_eq!(reopened.settings().unwrap().theme, ThemeMode::Light);
             assert_eq!(reopened.list_entries("", 20).unwrap().len(), entries);
             let reopened_saved = reopened.list_saved_items("", 20).unwrap();
             assert_eq!(reopened_saved.len(), favorites);

@@ -32,6 +32,7 @@ export component EchoButton inherits Rectangle {
     in property <bool> danger;
     in property <bool> enabled: true;
     in property <bool> checked;
+    in property <bool> selection-indicator;
     callback clicked();
     out property <bool> focused: focus.has-focus;
     callback focus-changed(bool);
@@ -69,6 +70,13 @@ export component EchoButton inherits Rectangle {
             horizontal-alignment: center;
             accessible-role: none;
         }
+    }
+    if (root.selection-indicator && root.checked): Rectangle {
+        x: max(6px, (root.width - content.min-width) / 2 - 7px);
+        y: (parent.height - self.height) / 2;
+        width: 3px; height: 22px; border-radius: 2px;
+        background: EchoTheme.amber;
+        accessible-role: none;
     }
     touch := TouchArea {
         enabled: root.enabled;

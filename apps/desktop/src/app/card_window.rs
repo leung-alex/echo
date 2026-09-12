@@ -89,6 +89,21 @@ impl App {
                 ])
             };
             hook.set_resize_bounds(bounds);
+            hook.set_caption_bounds(
+                (self.window.get_route().as_str() == "settings" && !self.window.get_modal()).then(
+                    || {
+                        [
+                            (self.window.get_settings_card_left() * dpi).round() as i32,
+                            (24.0 * dpi).round() as i32,
+                            ((self.window.get_settings_card_left()
+                                + self.window.get_settings_card_width())
+                                * dpi)
+                                .round() as i32,
+                            ((24.0 + 58.0) * dpi).round() as i32,
+                        ]
+                    },
+                ),
+            );
         }
         let shapes = if self.window.get_modal() || (full) {
             None

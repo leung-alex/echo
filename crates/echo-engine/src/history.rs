@@ -17,7 +17,6 @@ pub struct HistoryEntry {
     pub pinned_at: Option<i64>,
     pub source_app: Option<String>,
     pub source_executable: Option<String>,
-    pub source_window_title: Option<String>,
     pub content_type: String,
     pub preview_text: Option<String>,
     pub searchable_text: Option<String>,
@@ -484,7 +483,7 @@ mod tests {
     fn library_settings_interface_round_trips_theme() {
         let store = Arc::new(SettingsStore::default());
         let library = Library::new(store);
-        assert_eq!(library.settings().unwrap().theme, ThemeMode::System);
+        assert_eq!(library.settings().unwrap().theme, ThemeMode::Light);
 
         let mut settings = ClipboardSettings::default();
         settings.theme = ThemeMode::Dark;

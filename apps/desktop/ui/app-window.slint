@@ -1,3 +1,5 @@
+export { I18n } from "i18n.slint";
+import { I18n } from "i18n.slint";
 import { EnumChoice } from "enum-choice.slint";
 import { ListView, ScrollView, LineEdit, TextEdit, CheckBox, ComboBox, AboutSlint, Palette } from "std-widgets.slint";
 import { EchoTheme, EchoButton, Hint } from "theme.slint";
@@ -17,7 +19,6 @@ export component AppWindow inherits Window {
     icon: @image-url("../icons/echo-taskbar-256.png");
     in property <[EntryRow]> rows;
     in property <bool> software-deck;
-    in property <float> preview-progress: 1;
     in property <bool> outgoing-present;
     in property <OutgoingPanel> outgoing;
     in property <bool> slide-moving;
@@ -38,8 +39,8 @@ export component AppWindow inherits Window {
     in property <SidePreview> outgoing-preview;
     in property <SidePreview> departing-preview;
     out property <length> side-width: root.panel-width * 0.7;
-    out property <bool> left-side-visible: root.software-deck && root.view-mode == "cover_flow" && root.left-space.key != "" && root.panel-left >= root.side-width + 28px;
-    out property <bool> right-side-visible: root.software-deck && root.view-mode == "cover_flow" && root.right-space.key != "" && root.stage-width - root.panel-left - root.panel-width >= root.side-width + 28px;
+    out property <bool> left-side-visible: root.software-deck && root.left-space.key != "" && root.panel-left >= root.side-width + 28px;
+    out property <bool> right-side-visible: root.software-deck && root.right-space.key != "" && root.stage-width - root.panel-left - root.panel-width >= root.side-width + 28px;
     in-out property <string> query;
     in property <string> active-view: "history";
     in property <string> route: "history";
@@ -61,11 +62,8 @@ export component AppWindow inherits Window {
     in-out property <bool> text-edit-mode;
     in-out property <bool> history-enabled: true;
     in-out property <bool> record-sensitive;
-    in-out property <bool> store-window-titles;
-    in-out property <string> max-entries-text;
-    in-out property <string> max-total-mib-text;
-    in-out property <string> max-item-mib-text;
-    in-out property <string> theme-mode: "system";
+    in-out property <string> theme-mode: "light";
+    in-out property <string> language: "zh-CN";
     in-out property <bool> editor-open;
     in property <bool> editor-new;
     in property <string> editing-key;
@@ -104,10 +102,6 @@ export component AppWindow inherits Window {
     pure callback drag-data(string, int) -> data-transfer;
     callback can-drop-data(data-transfer) -> bool;
     callback drop-data(data-transfer,string) -> bool;
-    in-out property <string> view-mode;
-    in-out property <string> motion;
-    in-out property <string> motion-speed;
-    in-out property <string> switch-shortcut;
     in-out property <bool> global-hotkey-enabled;
     in-out property <string> global-hotkey;
     in-out property <bool> caret-anchor;
@@ -117,7 +111,6 @@ export component AppWindow inherits Window {
     in property <[string]> startup-space-names;
     in property <int> startup-space-index;
     in-out property <string> query-on-switch;
-    in-out property <string> density;
     in-out property <string> side-content;
     in-out property <string> graphics-mode;
     in-out property <string> frame-rate;
@@ -127,7 +120,7 @@ export component AppWindow inherits Window {
     in-out property <bool> trim-when-hidden;
     in-out property <bool> reduce-on-battery;
     in property <[SpaceVm]> spaces;
-    in property <string> space-title: "History";
+    in property <string> space-title: @tr("History");
     in property <bool> space-clearable;
     in property <string> space-subtitle;
     in property <string> space-icon;
@@ -157,6 +150,8 @@ export component AppWindow inherits Window {
     in property <string> confirmation-body;
     in property <string> confirmation-button;
     in property <bool> confirmation-danger;
+    in property <bool> confirmation-space-delete;
+    in-out property <int> space-delete-mode;
     in property <bool> picker-open;
     in property <string> picker-title;
     in-out property <string> picker-query;
@@ -164,7 +159,6 @@ export component AppWindow inherits Window {
     in property <bool> picker-more;
     in property <bool> picker-loading;
     in property <[ActionVm]> picker-actions;
-    in property <string> editor-sharing;
     private property <bool> picking-space-icon;
     out property <length> inline-content-height: live-panel.natural-height;
     out property <length> stage-width: root.width;
@@ -197,7 +191,7 @@ export component AppWindow inherits Window {
     callback viewport-changed();
     callback stage-scrolled(float);
     public function focus-content() {live-panel.focus-content();}
-    public function focus-controls() {if (root.route == "history") {live-panel.focus-controls();} else {settings-back.focus();}}
+    public function focus-controls() {if (root.route == "history") {live-panel.focus-controls();} else if (root.route == "about") {settings-back.focus();} else {page-focus.focus();}}
     public function reset-scroll() { root.scroll-y = 0px; }
     public function reveal-selection() { live-panel.reveal-selection(); }
     changed width => { root.viewport-changed(); }
@@ -208,8 +202,8 @@ export component AppWindow inherits Window {
     min-width: root.quick-insert ? 120px : 320px; min-height: root.quick-insert ? 120px : 300px;
     no-frame: true;
     background: transparent;
-    default-font-family: "Segoe UI"; default-font-size: T.font-body;
-    FocusScope {
+    default-font-family: "Microsoft YaHei UI"; default-font-size: T.font-body;
+    page-focus := FocusScope {
         x: 0px; y: 0px; width: root.width; height: root.height;
         key-pressed(event) => { if (root.ime-composing()) { return reject; } return root.key-event(event.text,event.modifiers.control,event.modifiers.shift,"control") ? accept : reject; }
         Rectangle {
@@ -274,18 +268,18 @@ export component AppWindow inherits Window {
                 visible: root.route == "history";
                 inline-mode: root.inline-mode;
                 control-focus-mode:root.control-focus-mode;
-                title: root.space-title; subtitle: root.space-subtitle; icon-key: root.space-icon; accent: root.space-accent;
+                title: root.space-title; subtitle: I18n.message(root.space-subtitle); icon-key: root.space-icon; accent: root.space-accent;
                 rows: root.rows; favorites: root.active-view != "history"; clearable: root.space-clearable; capture-only: false;
                 loading: root.loading; stale: root.stale-rows; error: root.status-error;
-                empty-state-text: root.empty-state-text;
+                empty-state-text: I18n.message(root.empty-state-text);
                 busy: root.busy || root.modal || root.navigation-busy;
-                compact: root.density == "compact"; batch: root.batch-mode; selected-count: root.selected-count;
+                batch: root.batch-mode; selected-count: root.selected-count;
                 selection-index: root.selection-index; query <=> root.query; quick-insert: root.quick-insert && root.paste-target-available;
                 copy-only: root.quick-insert && !root.paste-target-available;
                 has-more: root.has-more; has-previous: root.has-previous; scroll-y <=> root.scroll-y;
                 modal: root.modal; animating: root.software-deck ? root.slide-moving : root.navigation-busy;
-                navigation-label: root.navigation-label; status: root.status; status-error: root.status-error;
-                navigation-hint: root.control-focus-mode ? "F6  Quick navigation" : root.switch-shortcut == "ctrl_tab" ? "Ctrl+Tab / Ctrl+Shift+Tab" : "Tab / Shift+Tab";
+                navigation-label: root.navigation-label; status: I18n.message(root.status); status-error: root.status-error;
+                navigation-hint: root.control-focus-mode ? @tr("F6  Quick navigation") : "Tab / Shift+Tab";
                 previous-enabled: root.previous-enabled; next-enabled: root.next-enabled;
                 query-edited(value) => {root.query-edited(value);}
                 ime-composing => {return root.ime-composing();}
@@ -322,11 +316,11 @@ export component AppWindow inherits Window {
             SpacePanel {
                 x: 0px; y: 0px; width: root.panel-width; height: root.panel-height;
                 inline-mode: root.inline-mode;
-                title: root.outgoing.title; subtitle: root.outgoing.subtitle;
+                title: root.outgoing.title; subtitle: I18n.message(root.outgoing.subtitle);
                 icon-key: root.outgoing.icon-key; accent: root.outgoing.accent;
                 rows: root.outgoing.rows; favorites: root.outgoing.favorites; clearable: root.outgoing.clearable;
                 busy: true; modal: true; animating: true;
-                compact: root.density == "compact"; batch: root.outgoing.batch;
+                batch: root.outgoing.batch;
                 selected-count: root.outgoing.selected-count; selection-index: root.outgoing.selection-index;
                 query: root.outgoing.query; quick-insert: root.quick-insert && root.paste-target-available;
                 copy-only: root.quick-insert && !root.paste-target-available;
@@ -342,25 +336,18 @@ export component AppWindow inherits Window {
                 visible: root.route != "history";
                 x:root.settings-card-left;y:24px;width:root.settings-card-width;height:parent.height - 48px;
                 background:EchoTheme.surface;border-radius:T.panel-radius;border-width:1px;border-color:EchoTheme.line;clip:true;
-                settings-back := EchoButton {x:24px;y:16px;width:96px;text:"Back";icon:@image-url("icons/back.svg");flat:true;
+                settings-back := EchoButton {visible:root.route == "about";x:24px;y:16px;width:96px;text:@tr("Back");icon:@image-url("icons/back.svg");flat:true;
                     enabled:!root.modal;clicked => {root.route-selected("history");}}
             if (root.route == "settings"): SettingsPage {
-                y: 64px; height: parent.height - 64px;
+                y: 0px; height: parent.height;
                 scroll-anchor-changed(x,y) => {
                     root.settings-scroll-anchor-x = x;
                     root.settings-scroll-anchor-y = y;
                 }
                 history-enabled <=> root.history-enabled;
                 record-sensitive <=> root.record-sensitive;
-                store-window-titles <=> root.store-window-titles;
-                max-entries-text <=> root.max-entries-text;
-                max-total-mib-text <=> root.max-total-mib-text;
-                max-item-mib-text <=> root.max-item-mib-text;
                 theme-mode <=> root.theme-mode;
-                view-mode <=> root.view-mode;
-                motion <=> root.motion;
-                motion-speed <=> root.motion-speed;
-                switch-shortcut <=> root.switch-shortcut;
+                language <=> root.language;
                 global-hotkey-enabled <=> root.global-hotkey-enabled;
                 global-hotkey <=> root.global-hotkey;
                 caret-anchor <=> root.caret-anchor;
@@ -370,7 +357,6 @@ export component AppWindow inherits Window {
                 startup-space-names: root.startup-space-names;
                 startup-space-index: root.startup-space-index;
                 query-on-switch <=> root.query-on-switch;
-                density <=> root.density;
                 side-content <=> root.side-content;
                 graphics-mode <=> root.graphics-mode;
                 frame-rate <=> root.frame-rate;
@@ -380,9 +366,7 @@ export component AppWindow inherits Window {
                 trim-when-hidden <=> root.trim-when-hidden;
                 reduce-on-battery <=> root.reduce-on-battery;
                 spaces: root.spaces; busy: root.busy || root.modal; dirty: root.settings-dirty; valid: root.settings-valid; notice: root.settings-notice;
-                restart-required: root.restart-required; error: root.settings-error; actual-mode: root.actual-mode;
-                diagnostics: root.diagnostics; cache-status: root.cache-status;
-                preview-progress: root.preview-progress;
+                restart-required: root.restart-required; error: root.settings-error;
                 edited => { root.settings-edited(); }
                 save => { root.save-settings(); }
                 cancel => { root.settings-action("cancel"); }
@@ -397,10 +381,10 @@ export component AppWindow inherits Window {
                     Image { source: @image-url("../icons/echo-256.png"); width: 48px; height: 48px; image-fit: contain; }
                     Text { text: "Echo"; color: EchoTheme.text; font-size: 32px; font-weight: 600; vertical-alignment: center; }
                 }
-                Text { text: "Personal spaces for quick insertion\nRust + Slint · Windows · Version 0.1.0"; color: EchoTheme.muted; wrap: word-wrap; }
+                Text { text: @tr("Personal spaces for quick insertion\nRust + Slint · Windows · Version 0.1.0"); color: EchoTheme.muted; wrap: word-wrap; }
                 AboutSlint { height: 120px; }
-                Text { text: "Third-party notices are included in the application directory.\nClipboard data stays on this device."; color: EchoTheme.muted; wrap: word-wrap; min-width: 0px; }
-                EchoButton { text: "Back to settings"; clicked => { root.route-selected("settings"); } }
+                Text { text: @tr("Third-party notices are included in the application directory.\nClipboard data stays on this device."); color: EchoTheme.muted; wrap: word-wrap; min-width: 0px; }
+                EchoButton { text: @tr("Back to settings"); clicked => { root.route-selected("settings"); } }
             }
         }
         }
@@ -427,44 +411,43 @@ export component AppWindow inherits Window {
                 x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
                 width: min(520px,parent.width - 32px); height: min(620px,parent.height - 40px);
                 background: EchoTheme.elevated; border-radius: 15px; border-width: 1px; border-color: EchoTheme.line;
-                accessible-role: groupbox; accessible-label: root.editor-new ? "Create favorite" : "Edit favorite";
+                accessible-role: groupbox; accessible-label: root.editor-new ? @tr("Create favorite") : @tr("Edit favorite");
                 init => { name-edit.focus(); }
                 VerticalLayout {
                     padding: 20px; spacing: 10px;
-                    Text { text: root.editor-new ? "New content" : "Edit content"; color: EchoTheme.text; font-size: 21px; font-weight: 650; }
+                    Text { text: root.editor-new ? @tr("New content") : @tr("Edit content"); color: EchoTheme.text; font-size: 21px; font-weight: 650; }
                     ScrollView {
                         vertical-stretch: 1;
                         horizontal-scrollbar-policy: always-off;
                         VerticalLayout {
                             spacing: 10px;
-                    if (root.editor-sharing != ""): Text { text: root.editor-sharing; color: EchoTheme.muted; wrap: word-wrap; min-width: 0px; font-size: 12px; }
-                    Text { text: "Name (required)"; color: EchoTheme.muted; font-size: 12px; }
+                    Text { text: @tr("Name (required)"); color: EchoTheme.muted; font-size: 12px; }
                     name-edit := LineEdit {
-                        text <=> root.draft-name; accessible-label: "Favorite name (required)"; enabled: !root.busy;
+                        text <=> root.draft-name; accessible-label: @tr("Favorite name (required)"); enabled: !root.busy;
                         private property <int> focus-request: root.editor-name-focus-request;
                         changed focus-request => { self.focus(); }
                     }
-                    Text { text: root.content-editable ? "Content" : "Original non-text content is preserved"; color: EchoTheme.muted; font-size: 12px; wrap: word-wrap; }
-                    content-edit := TextEdit { accessible-action-set-value(value) => { if (root.content-editable && !root.busy) { root.draft-content = value; } } text <=> root.draft-content; read-only: !root.content-editable; accessible-label: "Favorite content"; enabled: !root.busy; min-height: 80px; }
-                    Text { text: "Favorite icon"; color: EchoTheme.muted; font-size: 12px; }
+                    Text { text: root.content-editable ? @tr("Content") : @tr("Original non-text content is preserved"); color: EchoTheme.muted; font-size: 12px; wrap: word-wrap; }
+                    content-edit := TextEdit { accessible-action-set-value(value) => { if (root.content-editable && !root.busy) { root.draft-content = value; } } text <=> root.draft-content; read-only: !root.content-editable; accessible-label: @tr("Favorite content"); enabled: !root.busy; min-height: 80px; }
+                    Text { text: @tr("Favorite icon"); color: EchoTheme.muted; font-size: 12px; }
                     HorizontalLayout {
                         spacing: 8px;
                         if (FavoriteIconImages.image-for(root.draft-icon).width > 0): Image {
                             width: 24px; height: 24px; source: FavoriteIconImages.image-for(root.draft-icon); colorize: EchoTheme.text;
                         }
-                        icon-edit := LineEdit { text <=> root.draft-icon; accessible-label: "Favorite icon"; enabled: !root.busy; min-width: 0px; }
+                        icon-edit := LineEdit { text <=> root.draft-icon; accessible-label: @tr("Favorite icon"); enabled: !root.busy; min-width: 0px; }
                         choose-icon := EchoButton {
-                            text: "Choose icon"; enabled: !root.busy;
+                            text: @tr("Choose icon"); enabled: !root.busy;
                             clicked => { root.picking-space-icon = false; root.filter-favorite-icons(""); root.icon-picker-open = true; }
                         }
                     }
-                    if (root.status-error): Text { text: root.status; color: EchoTheme.danger; wrap: word-wrap; font-size: 12px; min-width: 0px; }
+                    if (root.status-error): Text { text: I18n.error(root.status); color: EchoTheme.danger; wrap: word-wrap; font-size: 12px; min-width: 0px; }
                         }
                     }
                     HorizontalLayout {
                         spacing: 10px; alignment: end;
-                        cancel-button := EchoButton { text: "Cancel"; enabled: !root.busy; clicked => { root.cancel-editor(); } }
-                        save-button := EchoButton { text: root.busy ? "Saving…" : "Save favorite"; primary: true; enabled: !root.busy; clicked => { root.save-favorite(); } }
+                        cancel-button := EchoButton { text: @tr("Cancel"); enabled: !root.busy; clicked => { root.cancel-editor(); } }
+                        save-button := EchoButton { text: root.busy ? @tr("Saving…") : @tr("Save favorite"); primary: true; enabled: !root.busy; clicked => { root.save-favorite(); } }
                     }
                 }
             }
@@ -483,16 +466,16 @@ export component AppWindow inherits Window {
                 x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
                 width: min(440px,parent.width - 32px); height: 235px;
                 background: EchoTheme.elevated; border-radius: 15px; border-width: 1px; border-color: EchoTheme.line;
-                accessible-role: groupbox; accessible-label: "Clear clipboard history";
+                accessible-role: groupbox; accessible-label: @tr("Clear clipboard history");
                 init => { keep-button.focus(); }
                 VerticalLayout {
                     padding: 24px; spacing: 16px;
-                    Text { text: "Clear clipboard history?"; color: EchoTheme.text; font-size: 22px; font-weight: 650; }
-                    Text { text: "This removes unpinned history.\nPinned items and Favorites are kept.\nThis cannot be undone."; color: EchoTheme.muted; wrap: word-wrap; }
+                    Text { text: @tr("Clear clipboard history?"); color: EchoTheme.text; font-size: 22px; font-weight: 650; }
+                    Text { text: @tr("This removes unpinned history.\nPinned items and Favorites are kept.\nThis cannot be undone."); color: EchoTheme.muted; wrap: word-wrap; }
                     HorizontalLayout {
                         alignment: end; spacing: 10px;
-                        keep-button := EchoButton { text: "Keep history"; enabled: !root.busy; clicked => { root.clear-confirm-open = false; root.focus-content(); } }
-                        clear-button := EchoButton { text: "Clear unpinned"; danger: true; enabled: !root.busy; clicked => { root.confirm-clear(); } }
+                        keep-button := EchoButton { text: @tr("Keep history"); enabled: !root.busy; clicked => { root.clear-confirm-open = false; root.focus-content(); } }
+                        clear-button := EchoButton { text: @tr("Clear unpinned"); danger: true; enabled: !root.busy; clicked => { root.confirm-clear(); } }
                     }
                 }
             }
@@ -506,27 +489,27 @@ export component AppWindow inherits Window {
                     x: (parent.width - self.width)/2; y: (parent.height - self.height)/2;
                     width: min(T.dialog-width,parent.width - 32px); height: min(480px,parent.height - 32px);
                     background: EchoTheme.elevated; border-radius: T.dialog-radius; border-width: 1px; border-color: EchoTheme.line;
-                    accessible-role: groupbox; accessible-label: root.space-dialog-new ? "Create space" : "Edit space";
+                    accessible-role: groupbox; accessible-label: root.space-dialog-new ? @tr("Create space") : @tr("Edit space");
                     init => { space-name-input.focus(); }
                     VerticalLayout {
                         padding: 24px; spacing: 12px; alignment: start;
-                        Text { text: root.space-dialog-new ? "New space" : "Edit space"; color: EchoTheme.text; font-size: 23px; font-weight: 600; }
-                        Text { text: "Name · 1–32 characters"; color: EchoTheme.muted; }
-                        space-name-input := LineEdit { text <=> root.space-draft-title; accessible-label: "Space name"; enabled: !root.busy; }
-                        Text { text: "Description · optional"; color: EchoTheme.muted; }
-                        LineEdit { text <=> root.space-draft-description; accessible-label: "Space description"; enabled: !root.busy; }
+                        Text { text: root.space-dialog-new ? @tr("New space") : @tr("Edit space"); color: EchoTheme.text; font-size: 23px; font-weight: 600; }
+                        Text { text: @tr("Name · 1–32 characters"); color: EchoTheme.muted; }
+                        space-name-input := LineEdit { text <=> root.space-draft-title; accessible-label: @tr("Space name"); enabled: !root.busy; }
+                        Text { text: @tr("Description · optional"); color: EchoTheme.muted; }
+                        LineEdit { text <=> root.space-draft-description; accessible-label: @tr("Space description"); enabled: !root.busy; }
                         HorizontalLayout {
                             spacing: 10px;
-                            LineEdit { text <=> root.space-draft-icon; accessible-label: "Space icon"; enabled: !root.busy; }
-                            EchoButton { text: "Choose icon"; enabled: !root.busy; clicked => { root.picking-space-icon = true; root.filter-favorite-icons(""); root.icon-picker-open = true; } }
+                            LineEdit { text <=> root.space-draft-icon; accessible-label: @tr("Space icon"); enabled: !root.busy; }
+                            EchoButton { text: @tr("Choose icon"); enabled: !root.busy; clicked => { root.picking-space-icon = true; root.filter-favorite-icons(""); root.icon-picker-open = true; } }
                         }
-                        Text { text: "Accent · a small marker, not a full-card fill"; color: EchoTheme.muted; wrap: word-wrap; min-width: 0px; }
-                        EnumChoice { model: ["amber","blue","green","violet","rose","slate"]; selected-index: root.space-draft-accent == "blue" ? 1 : root.space-draft-accent == "green" ? 2 : root.space-draft-accent == "violet" ? 3 : root.space-draft-accent == "rose" ? 4 : root.space-draft-accent == "slate" ? 5 : 0; selected(value) => { root.space-draft-accent = value; } accessible-label: "Space accent"; enabled: !root.busy; }
-                        if (root.status-error): Text { text: root.status; color: EchoTheme.danger; wrap: word-wrap; min-width: 0px; }
+                        Text { text: @tr("Accent · a small marker, not a full-card fill"); color: EchoTheme.muted; wrap: word-wrap; min-width: 0px; }
+                        EnumChoice { model: [@tr("Amber"),@tr("Blue"),@tr("Green"),@tr("Violet"),@tr("Rose"),@tr("Slate")]; selected-index: root.space-draft-accent == "blue" ? 1 : root.space-draft-accent == "green" ? 2 : root.space-draft-accent == "violet" ? 3 : root.space-draft-accent == "rose" ? 4 : root.space-draft-accent == "slate" ? 5 : 0; selected(value) => { root.space-draft-accent = ["amber","blue","green","violet","rose","slate"][self.current-index]; } accessible-label: @tr("Space accent"); enabled: !root.busy; }
+                        if (root.status-error): Text { text: I18n.error(root.status); color: EchoTheme.danger; wrap: word-wrap; min-width: 0px; }
                         HorizontalLayout {
                             alignment: end; spacing: 10px;
-                            EchoButton { text: "Cancel"; enabled: !root.busy; clicked => { root.space-action("cancel",""); } }
-                            EchoButton { text: root.busy ? "Saving…" : "Save space"; primary: true; enabled: !root.busy; clicked => { root.space-action("save",""); } }
+                            EchoButton { text: @tr("Cancel"); enabled: !root.busy; clicked => { root.space-action("cancel",""); } }
+                            EchoButton { text: root.busy ? @tr("Saving…") : @tr("Save space"); primary: true; enabled: !root.busy; clicked => { root.space-action("save",""); } }
                         }
                     }
                 }
@@ -540,11 +523,11 @@ export component AppWindow inherits Window {
                     x: (parent.width - self.width)/2; y: (parent.height - self.height)/2;
                     width: min(520px,parent.width - 32px); height: min(570px,parent.height - 40px);
                     background: EchoTheme.elevated; border-radius: T.dialog-radius; border-width: 1px; border-color: EchoTheme.line;
-                    accessible-role: groupbox; accessible-label: root.picker-title;
-                    Text { x: 24px; y: 20px; width: parent.width - 48px; text: root.picker-title; color: EchoTheme.text; font-size: 22px; font-weight: 600; overflow: elide; }
+                    accessible-role: groupbox; accessible-label: I18n.message(root.picker-title);
+                    Text { x: 24px; y: 20px; width: parent.width - 48px; text: I18n.message(root.picker-title); color: EchoTheme.text; font-size: 22px; font-weight: 600; overflow: elide; }
                     if (root.picker-searchable): LineEdit {
                         x: 24px; y: 58px; width: parent.width - 48px; text <=> root.picker-query;
-                        accessible-label: "Search saved content"; enabled: !root.busy;
+                        accessible-label: @tr("Search saved content"); enabled: !root.busy;
                         init => { self.focus(); }
                         edited => { root.picker-query-edited(self.text); }
                     }
@@ -553,7 +536,7 @@ export component AppWindow inherits Window {
                         height: max(50px,parent.height - self.y - 96px);
                         VerticalLayout {
                             spacing: 8px; alignment: start;
-                            if (root.picker-loading): Text { text: "Loading…"; color: EchoTheme.muted; }
+                            if (root.picker-loading): Text { text: @tr("Loading…"); color: EchoTheme.muted; }
                             for action in root.picker-actions: EchoButton {
                                 text: action.label; label: action.label + (action.detail == "" ? "" : " · " + action.detail);
                                 danger: action.danger; enabled: action.enabled && !root.busy && !root.picker-loading;
@@ -562,11 +545,11 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
-                    if (root.status-error): Text { x: 24px; y: parent.height - 94px; width: parent.width - 48px; height: 34px; text: root.status; color: EchoTheme.danger; wrap: word-wrap; font-size: 12px; }
+                    if (root.status-error): Text { x: 24px; y: parent.height - 94px; width: parent.width - 48px; height: 34px; text: I18n.error(root.status); color: EchoTheme.danger; wrap: word-wrap; font-size: 12px; }
                     HorizontalLayout {
                         x: 24px; y: parent.height - 54px; width: parent.width - 48px; height: 36px; alignment: end; spacing: 10px;
-                        if (root.picker-more): EchoButton { text: "Next page"; enabled: !root.busy && !root.picker-loading; clicked => { root.picker-next(); } }
-                        EchoButton { text: "Close"; enabled: !root.busy; clicked => { root.picker-selected("cancel"); } }
+                        if (root.picker-more): EchoButton { text: @tr("Next page"); enabled: !root.busy && !root.picker-loading; clicked => { root.picker-next(); } }
+                        EchoButton { text: @tr("Close"); enabled: !root.busy; clicked => { root.picker-selected("cancel"); } }
                     }
                 }
             }
@@ -583,23 +566,69 @@ export component AppWindow inherits Window {
             FocusScope {
                 key-pressed(event) => { if (root.ime-composing()) { return reject; }
                     if (event.text == Key.Escape) { root.confirm("cancel"); return accept; }
-                    if (event.text == Key.Tab) { if (confirm-cancel.focused) { confirm-accept.focus(); } else { confirm-cancel.focus(); } return accept; }
+                    if (event.text == Key.Tab) {
+                        if (root.confirmation-space-delete) {
+                            if (event.modifiers.shift) {
+                                if (confirm-cancel.focused) { keep-space-content.focus(); }
+                                else if (keep-space-content.focused) { delete-space-content.focus(); }
+                                else if (delete-space-content.focused) { confirm-accept.focus(); }
+                                else { confirm-cancel.focus(); }
+                            } else {
+                                if (confirm-cancel.focused) { confirm-accept.focus(); }
+                                else if (confirm-accept.focused) { delete-space-content.focus(); }
+                                else if (delete-space-content.focused) { keep-space-content.focus(); }
+                                else { confirm-cancel.focus(); }
+                            }
+                        } else if (confirm-cancel.focused) { confirm-accept.focus(); } else { confirm-cancel.focus(); }
+                        return accept;
+                    }
+                    if (root.confirmation-space-delete && (delete-space-content.focused || keep-space-content.focused)
+                        && (event.text == Key.UpArrow || event.text == Key.DownArrow)) {
+                        root.space-delete-mode = root.space-delete-mode == 0 ? 1 : 0;
+                        if (root.space-delete-mode == 0) { delete-space-content.focus(); } else { keep-space-content.focus(); }
+                        return accept;
+                    }
                     return reject;
                 }
                 Rectangle {
                     x: (parent.width - self.width)/2; y: (parent.height - self.height)/2;
-                    width: min(T.dialog-width,parent.width - 32px); height: min(290px,parent.height - 32px);
+                    width: min(T.dialog-width,parent.width - 32px); height: min(root.confirmation-space-delete ? 390px : 290px,parent.height - 32px);
                     background: EchoTheme.elevated; border-radius: T.dialog-radius; border-width: 1px; border-color: EchoTheme.line;
-                    accessible-role: groupbox; accessible-label: root.confirmation-title;
+                    accessible-role: groupbox; accessible-label: I18n.message(root.confirmation-title);
                     init => { confirm-cancel.focus(); }
                     VerticalLayout {
                         padding: 24px; spacing: 16px;
-                        Text { text: root.confirmation-title; color: EchoTheme.text; font-size: 22px; font-weight: 600; wrap: word-wrap; min-width: 0px; }
-                        Text { text: root.confirmation-body; color: EchoTheme.muted; wrap: word-wrap; min-width: 0px; }
+                        Text { text: I18n.message(root.confirmation-title); color: EchoTheme.text; font-size: 22px; font-weight: 600; wrap: word-wrap; min-width: 0px; }
+                        Text { text: I18n.message(root.confirmation-body); color: EchoTheme.muted; wrap: word-wrap; min-width: 0px; }
+                        VerticalLayout {
+                            visible: root.confirmation-space-delete;
+                            min-height: root.confirmation-space-delete ? 114px : 0px;
+                            max-height: root.confirmation-space-delete ? 114px : 0px;
+                            spacing: root.confirmation-space-delete ? 8px : 0px;
+                            accessible-role: radio-group; accessible-label: @tr("Space content action");
+                            delete-space-content := EchoButton {
+                                visible: root.confirmation-space-delete; enabled: !root.busy && root.confirmation-space-delete;
+                                text: (root.space-delete-mode == 0 ? "●  " : "○  ") + @tr("Delete the space and all its content");
+                                label: @tr("Delete the space and all its content"); flat: true; checked: root.space-delete-mode == 0;
+                                accessible-role: radio-button; accessible-checkable: true; accessible-checked: root.space-delete-mode == 0;
+                                clicked => { root.space-delete-mode = 0; }
+                            }
+                            keep-space-content := EchoButton {
+                                visible: root.confirmation-space-delete; enabled: !root.busy && root.confirmation-space-delete;
+                                text: (root.space-delete-mode == 1 ? "●  " : "○  ") + @tr("Delete the space and move content to Favorites");
+                                label: @tr("Delete the space and move content to Favorites"); flat: true; checked: root.space-delete-mode == 1;
+                                accessible-role: radio-button; accessible-checkable: true; accessible-checked: root.space-delete-mode == 1;
+                                clicked => { root.space-delete-mode = 1; }
+                            }
+                        }
+                        if (root.confirmation-space-delete): Text {
+                            text: root.space-delete-mode == 0 ? @tr("All content in this space will be permanently deleted. This cannot be undone.") : @tr("All content in this space will be moved to Favorites and kept.");
+                            color: root.space-delete-mode == 0 ? EchoTheme.danger : EchoTheme.muted; wrap: word-wrap; min-width: 0px;
+                        }
                         HorizontalLayout {
                             alignment: end; spacing: 10px;
-                            confirm-cancel := EchoButton { text: "Cancel"; enabled: !root.busy; clicked => { root.confirm("cancel"); } }
-                            confirm-accept := EchoButton { text: root.confirmation-button; danger: root.confirmation-danger; enabled: !root.busy; clicked => { root.confirm("accept"); } }
+                            confirm-cancel := EchoButton { text: @tr("Cancel"); enabled: !root.busy; clicked => { root.confirm("cancel"); } }
+                            confirm-accept := EchoButton { text: I18n.message(root.confirmation-button); danger: root.confirmation-danger; enabled: !root.busy; clicked => { root.confirm("accept"); } }
                         }
                     }
                 }
@@ -627,19 +656,18 @@ export component CardSnapshot inherits Window {
     in property <bool> favorites;
     in property <bool> loading;
     in property <bool> titles-only;
-    in property <bool> compact;
     in property <bool> dark;
     in-out property <string> query;
     in property <string> navigation-label;
     in-out property <length> scroll-y;
     changed dark => {EchoTheme.dark = root.dark; Palette.color-scheme = root.dark ? ColorScheme.dark : ColorScheme.light;}
-    background:transparent;default-font-family:"Segoe UI";default-font-size:T.font-body;
+    background:transparent;default-font-family: "Microsoft YaHei UI";default-font-size:T.font-body;
     SpacePanel {
         x: 0px; y: 0px; width: root.width; height: root.height;
         inline-mode:root.inline-mode;
         title:root.panel-title;subtitle:root.subtitle;icon-key:root.icon-key;accent:root.accent;
         rows:root.rows;favorites:root.favorites;loading:root.loading;titles-only:root.titles-only;
-        compact:root.compact;capture-only:true;query <=> root.query;
+        capture-only:true;query <=> root.query;
         navigation-hint:root.navigation-hint;
         previous-enabled:root.previous-enabled;next-enabled:root.next-enabled;
         has-more:root.has-more;has-previous:root.has-previous;

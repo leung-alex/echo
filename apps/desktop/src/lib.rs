@@ -17,6 +17,7 @@ mod events;
 mod formatting;
 #[cfg(windows)]
 mod graphics;
+mod i18n;
 #[cfg(windows)]
 mod service;
 
@@ -72,6 +73,9 @@ fn run_windows() -> Result<(), String> {
     }
     // Secondary invocations return before the single storage owner or GPU is started.
     let worker = service::Worker::start(data_dir, hub.clone(), shell.hotkeys())?;
+    shell
+        .tray()
+        .set_labels(i18n::tray_labels(worker.bootstrap.ui.language));
     memory_trace::record(
         "core_ready",
         serde_json::json!({"background":args == ["--background"]}),
@@ -92,7 +96,7 @@ fn run_windows() -> Result<(), String> {
             "perspective":false, "fallback":graphics.fallback
         }),
     );
-    let application = app::App::new(hub.clone(), worker, args, graphics)?;
+    let application = app::App::new(hub.clone(), worker, args, graphics, shell.tray())?;
     app::install(application.clone());
     hub.activate();
     #[cfg(feature = "native-test")]

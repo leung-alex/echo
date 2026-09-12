@@ -60,12 +60,10 @@ pub fn apply(row: &mut crate::EntryRow, matcher: &mut FuzzyMatcher, dark: bool) 
     let (title, a) = styled(row.title.as_str(), matcher, dark);
     let (body, b) = styled(row.body.as_str(), matcher, dark);
     let (tags, c) = styled(row.tags.as_str(), matcher, dark);
-    let (source, d) = styled(row.source_label.as_str(), matcher, dark);
     row.title_rich = title;
     row.body_rich = body;
     row.tags_rich = tags;
-    row.source_rich = source;
-    row.match_count = a + b + c + d;
+    row.match_count = a + b + c;
 }
 #[cfg(test)]
 mod tests {

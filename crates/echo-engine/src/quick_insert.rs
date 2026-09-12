@@ -699,11 +699,10 @@ mod tests {
             Ok(ClipboardSettings {
                 history_enabled: true,
                 record_sensitive: false,
-                store_window_titles: false,
                 max_entries: 100,
                 max_total_bytes: 1024,
                 max_item_bytes: 1024,
-                theme: ThemeMode::System,
+                theme: ThemeMode::Light,
             })
         }
 

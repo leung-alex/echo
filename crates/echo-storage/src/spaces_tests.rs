@@ -54,7 +54,7 @@ fn create(s: &mut ClipboardStore, name: &str) -> SpaceId {
     .unwrap()
 }
 #[test]
-fn clear_favorites_covers_unloaded_items_but_preserves_shared_content_and_history() {
+fn clear_favorites_covers_unloaded_items_but_preserves_independent_copies_and_history() {
     let mut s = store();
     let work = create(&mut s, "Work");
     let shared = s
@@ -114,9 +114,16 @@ fn clear_favorites_covers_unloaded_items_but_preserves_shared_content_and_histor
             0
         );
     }
-    assert_eq!(s.spaces_for_item(shared.id).unwrap(), [work]);
+    assert!(s.saved_item(shared.id).unwrap().is_none());
+    let copy = s
+        .list_space_items(work, "shared", 10, None)
+        .unwrap()
+        .page
+        .items[0]
+        .id;
+    assert_ne!(copy, shared.id);
     assert_eq!(
-        s.saved_item_payload(shared.id).unwrap()[0].bytes,
+        s.saved_item_payload(copy).unwrap()[0].bytes,
         b"shared searchable content"
     );
     assert!(s.saved_item(only_work).unwrap().is_some());
@@ -248,15 +255,24 @@ fn custom_spaces_are_not_automatically_favorites() {
     );
 }
 #[test]
-fn membership_and_shared_edits_have_no_duplicate_payloads() {
+fn copying_to_spaces_creates_independent_editable_items() {
     let mut s = store();
     let work = create(&mut s, "Work");
     let personal = create(&mut s, "Personal");
     let item = s.create_favorite(content("shared value")).unwrap();
     command(&mut s, work, SpaceAction::AddItems(vec![item.id, item.id]));
     command(&mut s, personal, SpaceAction::AddItems(vec![item.id]));
-    assert_eq!(s.spaces_for_item(item.id).unwrap().len(), 3);
-    assert_eq!(count(&s), 1);
+    assert_eq!(s.spaces_for_item(item.id).unwrap(), [SpaceId::FAVORITES]);
+    assert_eq!(count(&s), 3);
+    let work_copy = s.list_space_items(work, "", 10, None).unwrap().page.items[0].id;
+    let personal_copy = s
+        .list_space_items(personal, "", 10, None)
+        .unwrap()
+        .page
+        .items[0]
+        .id;
+    assert_ne!(work_copy, item.id);
+    assert_ne!(personal_copy, work_copy);
     let before = revision(&s, work);
     s.update_favorite(
         item.id,
@@ -268,14 +284,22 @@ fn membership_and_shared_edits_have_no_duplicate_payloads() {
         },
     )
     .unwrap();
-    assert!(revision(&s, work) > before);
+    assert_eq!(revision(&s, work), before);
+    assert_eq!(
+        s.saved_item_payload(work_copy).unwrap()[0].bytes,
+        b"shared value"
+    );
+    assert_eq!(
+        s.saved_item_payload(personal_copy).unwrap()[0].bytes,
+        b"shared value"
+    );
     assert_eq!(
         s.saved_item_payload(item.id).unwrap()[0].bytes,
         b"new@example.test"
     );
 }
 #[test]
-fn deleting_space_rehomes_only_exclusive_items_atomically() {
+fn deleting_space_moves_all_owned_items_to_favorites_atomically() {
     let mut s = store();
     let work = create(&mut s, "Work");
     let other = create(&mut s, "Other");
@@ -286,10 +310,20 @@ fn deleting_space_rehomes_only_exclusive_items_atomically() {
         .created_item
         .unwrap();
     command(&mut s, other, SpaceAction::AddItems(vec![shared]));
-    let result = command(&mut s, work, SpaceAction::Delete);
-    assert_eq!(result.migrated_count, 1);
+    let result = command(
+        &mut s,
+        work,
+        SpaceAction::Delete(DeleteSpaceContents::MoveToFavorites),
+    );
+    assert_eq!(result.migrated_count, 2);
     assert_eq!(s.spaces_for_item(exclusive).unwrap(), [SpaceId::FAVORITES]);
-    assert_eq!(s.spaces_for_item(shared).unwrap(), [other]);
+    assert_eq!(s.spaces_for_item(shared).unwrap(), [SpaceId::FAVORITES]);
+    let other_copy = s.list_space_items(other, "", 10, None).unwrap().page.items[0].id;
+    assert_ne!(other_copy, shared);
+    assert_eq!(
+        s.saved_item_payload(other_copy).unwrap()[0].bytes,
+        b"shared"
+    );
     assert_eq!(
         s.saved_item_payload(exclusive).unwrap()[0].bytes,
         b"exclusive"
@@ -311,7 +345,7 @@ fn failed_space_deletion_rolls_back_rehoming() {
             space_id: Some(work),
             expected_revision: Some(r),
             request_id: "delete-test".into(),
-            action: SpaceAction::Delete
+            action: SpaceAction::Delete(DeleteSpaceContents::MoveToFavorites)
         })
         .is_err());
     assert_eq!(s.spaces_for_item(item).unwrap(), [work]);
@@ -342,7 +376,7 @@ fn stale_command_and_stale_cursor_cannot_mutate_or_mix_results() {
             space_id: Some(work),
             expected_revision: Some(old),
             request_id: "stale".into(),
-            action: SpaceAction::Delete
+            action: SpaceAction::Delete(DeleteSpaceContents::MoveToFavorites)
         }),
         Err(StorageError::Space(SpaceError::Conflict))
     ));
@@ -484,7 +518,7 @@ fn default_spaces_are_protected_and_names_are_canonical() {
                 space_id: Some(id),
                 expected_revision: Some(revision(&s, id)),
                 request_id: format!("delete{id}"),
-                action: SpaceAction::Delete
+                action: SpaceAction::Delete(DeleteSpaceContents::MoveToFavorites)
             })
             .is_err());
     }
@@ -497,7 +531,7 @@ fn settings_patch_is_atomic_and_does_not_overwrite_automatic_resume() {
     s.save_resume_space(work).unwrap();
     let mut ui = snapshot.ui;
     ui.graphics = GraphicsMode::Software;
-    ui.motion = Motion::Reduced;
+    ui.language = Language::English;
     let mut clipboard = snapshot.clipboard;
     clipboard.theme = ThemeMode::Dark;
     let patch = SettingsPatch {
@@ -508,6 +542,7 @@ fn settings_patch_is_atomic_and_does_not_overwrite_automatic_resume() {
     let saved = s.save_settings_patch(patch.clone()).unwrap();
     assert_eq!(saved.ui.resume_last_space_id, Some(work.to_string()));
     assert_eq!(saved.clipboard.theme, ThemeMode::Dark);
+    assert_eq!(saved.ui.language, Language::English);
     assert!(matches!(
         s.save_settings_patch(patch),
         Err(StorageError::Space(SpaceError::Conflict))
@@ -517,13 +552,102 @@ fn settings_patch_is_atomic_and_does_not_overwrite_automatic_resume() {
         clipboard: saved.clipboard.clone(),
         ui: saved.ui.clone(),
     };
-    invalid.clipboard.max_entries = 2001;
-    assert!(s.save_settings_patch(invalid.clone()).is_err());
-    assert_eq!(s.settings_snapshot().unwrap(), saved);
-    invalid.clipboard.max_entries = 2000;
-    invalid.clipboard.max_item_bytes = invalid.clipboard.max_total_bytes + 1;
+    invalid.ui.global_hotkey = "not a shortcut".into();
     assert!(s.save_settings_patch(invalid).is_err());
     assert_eq!(s.settings_snapshot().unwrap(), saved);
+}
+
+#[test]
+fn appearance_retirement_preserves_content_and_other_settings() {
+    let mut s = store();
+    let space = create(&mut s, "Settings"); // A custom name is content, not a translated ID.
+    let saved = s
+        .create_favorite(content("中文 and English {error}"))
+        .unwrap();
+    let before_spaces = s.list_spaces().unwrap();
+    s.connection.execute_batch(r#"
+        ALTER TABLE clipboard_settings RENAME COLUMN theme TO current_theme;
+        ALTER TABLE clipboard_settings ADD COLUMN theme TEXT NOT NULL DEFAULT 'system';
+        ALTER TABLE clipboard_settings DROP COLUMN current_theme;
+        UPDATE clipboard_settings SET history_enabled=0,
+            ui_settings_json='{"version":1,"view_mode":"flat","motion":"off","motion_speed":"relaxed","density":"compact","global_hotkey":"Ctrl+Alt+J","caret_anchor":false}';
+        ALTER TABLE clipboard_settings ADD COLUMN store_window_titles INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE clipboard_entries ADD COLUMN source_window_title TEXT;
+        ALTER TABLE saved_items ADD COLUMN source_window_title TEXT;
+        PRAGMA user_version=6;
+    "#).unwrap();
+    s.ensure_schema().unwrap();
+    let snapshot = s.settings_snapshot().unwrap();
+    assert_eq!(snapshot.clipboard.theme, ThemeMode::Light);
+    assert_eq!(snapshot.ui.language, Language::Chinese);
+    assert!(!snapshot.clipboard.history_enabled);
+    assert!(!snapshot.ui.caret_anchor);
+    assert_eq!(snapshot.ui.global_hotkey, "Ctrl+Alt+J");
+    assert_eq!(s.list_spaces().unwrap(), before_spaces);
+    assert!(s.list_spaces().unwrap().iter().any(|s| s.id == space));
+    assert!(saved.id > 0);
+    assert_eq!(count(&s), 1);
+    let encoded = serde_json::to_value(&snapshot.ui).unwrap();
+    for key in ["view_mode", "motion", "motion_speed", "density"] {
+        assert!(encoded.get(key).is_none());
+    }
+    s.ensure_schema().unwrap();
+    assert_eq!(s.settings_snapshot().unwrap(), snapshot);
+}
+#[test]
+fn fixed_tab_migration_preserves_settings_content_and_reopens() {
+    for shortcut in ["tab", "ctrl_tab"] {
+        let root = tempfile::tempdir().unwrap();
+        let mut s = ClipboardStore::open(root.path()).unwrap();
+        let space = create(&mut s, "Work");
+        let saved = s.create_favorite(content("Original content 原文")).unwrap();
+        let before_item = s.saved_item(saved.id).unwrap();
+        let before_payload = s.saved_item_payload(saved.id).unwrap();
+        let before_spaces = s.list_spaces().unwrap();
+        let snapshot = s.settings_snapshot().unwrap();
+        let mut expected = snapshot.clone();
+        expected.ui.language = Language::English;
+        expected.ui.global_hotkey = "Ctrl+Alt+J".into();
+        expected.ui.caret_anchor = false;
+        expected.clipboard.theme = ThemeMode::Dark;
+        expected = s
+            .save_settings_patch(SettingsPatch {
+                expected_revision: snapshot.revision,
+                clipboard: expected.clipboard,
+                ui: expected.ui,
+            })
+            .unwrap();
+        s.connection.execute(
+            "UPDATE clipboard_settings SET ui_settings_json=json_set(ui_settings_json,'$.switch_shortcut',?)",
+            [shortcut],
+        ).unwrap();
+        s.connection
+            .execute_batch("PRAGMA user_version=9;")
+            .unwrap();
+        drop(s);
+        for _ in 0..2 {
+            let s = ClipboardStore::open(root.path()).unwrap();
+            assert_eq!(s.settings_snapshot().unwrap(), expected);
+            assert_eq!(s.list_spaces().unwrap(), before_spaces);
+            assert!(s.list_spaces().unwrap().iter().any(|s| s.id == space));
+            assert_eq!(s.spaces_for_item(saved.id).unwrap(), [SpaceId::FAVORITES]);
+            assert_eq!(count(&s), 1);
+            assert_eq!(s.saved_item(saved.id).unwrap(), before_item);
+            assert_eq!(s.saved_item_payload(saved.id).unwrap(), before_payload);
+            let json: String = s
+                .connection
+                .query_row(
+                    "SELECT ui_settings_json FROM clipboard_settings WHERE id=1",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(serde_json::from_str::<serde_json::Value>(&json)
+                .unwrap()
+                .get("switch_shortcut")
+                .is_none());
+        }
+    }
 }
 #[test]
 fn shared_runtime_space_reads_and_writes_use_existing_actors() {
@@ -620,4 +744,132 @@ fn indexed_space_cursor_keeps_tied_negative_keys_and_filtered_totals() {
         !details.iter().any(|line| line.contains("USE TEMP B-TREE")),
         "{details:?}"
     );
+}
+
+#[test]
+fn deleting_space_content_covers_all_pages_and_does_not_touch_other_spaces() {
+    let mut s = store();
+    let work = create(&mut s, "Work");
+    let other = create(&mut s, "Other");
+    let first = command(
+        &mut s,
+        work,
+        SpaceAction::CreateItem(content("preserved copy")),
+    )
+    .created_item
+    .unwrap();
+    command(&mut s, other, SpaceAction::AddItems(vec![first]));
+    for i in 0..25 {
+        command(
+            &mut s,
+            work,
+            SpaceAction::CreateItem(content(&format!("item {i}"))),
+        );
+    }
+    let keep = s.create_favorite(content("keep favorite")).unwrap();
+    let before_other = s.list_space_items(other, "", 10, None).unwrap();
+    let stale = revision(&s, work) - 1;
+    assert!(matches!(
+        s.apply_space_command(SpaceCommand {
+            space_id: Some(work),
+            expected_revision: Some(stale),
+            request_id: "stale-delete".into(),
+            action: SpaceAction::Delete(DeleteSpaceContents::Delete)
+        }),
+        Err(StorageError::Space(SpaceError::Conflict))
+    ));
+    let delete = SpaceCommand {
+        space_id: Some(work),
+        expected_revision: Some(revision(&s, work)),
+        request_id: "delete-all".into(),
+        action: SpaceAction::Delete(DeleteSpaceContents::Delete),
+    };
+    let result = s.apply_space_command(delete.clone()).unwrap();
+    assert_eq!(result.affected_spaces, [work]);
+    assert_eq!(result.migrated_count, 0);
+    assert!(!s.list_spaces().unwrap().iter().any(|v| v.id == work));
+    assert!(s.saved_item(first).unwrap().is_none());
+    assert_eq!(
+        s.list_space_items(other, "", 10, None).unwrap(),
+        before_other
+    );
+    assert_eq!(
+        s.saved_item_payload(keep.id).unwrap()[0].bytes,
+        b"keep favorite"
+    );
+    assert_eq!(count(&s), 2);
+    assert_eq!(s.apply_space_command(delete).unwrap(), result);
+    assert!(s.maintenance_pending().unwrap());
+}
+
+#[test]
+fn failed_delete_content_rolls_back_content_search_and_membership() {
+    let mut s = store();
+    let work = create(&mut s, "Work");
+    let item = command(&mut s, work, SpaceAction::CreateItem(content("retained")))
+        .created_item
+        .unwrap();
+    let before = s.list_space_items(work, "retained", 10, None).unwrap();
+    s.connection.execute_batch("CREATE TRIGGER fail_delete_content BEFORE DELETE ON spaces BEGIN SELECT RAISE(ABORT,'test'); END;").unwrap();
+    assert!(s
+        .apply_space_command(SpaceCommand {
+            space_id: Some(work),
+            expected_revision: Some(revision(&s, work)),
+            request_id: "fail-content".into(),
+            action: SpaceAction::Delete(DeleteSpaceContents::Delete)
+        })
+        .is_err());
+    assert_eq!(s.saved_item_payload(item).unwrap()[0].bytes, b"retained");
+    assert_eq!(
+        s.list_space_items(work, "retained", 10, None).unwrap(),
+        before
+    );
+}
+
+#[test]
+fn v9_splits_legacy_shared_content_preserving_metadata_payload_and_order() {
+    let mut s = store();
+    let work = create(&mut s, "Work");
+    let original = s
+        .create_favorite(FavoriteDraft {
+            name: Some("Original name".into()),
+            content: "原始内容 {x}".into(),
+            tags: vec!["tag".into()],
+            icon_key: Some("Mail".into()),
+        })
+        .unwrap();
+    s.connection
+        .execute_batch("DROP INDEX space_memberships_owner_idx; PRAGMA user_version=8;")
+        .unwrap();
+    s.connection.execute("INSERT INTO space_memberships(space_id,saved_item_id,sort_key,created_at) VALUES (?,?,777,123)",params![work.0,original.id]).unwrap();
+    s.ensure_schema().unwrap();
+    let copy = s.list_space_items(work, "", 10, None).unwrap().page.items[0].clone();
+    assert_ne!(copy.id, original.id);
+    assert_eq!(copy.name, original.name);
+    assert_eq!(copy.tags, original.tags);
+    assert_eq!(copy.icon_key, original.icon_key);
+    assert_eq!(
+        s.saved_item_payload(copy.id).unwrap(),
+        s.saved_item_payload(original.id).unwrap()
+    );
+    assert_eq!(s.spaces_for_item(copy.id).unwrap(), [work]);
+    assert_eq!(
+        s.spaces_for_item(original.id).unwrap(),
+        [SpaceId::FAVORITES]
+    );
+    assert_eq!(
+        s.connection
+            .query_row(
+                "SELECT sort_key FROM space_memberships WHERE saved_item_id=?",
+                [copy.id],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        777
+    );
+    assert!(s.connection.execute("INSERT INTO space_memberships(space_id,saved_item_id,sort_key,created_at) VALUES (?,?,0,0)",params![work.0,original.id]).is_err());
+    s.ensure_schema().unwrap();
+    assert_eq!(count(&s), 2);
+    s.delete_favorite(copy.id).unwrap();
+    assert!(s.saved_item(original.id).unwrap().is_some());
 }

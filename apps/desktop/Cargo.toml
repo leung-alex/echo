@@ -27,6 +27,7 @@ raw-window-handle = "0.6"
 slint = { version = "=1.17.1", default-features = false, features = ["std", "backend-winit", "renderer-software", "accessibility", "compat-1-2", "raw-window-handle-06", "unstable-winit-030"] }
 
 [build-dependencies]
+serde_json.workspace = true
 slint-build = "=1.17.1"
 embed-resource = "3.0.11"
 [dev-dependencies]

@@ -3,6 +3,22 @@ use crate::EntryRow;
 use chrono::{Local, TimeZone};
 use echo_engine::{ClipboardSettings, QuickInsertItem, ThemeMode};
 use echo_presentation::RowKey;
+pub fn hotkey_status_is_informational(status: &str) -> bool {
+    status.is_empty()
+        || status.starts_with("Active globally: ")
+        || status == "Global shortcut is off"
+        || status
+            == "Global shortcut disabled for this isolated instance (ECHO_DISABLE_GLOBAL_HOTKEY)"
+}
+
+#[test]
+fn hotkey_errors_remain_visible_even_when_the_previous_binding_is_active() {
+    assert!(hotkey_status_is_informational("Active globally: Alt+V"));
+    assert!(hotkey_status_is_informational("Global shortcut is off"));
+    assert!(!hotkey_status_is_informational(
+        "Cannot register Ctrl+Alt+J. Active globally: Alt+V. Your previous binding is unchanged."
+    ));
+}
 pub fn row_section(item: &QuickInsertItem, previous_section: &mut String) -> String {
     let time = Local.timestamp_millis_opt(item.updated_at).single();
     let date = time.map(|t| t.date_naive());
@@ -43,11 +59,6 @@ pub fn row_content(item: &QuickInsertItem, section_label: &str) -> EntryRow {
             .into(),
         body: item.preview_text.clone().unwrap_or_default().into(),
         kind: item.content_type.clone().into(),
-        source_label: item
-            .source_app
-            .clone()
-            .unwrap_or_else(|| "Clipboard".into())
-            .into(),
         time_label: time
             .map(|t| t.format("%H:%M").to_string())
             .unwrap_or_default()
@@ -63,9 +74,6 @@ pub fn row_content(item: &QuickInsertItem, section_label: &str) -> EntryRow {
         body_rich: slint::StyledText::from_plain_text(item.preview_text.as_deref().unwrap_or("")),
         title_rich: slint::StyledText::from_plain_text(item.name.as_deref().unwrap_or("")),
         tags_rich: slint::StyledText::from_plain_text(&item.tags.join(" · ")),
-        source_rich: slint::StyledText::from_plain_text(
-            item.source_app.as_deref().unwrap_or("Clipboard"),
-        ),
         match_count: 0,
     }
 }
@@ -73,69 +81,49 @@ pub fn optional(value: &str) -> Option<String> {
     let v = value.trim();
     (!v.is_empty()).then(|| v.to_owned())
 }
-pub fn settings(
-    entries: &str,
-    total_mib: &str,
-    item_mib: &str,
-    theme: &str,
-    enabled: bool,
-    sensitive: bool,
-    titles: bool,
-) -> Result<ClipboardSettings, String> {
-    let max_entries = entries
-        .trim()
-        .parse::<u32>()
-        .map_err(|_| "Maximum entries must be a positive integer")?;
-    let parse_mib = |value: &str| -> Result<u64, String> {
-        let n = value
-            .trim()
-            .parse::<u64>()
-            .map_err(|_| "Storage limits must be positive integer MiB")?;
-        n.checked_mul(1024 * 1024)
-            .filter(|n| *n > 0)
-            .ok_or_else(|| "Storage limit is invalid or too large".into())
-    };
-    if max_entries == 0 || max_entries > echo_engine::MAX_HISTORY_ENTRIES {
-        return Err("Maximum entries must be between 1 and 2000".into());
-    }
-    let max_total_bytes = parse_mib(total_mib)?;
-    let max_item_bytes = parse_mib(item_mib)?;
-    if max_item_bytes > max_total_bytes {
-        return Err("Maximum item size cannot exceed total storage".into());
-    }
+pub fn settings(theme: &str, enabled: bool, sensitive: bool) -> Result<ClipboardSettings, String> {
     let theme = ThemeMode::parse(theme).ok_or("Unknown theme")?;
     Ok(ClipboardSettings {
         history_enabled: enabled,
         record_sensitive: sensitive,
-        store_window_titles: titles,
-        max_entries,
-        max_total_bytes,
-        max_item_bytes,
         theme,
+        ..ClipboardSettings::default()
     })
 }
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
-    fn limits_reject_overflow_and_zero() {
-        for (entries, total, item) in [
-            ("0", "10", "1"),
-            ("2001", "10", "1"),
-            ("1", "0", "1"),
-            ("1", "1", "2"),
-            ("1", "18446744073709551615", "1"),
-            ("-1", "10", "1"),
-        ] {
-            assert!(settings(entries, total, item, "system", true, false, false).is_err());
-        }
+    fn source_identity_is_not_projected_or_counted_as_a_visible_match() {
+        let item: QuickInsertItem = serde_json::from_value(serde_json::json!({
+            "id": 1, "source": "history", "content_type": "text",
+            "preview_text": "visible payload", "tags": [], "updated_at": 0,
+            "source_app": "PrivateSource"
+        }))
+        .unwrap();
+        let mut row = row_content(&item, "Today");
+        crate::match_highlight::apply(
+            &mut row,
+            &mut echo_engine::FuzzyMatcher::new("PrivateSource"),
+            false,
+        );
+        assert_eq!(row.match_count, 0);
+        assert_eq!(row.body.as_str(), "visible payload");
+        assert!(row.title.is_empty());
+        assert_eq!(item.source_app.as_deref(), Some("PrivateSource"));
+        crate::match_highlight::apply(
+            &mut row,
+            &mut echo_engine::FuzzyMatcher::new("visible"),
+            false,
+        );
+        assert!(row.match_count > 0);
     }
     #[test]
     fn settings_preserve_all_fields() {
-        let s = settings("2000", "512", "32", "dark", false, true, true).unwrap();
+        let s = settings("dark", false, true).unwrap();
         assert_eq!(s.max_total_bytes, 512 * 1024 * 1024);
         assert_eq!(s.theme, ThemeMode::Dark);
         assert!(!s.history_enabled);
-        assert!(s.record_sensitive && s.store_window_titles);
+        assert!(s.record_sensitive);
     }
 }

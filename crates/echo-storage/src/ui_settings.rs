@@ -3,11 +3,38 @@ use super::*;
 use echo_engine::{SettingsPatch, SettingsSnapshot, SpaceError, SpaceId, UiSettings};
 
 impl ClipboardStore {
+    pub(super) fn migrate_schema_v10(&mut self) -> Result<()> {
+        let tx = self
+            .connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        tx.execute_batch(include_str!("../migrations/v10.sql"))?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub(super) fn migrate_schema_v8(&mut self) -> Result<()> {
+        let tx = self
+            .connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        tx.execute_batch(include_str!("../migrations/v8.sql"))?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub(super) fn migrate_schema_v7(&mut self) -> Result<()> {
+        self.ensure_column("clipboard_settings", "theme", THEME_COLUMN_DEFINITION)?;
+        let tx = self
+            .connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        tx.execute_batch(include_str!("../migrations/v7.sql"))?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn settings_snapshot(&self) -> Result<SettingsSnapshot> {
         let (mut clipboard, theme, json, revision): (ClipboardSettings, String, String, i64) =
             self.connection.query_row(
-                "SELECT history_enabled,record_sensitive,store_window_titles,max_entries,
-             max_total_bytes,max_item_bytes,theme,ui_settings_json,settings_revision
+                "SELECT history_enabled,record_sensitive,theme,ui_settings_json,settings_revision
              FROM clipboard_settings WHERE id=1",
                 [],
                 |r| {
@@ -15,25 +42,12 @@ impl ClipboardStore {
                         ClipboardSettings {
                             history_enabled: r.get::<_, i64>(0)? != 0,
                             record_sensitive: r.get::<_, i64>(1)? != 0,
-                            store_window_titles: r.get::<_, i64>(2)? != 0,
-                            max_entries: r
-                                .get::<_, i64>(3)?
-                                .try_into()
-                                .unwrap_or(DEFAULT_MAX_ENTRIES)
-                                .min(DEFAULT_MAX_ENTRIES),
-                            max_total_bytes: r
-                                .get::<_, i64>(4)?
-                                .try_into()
-                                .unwrap_or(DEFAULT_MAX_TOTAL_BYTES),
-                            max_item_bytes: r
-                                .get::<_, i64>(5)?
-                                .try_into()
-                                .unwrap_or(DEFAULT_MAX_ITEM_BYTES),
-                            theme: ThemeMode::System,
+                            theme: ThemeMode::Light,
+                            ..ClipboardSettings::default()
                         },
-                        r.get(6)?,
-                        r.get(7)?,
-                        r.get(8)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
                     ))
                 },
             )?;
@@ -57,22 +71,11 @@ impl ClipboardStore {
         })
     }
     pub fn save_settings_patch(&mut self, mut patch: SettingsPatch) -> Result<SettingsSnapshot> {
+        // Limits are application constants, never writable settings.
+        patch.clipboard.max_entries = DEFAULT_MAX_ENTRIES;
+        patch.clipboard.max_total_bytes = DEFAULT_MAX_TOTAL_BYTES;
+        patch.clipboard.max_item_bytes = DEFAULT_MAX_ITEM_BYTES;
         let c = &patch.clipboard;
-        if c.max_entries > DEFAULT_MAX_ENTRIES {
-            return Err(StorageError::Invalid(
-                "Maximum history entries cannot exceed 2000".into(),
-            ));
-        }
-        if c.max_entries == 0
-            || c.max_total_bytes == 0
-            || c.max_item_bytes == 0
-            || c.max_item_bytes > c.max_total_bytes
-            || c.max_total_bytes > i64::MAX as u64
-        {
-            return Err(StorageError::Invalid(
-                "Storage limits must be positive; item limit cannot exceed total limit".into(),
-            ));
-        }
         let tx = self
             .connection
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -96,9 +99,9 @@ impl ClipboardStore {
         let next = revision
             .checked_add(1)
             .ok_or_else(|| StorageError::Invalid("Settings revision overflow".into()))?;
-        tx.execute("UPDATE clipboard_settings SET history_enabled=?,record_sensitive=?,store_window_titles=?,
+        tx.execute("UPDATE clipboard_settings SET history_enabled=?,record_sensitive=?,
             max_entries=?,max_total_bytes=?,max_item_bytes=?,theme=?,ui_settings_json=?,settings_revision=? WHERE id=1",
-            params![c.history_enabled as i64,c.record_sensitive as i64,c.store_window_titles as i64,
+            params![c.history_enabled as i64,c.record_sensitive as i64,
                 i64::from(c.max_entries),c.max_total_bytes as i64,c.max_item_bytes as i64,
                 c.theme.as_str(),json,next])?;
         tx.commit()?;

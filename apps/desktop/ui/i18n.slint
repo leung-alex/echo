@@ -1,0 +1,15 @@
+export global I18n {
+    in-out property <string> language: "zh-CN";
+    pure callback translate(string, string) -> string;
+    // Rust messages retain their source IDs so already-visible notices retranslate.
+    public pure function message(source: string) -> string {
+        return root.translate(root.language, source);
+    }
+    public pure function error(source: string) -> string {
+        let translated = root.message(source);
+        return root.language == "zh-CN" && source != "" && translated == source ? @tr("Operation failed") + ": " + source : translated;
+    }
+    public pure function space-title(title: string, system: bool) -> string {
+        return system ? root.message(title) : title;
+    }
+}

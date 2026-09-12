@@ -58,10 +58,10 @@ mod windows_impl {
     use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DestroyWindow, GetAncestor, GetClassNameW, GetForegroundWindow,
-        GetGUIThreadInfo, GetWindowLongW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
-        GetWindowThreadProcessId, IsWindow, PostMessageW, RegisterClassW, SetForegroundWindow,
-        CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, ES_PASSWORD, ES_READONLY, GA_ROOT, GWL_STYLE,
-        HWND_MESSAGE, WM_CLIPBOARDUPDATE, WM_CLOSE, WM_PASTE, WNDCLASSW, WS_OVERLAPPED,
+        GetGUIThreadInfo, GetWindowLongW, GetWindowRect, GetWindowThreadProcessId, IsWindow,
+        PostMessageW, RegisterClassW, SetForegroundWindow, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT,
+        ES_PASSWORD, ES_READONLY, GA_ROOT, GWL_STYLE, HWND_MESSAGE, WM_CLIPBOARDUPDATE, WM_CLOSE,
+        WM_PASTE, WNDCLASSW, WS_OVERLAPPED,
     };
 
     const OPEN_ATTEMPTS: usize = 5;
@@ -775,7 +775,6 @@ mod windows_impl {
                 (Some(path), app_name)
             })
             .unwrap_or((None, None));
-        let window_title = window_title(foreground);
         let thread_id = unsafe { GetWindowThreadProcessId(foreground, None) };
         let mut info = windows::Win32::UI::WindowsAndMessaging::GUITHREADINFO {
             cbSize: size_of::<windows::Win32::UI::WindowsAndMessaging::GUITHREADINFO>() as u32,
@@ -790,7 +789,6 @@ mod windows_impl {
         SourceContext {
             app_name,
             executable,
-            window_title,
             is_source_verified: true,
             is_sensitivity_verified: sensitivity_verified,
             is_password_input,
@@ -817,16 +815,6 @@ mod windows_impl {
             let _ = CloseHandle(process);
         }
         result
-    }
-
-    fn window_title(window: HWND) -> Option<String> {
-        let length = unsafe { GetWindowTextLengthW(window) };
-        if length <= 0 {
-            return None;
-        }
-        let mut buffer = vec![0_u16; length as usize + 1];
-        let copied = unsafe { GetWindowTextW(window, &mut buffer) };
-        (copied > 0).then(|| String::from_utf16_lossy(&buffer[..copied as usize]))
     }
 
     pub(crate) fn process_started_at(process_id: u32) -> Option<u64> {

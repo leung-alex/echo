@@ -11,9 +11,6 @@ pub(super) struct PreviewError {
 
 impl App {
     fn software_side_ids(&self) -> Vec<SpaceId> {
-        if self.ui.view_mode != SpaceViewMode::CoverFlow {
-            return Vec::new();
-        }
         let w = &self.window;
         let room = w.get_side_width() + 28.0;
         [

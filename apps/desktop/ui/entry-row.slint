@@ -3,8 +3,8 @@ import { DesignTokens as T } from "echo-tokens.slint";
 import { FavoriteIconImages } from "favorite-icon-images.slint";
 export struct EntryRow {
     key: string, title: string, body: string, kind: string,
-    title-rich: styled-text, body-rich: styled-text, tags-rich: styled-text, source-rich: styled-text, match-count: int,
-    source-label: string, time-label: string, section-label: string,
+    title-rich: styled-text, body-rich: styled-text, tags-rich: styled-text, match-count: int,
+    time-label: string, section-label: string,
     thumbnail: image, has-thumbnail: bool, pinned: bool,
     selected: bool, batch-selected: bool, icon-key: string, tags: string,
 }
@@ -12,7 +12,6 @@ struct RowAction { icon: image, label: string, command: string }
 export component EntryView inherits Rectangle {
     in property <EntryRow> entry;
     in property <bool> favorites;
-    in property <bool> compact;
     in property <bool> capture-only;
     in property <bool> thumbnail-active: true;
     in property <bool> batch;
@@ -47,16 +46,16 @@ export component EntryView inherits Rectangle {
     private property <length> action-right: favorites ? 12px : 36px;
     private property <length> content-width: max(0px,root.width - left-gutter - action-right - action-width - 8px);
     private property <[{icon: image, label: string, command: string}]> row-actions: favorites ? [
-        {icon:@image-url("icons/apps-sdk/Copy.svg"),label:"Copy item",command:"copy"},
-        {icon:@image-url("icons/apps-sdk/Pencil.svg"),label:"Edit saved content",command:"edit"},
-        {icon:@image-url("icons/apps-sdk/Trash.svg"),label:"Delete everywhere…",command:"delete"},
+        {icon:@image-url("icons/apps-sdk/Copy.svg"),label:@tr("Copy item"),command:"copy"},
+        {icon:@image-url("icons/apps-sdk/Pencil.svg"),label:@tr("Edit saved content"),command:"edit"},
+        {icon:@image-url("icons/apps-sdk/Trash.svg"),label:@tr("Delete content…"),command:"delete"},
     ] : [
-        {icon:@image-url("icons/apps-sdk/Copy.svg"),label:"Copy item",command:"copy"},
-        {icon:@image-url("icons/apps-sdk/Star.svg"),label:"Move to Favorites",command:"favorite"},
-        {icon:entry.pinned ? @image-url("icons/apps-sdk/PinFilled.svg") : @image-url("icons/apps-sdk/Pin.svg"),label:entry.pinned ? "Unpin item" : "Pin item",command:"pin"},
-        {icon:@image-url("icons/apps-sdk/Trash.svg"),label:"Delete this capture…",command:"delete"},
+        {icon:@image-url("icons/apps-sdk/Copy.svg"),label:@tr("Copy item"),command:"copy"},
+        {icon:@image-url("icons/apps-sdk/Star.svg"),label:@tr("Move to Favorites"),command:"favorite"},
+        {icon:entry.pinned ? @image-url("icons/apps-sdk/PinFilled.svg") : @image-url("icons/apps-sdk/Pin.svg"),label:entry.pinned ? @tr("Unpin item") : @tr("Pin item"),command:"pin"},
+        {icon:@image-url("icons/apps-sdk/Trash.svg"),label:@tr("Delete this capture…"),command:"delete"},
     ];
-    height: max(compact ? T.row-compact-height : favorites ? T.row-saved-min-height : T.row-history-min-height, body-layout.min-height + 32px);
+    height: max(favorites ? T.row-saved-min-height : T.row-history-min-height, body-layout.min-height + 32px);
     min-width: 0px;
     background: transparent;
     Rectangle {
@@ -144,7 +143,7 @@ export component EntryView inherits Rectangle {
             height: T.row-image-height;
             background: EchoTheme.elevated;
             Image { x: 0px; y: 0px; width: parent.width; height: parent.height; source: root.entry.thumbnail; image-fit: contain; }
-            if (root.entry.thumbnail.width == 0): Text { text: "Image"; color: EchoTheme.muted; horizontal-alignment: center; vertical-alignment: center; accessible-role: none; }
+            if (root.entry.thumbnail.width == 0): Text { text: @tr("Image"); color: EchoTheme.muted; horizontal-alignment: center; vertical-alignment: center; accessible-role: none; }
         }
         if (root.entry.body != "" && !root.entry.has-thumbnail && root.entry.match-count == 0): Text {
             text: root.entry.body; color: root.active ? EchoTheme.selected-text : EchoTheme.text;
@@ -155,7 +154,7 @@ export component EntryView inherits Rectangle {
             default-font-family: "Microsoft YaHei UI";
             text: root.entry.body-rich; default-color: root.active ? EchoTheme.selected-text : EchoTheme.text; default-font-size: T.font-body; max-height: T.row-max-text-height; min-width: 0px; accessible-role: none;
         }
-        if (root.entry.tags != "" && !root.compact): StyledText {
+        if (root.entry.tags != ""): StyledText {
             default-font-family: "Microsoft YaHei UI";
             text: root.entry.tags-rich; default-color: root.active ? EchoTheme.selected-text : EchoTheme.muted;
             default-font-size: T.font-caption; max-height: 24px; min-width: 0px; accessible-role: none;
@@ -170,8 +169,8 @@ export component EntryView inherits Rectangle {
         HorizontalLayout {
             spacing: T.row-action-gap; alignment: end;
             if (root.batch): EchoButton {
-                text: root.entry.batch-selected ? "✓ Selected" : "Select";
-                label: "Toggle selection"; checked: root.entry.batch-selected;
+                text: root.entry.batch-selected ? @tr("✓ Selected") : @tr("Select");
+                label: @tr("Toggle selection"); checked: root.entry.batch-selected;
                 height: T.row-action-size;
                 focus-changed(value) => {root.focused-actions = max(0,root.focused-actions + (value ? 1 : -1));}
                 take-focus-on-click: !root.inline-mode; execution-blocked: root.input-blocked; enabled: !root.busy;

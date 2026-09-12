@@ -1,6 +1,6 @@
 //! Ready-before-motion translation and a single latest pending destination.
 //! This owns no models, timers, renderer resources or native input state.
-use echo_engine::{MotionSpeed, SpaceId};
+use echo_engine::SpaceId;
 
 /// Map logical neighbors into the physical slot of an anchored popup.
 pub fn popup_neighbors<T>(
@@ -45,13 +45,8 @@ pub fn side_width(main_width: f32) -> f32 {
 pub const SIDE_GAP: f32 = 12.0;
 pub const SIDE_HEIGHT_INSET: f32 = 16.0;
 
-pub fn duration_ms(speed: MotionSpeed) -> u64 {
-    match speed {
-        MotionSpeed::Snappy => 140,
-        MotionSpeed::Standard => 180,
-        MotionSpeed::Relaxed => 220,
-    }
-}
+/// Snappy card transitions always complete in 140 ms.
+pub const DURATION_MS: u64 = 140;
 
 /// Cubic ease-out: monotonic, no spring or overshoot, exact finite end.
 pub fn progress(elapsed_ms: u64, duration_ms: u64) -> f32 {
@@ -126,7 +121,7 @@ impl Slide {
     }
     /// A stale completion cannot start a transition. The caller also checks its
     /// query ticket and data version before publishing the incoming model.
-    pub fn ready(&mut self, to: SpaceId, now_ms: u64, speed: MotionSpeed, motion: bool) -> bool {
+    pub fn ready(&mut self, to: SpaceId, now_ms: u64, motion: bool) -> bool {
         let Some(active) = &mut self.active else {
             return false;
         };
@@ -135,7 +130,7 @@ impl Slide {
         }
         active.started_ms = Some(now_ms);
         active.duration_ms = if motion && active.from != to {
-            duration_ms(speed)
+            DURATION_MS
         } else {
             0
         };
@@ -198,17 +193,17 @@ mod tests {
                 retain_outgoing: true
             }
         );
-        assert!(!slide.ready(SpaceId(2), 1000, MotionSpeed::Standard, true));
-        assert!(slide.ready(SpaceId(3), 1000, MotionSpeed::Standard, true));
+        assert!(!slide.ready(SpaceId(2), 1000, true));
+        assert!(slide.ready(SpaceId(3), 1000, true));
         assert_eq!(slide.offsets(1000, 520.0), Some([0.0, 520.0]));
-        assert!(!slide.finished(1179));
-        assert!(slide.finished(1180));
+        assert!(!slide.finished(1139));
+        assert!(slide.finished(1140));
     }
     #[test]
     fn active_motion_finishes_before_only_the_latest_pending_destination() {
         let mut slide = Slide::default();
         slide.request(SpaceId(1), SpaceId(2), 1.0);
-        slide.ready(SpaceId(2), 0, MotionSpeed::Standard, true);
+        slide.ready(SpaceId(2), 0, true);
         let before = slide.offsets(60, 520.0);
         for id in 3..=100 {
             assert_eq!(slide.request(SpaceId(2), SpaceId(id), 1.0), Request::Queued);
@@ -224,35 +219,29 @@ mod tests {
     fn repeated_active_target_cancels_pending_and_hide_cancels_everything() {
         let mut slide = Slide::default();
         slide.request(SpaceId(1), SpaceId(2), 1.0);
-        slide.ready(SpaceId(2), 0, MotionSpeed::Standard, true);
+        slide.ready(SpaceId(2), 0, true);
         slide.request(SpaceId(2), SpaceId(3), 1.0);
         slide.request(SpaceId(2), SpaceId(2), 1.0);
         assert_eq!(slide.finish(), None);
         slide.request(SpaceId(2), SpaceId(3), 1.0);
         slide.cancel();
-        assert!(!slide.ready(SpaceId(3), 100, MotionSpeed::Standard, true));
+        assert!(!slide.ready(SpaceId(3), 100, true));
         assert!(!slide.moving());
         assert!(!slide.loading());
     }
     #[test]
-    fn speed_reduced_motion_and_reverse_travel_are_finite() {
-        for (speed, duration) in [
-            (MotionSpeed::Snappy, 140),
-            (MotionSpeed::Standard, 180),
-            (MotionSpeed::Relaxed, 220),
-        ] {
-            assert_eq!(duration_ms(speed), duration);
-            let mut previous = 0.0;
-            for t in 0..=duration + 1 {
-                let p = progress(t, duration);
-                assert!((previous..=1.0).contains(&p));
-                previous = p;
-            }
-            let mut slide = Slide::default();
-            slide.request(SpaceId(2), SpaceId(1), -1.0);
-            slide.ready(SpaceId(1), 900, speed, false);
-            assert!(slide.finished(900));
-            assert_eq!(slide.offsets(900, 520.0), Some([520.0, 0.0]));
+    fn snappy_reverse_travel_finishes_in_140_ms() {
+        let mut slide = Slide::default();
+        slide.request(SpaceId(2), SpaceId(1), -1.0);
+        assert!(slide.ready(SpaceId(1), 900, true));
+        assert!(!slide.finished(1039));
+        assert!(slide.finished(1040));
+        assert_eq!(slide.offsets(1040, 520.0), Some([520.0, 0.0]));
+        let mut previous = 0.0;
+        for t in 0..=DURATION_MS + 1 {
+            let p = progress(t, DURATION_MS);
+            assert!((previous..=1.0).contains(&p));
+            previous = p;
         }
     }
 }

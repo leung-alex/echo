@@ -6,7 +6,7 @@ function Start-FocusAsync([string]$Operation,[string[]]$Arguments) {
 }
 function Save-Hotkey([string]$Chord) {
     Set-Value 'Global quick insert shortcut' $Chord
-    Click 'Save changes';Wait-Text "Active globally: $Chord"
+    Click 'Save changes';Assert-Binding $Chord $false
     Wait-Until {!(D dump).Contains('Unsaved changes')} 'settings commit'|Out-Null
 }
 function Choose-Synthetic {
@@ -22,7 +22,7 @@ function Expect-Quick([bool]$HasTarget) {
 Check 'default-global-binding-and-settings' {
     Open-KeyboardSettings;Assert-Binding 'Alt+V' $false
     if((D read $mainTitle @('Global quick insert shortcut')) -ne 'Alt+V'){throw 'Default is not Alt+V.'}
-    Wait-Text 'Active globally: Alt+V';if($NativeTest){Shot 'settings-global-shortcut'}
+    if($NativeTest){Shot 'settings-global-shortcut'}
     'Alt+V is registered and represented by editable Settings controls'
 }
 Check 'invalid-shortcut-does-not-change-live-binding' {
@@ -62,11 +62,11 @@ Check 'repeat-keydown-and-toggle-are-single-window' {
 }
 Check 'disabled-global-shortcut-does-not-activate' {
     Open-KeyboardSettings;D toggle $mainTitle @('Enable global quick insert shortcut','false')|Out-Null
-    Click 'Save changes';Wait-Text 'Global shortcut is off';Assert-Binding 'Ctrl+Alt+J' $true
+    Click 'Save changes';Assert-Binding 'Ctrl+Alt+J' $true
     D close|Out-Null;Wait-Hidden;Target-Command $target 'focus-primary'|Out-Null
     F 'hotkey' @([string]$targetProcess.Id,$target.title,'Ctrl+Alt+J')|Out-Null;Start-Sleep -Milliseconds 250
     if(D exists){throw 'Disabled shortcut still activates.'}
-    Open-KeyboardSettings;Click 'Reset to Alt+V';Click 'Save changes';Wait-Text 'Active globally: Alt+V'
+    Open-KeyboardSettings;Click 'Reset to Alt+V';Click 'Save changes';Assert-Binding 'Alt+V' $false
     'disable releases the binding; reset restores Alt+V on Save'
 }
 Check 'settings-persist-and-first-background-popup-is-anchored' {
@@ -93,7 +93,7 @@ Check 'startup-registration-conflict-survives-and-retries' {
     if((D read $mainTitle @('Global quick insert shortcut')) -ne 'Ctrl+Alt+J'){throw 'Startup conflict changed the saved preference.'}
     [IO.File]::WriteAllText((Join-Path $EvidenceRoot 'stop-blocker'),'release')
     if(!$blocker.WaitForExit(5000)){throw 'Startup conflict fixture did not stop.'}
-    Click 'Retry saved shortcut';Wait-Text 'Active globally: Ctrl+Alt+J';Assert-Binding 'Ctrl+Alt+J' $false
+    Click 'Retry saved shortcut';Assert-Binding 'Ctrl+Alt+J' $false
     Save-Hotkey 'Alt+V'
     'Startup survives a reserved hotkey and retries the saved preference without losing settings'
 }

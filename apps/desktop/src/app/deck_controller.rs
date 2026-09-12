@@ -80,7 +80,11 @@ impl App {
             .iter()
             .map(|s| crate::SpaceVm {
                 key: s.id.to_string().into(),
-                title: s.title.clone().into(),
+                title: if s.id.is_system() {
+                    crate::i18n::text(self.active_language.unwrap_or_default(), &s.title).into()
+                } else {
+                    s.title.clone().into()
+                },
                 icon_key: space_icon(s).into(),
                 accent: accent(if s.id.is_system() {
                     "default"
@@ -137,7 +141,12 @@ impl App {
         self.window
             .set_next_enabled(count > 1 && (self.ui.loop_spaces || index + 1 < count));
         if let Some(space) = self.spaces.iter().find(|s| s.id == selected) {
-            self.window.set_space_title(space.title.clone().into());
+            let title = if space.id.is_system() {
+                crate::i18n::text(self.active_language.unwrap_or_default(), &space.title)
+            } else {
+                space.title.clone()
+            };
+            self.window.set_space_title(title.clone().into());
             self.window.set_space_icon(space_icon(space).into());
             self.window
                 .set_space_accent(accent(if space.id.is_system() {
@@ -145,9 +154,8 @@ impl App {
                 } else {
                     &space.accent_key
                 }));
-            self.window.set_navigation_label(
-                format!("{}  ·  {} / {}", space.title, index + 1, count).into(),
-            );
+            self.window
+                .set_navigation_label(format!("{}  ·  {} / {}", title, index + 1, count).into());
             let subtitle = if self.surface.loading {
                 "Loading this space…".into()
             } else if self.surface.query.is_empty() {

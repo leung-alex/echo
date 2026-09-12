@@ -96,11 +96,16 @@ pub enum SpaceError {
     #[error("Invalid or reused operation identity")]
     InvalidRequest,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeleteSpaceContents {
+    MoveToFavorites,
+    Delete,
+}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SpaceAction {
     Create(SpaceDraft),
     Update(SpaceDraft),
-    Delete,
+    Delete(DeleteSpaceContents),
     MoveSpace(i32),
     AddItems(Vec<i64>),
     RemoveItem(i64),
@@ -218,7 +223,7 @@ mod tests {
             space_id: Some(SpaceId(3)),
             expected_revision: None,
             request_id: "test:1".into(),
-            action: SpaceAction::Delete,
+            action: SpaceAction::Delete(DeleteSpaceContents::MoveToFavorites),
         };
         assert!(cmd.validate().is_err());
         cmd.expected_revision = Some(1);

@@ -53,9 +53,6 @@ fn registry_number(name: &str) -> Option<u32> {
             .then_some(value)
     }
 }
-pub fn system_dark() -> bool {
-    registry_number("AppsUseLightTheme") == Some(0)
-}
 pub fn apply_theme(handle: isize, dark: bool, request_mica: bool) -> bool {
     let Ok(hwnd) = owned(handle) else {
         return false;
@@ -251,12 +248,18 @@ pub fn center_composition(handle: isize, favorite: isize) -> Result<(), String> 
     }
     Ok(())
 }
+fn caption_hit(bounds: Option<[i32; 4]>, point: [i32; 2]) -> bool {
+    bounds
+        .is_some_and(|[l, t, r, b]| point[0] >= l && point[0] < r && point[1] >= t && point[1] < b)
+}
+
 struct HookData {
     ime_mode: super::ime_mode::ImeMode,
     handler: EventHandler,
     main: bool,
     composing: Arc<AtomicBool>,
     resize_bounds: std::cell::Cell<Option<[i32; 4]>>,
+    caption_bounds: std::cell::Cell<Option<[i32; 4]>>,
     inline: std::cell::Cell<bool>,
     prior_popup_style: std::cell::Cell<Option<isize>>,
 }
@@ -330,6 +333,11 @@ impl WindowHook {
     pub fn set_resize_bounds(&self, bounds: Option<[i32; 4]>) {
         self.data.resize_bounds.set(bounds);
     }
+    /// Optional native title drag region in physical client coordinates.
+    /// Resize edges take precedence; `None` leaves every control as client input.
+    pub fn set_caption_bounds(&self, bounds: Option<[i32; 4]>) {
+        self.data.caption_bounds.set(bounds);
+    }
     /// Recheck at event delivery; ignore obsolete deactivation notifications.
     pub fn foreground_is_external(&self) -> bool {
         unsafe {
@@ -383,6 +391,7 @@ pub fn attach_window(
             main: is_main,
             composing: Arc::new(AtomicBool::new(false)),
             resize_bounds: std::cell::Cell::new(None),
+            caption_bounds: std::cell::Cell::new(None),
             inline: std::cell::Cell::new(false),
             prior_popup_style: std::cell::Cell::new(None),
             ime_mode: Default::default(),
@@ -477,6 +486,9 @@ unsafe extern "system" fn subclass(
             if code != 0 {
                 return code as LRESULT;
             }
+            if caption_hit(state.caption_bounds.get(), [x - r.left, y - r.top]) {
+                return HTCAPTION as LRESULT;
+            }
         }
         _ => {}
     }
@@ -485,6 +497,16 @@ unsafe extern "system" fn subclass(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn caption_region_excludes_controls_and_can_be_disabled_for_modals() {
+        let bounds = Some([280, 24, 1320, 82]);
+        assert!(caption_hit(bounds, [320, 56]));
+        assert!(caption_hit(bounds, [900, 58]));
+        assert!(!caption_hit(bounds, [400, 120]));
+        assert!(!caption_hit(bounds, [279, 56]));
+        assert!(!caption_hit(bounds, [1320, 56]));
+        assert!(!caption_hit(None, [320, 56]));
+    }
     #[test]
     fn geometry_handles_negative_monitor_coordinates() {
         let r = RECT {

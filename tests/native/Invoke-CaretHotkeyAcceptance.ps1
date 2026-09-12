@@ -156,7 +156,7 @@ function F([string]$Operation,[string[]]$Arguments=@()) {
 }
 function Open-KeyboardSettings {
     Start-ScopedProcess @('--settings');Wait-Text 'Settings'
-    if((D dump).Contains('ControlType.Button | Keyboard & insertion |')){Click 'Keyboard & insertion'}
+    if((D dump).Contains('ControlType.Button | Keyboard shortcuts |')){Click 'Keyboard shortcuts'}
     else{D combo $mainTitle @('Settings category','2')|Out-Null}
     Wait-Text 'Global quick insert shortcut'
 }

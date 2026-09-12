@@ -68,11 +68,7 @@ impl App {
                     scroll_y: w.get_scroll_y(),
                     query: w.get_query(),
                     navigation_label: w.get_navigation_label(),
-                    navigation_hint: if self.ui.switch_shortcut == SwitchShortcut::CtrlTab {
-                        "Ctrl+Tab / Ctrl+Shift+Tab".into()
-                    } else {
-                        "Tab / Shift+Tab".into()
-                    },
+                    navigation_hint: "Tab / Shift+Tab".into(),
                     previous_enabled: w.get_previous_enabled(),
                     next_enabled: w.get_next_enabled(),
                     has_more: w.get_has_more(),
@@ -265,10 +261,10 @@ impl App {
         {
             return;
         }
-        let motion = self.full_motion() && self.window.get_outgoing_present();
+        let motion = self.window.get_outgoing_present();
         self.software
             .slide
-            .ready(self.surface.space, self.now(), self.ui.motion_speed, motion);
+            .ready(self.surface.space, self.now(), motion);
         self.deck.phase = Phase::Animating;
         self.deck.interaction = None;
         self.window.set_slide_moving(motion);
@@ -293,7 +289,7 @@ impl App {
         }
         crate::memory_trace::record(
             "slide_started",
-            serde_json::json!({"space":self.surface.space.0,"revision":self.surface.revision,"query_epoch":stamp.query,"prepared_frame":true,"duration_ms":if motion {echo_presentation::slide::duration_ms(self.ui.motion_speed)} else {0}}),
+            serde_json::json!({"space":self.surface.space.0,"revision":self.surface.revision,"query_epoch":stamp.query,"prepared_frame":true,"duration_ms":if motion {echo_presentation::slide::DURATION_MS} else {0}}),
         );
         self.software_tick();
     }

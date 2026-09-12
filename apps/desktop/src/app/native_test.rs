@@ -360,7 +360,7 @@ fn execute(
                 "inline":{"active":a.inline_ui.ticket.is_some(),"popup":a.inline_active(),"unavailable":a.inline_ui.unavailable,"pending":a.inline_ui.pending,"composing":a.inline_ui.composing,"suspended":a.inline_ui.suspended,"provider":a.inline_ui.backend,"readiness":a.worker.inline.readiness(),"ticket":a.inline_ui.ticket.map(|t|[t.session,t.revision,t.input_serial]),"natural_height":a.window.get_inline_content_height(),"status":a.surface.status},
                 "quick_insert":{"active":a.session.context == Context::QuickInsert,"has_target":a.session.has_target,"capture_pending":a.capture_pending,"anchor_source":a.popup_anchor.map(|anchor|anchor.source.label()),"hotkey_status":a.window.get_hotkey_status().to_string()},
                 "settings":{"dirty":a.window.get_settings_dirty(),"valid":a.window.get_settings_valid(),"error":a.window.get_settings_error().to_string(),"ui":a.ui},
-                "flow_timer":false,"preview_timer":a.preview_timer.running(),
+                "flow_timer":false,"preview_timer":false,
                 "thumbnails_bytes":a.images.bytes+a.software.outgoing_image_bytes,"native_region":a.window_shapes.as_ref().is_some_and(|s|s.is_some()),
                 "panel":[a.window.get_panel_left(),a.window.get_panel_top(),a.window.get_panel_width(),a.window.get_panel_height()],
                 "stage":[a.window.get_stage_width(),a.window.get_stage_height()],"scale_factor":a.window.window().scale_factor()});

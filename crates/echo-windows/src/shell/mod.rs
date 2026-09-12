@@ -11,6 +11,7 @@ mod ime_mode;
 mod pipe;
 mod tray;
 pub use hotkey::{HotkeyController, HotkeyReservation};
+pub use tray::{TrayController, TrayLabels};
 mod window;
 pub use card_window::{
     apply_card_chrome, cloak_card_frame, expand_card_region, finish_card_frame, set_card_region,
@@ -21,7 +22,7 @@ use common::{wide, Handle, Security};
 pub use environment::{fit_window, ui_environment, UiEnvironment};
 pub use window::{
     apply_theme, attach_window, center_composition, focus_window, reposition_favorites, set_owner,
-    start_drag, system_dark, WindowHook,
+    start_drag, WindowHook,
 };
 
 #[derive(Debug, Clone)]
@@ -49,10 +50,14 @@ pub struct NativeShell {
     stop: Arc<Handle>,
     hwnd: isize,
     hotkeys: HotkeyController,
+    labels: TrayController,
     pipe: Option<JoinHandle<()>>,
     tray: Option<JoinHandle<()>>,
 }
 impl NativeShell {
+    pub fn tray(&self) -> TrayController {
+        self.labels.clone()
+    }
     pub fn hotkeys(&self) -> HotkeyController {
         self.hotkeys.clone()
     }
@@ -80,10 +85,12 @@ impl NativeShell {
         });
         let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
         let tray_callback = handler.clone();
+        let labels = Arc::new(std::sync::Mutex::new(TrayLabels::default()));
+        let tray_labels = labels.clone();
         let (hotkey_tx, hotkey_rx) = std::sync::mpsc::sync_channel(8);
         let tray = std::thread::Builder::new()
             .name("echo-native-tray".into())
-            .spawn(move || tray::run(tray_callback, ready_tx, hotkey_rx))
+            .spawn(move || tray::run(tray_callback, ready_tx, hotkey_rx, tray_labels))
             .map_err(|e| e.to_string())?;
         let hwnd = match ready_rx.recv_timeout(std::time::Duration::from_secs(5)) {
             Ok(Ok(hwnd)) => hwnd,
@@ -112,6 +119,7 @@ impl NativeShell {
             stop,
             hwnd,
             hotkeys: HotkeyController::new(hwnd, hotkey_tx),
+            labels: TrayController { hwnd, labels },
             pipe: Some(pipe),
             tray: Some(tray),
         }))

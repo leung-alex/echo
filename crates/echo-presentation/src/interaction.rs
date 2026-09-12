@@ -197,13 +197,7 @@ mod tests {
 }
 
 /// Native space keyboard policy. Editors, IME and actual controls own their keys.
-pub fn interpret_space(
-    key: Key<'_>,
-    shortcut: echo_engine::SwitchShortcut,
-    navigation: bool,
-    modal: bool,
-    settings: bool,
-) -> Intent {
+pub fn interpret_space(key: Key<'_>, navigation: bool, modal: bool, settings: bool) -> Intent {
     if key.composing {
         return Intent::None;
     }
@@ -234,11 +228,7 @@ pub fn interpret_space(
         };
     }
     if key.text == "Tab" && navigation {
-        let configured = match shortcut {
-            echo_engine::SwitchShortcut::Tab => !key.ctrl,
-            echo_engine::SwitchShortcut::CtrlTab => key.ctrl,
-        };
-        if configured {
+        if !key.ctrl {
             return Intent::SwitchSpace(if key.shift { -1 } else { 1 });
         }
         return Intent::None;
@@ -265,7 +255,6 @@ pub fn interpret_space(
 #[cfg(test)]
 mod space_tests {
     use super::*;
-    use echo_engine::SwitchShortcut;
     fn key(text: &str) -> Key<'_> {
         Key {
             text,
@@ -281,70 +270,53 @@ mod space_tests {
     fn tab_reverses_but_never_steals_control_focus() {
         let mut k = key("Tab");
         assert_eq!(
-            interpret_space(k, SwitchShortcut::Tab, true, false, false),
+            interpret_space(k, true, false, false),
             Intent::SwitchSpace(1)
         );
         k.shift = true;
         assert_eq!(
-            interpret_space(k, SwitchShortcut::Tab, true, false, false),
+            interpret_space(k, true, false, false),
             Intent::SwitchSpace(-1)
         );
         k.target = Target::Control;
-        assert_eq!(
-            interpret_space(k, SwitchShortcut::Tab, true, false, false),
-            Intent::None
-        );
+        assert_eq!(interpret_space(k, true, false, false), Intent::None);
     }
     #[test]
-    fn configured_shortcut_and_ime_are_respected() {
+    fn tab_is_fixed_and_ctrl_tab_and_ime_are_not_intercepted() {
         let mut k = key("Tab");
         assert_eq!(
-            interpret_space(k, SwitchShortcut::CtrlTab, true, false, false),
-            Intent::None
-        );
-        k.ctrl = true;
-        assert_eq!(
-            interpret_space(k, SwitchShortcut::CtrlTab, true, false, false),
+            interpret_space(k, true, false, false),
             Intent::SwitchSpace(1)
         );
+        k.ctrl = true;
+        for shift in [false, true] {
+            k.shift = shift;
+            assert_eq!(interpret_space(k, true, false, false), Intent::None);
+        }
+        k.ctrl = false;
         k.composing = true;
-        assert_eq!(
-            interpret_space(k, SwitchShortcut::CtrlTab, true, false, false),
-            Intent::None
-        );
+        assert_eq!(interpret_space(k, true, false, false), Intent::None);
     }
     #[test]
     fn control_f_leaves_buttons_and_editors_unchanged() {
         let mut k = key("f");
         k.ctrl = true;
         k.target = Target::Control;
-        assert_eq!(
-            interpret_space(k, SwitchShortcut::Tab, true, false, false),
-            Intent::None
-        );
-        assert_eq!(
-            interpret_space(k, SwitchShortcut::Tab, true, true, false),
-            Intent::None
-        );
-        assert_eq!(
-            interpret_space(k, SwitchShortcut::Tab, true, false, true),
-            Intent::None
-        );
+        assert_eq!(interpret_space(k, true, false, false), Intent::None);
+        assert_eq!(interpret_space(k, true, true, false), Intent::None);
+        assert_eq!(interpret_space(k, true, false, true), Intent::None);
     }
     #[test]
     fn search_caret_stays_native_and_dialogs_own_enter() {
         for text in ["Home", "End", "ArrowLeft", "ArrowRight"] {
-            assert_eq!(
-                interpret_space(key(text), SwitchShortcut::Tab, true, false, false),
-                Intent::None
-            );
+            assert_eq!(interpret_space(key(text), true, false, false), Intent::None);
         }
         assert_eq!(
-            interpret_space(key("Enter"), SwitchShortcut::Tab, true, true, false),
+            interpret_space(key("Enter"), true, true, false),
             Intent::None
         );
         assert_eq!(
-            interpret_space(key("Tab"), SwitchShortcut::Tab, false, false, false),
+            interpret_space(key("Tab"), false, false, false),
             Intent::None
         );
     }

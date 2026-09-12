@@ -1,3 +1,4 @@
+import { I18n } from "i18n.slint";
 import { ScrollView } from "std-widgets.slint";
 import { EchoTheme, EchoButton } from "theme.slint";
 import { DesignTokens as T } from "echo-tokens.slint";
@@ -19,7 +20,6 @@ export component SpacePanel inherits Rectangle {
     in property <bool> stale;
     in property <bool> error;
     in property <bool> busy;
-    in property <bool> compact;
     in property <bool> control-focus-mode;
     in property <bool> batch;
     in property <bool> modal;
@@ -89,7 +89,7 @@ export component SpacePanel inherits Rectangle {
     drop-shadow-offset-y: root.capture-only ? 0px : T.flow-shadow-offset-y;
     drop-shadow-color: #000000.with-alpha(T.flow-shadow-opacity * root.shadow-opacity);
     accessible-role: groupbox; accessible-enabled: !root.capture-only && !root.animating;
-    accessible-label: root.capture-only ? "" : root.title + " space";
+    accessible-label: root.capture-only ? "" : root.title + @tr(" space");
     TouchArea {height:58px;enabled:!root.inline-mode && !root.capture-only && !root.busy;
         pointer-event(event) => {if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {root.drag();}}
     }
@@ -106,15 +106,15 @@ export component SpacePanel inherits Rectangle {
     if (root.show-notice): Text {
         x:T.panel-padding;y:T.panel-header-height + 4px;
         width:parent.width - 2*T.panel-padding;height:56px;
-        text:root.status;wrap:word-wrap;overflow:elide;
+        text:root.status-error ? I18n.error(root.status) : I18n.message(root.status);wrap:word-wrap;overflow:elide;
         color:root.status-error ? EchoTheme.danger : EchoTheme.muted;font-size:12px;
     }
     if (root.batch): HorizontalLayout {
         x:T.panel-padding;y:root.header-height + 8px;width:parent.width - 2*T.panel-padding;height:36px;spacing:8px;alignment:start;
-        EchoButton {text:"All loaded";enabled:!root.busy;clicked => {root.batch-action("all");}}
-        EchoButton {text:"Move to Favorites";enabled:root.selected-count > 0 && !root.busy;clicked => {root.batch-action("favorite");}}
-        EchoButton {text:"Pin";enabled:root.selected-count > 0 && !root.busy;clicked => {root.batch-action("pin");}}
-        EchoButton {text:"Delete";danger:true;enabled:root.selected-count > 0 && !root.busy;clicked => {root.batch-action("delete");}}
+        EchoButton {text:@tr("All loaded");enabled:!root.busy;clicked => {root.batch-action("all");}}
+        EchoButton {text:@tr("Move to Favorites");enabled:root.selected-count > 0 && !root.busy;clicked => {root.batch-action("favorite");}}
+        EchoButton {text:@tr("Pin");enabled:root.selected-count > 0 && !root.busy;clicked => {root.batch-action("pin");}}
+        EchoButton {text:@tr("Delete");danger:true;enabled:root.selected-count > 0 && !root.busy;clicked => {root.batch-action("delete");}}
     }
     list := ScrollView {
         vertical-scrollbar-policy: always-off;
@@ -134,7 +134,7 @@ export component SpacePanel inherits Rectangle {
             thumbnail-active: !root.animating && self.y + self.height >= -root.scroll-y && self.y <= -root.scroll-y + list.visible-height;
             inline-mode: root.inline-mode;
             control-focus-mode:root.control-focus-mode;
-            entry:entry;favorites:root.favorites;compact:root.compact;capture-only:root.capture-only;batch:root.batch;
+            entry:entry;favorites:root.favorites;capture-only:root.capture-only;batch:root.batch;
             busy:root.busy;input-blocked:root.loading || root.stale || root.animating;quick-insert:root.quick-insert;copy-only:root.copy-only;reorder-enabled:root.query == "";
             selected-geometry(y,height) => {
                 if (!root.capture-only && !root.animating) {
@@ -159,15 +159,15 @@ export component SpacePanel inherits Rectangle {
             height:100px;
             Image {x:(parent.width - 104px)/2;width:104px;height:100px;source:@image-url("icons/favorites-empty.svg");}
         }
-        if (!root.favorites || root.titles-only || root.loading || root.error || root.stale || root.query != ""): Text {text:root.titles-only ? "Private space" : root.empty-state-text != "" ? root.empty-state-text : root.loading ? "Loading…" : root.error ? "Unable to load this space" : root.query != "" ? "No matches in this space" : root.favorites ? "" : "Your clipboard history appears here";
+        if (!root.favorites || root.titles-only || root.loading || root.error || root.stale || root.query != ""): Text {text:root.titles-only ? @tr("Private space") : root.empty-state-text != "" ? I18n.message(root.empty-state-text) : root.loading ? @tr("Loading…") : root.error ? @tr("Unable to load this space") : root.query != "" ? @tr("No matches in this space") : root.favorites ? "" : @tr("Your clipboard history appears here");
             color:EchoTheme.text;font-size:root.inline-mode ? 15px : 19px;horizontal-alignment:center;wrap:word-wrap;}
-        if (!root.capture-only && root.error): EchoButton {text:"Retry";clicked => {root.action("retry","");}}
+        if (!root.capture-only && root.error): EchoButton {text:@tr("Retry");clicked => {root.action("retry","");}}
     }
     // Paint header controls last so their hints stay above the scrolling rows.
     new-content := EchoButton {
         x: root.width - T.panel-padding - 72px; y: 18px;
         width: 32px; height: 32px; row-action: true;
-        icon: @image-url("favorite-icons/ComposeEditSquare.svg"); label: "New content";
+        icon: @image-url("favorite-icons/ComposeEditSquare.svg"); label: @tr("New content");
         visible: root.favorites && !root.capture-only && !root.titles-only;
         enabled: root.favorites && !root.capture-only && !root.titles-only && !root.busy && !root.loading && !root.stale && !root.error && !root.modal && !root.animating;
         take-focus-on-click: !root.inline-mode;
@@ -176,7 +176,7 @@ export component SpacePanel inherits Rectangle {
     settings-button := EchoButton {
         x: root.width - T.panel-padding - 32px; y: 18px;
         width: 32px; height: 32px; row-action: true;
-        icon: @image-url("favorite-icons/SettingsCog.svg"); label: "Settings";
+        icon: @image-url("favorite-icons/SettingsCog.svg"); label: @tr("Settings");
         visible: !root.capture-only && !root.titles-only;
         enabled: !root.capture-only && !root.titles-only && !root.busy && !root.modal && !root.animating;
         take-focus-on-click: !root.inline-mode;
@@ -186,7 +186,7 @@ export component SpacePanel inherits Rectangle {
         x: root.width - T.panel-padding - (root.favorites ? 112px : 72px); y: 18px;
         width: 32px; height: 32px; row-action: true; flat: true; danger: true;
         icon: @image-url("icons/apps-sdk/Trash.svg");
-        label: root.favorites ? "Clear Favorites" : "Clear unpinned history";
+        label: root.favorites ? @tr("Clear Favorites") : @tr("Clear unpinned history");
         enabled: !root.busy && !root.loading && !root.stale && !root.error && !root.modal && !root.animating;
         take-focus-on-click: !root.inline-mode;
         clicked => { if (!root.ime-composing()) {root.action("clear-all", "");} }
