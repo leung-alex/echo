@@ -50,6 +50,18 @@ windows = { version = "0.62.2", features = [
 [profile.dev.package."*"]
 opt-level = 3
 
+# Generated Slint bindings run on the UI thread; leaving them unoptimized
+# makes the standard echo dev build miss animation frames despite fast dependencies.
+[profile.dev.package.echo-desktop]
+opt-level = 1
+# Keep line tables and backtraces without costly generated-variable metadata.
+debug = 1
+
+# Tests exercise behavior and pixels; optimizing generated test bindings only
+# adds compile time. Runtime measurements use the separate perf profile.
+[profile.test.package.echo-desktop]
+opt-level = 0
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

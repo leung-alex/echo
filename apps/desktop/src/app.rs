@@ -956,6 +956,10 @@ impl App {
         }
     }
     fn render(&mut self) {
+        // The settled render publishes any changes received during the slide.
+        if self.software.slide.moving() {
+            return;
+        }
         let _timing = crate::popup_timing::span("main_model_update");
         if (self.surface.loading || self.surface.dirty)
             && (self.surface.presented_query.is_some() || self.model.row_count() > 0)
@@ -1139,6 +1143,11 @@ impl App {
             return;
         };
         self.images.remember_main(&hash);
+        // Frame readiness drained prior reads. Defer newly visible requests until
+        // the slide settles, so no cache eviction can mutate its row models.
+        if self.software.slide.moving() {
+            return;
+        }
         if self.images.cache.contains_key(&hash) || !self.images.pending.insert(hash.clone()) {
             return;
         }

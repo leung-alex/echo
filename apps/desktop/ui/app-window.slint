@@ -25,6 +25,8 @@ export component AppWindow inherits Window {
     in property <length> incoming-x;
     in property <length> outgoing-x;
     in property <float> carousel-progress: 1;
+    in property <float> incoming-content-opacity: 1;
+    in property <float> outgoing-content-opacity: 1;
     in property <float> carousel-direction: 1;
     in property <SpaceVm> incoming-space;
     in property <SpaceVm> outgoing-space;
@@ -260,8 +262,8 @@ export component AppWindow inherits Window {
                 y: root.panel-top + (root.slide-moving ? 16px * (1 - root.carousel-progress) : 0px);
                 width: root.slide-moving ? root.side-width + (root.panel-width - root.side-width) * root.carousel-progress : root.panel-width;
                 height: root.panel-height - (root.slide-moving ? 32px * (1 - root.carousel-progress) : 0px);
-                content-width: root.panel-width; content-height: root.panel-height;
-                content-opacity: root.slide-moving ? max(0,min(1,root.carousel-progress * 3 - 2)) : 1;
+                content-width: root.panel-width; content-height: root.panel-height; side-content-width: root.side-width;
+                content-opacity: root.slide-moving ? root.incoming-content-opacity : 1;
                 space: root.incoming-space; preview: root.incoming-preview; software: root.software-deck; visible: root.route == "history";
             live-panel := SpacePanel {
                 x: 0px; y: 0px; width: root.panel-width; height: root.panel-height;
@@ -310,8 +312,8 @@ export component AppWindow inherits Window {
                 y: root.panel-top + (root.slide-moving ? 16px * root.carousel-progress : 0px);
                 width: root.panel-width - (root.slide-moving ? (root.panel-width - root.side-width) * root.carousel-progress : 0px);
                 height: root.panel-height - (root.slide-moving ? 32px * root.carousel-progress : 0px);
-                content-width: root.panel-width; content-height: root.panel-height;
-                content-opacity: root.slide-moving ? max(0,1 - root.carousel-progress * 3) : 1;
+                content-width: root.panel-width; content-height: root.panel-height; side-content-width: root.side-width;
+                content-opacity: root.slide-moving ? root.outgoing-content-opacity : 1;
                 space: root.outgoing-space; preview: root.outgoing-preview;
             SpacePanel {
                 x: 0px; y: 0px; width: root.panel-width; height: root.panel-height;

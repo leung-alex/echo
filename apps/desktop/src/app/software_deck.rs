@@ -305,8 +305,10 @@ impl App {
         }
         let now = self.now();
         if let Some((p, direction)) = self.software.slide.motion(now) {
+            let update_started = Instant::now();
             let width = self.window.get_panel_width();
             let side = self.window.get_side_width();
+            let geometry_us = update_started.elapsed().as_micros();
             let outgoing = -direction
                 * if direction > 0.0 {
                     side + 12.0
@@ -321,10 +323,23 @@ impl App {
                     side + 12.0
                 }
                 * (1.0 - p);
+            // Publish the clamped values, rather than binding the entire row
+            // subtree to progress. Unchanged opacity must not dirty every row
+            // throughout the fully transparent part of the slide.
+            self.window
+                .set_incoming_content_opacity((p * 3.0 - 2.0).clamp(0.0, 1.0));
+            self.window
+                .set_outgoing_content_opacity((1.0 - p * 3.0).max(0.0));
+            let opacity_us = update_started.elapsed().as_micros() - geometry_us;
             self.window.set_carousel_progress(p);
+            let progress_us = update_started.elapsed().as_micros() - geometry_us - opacity_us;
             self.window.set_carousel_direction(direction);
             self.window.set_outgoing_x(outgoing);
             self.window.set_incoming_x(incoming);
+            crate::memory_trace::record(
+                "frame_update",
+                serde_json::json!({"geometry_us":geometry_us,"opacity_us":opacity_us,"progress_us":progress_us,"offsets_us":update_started.elapsed().as_micros()-geometry_us-opacity_us-progress_us}),
+            );
             if !self.software.slide.finished(now) {
                 return;
             }
@@ -340,6 +355,7 @@ impl App {
             if let Some(id) = pending.filter(|id| *id != self.surface.space) {
                 self.navigate_to(id);
             } else {
+                self.request_recent_thumbnails();
                 self.software_content_ready();
                 self.inline_results_ready();
             }

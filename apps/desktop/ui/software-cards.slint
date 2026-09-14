@@ -22,6 +22,8 @@ export component SpaceSideCard inherits Rectangle {
     in property <SpaceVm> space;
     in property <SidePreview> preview;
     in property <bool> enabled: true;
+    in property <length> layout-width: root.width;
+    in property <length> layout-height: root.height;
     callback chosen();
     width: 448px;
     background: area.has-hover && root.enabled ? EchoTheme.elevated : EchoTheme.surface;
@@ -30,6 +32,12 @@ export component SpaceSideCard inherits Rectangle {
     accessible-label: @tr("Switch to ") + root.space.title + " · " + root.space.count + @tr(" items");
     accessible-enabled: root.enabled;
     accessible-action-default => { if (root.enabled) { root.chosen(); } }
+    // The frame may resize, but side labels and previews keep their settled layout.
+    Rectangle {
+        width: root.width; height: root.height; clip: true;
+        Rectangle {
+            x: 0px; y: 0px;
+            width: root.layout-width; height: root.layout-height;
     Image {
         x: 20px; y: 22px;
         width: 24px; height: 24px;
@@ -72,6 +80,8 @@ export component SpaceSideCard inherits Rectangle {
             }
         }
     }
+        }
+    }
     area := TouchArea { enabled: root.enabled; clicked => { root.chosen(); } }
 }
 
@@ -80,6 +90,7 @@ export component SpaceSideCard inherits Rectangle {
 export component CarouselCard inherits Rectangle {
     in property <length> content-width;
     in property <length> content-height;
+    in property <length> side-content-width;
     in property <float> content-opacity: 1;
     in property <SpaceVm> space;
     in property <SidePreview> preview;
@@ -104,6 +115,7 @@ export component CarouselCard inherits Rectangle {
         }
         if (root.content-opacity < 1): SpaceSideCard {
             width: parent.width; height: parent.height; space: root.space;
+            layout-width: root.side-content-width; layout-height: root.content-height - 32px;
             preview: root.preview;
             opacity: 1 - root.content-opacity; enabled: false;
         }

@@ -61,7 +61,8 @@ pub fn record(state: &'static str, details: serde_json::Value) {
     });
     if let Some(file) = writer.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
         let _ = writeln!(file, "{event}");
-        if !matches!(state, "frame_redraw" | "frame_presented") || index % 64 == 0 {
+        if !matches!(state, "frame_redraw" | "frame_presented" | "frame_update") || index % 64 == 0
+        {
             let _ = file.flush();
         }
     }

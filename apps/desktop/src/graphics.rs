@@ -1,6 +1,7 @@
 //! Renderer selection happens once, after single-instance admission and settings bootstrap.
 use crate::events::Hub;
 use std::sync::Arc;
+thread_local! { static FRAME_BEGIN: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) }; }
 thread_local! { static SOFTWARE_FRAME: std::cell::RefCell<echo_windows::shell::SoftwareFrame> = Default::default(); }
 thread_local! { static EXPECTED_FRAME: std::cell::RefCell<Option<(echo_presentation::slide::ContentFrame, Arc<Hub>)>> = const { std::cell::RefCell::new(None) }; }
 thread_local! { static CARD_COMMITS: std::cell::RefCell<Option<(std::rc::Rc<std::cell::Cell<u64>>, Arc<Hub>)>> = const { std::cell::RefCell::new(None) }; }
@@ -33,21 +34,37 @@ pub struct GraphicsInfo {
 fn software(reason: Option<String>) -> Result<GraphicsInfo, String> {
     let renderer = "software";
     if renderer == "software" {
-        i_slint_backend_winit::echo_software::install_before_frame(std::rc::Rc::new(
-            crate::app::before_software_frame,
-        ));
+        i_slint_backend_winit::echo_software::install_before_frame(std::rc::Rc::new(|| {
+            FRAME_BEGIN.with(|start| start.set(Some(std::time::Instant::now())));
+            crate::app::before_software_frame();
+        }));
         i_slint_backend_winit::echo_software::install(std::rc::Rc::new(
             |hwnd, width, height, draw| {
                 let started = std::time::Instant::now();
+                let update_us = FRAME_BEGIN.with(|start| {
+                    start
+                        .get()
+                        .map(|start| start.elapsed().as_micros())
+                        .unwrap_or_default()
+                });
                 let commit = CARD_COMMITS.with(|commits| {
                     commits
                         .borrow()
                         .as_ref()
                         .map(|(generation, hub)| (generation.get(), hub.clone()))
                 });
-                let outcome = match SOFTWARE_FRAME
-                    .with(|frame| frame.borrow_mut().render(hwnd, width, height, draw))
-                {
+                let mut draw_us = 0;
+                let mut measured_draw = |pixels: &mut [u32], fresh: bool| {
+                    let start = std::time::Instant::now();
+                    let changed = draw(pixels, fresh);
+                    draw_us += start.elapsed().as_micros();
+                    changed
+                };
+                let outcome = match SOFTWARE_FRAME.with(|frame| {
+                    frame
+                        .borrow_mut()
+                        .render(hwnd, width, height, &mut measured_draw)
+                }) {
                     Ok(outcome) => outcome,
                     Err(error) => {
                         cancel_software_frame();
@@ -64,7 +81,7 @@ fn software(reason: Option<String>) -> Result<GraphicsInfo, String> {
                 {
                     crate::memory_trace::record(
                         "frame_presented",
-                        serde_json::json!({"render_present_us":started.elapsed().as_micros(),"width":width,"height":height}),
+                        serde_json::json!({"render_present_us":started.elapsed().as_micros(),"draw_us":draw_us,"update_us":update_us,"width":width,"height":height}),
                     );
                 }
                 if let Some((stamp, hub)) =

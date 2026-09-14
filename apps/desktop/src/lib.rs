@@ -154,3 +154,6 @@ fn restart_application() -> Result<(), String> {
 
 #[cfg(test)]
 mod row_click_tests;
+
+#[cfg(test)]
+mod side_layout_tests;
