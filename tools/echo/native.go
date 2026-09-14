@@ -22,7 +22,7 @@ func (a *app) runNativeGate(scope string) error {
 	if scope != "smoke" {
 		return fmt.Errorf("unsupported native scope %q", scope)
 	}
-	if err := a.build(true); err != nil {
+	if err := a.run("cargo", "build", "-p", "echo-desktop", "--profile", "perf", "--no-default-features", "--features", "native-test", "--locked"); err != nil {
 		return err
 	}
 	root := os.Getenv("ECHO_EVIDENCE_DIR")
@@ -42,7 +42,7 @@ func (a *app) runNativeGate(scope string) error {
 		overrides["ECHO_NATIVE_FIXTURE_EXE"] = filepath.Join(a.root, "target", "release", "examples", "native_fixture.exe")
 	}
 	return a.runWithEnv(overrides, "pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", filepath.Join(a.root, "tests", "native", "Invoke-NativeGate.ps1"),
-		"-Root", a.root, "-Executable", a.desktopExecutable(true), "-Scope", scope, "-EvidenceRoot", run)
+		"-Root", a.root, "-Executable", filepath.Join(a.root, "target", "perf", "echo-desktop.exe"), "-Scope", scope, "-EvidenceRoot", run)
 }
 
 func forbiddenBrowserPackage(name string) bool {

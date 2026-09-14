@@ -23,7 +23,7 @@ $fixtureSets = Join-Path $EvidenceRoot 'fixture-datasets'
 New-Item -ItemType Directory -Path $EvidenceRoot,$tools | Out-Null
 
 $oldEnvironment = @{}
-foreach ($name in @('ECHO_DATA_DIR','ECHO_ACCEPTANCE_RUN_ROOT','ECHO_ACCEPTANCE_PID','ECHO_RENDERER')) {
+foreach ($name in @('ECHO_DATA_DIR','ECHO_ACCEPTANCE_RUN_ROOT','ECHO_ACCEPTANCE_PID','ECHO_RENDERER','ECHO_NATIVE_TEST_ROOT','ECHO_WINDOWS_ACCEPTANCE')) {
     $oldEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
 }
 
@@ -82,6 +82,9 @@ try {
     [Environment]::SetEnvironmentVariable('ECHO_DATA_DIR', $data, 'Process')
     [Environment]::SetEnvironmentVariable('ECHO_ACCEPTANCE_RUN_ROOT', $EvidenceRoot, 'Process')
     [Environment]::SetEnvironmentVariable('ECHO_RENDERER', $Renderer, 'Process')
+    # Read-only smoke authorizes only this isolated synthetic native-test instance.
+    [Environment]::SetEnvironmentVariable('ECHO_NATIVE_TEST_ROOT', $EvidenceRoot, 'Process')
+    [Environment]::SetEnvironmentVariable('ECHO_WINDOWS_ACCEPTANCE', '1', 'Process')
 
     & (Join-Path $native 'Invoke-Smoke.ps1') -Root $Root -Executable $Executable -Driver $driver -Scope $Scope -EvidenceRoot $EvidenceRoot
     if ($LASTEXITCODE -ne 0) { throw "Native $Scope acceptance failed." }

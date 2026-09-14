@@ -81,11 +81,9 @@ pub fn optional(value: &str) -> Option<String> {
     let v = value.trim();
     (!v.is_empty()).then(|| v.to_owned())
 }
-pub fn settings(theme: &str, enabled: bool, sensitive: bool) -> Result<ClipboardSettings, String> {
+pub fn settings(theme: &str) -> Result<ClipboardSettings, String> {
     let theme = ThemeMode::parse(theme).ok_or("Unknown theme")?;
     Ok(ClipboardSettings {
-        history_enabled: enabled,
-        record_sensitive: sensitive,
         theme,
         ..ClipboardSettings::default()
     })
@@ -120,10 +118,10 @@ mod tests {
     }
     #[test]
     fn settings_preserve_all_fields() {
-        let s = settings("dark", false, true).unwrap();
+        let s = settings("dark").unwrap();
         assert_eq!(s.max_total_bytes, 512 * 1024 * 1024);
         assert_eq!(s.theme, ThemeMode::Dark);
-        assert!(!s.history_enabled);
+        assert!(s.history_enabled);
         assert!(s.record_sensitive);
     }
 }

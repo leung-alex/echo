@@ -19,6 +19,7 @@ use std::{
 mod capture_lane;
 #[cfg(feature = "native-test")]
 pub(crate) mod native_faults;
+pub(crate) mod native_isolation;
 mod settings_commit;
 
 pub enum Mutation {
@@ -69,6 +70,8 @@ fn advance_search_generation(epoch: &AtomicU64, work: &Work) -> u64 {
     }
 }
 pub struct Worker {
+    #[cfg(feature = "native-test")]
+    pub capture_disabled: bool,
     sender: SyncSender<(u64, Work)>,
     control: SyncSender<(u64, Work)>,
     search_epoch: Arc<AtomicU64>,
@@ -84,6 +87,7 @@ impl Worker {
         hub: Arc<Hub>,
         hotkeys: echo_windows::shell::HotkeyController,
     ) -> Result<Self, String> {
+        let _capture_disabled = native_isolation::validated_root(&path)?.is_some();
         let inline_hub = hub.clone();
         let inline = echo_windows::inline::InlineController::start(Arc::new(move |event| {
             inline_hub.post_inline(event)
@@ -125,6 +129,8 @@ impl Worker {
             }
         };
         Ok(Self {
+            #[cfg(feature = "native-test")]
+            capture_disabled: _capture_disabled,
             inline,
             bootstrap,
             sender,
@@ -194,10 +200,17 @@ impl Services {
         hotkeys: echo_windows::shell::HotkeyController,
         inline: echo_windows::inline::InlineController,
     ) -> Result<Self, String> {
+        let _capture_disabled = native_isolation::validated_root(path)?.is_some();
         let store = Arc::new(SharedClipboardStore::open(path).map_err(|e| e.to_string())?);
         let platform = Arc::new(echo_windows::WindowsPlatform::new());
         platform.set_inline_controller(inline);
         let sink: Arc<dyn ClipboardSink> = store.clone();
+        #[cfg(feature = "native-test")]
+        let sink: Arc<dyn ClipboardSink> = if _capture_disabled {
+            Arc::new(native_isolation::DisabledCaptureSink)
+        } else {
+            sink
+        };
         let clipboard = Arc::new(ClipboardService::new(platform.clone(), sink));
         let library = Library::new(store);
         let quick = QuickInsertService::new(library.clone(), clipboard.clone(), platform.clone());

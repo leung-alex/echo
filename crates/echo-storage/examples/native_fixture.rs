@@ -178,9 +178,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 None,
             )?;
         }
-        let mut settings = store.settings()?;
-        settings.history_enabled = false;
-        store.update_settings(&settings)?;
+        // Authorized native-test runtime disables capture before starting its listener.
         drop(store);
         let conn = rusqlite::Connection::open(dir.join("echo.sqlite3"))?;
         conn.execute("UPDATE clipboard_entries SET updated_at = 1788609600000 - ((? - id) / 5) * 3600000, created_at = 1788609600000 - ((? - id) / 5) * 3600000", [count as i64, count as i64])?;

@@ -49,7 +49,7 @@ impl Default for ClipboardSettings {
     fn default() -> Self {
         Self {
             history_enabled: true,
-            record_sensitive: false,
+            record_sensitive: true,
             max_entries: MAX_HISTORY_ENTRIES,
             max_total_bytes: MAX_STORAGE_BYTES,
             max_item_bytes: MAX_ITEM_BYTES,

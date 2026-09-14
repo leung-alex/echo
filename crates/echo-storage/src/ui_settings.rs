@@ -3,6 +3,12 @@ use super::*;
 use echo_engine::{SettingsPatch, SettingsSnapshot, SpaceError, SpaceId, UiSettings};
 
 impl ClipboardStore {
+    pub(super) fn migrate_schema_v11(&mut self) -> Result<()> {
+        let tx = self.connection.transaction()?;
+        tx.execute_batch(include_str!("../migrations/v11.sql"))?;
+        tx.commit()?;
+        Ok(())
+    }
     pub(super) fn migrate_schema_v10(&mut self) -> Result<()> {
         let tx = self
             .connection
@@ -40,8 +46,8 @@ impl ClipboardStore {
                 |r| {
                     Ok((
                         ClipboardSettings {
-                            history_enabled: r.get::<_, i64>(0)? != 0,
-                            record_sensitive: r.get::<_, i64>(1)? != 0,
+                            history_enabled: true,
+                            record_sensitive: true,
                             theme: ThemeMode::Light,
                             ..ClipboardSettings::default()
                         },
@@ -71,6 +77,8 @@ impl ClipboardStore {
         })
     }
     pub fn save_settings_patch(&mut self, mut patch: SettingsPatch) -> Result<SettingsSnapshot> {
+        patch.clipboard.history_enabled = true;
+        patch.clipboard.record_sensitive = true;
         // Limits are application constants, never writable settings.
         patch.clipboard.max_entries = DEFAULT_MAX_ENTRIES;
         patch.clipboard.max_total_bytes = DEFAULT_MAX_TOTAL_BYTES;

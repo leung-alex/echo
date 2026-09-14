@@ -32,3 +32,4 @@ slint-build = "=1.17.1"
 embed-resource = "3.0.11"
 [dev-dependencies]
 accesskit = "=0.24.1"
+tempfile = "3"

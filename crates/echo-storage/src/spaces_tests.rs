@@ -580,7 +580,7 @@ fn appearance_retirement_preserves_content_and_other_settings() {
     let snapshot = s.settings_snapshot().unwrap();
     assert_eq!(snapshot.clipboard.theme, ThemeMode::Light);
     assert_eq!(snapshot.ui.language, Language::Chinese);
-    assert!(!snapshot.clipboard.history_enabled);
+    assert!(snapshot.clipboard.history_enabled);
     assert!(!snapshot.ui.caret_anchor);
     assert_eq!(snapshot.ui.global_hotkey, "Ctrl+Alt+J");
     assert_eq!(s.list_spaces().unwrap(), before_spaces);
@@ -872,4 +872,120 @@ fn v9_splits_legacy_shared_content_preserving_metadata_payload_and_order() {
     assert_eq!(count(&s), 2);
     s.delete_favorite(copy.id).unwrap();
     assert!(s.saved_item(original.id).unwrap().is_some());
+}
+
+#[test]
+fn v11_enables_all_legacy_recording_combinations_without_changing_content() {
+    for history in [0, 1] {
+        for sensitive in [0, 1] {
+            let root = tempfile::tempdir().unwrap();
+            let mut s = ClipboardStore::open(root.path()).unwrap();
+            assert!(s.settings().unwrap().history_enabled);
+            assert!(s.settings().unwrap().record_sensitive);
+            let space = create(&mut s, "Work");
+            let saved = command(
+                &mut s,
+                space,
+                SpaceAction::CreateItem(content("Original content")),
+            )
+            .created_item
+            .unwrap();
+            let before_item = s.saved_item(saved).unwrap();
+            let before_payload = s.saved_item_payload(saved).unwrap();
+            let rep = ClipboardRepresentation {
+                format: "text".into(),
+                mime_type: "text/plain".into(),
+                bytes: b"history survives".to_vec(),
+            };
+            s.record_capture(NormalizedCapture {
+                sequence: 1,
+                source: SourceContext::default(),
+                content_type: ContentType::Text,
+                preview_text: Some("history survives".into()),
+                searchable_text: Some("history survives".into()),
+                sanitized_html: None,
+                fingerprint: fingerprint(std::slice::from_ref(&rep)),
+                representations: vec![rep],
+            })
+            .unwrap();
+            let before_spaces = s.list_spaces().unwrap();
+            let mut expected = s.settings_snapshot().unwrap();
+            expected.ui.language = Language::English;
+            expected.ui.global_hotkey = "Ctrl+Alt+J".into();
+            expected.clipboard.theme = ThemeMode::Dark;
+            expected = s
+                .save_settings_patch(SettingsPatch {
+                    expected_revision: expected.revision,
+                    clipboard: expected.clipboard,
+                    ui: expected.ui,
+                })
+                .unwrap();
+            s.connection
+                .execute(
+                    "UPDATE clipboard_settings SET history_enabled=?,record_sensitive=?",
+                    params![history, sensitive],
+                )
+                .unwrap();
+            s.connection
+                .execute_batch("PRAGMA user_version=10;")
+                .unwrap();
+            drop(s);
+            for _ in 0..2 {
+                let s = ClipboardStore::open(root.path()).unwrap();
+                assert_eq!(s.settings_snapshot().unwrap(), expected);
+                assert_eq!(s.list_spaces().unwrap(), before_spaces);
+                assert_eq!(s.saved_item(saved).unwrap(), before_item);
+                assert_eq!(s.saved_item_payload(saved).unwrap(), before_payload);
+                let flags: (i64, i64) = s
+                    .connection
+                    .query_row(
+                        "SELECT history_enabled,record_sensitive FROM clipboard_settings",
+                        [],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .unwrap();
+                assert_eq!(flags, (1, 1));
+                let text: String = s
+                    .connection
+                    .query_row("SELECT preview_text FROM clipboard_entries", [], |r| {
+                        r.get(0)
+                    })
+                    .unwrap();
+                assert_eq!(text, "history survives");
+            }
+        }
+    }
+}
+
+#[test]
+fn settings_read_and_write_paths_keep_production_recording_enabled() {
+    let root = tempfile::tempdir().unwrap();
+    let s = SharedClipboardStore::open(root.path()).unwrap();
+    for history in [false, true] {
+        for sensitive in [false, true] {
+            let mut snapshot = s.settings_snapshot().unwrap();
+            snapshot.clipboard.history_enabled = history;
+            snapshot.clipboard.record_sensitive = sensitive;
+            s.update_settings(&snapshot.clipboard).unwrap();
+            assert!(
+                s.settings().unwrap().history_enabled && s.settings().unwrap().record_sensitive
+            );
+            let saved = s
+                .save_settings_patch(SettingsPatch {
+                    expected_revision: s.settings_snapshot().unwrap().revision,
+                    clipboard: snapshot.clipboard,
+                    ui: snapshot.ui,
+                })
+                .unwrap();
+            assert!(saved.clipboard.history_enabled && saved.clipboard.record_sensitive);
+        }
+    }
+    drop(s);
+    let s = ClipboardStore::open(root.path()).unwrap();
+    s.connection
+        .execute_batch("UPDATE clipboard_settings SET history_enabled=0,record_sensitive=0;")
+        .unwrap();
+    assert!(s.settings().unwrap().history_enabled && s.settings().unwrap().record_sensitive);
+    let snapshot = s.settings_snapshot().unwrap();
+    assert!(snapshot.clipboard.history_enabled && snapshot.clipboard.record_sensitive);
 }

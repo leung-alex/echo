@@ -35,7 +35,7 @@ const DEFAULT_MAX_ENTRIES: u32 = echo_engine::MAX_HISTORY_ENTRIES;
 const DEFAULT_MAX_TOTAL_BYTES: u64 = echo_engine::MAX_STORAGE_BYTES;
 const DEFAULT_MAX_ITEM_BYTES: u64 = echo_engine::MAX_ITEM_BYTES;
 const SEARCH_FTS_SCHEMA_KEY: &str = "search_fts_schema";
-const CURRENT_SCHEMA_VERSION: i32 = 10;
+const CURRENT_SCHEMA_VERSION: i32 = 11;
 const THEME_COLUMN_DEFINITION: &str =
     "TEXT NOT NULL DEFAULT 'system' CHECK (theme IN ('system', 'light', 'dark'))";
 
@@ -222,6 +222,7 @@ impl ClipboardStore {
                 8 => self.migrate_schema_v8()?,
                 9 => self.migrate_schema_v9()?,
                 10 => self.migrate_schema_v10()?,
+                11 => self.migrate_schema_v11()?,
                 _ => unreachable!("schema version is bounded above"),
             }
             self.connection
@@ -840,10 +841,10 @@ impl ClipboardStore {
                 },
             )
             .map_err(StorageError::from)
-            .and_then(|(history_enabled, record_sensitive, theme)| {
+            .and_then(|(_history_enabled, _record_sensitive, theme)| {
                 Ok(ClipboardSettings {
-                    history_enabled,
-                    record_sensitive,
+                    history_enabled: true,
+                    record_sensitive: true,
                     theme: ThemeMode::parse(&theme)
                         .ok_or_else(|| StorageError::Invalid("Invalid theme setting".into()))?,
                     ..ClipboardSettings::default()
@@ -858,8 +859,8 @@ impl ClipboardStore {
              theme = ?, settings_revision = settings_revision + 1
              WHERE id = 1",
             params![
-                settings.history_enabled as i64,
-                settings.record_sensitive as i64,
+                1_i64,
+                1_i64,
                 i64::from(DEFAULT_MAX_ENTRIES),
                 DEFAULT_MAX_TOTAL_BYTES as i64,
                 DEFAULT_MAX_ITEM_BYTES as i64,

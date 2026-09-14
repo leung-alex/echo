@@ -54,7 +54,7 @@ impl Controller {
         .map_err(|e| e.to_string())?;
         if marker["synthetic"] != true
             || marker["capture_enabled"] != false
-            || app.borrow().settings.history_enabled
+            || !app.borrow().worker.capture_disabled
         {
             return Err(
                 "Native test bridge only accepts capture-disabled synthetic fixtures".into(),

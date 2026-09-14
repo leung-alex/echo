@@ -62,8 +62,6 @@ export component AppWindow inherits Window {
     in property <bool> inline-mode;
     in property <bool> paste-target-available;
     in-out property <bool> text-edit-mode;
-    in-out property <bool> history-enabled: true;
-    in-out property <bool> record-sensitive;
     in-out property <string> theme-mode: "light";
     in-out property <string> language: "zh-CN";
     in-out property <bool> editor-open;
@@ -72,6 +70,13 @@ export component AppWindow inherits Window {
     in-out property <string> draft-name;
     in-out property <string> draft-content;
     in property <int> editor-name-focus-request;
+    in property <int> editor-content-focus-request;
+    in property <bool> editor-name-invalid;
+    in property <bool> editor-content-invalid;
+    in property <string> editor-error;
+    callback editor-edited();
+    changed draft-name => { root.editor-edited(); }
+    changed draft-content => { root.editor-edited(); }
     in-out property <string> draft-icon;
     in property <[FavoriteIconChoice]> favorite-icon-choices;
     private property <bool> icon-picker-open;
@@ -346,8 +351,6 @@ export component AppWindow inherits Window {
                     root.settings-scroll-anchor-x = x;
                     root.settings-scroll-anchor-y = y;
                 }
-                history-enabled <=> root.history-enabled;
-                record-sensitive <=> root.record-sensitive;
                 theme-mode <=> root.theme-mode;
                 language <=> root.language;
                 global-hotkey-enabled <=> root.global-hotkey-enabled;
@@ -418,19 +421,48 @@ export component AppWindow inherits Window {
                 VerticalLayout {
                     padding: 20px; spacing: 10px;
                     Text { text: root.editor-new ? @tr("New content") : @tr("Edit content"); color: EchoTheme.text; font-size: 21px; font-weight: 650; }
-                    ScrollView {
+                    editor-scroll := ScrollView {
                         vertical-stretch: 1;
                         horizontal-scrollbar-policy: always-off;
                         VerticalLayout {
                             spacing: 10px;
-                    Text { text: @tr("Name (required)"); color: EchoTheme.muted; font-size: 12px; }
-                    name-edit := LineEdit {
-                        text <=> root.draft-name; accessible-label: @tr("Favorite name (required)"); enabled: !root.busy;
-                        private property <int> focus-request: root.editor-name-focus-request;
-                        changed focus-request => { self.focus(); }
+                    HorizontalLayout {
+                        alignment: start; spacing: 4px;
+                        Text { text: "*"; color: EchoTheme.danger; font-size: 12px; }
+                        Text { text: @tr("Name"); color: EchoTheme.muted; font-size: 12px; }
                     }
-                    Text { text: root.content-editable ? @tr("Content") : @tr("Original non-text content is preserved"); color: EchoTheme.muted; font-size: 12px; wrap: word-wrap; }
-                    content-edit := TextEdit { accessible-action-set-value(value) => { if (root.content-editable && !root.busy) { root.draft-content = value; } } text <=> root.draft-content; read-only: !root.content-editable; accessible-label: @tr("Favorite content"); enabled: !root.busy; min-height: 80px; }
+                    Rectangle {
+                        height: 36px;
+                        name-edit := LineEdit {
+                            width: parent.width; height: parent.height;
+                            text <=> root.draft-name; accessible-label: @tr("Favorite name (required)"); enabled: !root.busy;
+                            private property <int> focus-request: root.editor-name-focus-request;
+                            changed focus-request => { editor-scroll.viewport-y = 0px; self.focus(); }
+                        }
+                        Rectangle { width: parent.width; height: parent.height; background: transparent; border-radius: 4px; border-width: root.editor-name-invalid ? 1px : 0px; border-color: EchoTheme.danger; }
+                    }
+                    if (root.editor-name-invalid): Text { text: @tr("Enter a name."); color: EchoTheme.danger; wrap: word-wrap; font-size: 12px; min-width: 0px; }
+                    content-label := HorizontalLayout {
+                        alignment: start; spacing: 4px;
+                        if (root.content-editable): Text { text: "*"; color: EchoTheme.danger; font-size: 12px; }
+                        Text { text: root.content-editable ? @tr("Content") : @tr("Original non-text content is preserved"); color: EchoTheme.muted; font-size: 12px; wrap: word-wrap; }
+                    }
+                    Rectangle {
+                        min-height: 80px; vertical-stretch: 1;
+                        content-edit := TextEdit {
+                            width: parent.width; height: parent.height;
+                            accessible-action-set-value(value) => { if (root.content-editable && !root.busy) { root.draft-content = value; } }
+                            text <=> root.draft-content; read-only: !root.content-editable;
+                            accessible-label: root.content-editable ? @tr("Favorite content (required)") : @tr("Favorite content"); enabled: !root.busy;
+                            private property <int> focus-request: root.editor-content-focus-request;
+                            changed focus-request => {
+                                editor-scroll.viewport-y = -min(content-label.y, max(0px, editor-scroll.viewport-height - editor-scroll.visible-height));
+                                self.focus();
+                            }
+                        }
+                        Rectangle { width: parent.width; height: parent.height; background: transparent; border-radius: 4px; border-width: root.editor-content-invalid ? 1px : 0px; border-color: EchoTheme.danger; }
+                    }
+                    if (root.editor-content-invalid): Text { text: @tr("Enter content."); color: EchoTheme.danger; wrap: word-wrap; font-size: 12px; min-width: 0px; }
                     Text { text: @tr("Favorite icon"); color: EchoTheme.muted; font-size: 12px; }
                     HorizontalLayout {
                         spacing: 8px;
@@ -443,9 +475,9 @@ export component AppWindow inherits Window {
                             clicked => { root.picking-space-icon = false; root.filter-favorite-icons(""); root.icon-picker-open = true; }
                         }
                     }
-                    if (root.status-error): Text { text: I18n.error(root.status); color: EchoTheme.danger; wrap: word-wrap; font-size: 12px; min-width: 0px; }
                         }
                     }
+                    if (root.editor-error != ""): Text { text: I18n.error(root.editor-error); color: EchoTheme.danger; wrap: word-wrap; font-size: 12px; min-width: 0px; }
                     HorizontalLayout {
                         spacing: 10px; alignment: end;
                         cancel-button := EchoButton { text: @tr("Cancel"); enabled: !root.busy; clicked => { root.cancel-editor(); } }

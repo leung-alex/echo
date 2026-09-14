@@ -93,17 +93,15 @@ impl Default for CaptureSettings {
     fn default() -> Self {
         Self {
             history_enabled: true,
-            record_sensitive: false,
+            record_sensitive: true,
         }
     }
 }
 
 impl From<&ClipboardSettings> for CaptureSettings {
-    fn from(settings: &ClipboardSettings) -> Self {
-        Self {
-            history_enabled: settings.history_enabled,
-            record_sensitive: settings.record_sensitive,
-        }
+    fn from(_settings: &ClipboardSettings) -> Self {
+        // Production settings cannot disable recording; explicit test sinks may.
+        Self::default()
     }
 }
 
@@ -1598,7 +1596,7 @@ mod tests {
     }
 
     #[test]
-    fn history_switch_disables_capture() {
+    fn internal_sink_disables_capture_before_read_and_after_refresh() {
         let platform = Arc::new(TestPlatform::new(text_snapshot(1, "disabled")));
         let sink = Arc::new(MemorySink::default());
         sink.set_settings(CaptureSettings {
@@ -1608,6 +1606,11 @@ mod tests {
         let service = ClipboardService::new(platform.clone(), sink.clone());
         platform.set_snapshot(text_snapshot(2, "disabled"));
         assert_eq!(service.capture_now().unwrap(), CaptureOutcome::Disabled);
+        assert_eq!(platform.read_count(), 0);
+        service.refresh_configuration().unwrap();
+        platform.set_snapshot(text_snapshot(3, "still disabled"));
+        assert_eq!(service.capture_now().unwrap(), CaptureOutcome::Disabled);
+        assert_eq!(platform.read_count(), 0);
         assert!(sink.records().is_empty());
         service.shutdown();
     }
@@ -1666,15 +1669,37 @@ mod tests {
     }
 
     #[test]
-    fn sensitive_source_is_not_recorded_by_default() {
-        let mut snapshot = text_snapshot(1, "secret");
-        snapshot.source.is_password_input = true;
-        let platform = Arc::new(TestPlatform::new(snapshot));
-        let sink = Arc::new(MemorySink::default());
-        let service = ClipboardService::new(platform, sink.clone());
-        assert_eq!(service.capture_now().unwrap(), CaptureOutcome::Unsupported);
-        assert!(sink.records().is_empty());
-        service.shutdown();
+    fn ordinary_and_sensitive_sources_are_recorded_by_default() {
+        for (password, private) in [(false, false), (true, false), (false, true)] {
+            let mut snapshot = text_snapshot(1, "synthetic content");
+            snapshot.source.is_password_input = password;
+            snapshot.source.is_private_window = private;
+            let platform = Arc::new(TestPlatform::new(text_snapshot(0, "initial")));
+            let sink = Arc::new(MemorySink::default());
+            let service = ClipboardService::new(platform.clone(), sink.clone());
+            platform.set_snapshot(snapshot);
+            assert!(matches!(
+                service.capture_now().unwrap(),
+                CaptureOutcome::Recorded(_)
+            ));
+            assert_eq!(sink.records().len(), 1);
+            service.shutdown();
+        }
+    }
+
+    #[test]
+    fn retired_settings_cannot_disable_production_capture() {
+        for history in [false, true] {
+            for sensitive in [false, true] {
+                let settings = ClipboardSettings {
+                    history_enabled: history,
+                    record_sensitive: sensitive,
+                    ..ClipboardSettings::default()
+                };
+                let capture = CaptureSettings::from(&settings);
+                assert!(capture.history_enabled && capture.record_sensitive);
+            }
+        }
     }
 
     #[test]

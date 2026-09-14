@@ -59,6 +59,12 @@ pub(super) fn connect(app: &App) {
         }
     });
     callback!(on_stage_scrolled,delta=>Command::StageScroll(delta));
+    let weak = window.as_weak();
+    window.on_editor_edited(move || {
+        if let Some(window) = weak.upgrade() {
+            super::editor_validation::edited(&window);
+        }
+    });
     callback!(on_save_favorite,=>Command::SaveFavorite);
     callback!(on_cancel_editor,=>Command::CancelEditor);
     callback!(on_confirm_clear,=>Command::Clear);

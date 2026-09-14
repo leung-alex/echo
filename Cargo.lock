@@ -1247,6 +1247,7 @@ dependencies = [
  "sha2",
  "slint",
  "slint-build",
+ "tempfile",
 ]
 
 [[package]]

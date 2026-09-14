@@ -81,9 +81,6 @@ func TestNativeGateRoutesToCurrentRunners(t *testing.T) {
 				t.Fatalf("route failed: %v", err)
 			}
 			expected := "--features native-test"
-			if scope == "smoke" {
-				expected = "--release"
-			}
 			if !strings.Contains(command, expected) {
 				t.Fatalf("%s routed to %s", scope, command)
 			}

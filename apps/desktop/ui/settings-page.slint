@@ -5,9 +5,8 @@ import { DesignTokens as T } from "echo-tokens.slint";
 import { SpaceVm } from "space-models.slint";
 import { EnumChoice } from "enum-choice.slint";
 import { ShortcutRow } from "shortcut-row.slint";
+import { SpaceChoice } from "space-choice.slint";
 export component SettingsPage inherits Rectangle {
-    in-out property <bool> history-enabled;
-    in-out property <bool> record-sensitive;
     in-out property <string> theme-mode;
     in-out property <string> language;
     in-out property <bool> global-hotkey-enabled;
@@ -35,8 +34,6 @@ export component SettingsPage inherits Rectangle {
     in property <string> error;
     in property <string> notice;
     callback edited();
-    changed history-enabled => { root.edited(); }
-    changed record-sensitive => { root.edited(); }
     changed language => { root.edited(); }
     changed theme-mode => { root.edited(); }
     changed global-hotkey-enabled => { root.edited(); }
@@ -67,7 +64,7 @@ export component SettingsPage inherits Rectangle {
     private property <int> section;
     changed section => {settings-scroll.viewport-y=0px;}
     private property <bool> narrow: root.width < 850px;
-    private property <[string]> categories: [@tr("Appearance"), @tr("Spaces"), @tr("Keyboard shortcuts"), @tr("Recording")];
+    private property <[string]> categories: [@tr("Appearance"), @tr("Spaces"), @tr("Keyboard shortcuts")];
     background: transparent;
     Image { x: 28px; y: settings-title.y + (settings-title.height - self.height) / 2; width: 26px; height: 26px; source: @image-url("favorite-icons/SettingsCog.svg"); colorize: EchoTheme.text; image-fit: contain; }
     settings-title := Text { x: 64px; y: 15px; text: @tr("Settings"); color: EchoTheme.text; font-size: T.font-setting-title; font-weight: 600; }
@@ -79,13 +76,15 @@ export component SettingsPage inherits Rectangle {
         x: 20px; y: 75px; width: T.settings-nav-width; spacing: 8px; alignment: start;
         for label[index] in root.categories: EchoButton {
             text: label; checked: root.section == index; selection-indicator: true;
-            flat: true; width: parent.width; height: 42px;
+            flat: true; border-width: 0px; width: parent.width; height: 42px;
             clicked => { root.section = index; }
         }
         Rectangle { height: 20px; }
-        EchoButton { text: @tr("Quit"); flat: true; danger: true; clicked => { root.action("quit"); } }
+        EchoButton { text: @tr("Quit"); flat: true; border-width: 0px; danger: true; clicked => { root.action("quit"); } }
     }
     settings-scroll := ScrollView {
+        vertical-scrollbar-policy: always-off;
+        horizontal-scrollbar-policy: always-off;
         x: root.narrow ? 28px : T.settings-nav-width + 46px;
         y: root.narrow ? 113px : 73px;
         width: min(T.settings-max-form-width,parent.width - self.x - 28px);
@@ -122,14 +121,15 @@ export component SettingsPage inherits Rectangle {
                 EchoButton { text: @tr("New space"); icon: @image-url("icons/plus.svg"); enabled: !root.busy; clicked => { root.space-action("new",""); } }
                 CheckBox { enabled: !root.busy; text: @tr("Cycle from the last space back to the first"); checked <=> root.loop-spaces; }
                 CheckBox { enabled: !root.busy; text: @tr("Remember selection and scroll position in this session"); checked <=> root.remember-position; }
-                Text { text: @tr("Open Echo in"); color: EchoTheme.text; }
-                EnumChoice {
+                Text { text: @tr("Home screen"); color: EchoTheme.text; }
+                SpaceChoice {
                     enabled: !root.busy; model: root.startup-space-names;
+                    spaces: root.spaces;
                     selected-index: root.startup-space-index;
-                    selected(value) => {
-                        root.startup-space = self.current-index == root.spaces.length ? "last" : root.spaces[self.current-index].key;
+                    selected(index) => {
+                        root.startup-space = index == root.spaces.length ? "last" : root.spaces[index].key;
                     }
-                    accessible-label: @tr("Startup space");
+                    accessible-label: @tr("Home screen");
                 }
             }
             if (root.section == 2): VerticalLayout {
@@ -159,14 +159,6 @@ export component SettingsPage inherits Rectangle {
                     ShortcutRow { title: @tr("New space"); keys: ["Ctrl", "Shift", "N"]; key-label: "Ctrl+Shift+N"; }
                     ShortcutRow { title: @tr("Go back or hide Echo"); keys: ["Esc"]; key-label: "Esc"; }
                 }
-                Text { text: @tr("While browsing content. Text fields and dialogs keep their usual shortcuts."); color: EchoTheme.muted; font-size: 12px; wrap: word-wrap; min-width: 0px; }
-            }
-            if (root.section == 3): VerticalLayout {
-                spacing: 18px; alignment: start;
-                CheckBox { enabled: !root.busy; text: @tr("Record clipboard history"); checked <=> root.history-enabled; }
-                Text { text: @tr("Pausing capture does not remove existing History."); color: EchoTheme.muted; wrap: word-wrap; min-width: 0px; }
-                CheckBox { enabled: !root.busy; text: @tr("Allow sensitive clipboard content"); checked <=> root.record-sensitive; }
-                Text { text: @tr("This may retain private content. Leave it disabled unless needed."); color: EchoTheme.danger; wrap: word-wrap; min-width: 0px; }
             }
             if (root.notice != ""): Text { text: I18n.message(root.notice); color: EchoTheme.muted; wrap: word-wrap; min-width: 0px; }
             if (root.error != ""): Text { text: I18n.error(root.error); color: EchoTheme.danger; wrap: word-wrap; min-width: 0px; }

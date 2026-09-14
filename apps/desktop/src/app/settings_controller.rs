@@ -61,11 +61,7 @@ impl App {
     }
     fn read_settings_patch(&self) -> Result<SettingsPatch, String> {
         let w = &self.window;
-        let clipboard = formatting::settings(
-            w.get_theme_mode().as_str(),
-            w.get_history_enabled(),
-            w.get_record_sensitive(),
-        )?;
+        let clipboard = formatting::settings(w.get_theme_mode().as_str())?;
         Ok(SettingsPatch {
             expected_revision: self.settings_revision,
             clipboard,
@@ -77,8 +73,6 @@ impl App {
         let w = &self.window;
         let c = &self.settings;
         let u = &self.ui;
-        w.set_history_enabled(c.history_enabled);
-        w.set_record_sensitive(c.record_sensitive);
         w.set_theme_mode(c.theme.as_str().into());
         w.set_language(u.language.as_str().into());
         w.set_global_hotkey_enabled(u.global_hotkey_enabled);

@@ -27,6 +27,7 @@ mod bindings;
 mod card_window;
 mod deck_controller;
 mod dialogs;
+mod editor_validation;
 mod inline_completion;
 #[cfg(feature = "native-test")]
 pub(crate) mod native_test;
@@ -1566,10 +1567,15 @@ impl App {
         let serial = self.serial;
         self.mutation = Some(serial);
         self.set_busy();
-        self.report("Saving…", false);
-        if !self.send(Work::Mutate(serial, mutation)) {
+        if !self.window.get_editor_open() {
+            self.report("Saving…", false);
+        }
+        if let Err(error) = self.worker.send(Work::Mutate(serial, mutation)) {
             self.mutation = None;
             self.set_busy();
+            if !editor_validation::report_save_error(&self.window, &error) {
+                self.report(error, true);
+            }
         }
     }
     fn mutated(&mut self, serial: u64, result: Result<crate::events::MutationResult, String>) {
@@ -1599,9 +1605,7 @@ impl App {
                     self.apply_theme();
                 }
                 if result.editor_saved {
-                    self.window.set_editor_open(false);
-                    self.editor_key = None;
-                    self.editor_original = None;
+                    self.close_editor();
                 }
                 self.window.set_clear_confirm_open(false);
                 self.window.set_space_dialog_open(false);
@@ -1661,7 +1665,9 @@ impl App {
             }
             Err(error) => {
                 self.edit_created_copy = false;
-                self.report(error.clone(), true);
+                if !editor_validation::report_save_error(&self.window, &error) {
+                    self.report(error.clone(), true);
+                }
                 if self.window.get_route().as_str() == "settings" {
                     self.window.set_settings_error(error.into());
                 }

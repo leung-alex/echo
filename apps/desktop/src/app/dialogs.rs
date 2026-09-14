@@ -270,7 +270,10 @@ impl App {
     }
     pub(super) fn space_mutation(&mut self, id: SpaceId, action: SpaceAction) {
         let Some(space) = self.spaces.iter().find(|s| s.id == id) else {
-            self.report("Space no longer exists", true);
+            if !super::editor_validation::report_save_error(&self.window, "Space no longer exists")
+            {
+                self.report("Space no longer exists", true);
+            }
             return;
         };
         self.space_mutation_at(id, space.revision, action);
@@ -807,7 +810,7 @@ impl App {
         self.window
             .set_content_editable(item.as_ref().is_none_or(|i| i.editable_text.is_some()));
         self.editor_original = Some(self.editor_values());
-        self.report("", false);
+        super::editor_validation::reset(&self.window);
         self.window.set_editor_open(true);
     }
     fn editor_values(&self) -> (String, String, String) {
@@ -824,7 +827,8 @@ impl App {
                 .as_ref()
                 .is_some_and(|original| original != &self.editor_values())
     }
-    fn close_editor(&mut self) {
+    pub(super) fn close_editor(&mut self) {
+        super::editor_validation::reset(&self.window);
         self.window.set_editor_open(false);
         self.editor_key = None;
         self.editor_original = None;
@@ -857,16 +861,10 @@ impl App {
             return;
         }
         let (name, content, icon) = self.editor_values();
-        let name = match echo_engine::normalize_name(&name) {
-            Ok(name) => Some(name),
-            Err(_) => {
-                self.report("Name is required. Enter a name before saving.", true);
-                self.window.set_editor_name_focus_request(
-                    self.window.get_editor_name_focus_request().wrapping_add(1),
-                );
-                return;
-            }
-        };
+        if !super::editor_validation::validate(&self.window) {
+            return;
+        }
+        let name = Some(echo_engine::normalize_name(&name).expect("validated editor name"));
         let tags = self.editor_tags.clone();
         let icon_key = formatting::optional(&icon);
         if let Some(key) = self.editor_key {
