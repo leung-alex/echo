@@ -27,7 +27,10 @@ impl FuzzyMatcher {
         Self {
             pattern: Pattern::new(
                 &query,
-                CaseMatching::Smart,
+                // Ordinary clipboard searches never opt into case sensitivity
+                // just because the query contains an uppercase letter. Admission,
+                // ranking and highlight ranges share this same pattern.
+                CaseMatching::Ignore,
                 Normalization::Smart,
                 AtomKind::Fuzzy,
             ),
@@ -445,10 +448,29 @@ mod tests {
         assert!(m.score("work item").unwrap() > m.score("w___o___r___k item").unwrap());
     }
     #[test]
-    fn smart_case_respects_explicit_uppercase_query() {
-        assert!(FuzzyMatcher::new("work").score("WORK item").is_some());
-        assert!(FuzzyMatcher::new("WORK").score("WORK item").is_some());
-        assert!(FuzzyMatcher::new("WORK").score("work item").is_none());
+    fn query_case_does_not_change_matches_scores_or_highlights() {
+        for (text, queries) in [
+            ("最高睿频 ≥5.4GHz", ["hz", "HZ", "Hz", "hZ"]),
+            ("work item", ["work", "WORK", "Work", "wOrK"]),
+            ("WORK item", ["work", "WORK", "Work", "wOrK"]),
+            ("中文 CPU 5.4GHz", ["cpu hz", "CPU HZ", "Cpu Hz", "cPu hZ"]),
+        ] {
+            let mut baseline = FuzzyMatcher::new(queries[0]);
+            let score = baseline.score(text);
+            let ranges = baseline.highlights(text);
+            assert!(score.is_some());
+            assert!(!ranges.is_empty());
+            for query in queries {
+                let mut matcher = FuzzyMatcher::new(query);
+                assert_eq!(matcher.score(text), score, "query={query}, text={text}");
+                assert_eq!(
+                    matcher.highlights(text),
+                    ranges,
+                    "query={query}, text={text}"
+                );
+                assert!(matcher.score("unrelated").is_none());
+            }
+        }
     }
     #[test]
     fn family_emoji_highlights_preserve_the_whole_grapheme() {

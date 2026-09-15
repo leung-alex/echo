@@ -36,30 +36,48 @@ fn markup(text: &str, ranges: &[Range<usize>], color: &str) -> String {
         if color.is_empty() {
             result.push_str(&format!("**{matched}**"));
         } else {
-            result.push_str(&format!("<font color='{color}'>**{matched}**</font>"));
+            result.push_str(&format!("<font color='{color}'>{matched}</font>"));
         }
         end = range.end;
     }
     result.push_str(&escape(&text[end..]));
     result
 }
-fn styled(text: &str, matcher: &mut FuzzyMatcher, color: &str) -> (StyledText, i32) {
+fn styled(text: &str, matcher: &mut FuzzyMatcher, color: &str) -> (StyledText, Vec<Range<usize>>) {
     let ranges = matcher.highlights(text);
     if ranges.is_empty() {
-        return (StyledText::from_plain_text(text), 0);
+        return (StyledText::from_plain_text(text), ranges);
     }
     let value = StyledText::from_markdown(&markup(text, &ranges, color))
         .unwrap_or_else(|_| StyledText::from_plain_text(text));
-    (value, ranges.len() as i32)
+    (value, ranges)
 }
 pub fn apply(row: &mut crate::EntryRow, matcher: &mut FuzzyMatcher, color: &str) {
     let (title, a) = styled(row.title.as_str(), matcher, color);
     let (body, b) = styled(row.body.as_str(), matcher, color);
     let (tags, c) = styled(row.tags.as_str(), matcher, color);
+    row.match_count = (a.len() + b.len() + c.len()) as i32;
+    fn ranges(matches: Vec<Range<usize>>) -> slint::ModelRc<crate::MatchRange> {
+        if matches.is_empty() {
+            return Default::default();
+        }
+        std::rc::Rc::new(slint::VecModel::from(
+            matches
+                .into_iter()
+                .map(|r| crate::MatchRange {
+                    start: r.start as i32,
+                    end: r.end as i32,
+                })
+                .collect::<Vec<_>>(),
+        ))
+        .into()
+    }
+    row.title_matches = ranges(a);
+    row.body_matches = ranges(b);
+    row.tags_matches = ranges(c);
     row.title_rich = title;
     row.body_rich = body;
     row.tags_rich = tags;
-    row.match_count = a + b + c;
 }
 #[cfg(test)]
 mod tests {
@@ -84,12 +102,12 @@ mod tests {
         assert!(StyledText::from_markdown(&marked).is_ok());
     }
     #[test]
-    fn fuzzy_matches_are_bold_and_colored_without_styling_whole_row() {
+    fn fuzzy_matches_are_colored_without_changing_font_weight() {
         let text = "Worktrees/echo/ui";
         let ranges = FuzzyMatcher::new("wrk ui").highlights(text);
         let value = markup(text, &ranges, "#855400");
         assert!(value.contains("<font"));
-        assert!(value.contains("**W**"));
+        assert!(value.contains(">W</font>"));
         assert!(StyledText::from_markdown(&value).is_ok());
     }
     #[test]
@@ -97,9 +115,9 @@ mod tests {
         let text = "中文 👨‍👩‍👧‍👦 Cafe\u{301} <script> ** [x](url) & \\";
         let ranges = FuzzyMatcher::new("👨‍👩‍👧‍👦 cafe 中文").highlights(text);
         let value = markup(text, &ranges, "#855400");
-        assert!(value.contains("**👨‍👩‍👧‍👦**"));
-        assert!(value.contains("**Cafe\u{301}**"));
-        assert!(value.contains("**中文**"));
+        assert!(value.contains(">👨‍👩‍👧‍👦</font>"));
+        assert!(value.contains(">Cafe\u{301}</font>"));
+        assert!(value.contains(">中文</font>"));
         assert!(!value.contains("<script>"));
         assert!(value.contains("\\<script\\>"));
         assert!(StyledText::from_markdown(&value).is_ok());

@@ -570,7 +570,7 @@ fn appearance_retirement_preserves_content_and_other_settings() {
         ALTER TABLE clipboard_settings ADD COLUMN theme TEXT NOT NULL DEFAULT 'system';
         ALTER TABLE clipboard_settings DROP COLUMN current_theme;
         UPDATE clipboard_settings SET history_enabled=0,
-            ui_settings_json='{"version":1,"view_mode":"flat","motion":"off","motion_speed":"relaxed","density":"compact","global_hotkey":"Ctrl+Alt+J","caret_anchor":false}';
+            ui_settings_json='{"version":1,"view_mode":"flat","motion":"off","motion_speed":"relaxed","density":"compact","global_hotkey":"Ctrl+Alt+J","remember_position":false}';
         ALTER TABLE clipboard_settings ADD COLUMN store_window_titles INTEGER NOT NULL DEFAULT 0;
         ALTER TABLE clipboard_entries ADD COLUMN source_window_title TEXT;
         ALTER TABLE saved_items ADD COLUMN source_window_title TEXT;
@@ -581,7 +581,7 @@ fn appearance_retirement_preserves_content_and_other_settings() {
     assert_eq!(snapshot.clipboard.theme, ThemeMode::Light);
     assert_eq!(snapshot.ui.language, Language::Chinese);
     assert!(snapshot.clipboard.history_enabled);
-    assert!(!snapshot.ui.caret_anchor);
+    assert!(!snapshot.ui.remember_position);
     assert_eq!(snapshot.ui.global_hotkey, "Ctrl+Alt+J");
     assert_eq!(s.list_spaces().unwrap(), before_spaces);
     assert!(s.list_spaces().unwrap().iter().any(|s| s.id == space));
@@ -608,7 +608,7 @@ fn fixed_tab_migration_preserves_settings_content_and_reopens() {
         let mut expected = snapshot.clone();
         expected.ui.language = Language::English;
         expected.ui.global_hotkey = "Ctrl+Alt+J".into();
-        expected.ui.caret_anchor = false;
+        expected.ui.remember_position = false;
         expected.clipboard.theme = ThemeMode::Dark;
         expected = s
             .save_settings_patch(SettingsPatch {

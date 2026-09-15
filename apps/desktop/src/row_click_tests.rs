@@ -19,7 +19,7 @@ slint::slint! {
         pure callback drag-data() -> data-transfer;
         EntryView {
             width: 500px; height: 180px;
-            entry: { key: "opaque-row", body: "Synthetic content" };
+            entry: { key: "opaque-row", body: "Synthetic content", match-count: 1, body-matches: [{start:0,end:9}] };
             favorites: root.saved; reorder-enabled: true; quick-insert: true;
             input-blocked: root.blocked; copy-only: root.copy-only;
             action(command, key) => { root.action(command); }

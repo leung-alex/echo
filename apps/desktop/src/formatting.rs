@@ -75,6 +75,9 @@ pub fn row_content(item: &QuickInsertItem, section_label: &str) -> EntryRow {
         title_rich: slint::StyledText::from_plain_text(item.name.as_deref().unwrap_or("")),
         tags_rich: slint::StyledText::from_plain_text(&item.tags.join(" · ")),
         match_count: 0,
+        title_matches: Default::default(),
+        body_matches: Default::default(),
+        tags_matches: Default::default(),
     }
 }
 pub fn optional(value: &str) -> Option<String> {

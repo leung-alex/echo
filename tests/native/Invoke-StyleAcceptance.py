@@ -107,7 +107,7 @@ def main():
                         ('font.weight-normal', 500, 'weight', 500),
                         ('space.1', 7, 'spacing', 7),
                         ('row.radius', 16, 'radius', 16),
-                        ('color.accent-text', '#c03652', 'accent', [192, 54, 82, 255])]
+                        ('color.search-text', '#c03652', 'search_text', [192, 54, 82, 255])]
             for token, value, field, expected in variants:
                 doc['tokens'][token]['value'] = value
                 begin = time.monotonic()

@@ -49,6 +49,11 @@ impl App {
         }
     }
     pub(super) fn update_card_region(&mut self) {
+        let scale = self.window.window().scale_factor();
+        let theme = self.window.global::<crate::EchoTheme>();
+        if theme.get_preview_scale() != scale {
+            theme.set_preview_scale(scale);
+        }
         let Some(hwnd) = self.hwnd else {
             return;
         };

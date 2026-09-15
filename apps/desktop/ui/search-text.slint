@@ -1,0 +1,63 @@
+import { DesignTokens as T } from "echo-tokens.slint";
+import { EchoTheme } from "theme.slint";
+
+export struct MatchRange { start: int, end: int }
+
+// Selection painting uses the same native layout as the text, including UTF-8,
+// wrapping and font fallback. Disabled layers cannot take focus or intercept clicks.
+component MatchPaint inherits TextInput {
+    in property <MatchRange> match-range;
+    enabled: false;
+    read-only: true;
+    single-line: false;
+    wrap: word-wrap;
+    color: transparent;
+    selection-foreground-color: T.color-search-text;
+    selection-background-color: T.color-search-background;
+    text-cursor-width: 0px;
+    accessible-role: none;
+    function update-selection() { self.set-selection-offsets(match-range.start, match-range.end); }
+    init => { update-selection(); }
+    changed match-range => { update-selection(); }
+    changed text => { update-selection(); }
+}
+
+export component SearchText inherits Rectangle {
+    in property <string> text;
+    in property <styled-text> rich;
+    in property <[MatchRange]> matches;
+    in property <color> foreground;
+    in property <length> font-size;
+    min-width: 0px;
+    preferred-height: plain.preferred-height;
+    min-height: plain.preferred-height;
+    clip: true;
+    accessible-role: none;
+    plain := Text {
+        width: parent.width; height: parent.height;
+        text: root.text;
+        color: EchoTheme.high-contrast ? transparent : root.foreground;
+        font-family: "Microsoft YaHei UI";
+        font-size: root.font-size;
+        font-weight: T.font-weight-normal;
+        wrap: word-wrap;
+        accessible-role: none;
+    }
+    if (!EchoTheme.high-contrast): Rectangle {
+        width: parent.width; height: parent.height;
+        for range in root.matches: MatchPaint {
+            width: parent.width; height: parent.height;
+            text: root.text; match-range: range;
+            font-family: "Microsoft YaHei UI";
+            font-size: root.font-size;
+            font-weight: T.font-weight-normal;
+        }
+    }
+    if (EchoTheme.high-contrast): StyledText {
+        width: parent.width; height: parent.height;
+        text: root.rich; default-color: root.foreground;
+        default-font-family: "Microsoft YaHei UI";
+        default-font-size: root.font-size;
+        accessible-role: none;
+    }
+}

@@ -34,7 +34,7 @@ mod tests {
         saved.revision = 7;
         saved.ui.global_hotkey = "Ctrl+Alt+J".into();
         saved.ui.global_hotkey_enabled = false;
-        saved.ui.caret_anchor = false;
+        saved.ui.remember_position = false;
         let (result, warning) = reconcile(
             &previous,
             saved,
@@ -43,7 +43,7 @@ mod tests {
                 assert_eq!(patch.expected_revision, 7);
                 assert_eq!(patch.ui.global_hotkey, "Alt+V");
                 assert!(patch.ui.global_hotkey_enabled);
-                assert!(!patch.ui.caret_anchor);
+                assert!(!patch.ui.remember_position);
                 Ok(SettingsSnapshot {
                     revision: 8,
                     clipboard: patch.clipboard,

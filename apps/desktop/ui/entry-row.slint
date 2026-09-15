@@ -1,7 +1,10 @@
 import { EchoTheme, EchoButton } from "theme.slint";
 import { DesignTokens as T } from "echo-tokens.slint";
 import { FavoriteIconImages } from "favorite-icon-images.slint";
+import { SearchText, MatchRange } from "search-text.slint";
+export { MatchRange }
 export struct EntryRow {
+    title-matches: [MatchRange], body-matches: [MatchRange], tags-matches: [MatchRange],
     key: string, title: string, body: string, kind: string,
     title-rich: styled-text, body-rich: styled-text, tags-rich: styled-text, match-count: int,
     time-label: string, section-label: string,
@@ -30,7 +33,7 @@ export component EntryView inherits Rectangle {
     }
     callback select(string);
     callback action(string,string);
-    callback thumbnail-needed(string);
+    callback thumbnail-needed(string,length,length);
     function perform(action-name: string) {if (!root.busy && !root.input-blocked && !root.capture-only) {root.action(action-name,root.entry.key);}}
     callback key-event(string,bool,bool,string) -> bool;
     pure callback drag-data(string) -> data-transfer;
@@ -73,11 +76,16 @@ export component EntryView inherits Rectangle {
     accessible-item-selectable: !capture-only;
     accessible-item-selected: entry.selected;
     accessible-action-default => { if (!root.capture-only && !root.busy && !root.input-blocked) { root.select(entry.key); } }
-    changed thumbnail-active => {if (thumbnail-active && entry.has-thumbnail && !capture-only) {root.thumbnail-needed(entry.key);}}
-    init => { if (entry.has-thumbnail && !capture-only && thumbnail-active) { root.thumbnail-needed(entry.key); } }
+    private property <float> preview-scale: EchoTheme.preview-scale;
+    private property <length> preview-height: T.row-image-height;
+    changed preview-scale => {if (entry.has-thumbnail && !capture-only && thumbnail-active) {root.thumbnail-needed(entry.key,root.content-width,T.row-image-height);}}
+    changed preview-height => {if (entry.has-thumbnail && !capture-only && thumbnail-active) {root.thumbnail-needed(entry.key,root.content-width,T.row-image-height);}}
+    changed content-width => {if (entry.has-thumbnail && !capture-only && thumbnail-active) {root.thumbnail-needed(entry.key,root.content-width,T.row-image-height);}}
+    changed thumbnail-active => {if (thumbnail-active && entry.has-thumbnail && !capture-only) {root.thumbnail-needed(entry.key,root.content-width,T.row-image-height);}}
+    init => { if (entry.has-thumbnail && !capture-only && thumbnail-active) { root.thumbnail-needed(entry.key,root.content-width,T.row-image-height); } }
     changed entry => {
         if (!capture-only) {
-            if (entry.has-thumbnail && thumbnail-active) { root.thumbnail-needed(entry.key); }
+            if (entry.has-thumbnail && thumbnail-active) { root.thumbnail-needed(entry.key,root.content-width,T.row-image-height); }
         }
     }
     if (active): Rectangle { x: 8px; y: 12px; width: 3px; height: parent.height - 32px; background: EchoTheme.amber; border-radius: 1px; }
@@ -134,15 +142,19 @@ export component EntryView inherits Rectangle {
         height: self.min-height;
         y: 2px + max(0px,(root.height - 10px - self.height)/2);
         spacing: T.space-1; alignment: start;
-        if (root.favorites): StyledText {
-            default-font-family: "Microsoft YaHei UI";
-            text: root.entry.title-rich; default-color: root.active ? EchoTheme.selected-row-text : EchoTheme.row-text;
-            default-font-size: T.font-secondary; min-width: 0px; max-height: 40px; accessible-role: none;
+        if (root.favorites): SearchText {
+            text: root.entry.title; rich: root.entry.title-rich; matches: root.entry.title-matches; foreground: root.active ? EchoTheme.selected-row-text : EchoTheme.row-text;
+            font-size: T.font-secondary; min-width: 0px; max-height: 40px; accessible-role: none;
         }
         if (root.entry.has-thumbnail): Rectangle {
             height: T.row-image-height;
             background: EchoTheme.elevated;
-            Image { x: 0px; y: 0px; width: parent.width; height: parent.height; source: root.entry.thumbnail; image-fit: contain; }
+            Image {
+                width: min(parent.width, root.entry.thumbnail.width * 1px / max(1, EchoTheme.preview-scale));
+                height: min(parent.height, root.entry.thumbnail.height * 1px / max(1, EchoTheme.preview-scale));
+                x: (parent.width - self.width)/2; y: (parent.height - self.height)/2;
+                source: root.entry.thumbnail; image-fit: contain; image-rendering: smooth;
+            }
             if (root.entry.thumbnail.width == 0): Text { text: @tr("Image"); color: EchoTheme.muted; horizontal-alignment: center; vertical-alignment: center; accessible-role: none; }
         }
         if (root.entry.body != "" && !root.entry.has-thumbnail && root.entry.match-count == 0): Text {
@@ -150,14 +162,12 @@ export component EntryView inherits Rectangle {
             font-family: "Microsoft YaHei UI"; font-size: T.font-body;
             wrap: word-wrap; overflow: elide; max-height: T.row-max-text-height; min-width: 0px; accessible-role: none;
         }
-        if (root.entry.body != "" && !root.entry.has-thumbnail && root.entry.match-count > 0): StyledText {
-            default-font-family: "Microsoft YaHei UI";
-            text: root.entry.body-rich; default-color: root.active ? EchoTheme.selected-row-text : EchoTheme.row-text; default-font-size: T.font-body; max-height: T.row-max-text-height; min-width: 0px; accessible-role: none;
+        if (root.entry.body != "" && !root.entry.has-thumbnail && root.entry.match-count > 0): SearchText {
+            text: root.entry.body; rich: root.entry.body-rich; matches: root.entry.body-matches; foreground: root.active ? EchoTheme.selected-row-text : EchoTheme.row-text; font-size: T.font-body; max-height: T.row-max-text-height; min-width: 0px; accessible-role: none;
         }
-        if (root.entry.tags != ""): StyledText {
-            default-font-family: "Microsoft YaHei UI";
-            text: root.entry.tags-rich; default-color: root.active ? EchoTheme.selected-text : EchoTheme.muted;
-            default-font-size: T.font-caption; max-height: 24px; min-width: 0px; accessible-role: none;
+        if (root.entry.tags != ""): SearchText {
+            text: root.entry.tags; rich: root.entry.tags-rich; matches: root.entry.tags-matches; foreground: root.active ? EchoTheme.selected-text : EchoTheme.muted;
+            font-size: T.font-caption; max-height: 24px; min-width: 0px; accessible-role: none;
         }
     }
     // Fixed geometry shares the time slot; no floating toolbar or content overlay.

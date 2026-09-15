@@ -142,15 +142,6 @@ Check 'changed-control-dismisses-without-paste' {
     if((Target-Command $target 'read-secondary') -ne $before){throw 'Focus-loss dismissal changed the new control.'}
     'switching external input closes Quick Insert and cancels the old session without paste'
 }
-Check 'anchor-setting-switches-layout-without-losing-hotkey' {
-    Open-KeyboardSettings;D toggle $mainTitle @('Open Quick Insert near the text cursor','false')|Out-Null
-    Click 'Save changes';Wait-Text 'Your settings are saved'
-    Open-FromTarget;Expect-Quick $true
-    if($NativeTest){$m=D metrics;if($m.settings.ui.caret_anchor){throw 'Anchor preference was not saved.'}}
-    Open-KeyboardSettings;D toggle $mainTitle @('Open Quick Insert near the text cursor','true')|Out-Null
-    Click 'Save changes';Wait-Text 'Your settings are saved'
-    'caret anchoring can be disabled separately from global shortcut and safe insertion'
-}
 if($WpfFixture) {
     Check 'uia-only-wpf-caret-and-paste' {
         if(D exists){D close|Out-Null;Wait-Hidden}

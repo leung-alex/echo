@@ -119,28 +119,35 @@ pub(crate) fn entry_row_equal(a: &crate::EntryRow, b: &crate::EntryRow) -> bool 
     macro_rules! fields {
         ($($field:ident),* $(,)?) => {{
             // Exhaustive: adding a Slint row field requires updating this comparison.
-            let crate::EntryRow { thumbnail: _, $($field: _,)* } = a;
+            let crate::EntryRow { thumbnail: _, title_matches: _, body_matches: _, tags_matches: _, $($field: _,)* } = a;
             image_equal(&a.thumbnail, &b.thumbnail) $(&& a.$field == b.$field)*
         }}
     }
-    fields!(
-        key,
-        title,
-        body,
-        kind,
-        title_rich,
-        body_rich,
-        tags_rich,
-        match_count,
-        time_label,
-        section_label,
-        has_thumbnail,
-        pinned,
-        selected,
-        batch_selected,
-        icon_key,
-        tags
-    )
+    let same_ranges = |a: &slint::ModelRc<crate::MatchRange>,
+                       b: &slint::ModelRc<crate::MatchRange>| {
+        a.row_count() == b.row_count() && (0..a.row_count()).all(|i| a.row_data(i) == b.row_data(i))
+    };
+    same_ranges(&a.title_matches, &b.title_matches)
+        && same_ranges(&a.body_matches, &b.body_matches)
+        && same_ranges(&a.tags_matches, &b.tags_matches)
+        && fields!(
+            key,
+            title,
+            body,
+            kind,
+            title_rich,
+            body_rich,
+            tags_rich,
+            match_count,
+            time_label,
+            section_label,
+            has_thumbnail,
+            pinned,
+            selected,
+            batch_selected,
+            icon_key,
+            tags
+        )
 }
 #[cfg(test)]
 #[derive(Debug, PartialEq, Eq)]

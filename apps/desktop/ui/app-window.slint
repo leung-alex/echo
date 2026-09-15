@@ -4,10 +4,10 @@ import { I18n } from "i18n.slint";
 import { EnumChoice } from "enum-choice.slint";
 import { ListView, ScrollView, LineEdit, TextEdit, CheckBox, ComboBox, AboutSlint, Palette } from "std-widgets.slint";
 import { EchoTheme, EchoButton, Hint } from "theme.slint";
-import { EntryRow } from "entry-row.slint";
+import { EntryRow, MatchRange } from "entry-row.slint";
 import { FavoriteIconChoice, FavoriteIconPicker } from "favorite-icon-picker.slint";
 import { FavoriteIconImages } from "favorite-icon-images.slint";
-export { EntryRow, EchoTheme, FavoriteIconChoice, FavoriteIconImages, SpaceVm, ActionVm }
+export { EntryRow, MatchRange, EchoTheme, FavoriteIconChoice, FavoriteIconImages, SpaceVm, ActionVm }
 
 import { DesignTokens as T } from "echo-tokens.slint";
 import { SpacePanel } from "space-panel.slint";
@@ -99,7 +99,7 @@ export component AppWindow inherits Window {
     callback dismiss();
     callback drag-requested();
     callback key-event(string,bool,bool,string) -> bool;
-    callback thumbnail-requested(string);
+    callback thumbnail-requested(string,length,length);
     callback save-settings();
     callback save-favorite();
     callback cancel-editor();
@@ -112,8 +112,6 @@ export component AppWindow inherits Window {
     callback drop-data(data-transfer,string) -> bool;
     in-out property <bool> global-hotkey-enabled;
     in-out property <string> global-hotkey;
-    in-out property <bool> caret-anchor;
-    in-out property <bool> inline-completion;
     in property <string> hotkey-status;
     in-out property <string> startup-space;
     in property <[string]> startup-space-names;
@@ -301,7 +299,7 @@ export component AppWindow inherits Window {
                 select(key) => { root.row-selected(key); }
                 action(action,key) => { root.row-action(action,key); }
                 batch-action(action) => { root.batch-action(action); }
-                thumbnail-needed(key) => { root.thumbnail-requested(key); }
+                thumbnail-needed(key,width,height) => { root.thumbnail-requested(key,width,height); }
                 key-event(key,ctrl,shift,target) => { return root.key-event(key,ctrl,shift,target); }
                 create-item => { root.create-favorite(); }
                 more => { root.load-more(); }
@@ -357,8 +355,6 @@ export component AppWindow inherits Window {
                 language <=> root.language;
                 global-hotkey-enabled <=> root.global-hotkey-enabled;
                 global-hotkey <=> root.global-hotkey;
-                caret-anchor <=> root.caret-anchor;
-                inline-completion <=> root.inline-completion;
                 hotkey-status: root.hotkey-status;
                 startup-space <=> root.startup-space;
                 startup-space-names: root.startup-space-names;

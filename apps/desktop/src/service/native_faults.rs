@@ -32,6 +32,7 @@ mod tests {
                 1,
                 "synthetic".into(),
                 Ok(crate::events::PixelData {
+                    requested: Default::default(),
                     width: 1,
                     height: 1,
                     rgba: vec![0; 9 * 1024 * 1024],

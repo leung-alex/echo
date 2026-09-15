@@ -19,8 +19,9 @@ window only when it is still the same process/window and no unrelated app has
 already taken foreground. Window Close still hides; explicit Quit releases the
 registration and stops the resident.
 
-`Open Quick Insert near the text cursor` independently controls anchoring. The
-manager/settings retain their normal layout and are not glued to the caret.
+Quick Insert always uses caret anchoring when a usable anchor is available and
+filters suggestions in the original input when supported. These behaviors are
+fixed, not user settings. The manager/settings retain their normal layout.
 Switching spaces or opening Settings inside a Quick Insert session does not
 recapture Echo's own input control as the destination.
 
@@ -28,7 +29,7 @@ recapture Echo's own input control as the destination.
 
 - `echo-engine/global_shortcut.rs`: portable syntax, validation and canonical names.
 - `echo-engine/ui_settings.rs`: defaulted JSON fields `global_hotkey_enabled`,
-  `global_hotkey`, `caret_anchor`; existing version-1 settings need no schema reset.
+  `global_hotkey`. Caret anchoring and inline filtering have no stored switches.
 - `echo-windows/shell/hotkey.rs`: RegisterHotKey/UnregisterHotKey on the existing
   tray thread; MOD_NOREPEAT; no low-level keyboard hook or new resident process.
 - `echo-windows/focus.rs`: foreground process/start-time/control snapshot at the

@@ -192,7 +192,7 @@ fn execute(
             let c = |c: slint::Color| [c.red(), c.green(), c.blue(), c.alpha()];
             Ok(serde_json::json!({
                 "pid":std::process::id(), "row_color":c(g.get_color_row_text()),
-                "accent":c(g.get_color_accent_text()), "font":g.get_font_body(), "weight":g.get_font_weight_normal(),
+                "accent":c(g.get_color_accent_text()), "search_text":c(g.get_color_search_text()), "search_background":c(g.get_color_search_background()), "font":g.get_font_body(), "weight":g.get_font_weight_normal(),
                 "spacing":g.get_space_1(), "radius":g.get_row_radius(),
                 "dark":window.get_dark(), "high_contrast":a.environment.high_contrast,
                 "query":a.surface.query, "selection":a.surface.selection.map(|k| k.to_string()),

@@ -37,9 +37,14 @@ pub(super) fn connect(app: &App) {
     callback!(on_drag_requested,=>Command::Drag);
     let weak = window.as_weak();
     let hub = app.hub.clone();
-    window.on_thumbnail_requested(move |key| {
-        if weak.upgrade().is_some() {
-            hub.post(Event::Command(Command::Thumbnail(key.to_string())));
+    window.on_thumbnail_requested(move |key, width, height| {
+        if let Some(window) = weak.upgrade() {
+            let size = crate::image_preview::PreviewSize::physical(
+                width,
+                height,
+                window.window().scale_factor(),
+            );
+            hub.post(Event::Command(Command::Thumbnail(key.to_string(), size)));
         }
     });
     callback!(on_save_settings,=>Command::SaveSettings);

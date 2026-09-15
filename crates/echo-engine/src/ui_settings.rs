@@ -81,8 +81,6 @@ pub struct UiSettings {
     pub loop_spaces: bool,
     pub global_hotkey_enabled: bool,
     pub global_hotkey: String,
-    pub caret_anchor: bool,
-    pub inline_completion: bool,
     pub startup_space: StartupSpace,
     pub remember_position: bool,
     pub query_on_switch: QueryOnSwitch,
@@ -102,8 +100,6 @@ impl Default for UiSettings {
             loop_spaces: true,
             global_hotkey_enabled: true,
             global_hotkey: "Alt+V".into(),
-            caret_anchor: true,
-            inline_completion: true,
             startup_space: Default::default(),
             remember_position: true,
             query_on_switch: Default::default(),
@@ -204,7 +200,7 @@ mod tests {
     fn retired_graphics_preferences_round_trip_without_resetting_settings() {
         for language in ["zh-CN", "en"] {
             for graphics in ["auto", "software"] {
-                let source = serde_json::json!({"version":1,"language":language,"graphics":graphics,"reflections":true,"side_content":"titles_only","global_hotkey":"Ctrl+Alt+J","caret_anchor":false});
+                let source = serde_json::json!({"version":1,"language":language,"graphics":graphics,"reflections":true,"side_content":"titles_only","global_hotkey":"Ctrl+Alt+J","remember_position":false});
                 let settings: UiSettings = serde_json::from_value(source).unwrap();
                 settings.validate().unwrap();
                 let encoded = serde_json::to_value(&settings).unwrap();
@@ -212,7 +208,7 @@ mod tests {
                 assert_eq!(encoded["graphics"], graphics);
                 assert_eq!(encoded["reflections"], true);
                 assert_eq!(encoded["global_hotkey"], "Ctrl+Alt+J");
-                assert_eq!(encoded["caret_anchor"], false);
+                assert_eq!(encoded["remember_position"], false);
                 let restored: UiSettings = serde_json::from_value(encoded).unwrap();
                 assert_eq!(settings, restored);
             }
@@ -226,6 +222,9 @@ mod tests {
     }
     #[test]
     fn unsupported_settings_are_not_silently_accepted() {
+        // These are fixed application behaviors, no longer configurable switches.
+        assert!(serde_json::from_str::<UiSettings>(r#"{"caret_anchor":false}"#).is_err());
+        assert!(serde_json::from_str::<UiSettings>(r#"{"inline_completion":false}"#).is_err());
         assert!(serde_json::from_str::<UiSettings>(r#"{"motion":"random"}"#).is_err());
         assert!(serde_json::from_str::<UiSettings>(r#"{"unknown":true}"#).is_err());
         let mut settings = UiSettings::default();
@@ -233,13 +232,12 @@ mod tests {
         assert!(settings.validate().is_err());
     }
     #[test]
-    fn hotkey_and_anchor_settings_round_trip() {
+    fn hotkey_settings_round_trip() {
         let mut s = UiSettings::default();
         assert_eq!(s.global_hotkey, "Alt+V");
-        assert!(s.global_hotkey_enabled && s.caret_anchor);
+        assert!(s.global_hotkey_enabled);
         s.global_hotkey = "Ctrl+Alt+J".into();
         s.global_hotkey_enabled = false;
-        s.caret_anchor = false;
         let decoded: UiSettings =
             serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(s, decoded);

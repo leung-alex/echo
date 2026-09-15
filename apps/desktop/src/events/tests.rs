@@ -144,6 +144,7 @@ fn display_result_backpressure_keeps_control_and_shutdown_live() {
             1,
             "synthetic".into(),
             Ok(super::PixelData {
+                requested: Default::default(),
                 width: 1536,
                 height: 1536,
                 rgba: vec![0; 9 * 1024 * 1024],

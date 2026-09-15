@@ -28,6 +28,8 @@ pub(super) const SCHEMA: &[(&str, &str, bool)] = &[
     ("color.panel", "color", true),
     ("color.raised", "color", true),
     ("color.row-text", "color", true),
+    ("color.search-background", "color", true),
+    ("color.search-text", "color", true),
     ("color.selection", "color", true),
     ("color.shadow", "color", true),
     ("color.stage-edge", "color", true),
@@ -129,7 +131,9 @@ pub(super) fn defaults() -> StyleSnapshot {
         ("color.on-accent".into(), StyleValue::Color(0xffffffff, 0x102430ff)),
         ("color.panel".into(), StyleValue::Color(0xf7f7f6ff, 0x161d23ff)),
         ("color.raised".into(), StyleValue::Color(0xffffffff, 0x1d252cff)),
-        ("color.row-text".into(), StyleValue::Color(0x555b60ff, 0xf4f6f7ff)),
+        ("color.row-text".into(), StyleValue::Color(0x626a70ff, 0xf4f6f7ff)),
+        ("color.search-background".into(), StyleValue::Color(0xffe59aff, 0x69501cff)),
+        ("color.search-text".into(), StyleValue::Color(0x493600ff, 0xfff0bdff)),
         ("color.selection".into(), StyleValue::Color(0xedf5faff, 0x253e4fff)),
         ("color.shadow".into(), StyleValue::Color(0x00000020, 0x00000066)),
         ("color.stage-edge".into(), StyleValue::Color(0xdfe5e2ff, 0x080d10ff)),
@@ -209,6 +213,8 @@ macro_rules! apply_style {
         g.set_color_panel(s.color("color.panel", dark));
         g.set_color_raised(s.color("color.raised", dark));
         g.set_color_row_text(s.color("color.row-text", dark));
+        g.set_color_search_background(s.color("color.search-background", dark));
+        g.set_color_search_text(s.color("color.search-text", dark));
         g.set_color_selection(s.color("color.selection", dark));
         g.set_color_shadow(s.color("color.shadow", dark));
         g.set_color_stage_edge(s.color("color.stage-edge", dark));

@@ -11,8 +11,6 @@ export component SettingsPage inherits Rectangle {
     in-out property <string> language;
     in-out property <bool> global-hotkey-enabled;
     in-out property <string> global-hotkey;
-    in-out property <bool> caret-anchor;
-    in-out property <bool> inline-completion;
     in property <string> hotkey-status;
     in-out property <string> startup-space;
     in property <[string]> startup-space-names;
@@ -38,8 +36,6 @@ export component SettingsPage inherits Rectangle {
     changed theme-mode => { root.edited(); }
     changed global-hotkey-enabled => { root.edited(); }
     changed global-hotkey => { root.edited(); }
-    changed caret-anchor => { root.edited(); }
-    changed inline-completion => { root.edited(); }
     changed startup-space => { root.edited(); }
     changed query-on-switch => { root.edited(); }
     changed side-content => { root.edited(); }
@@ -141,8 +137,6 @@ export component SettingsPage inherits Rectangle {
                     EchoButton { text: @tr("Reset to Alt+V"); enabled: !root.busy; clicked => { root.global-hotkey = "Alt+V"; root.global-hotkey-enabled = true; } }
                     EchoButton { text: @tr("Retry saved shortcut"); enabled: !root.busy && !root.dirty; clicked => { root.action("retry-hotkey"); } }
                 }
-                CheckBox { text: @tr("Open Quick Insert near the text cursor"); checked <=> root.caret-anchor; enabled: !root.busy; }
-                CheckBox { text: @tr("Filter suggestions in the original input"); checked <=> root.inline-completion; enabled: !root.busy; }
                 VerticalLayout {
                     spacing: 6px; padding-top: 10px; alignment: start;
                     Text { text: @tr("Navigation"); color: EchoTheme.muted; font-size: 13px; font-weight: 600; }

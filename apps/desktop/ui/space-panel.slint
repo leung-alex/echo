@@ -47,7 +47,7 @@ export component SpacePanel inherits Rectangle {
     callback select(string);
     callback action(string,string);
     callback batch-action(string);
-    callback thumbnail-needed(string);
+    callback thumbnail-needed(string,length,length);
     callback key-event(string,bool,bool,string) -> bool;
     callback create-item();
     callback more();
@@ -144,7 +144,7 @@ export component SpacePanel inherits Rectangle {
             }
             select(key) => {root.select(key);}
             action(action,key) => {root.action(action,key);}
-            thumbnail-needed(key) => {if (!root.capture-only && !root.animating) {root.thumbnail-needed(key);}}
+            thumbnail-needed(key,width,height) => {if (!root.capture-only && !root.animating) {root.thumbnail-needed(key,width,height);}}
             key-event(key,ctrl,shift,target) => {return !root.capture-only && root.handle-content-key(key,ctrl,shift,target);}
             drag-data(key) => {return root.drag-data(key);}
             can-drop-data(data) => {return !root.capture-only && root.can-drop-data(data);}
@@ -166,7 +166,7 @@ export component SpacePanel inherits Rectangle {
     // Paint header controls last so their hints stay above the scrolling rows.
     new-content := EchoButton {
         x: root.width - T.panel-padding - 72px; y: 18px;
-        width: 32px; height: 32px; row-action: true;
+        width: 32px; height: 32px; row-action: true; flat: true;
         icon: @image-url("favorite-icons/ComposeEditSquare.svg"); label: @tr("New content");
         visible: root.favorites && !root.capture-only && !root.titles-only;
         enabled: root.favorites && !root.capture-only && !root.titles-only && !root.busy && !root.loading && !root.stale && !root.error && !root.modal && !root.animating;
@@ -175,7 +175,7 @@ export component SpacePanel inherits Rectangle {
     }
     settings-button := EchoButton {
         x: root.width - T.panel-padding - 32px; y: 18px;
-        width: 32px; height: 32px; row-action: true;
+        width: 32px; height: 32px; row-action: true; flat: true;
         icon: @image-url("favorite-icons/SettingsCog.svg"); label: @tr("Settings");
         visible: !root.capture-only && !root.titles-only;
         enabled: !root.capture-only && !root.titles-only && !root.busy && !root.modal && !root.animating;

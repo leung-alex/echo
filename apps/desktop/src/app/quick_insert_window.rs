@@ -107,7 +107,6 @@ impl App {
         let _timing = crate::popup_timing::span("geometry_update");
         let anchor = self.popup_anchor.filter(|_| {
             self.session.context == Context::QuickInsert
-                && (self.ui.caret_anchor || self.inline_active())
                 && self.window.get_route().as_str() == "history"
         });
         if let Some(anchor) = anchor {

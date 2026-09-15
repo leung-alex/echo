@@ -526,8 +526,20 @@
     },
     "color.row-text": {
       "type": "color",
-      "value": "#555b60",
+      "value": "#626a70",
       "dark": "#f4f6f7",
+      "runtime": true
+    },
+    "color.search-text": {
+      "type": "color",
+      "value": "#493600",
+      "dark": "#fff0bd",
+      "runtime": true
+    },
+    "color.search-background": {
+      "type": "color",
+      "value": "#ffe59a",
+      "dark": "#69501c",
       "runtime": true
     }
   }

@@ -49,8 +49,6 @@ impl App {
         enum_field!(frame_rate, get_frame_rate, FrameRate);
         value.global_hotkey_enabled = w.get_global_hotkey_enabled();
         value.global_hotkey = GlobalShortcut::parse(w.get_global_hotkey().as_str())?.canonical();
-        value.caret_anchor = w.get_caret_anchor();
-        value.inline_completion = w.get_inline_completion();
         value.loop_spaces = w.get_loop_spaces();
         value.remember_position = w.get_remember_position();
         value.reflections = w.get_reflections();
@@ -77,8 +75,6 @@ impl App {
         w.set_language(u.language.as_str().into());
         w.set_global_hotkey_enabled(u.global_hotkey_enabled);
         w.set_global_hotkey(u.global_hotkey.clone().into());
-        w.set_caret_anchor(u.caret_anchor);
-        w.set_inline_completion(u.inline_completion);
         w.set_startup_space(u.startup_space.key().into());
         self.render_startup_choices();
         w.set_query_on_switch(u.query_on_switch.as_str().into());

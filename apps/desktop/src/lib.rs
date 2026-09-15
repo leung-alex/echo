@@ -4,6 +4,7 @@
 static ALLOCATOR: echo_windows::allocation::AccountedSystem =
     echo_windows::allocation::AccountedSystem;
 mod favorite_icons;
+mod image_preview;
 mod match_highlight;
 mod memory_lifecycle;
 mod memory_trace;
@@ -162,5 +163,7 @@ fn restart_application() -> Result<(), String> {
 #[cfg(test)]
 mod row_click_tests;
 
+#[cfg(test)]
+mod search_text_tests;
 #[cfg(test)]
 mod side_layout_tests;

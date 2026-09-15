@@ -17,6 +17,7 @@ use std::{
 };
 
 mod capture_lane;
+mod image_lane;
 #[cfg(feature = "native-test")]
 pub(crate) mod native_faults;
 pub(crate) mod native_isolation;
@@ -48,7 +49,11 @@ pub enum Work {
     Execute(Operation, RowKey),
     ExecuteInline(Operation, RowKey, echo_engine::InlineTicket),
     Mutate(u64, Mutation),
-    Thumbnail(u64, String),
+    Thumbnail(
+        u64,
+        echo_engine::Thumbnail,
+        crate::image_preview::PreviewSize,
+    ),
     Diagnostics(crate::events::DiagnosticReport),
     Wake,
     Stop,
@@ -266,6 +271,7 @@ fn run(
             }
         })
         .ok();
+    let images = image_lane::Lane::start(services.library.store().clone(), hub.clone());
     hub.post(Event::Ready(Ok(settings)));
     while let Ok((search_generation, work)) = control.try_recv().or_else(|_| receiver.recv()) {
         let cancelled = || search_epoch.load(Ordering::Acquire) != search_generation;
@@ -414,15 +420,18 @@ fn run(
             Work::Mutate(serial, mutation) => {
                 hub.post(Event::Mutated(serial, mutate(&services, mutation)))
             }
-            Work::Thumbnail(generation, hash) => {
-                let event = Event::Thumbnail(generation, hash.clone(), thumbnail(&services, &hash));
-                #[cfg(feature = "native-test")]
-                native_faults::publish_thumbnail(&hub, event);
-                #[cfg(not(feature = "native-test"))]
-                hub.post(event);
+            Work::Thumbnail(generation, asset, size) => {
+                if let Err(error) = images
+                    .as_ref()
+                    .map_err(Clone::clone)
+                    .and_then(|lane| lane.submit(generation, asset.clone(), size))
+                {
+                    hub.post(Event::Thumbnail(generation, asset.source_hash, Err(error)));
+                }
             }
         }
     }
+    drop(images);
     services.clipboard.shutdown();
     // Dropping the domain owners closes the publisher before joining its subscriber.
     drop(services);
@@ -586,33 +595,6 @@ fn side_summary(item: QuickInsertItem) -> QuickInsertItem {
         icon_key: None,
         ..item
     }
-}
-fn thumbnail(services: &Services, hash: &str) -> Result<PixelData, String> {
-    if hash.len() != 64 || !hash.bytes().all(|c| c.is_ascii_hexdigit()) {
-        return Err("Invalid thumbnail identity".into());
-    }
-    let asset = services
-        .library
-        .store()
-        .read_thumbnail(hash)
-        .map_err(|e| e.to_string())?
-        .ok_or("Thumbnail is unavailable")?;
-    if asset.bytes.len() > 8 * 1024 * 1024 {
-        return Err("Thumbnail exceeds the decode budget".into());
-    }
-    let mut reader =
-        image::io::Reader::with_format(std::io::Cursor::new(asset.bytes), image::ImageFormat::Png);
-    let mut limits = image::io::Limits::default();
-    limits.max_image_width = Some(2048);
-    limits.max_image_height = Some(2048);
-    limits.max_alloc = Some(16 * 1024 * 1024);
-    reader.limits(limits);
-    let rgba = reader.decode().map_err(|e| e.to_string())?.into_rgba8();
-    Ok(PixelData {
-        width: rgba.width(),
-        height: rgba.height(),
-        rgba: rgba.into_raw(),
-    })
 }
 #[cfg(test)]
 mod tests {

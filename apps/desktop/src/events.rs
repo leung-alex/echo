@@ -31,7 +31,7 @@ pub enum Command {
     Dismiss,
     Drag,
     Keyboard(Intent),
-    Thumbnail(String),
+    Thumbnail(String, crate::image_preview::PreviewSize),
     SaveSettings,
     SettingsEdited,
     SettingsAction(String),
@@ -96,6 +96,7 @@ pub struct ItemDetails {
     pub spaces: Vec<SpaceId>,
 }
 pub struct PixelData {
+    pub requested: crate::image_preview::PreviewSize,
     pub width: u32,
     pub height: u32,
     pub rgba: Vec<u8>,

@@ -123,8 +123,9 @@ impl App {
         self.images.epoch = self.images.epoch.wrapping_add(1);
         self.images.pending.clear();
         // The outgoing model keeps its visible pixels; incoming cache gets a
-        // separate 2 MiB share of the 4 MiB total, with no adjacent preloading.
+        // separate bounded share during the transition, with no adjacent preloading.
         self.images.cache.clear();
+        self.images.quality.clear();
         self.images.order.clear();
         self.images.bytes = 0;
         self.deck.request(id);

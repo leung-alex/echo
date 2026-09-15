@@ -117,7 +117,7 @@ impl App {
                     .page
                     .items
                     .iter()
-                    .filter_map(|i| i.thumbnail.as_ref().map(|t| t.content_hash.clone()))
+                    .filter_map(|i| i.thumbnail.clone())
                     .collect();
                 self.previews.insert(
                     id,
@@ -128,11 +128,16 @@ impl App {
                         total: data.total,
                     },
                 );
-                for hash in hashes {
+                for asset in hashes {
+                    let hash = asset.source_hash.clone();
                     if !self.images.cache.contains_key(&hash)
                         && self.images.pending.insert(hash.clone())
                     {
-                        if !self.send(Work::Thumbnail(self.images.epoch, hash.clone())) {
+                        if !self.send(Work::Thumbnail(
+                            self.images.epoch,
+                            asset,
+                            Default::default(),
+                        )) {
                             self.images.pending.remove(&hash);
                         }
                     }
@@ -177,7 +182,7 @@ impl App {
                     image: item
                         .thumbnail
                         .as_ref()
-                        .and_then(|t| self.images.cache.get(&t.content_hash))
+                        .and_then(|t| self.images.cache.get(&t.source_hash))
                         .map(|(image, _)| image.clone())
                         .unwrap_or_default(),
                 })

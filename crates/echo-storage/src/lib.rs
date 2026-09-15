@@ -1607,6 +1607,29 @@ impl ClipboardStore {
             .map_err(StorageError::from)
     }
 
+    /// Read just the retained image representation, never the entire clipboard payload.
+    pub fn read_preview_source(
+        &self,
+        source_hash: &str,
+    ) -> Result<Option<ClipboardRepresentation>> {
+        validate_hash(source_hash)?;
+        for (table, owner) in [
+            ("clipboard_representations", "entry_id"),
+            ("saved_item_representations", "saved_item_id"),
+        ] {
+            let sql = format!("SELECT r.id,r.{owner},r.format,r.mime_type,r.inline_data,r.blob_hash,r.content_hash,r.byte_size FROM {table} r WHERE COALESCE(r.content_hash,r.blob_hash)=? AND r.byte_size<=33554432 LIMIT 1");
+            let rep = self
+                .connection
+                .prepare_cached(&sql)?
+                .query_row([source_hash], map_representation)
+                .optional()?;
+            if let Some(rep) = rep {
+                return self.resolve_representation(&rep).map(Some);
+            }
+        }
+        Ok(None)
+    }
+
     pub fn read_thumbnail(&self, content_hash: &str) -> Result<Option<StoredThumbnail>> {
         let started = Instant::now();
         let result = self.read_thumbnail_inner(content_hash);
@@ -3049,6 +3072,16 @@ impl SharedClipboardStore {
         self.runtime.reader.read(|store| store.entry_payload(id))
     }
 
+    pub fn read_preview_source(
+        &self,
+        source_hash: &str,
+    ) -> Result<Option<ClipboardRepresentation>> {
+        let _admission = self.runtime.enter()?;
+        self.runtime
+            .reader
+            .read(|store| store.read_preview_source(source_hash))
+    }
+
     pub fn read_thumbnail(&self, content_hash: &str) -> Result<Option<StoredThumbnail>> {
         let content_hash = content_hash.to_owned();
         let _admission = self.runtime.enter()?;
@@ -4239,6 +4272,33 @@ mod tests {
             .unwrap();
         assert_eq!(stored.metadata, thumbnail);
         assert_eq!(store.entry_payload(id).unwrap()[0].bytes, original);
+        assert_eq!(
+            store
+                .read_preview_source(&thumbnail.source_hash)
+                .unwrap()
+                .unwrap()
+                .bytes,
+            original
+        );
+        assert!(store
+            .read_preview_source(&"0".repeat(64))
+            .unwrap()
+            .is_none());
+        assert!(store.read_preview_source("invalid").is_err());
+        let saved = store.move_history_to_favorite(id).unwrap();
+        assert!(store.entry(id).unwrap().is_none());
+        assert_eq!(
+            store
+                .read_preview_source(&thumbnail.source_hash)
+                .unwrap()
+                .unwrap()
+                .bytes,
+            original
+        );
+        assert_eq!(
+            store.saved_item_payload(saved.id).unwrap()[0].bytes,
+            original
+        );
     }
 
     #[test]

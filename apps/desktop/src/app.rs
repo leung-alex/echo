@@ -109,6 +109,8 @@ pub fn is_composing() -> bool {
 }
 #[derive(Default)]
 struct Images {
+    quality: HashMap<String, crate::image_preview::PreviewSize>,
+    main_sizes: HashMap<String, crate::image_preview::PreviewSize>,
     cache: HashMap<String, (slint::Image, usize)>,
     order: VecDeque<String>,
     // Bounded request identities only; hidden reclamation still releases pixels.
@@ -122,7 +124,9 @@ impl Images {
         self.recent_main.retain(|key| key != hash);
         self.recent_main.push_back(hash.to_owned());
         while self.recent_main.len() > 8 {
-            self.recent_main.pop_front();
+            if let Some(old) = self.recent_main.pop_front() {
+                self.main_sizes.remove(&old);
+            }
         }
     }
     fn trim_to(&mut self, limit: usize) -> bool {
@@ -131,6 +135,7 @@ impl Images {
             let Some(key) = self.order.pop_front() else {
                 break;
             };
+            self.quality.remove(&key);
             if let Some((_, size)) = self.cache.remove(&key) {
                 self.bytes = self.bytes.saturating_sub(size);
                 changed = true;
@@ -710,7 +715,7 @@ impl App {
         self.worker.epoch.store(epoch, Ordering::Release);
         self.set_busy();
         // Filtering is driven only by the original input, never a hidden local query.
-        if context == Context::QuickInsert && self.ui.inline_completion {
+        if context == Context::QuickInsert {
             if let Some(snapshot) = self.activation_focus.clone() {
                 self.begin_inline(epoch, snapshot);
                 return;
@@ -1024,7 +1029,7 @@ impl App {
                         if let Some(image) = item
                             .thumbnail
                             .as_ref()
-                            .and_then(|t| self.images.cache.get(&t.content_hash))
+                            .and_then(|t| self.images.cache.get(&t.source_hash))
                         {
                             row.thumbnail = image.0.clone();
                         }
@@ -1138,41 +1143,58 @@ impl App {
             .filter(|item| {
                 item.thumbnail
                     .as_ref()
-                    .is_some_and(|t| self.images.recent_main.contains(&t.content_hash))
+                    .is_some_and(|t| self.images.recent_main.contains(&t.source_hash))
             })
             .map(|item| RowKey::of(item).to_string())
             .collect();
         for key in keys {
-            self.thumbnail_request(key);
+            let size = self
+                .surface
+                .resolve_key(&key)
+                .and_then(|k| self.surface.items.iter().find(|i| RowKey::of(i) == k))
+                .and_then(|i| i.thumbnail.as_ref())
+                .and_then(|t| self.images.main_sizes.get(&t.source_hash))
+                .copied()
+                .unwrap_or_default();
+            self.thumbnail_request(key, size);
         }
     }
-    fn thumbnail_request(&mut self, key: String) {
+    fn thumbnail_request(&mut self, key: String, size: crate::image_preview::PreviewSize) {
         if !self.surface.visible || self.window.get_route().as_str() != "history" {
             return;
         }
         let Some(key) = self.surface.resolve_key(&key) else {
             return;
         };
-        let Some(hash) = self
+        let Some(asset) = self
             .surface
             .items
             .iter()
             .find(|x| RowKey::of(x) == key)
             .and_then(|x| x.thumbnail.as_ref())
-            .map(|t| t.content_hash.clone())
+            .cloned()
         else {
             return;
         };
+        let hash = asset.source_hash.clone();
         self.images.remember_main(&hash);
+        self.images.main_sizes.insert(hash.clone(), size);
         // Frame readiness drained prior reads. Defer newly visible requests until
         // the slide settles, so no cache eviction can mutate its row models.
         if self.software.slide.moving() {
             return;
         }
-        if self.images.cache.contains_key(&hash) || !self.images.pending.insert(hash.clone()) {
+        if (self.images.cache.contains_key(&hash)
+            && self
+                .images
+                .quality
+                .get(&hash)
+                .is_some_and(|q| q.covers(size)))
+            || !self.images.pending.insert(hash.clone())
+        {
             return;
         }
-        if !self.send(Work::Thumbnail(self.images.epoch, hash.clone())) {
+        if !self.send(Work::Thumbnail(self.images.epoch, asset, size)) {
             self.images.pending.remove(&hash);
         } else {
             crate::popup_timing::mark("main_thumbnail_requested");
@@ -1190,13 +1212,27 @@ impl App {
             return;
         };
         let bytes = pixels.rgba.len();
-        if bytes > 2 * 1024 * 1024 {
+        if bytes > crate::image_preview::CACHE_BYTES {
             return;
         }
-        if self.images.cache.contains_key(&hash) {
+        if self
+            .images
+            .quality
+            .get(&hash)
+            .is_some_and(|q| q.covers(pixels.requested))
+            && self.images.cache.contains_key(&hash)
+        {
             return;
         }
-        if self.images.trim_to(2 * 1024 * 1024 - bytes) {
+        if let Some((_, old_bytes)) = self.images.cache.remove(&hash) {
+            self.images.bytes = self.images.bytes.saturating_sub(old_bytes);
+        }
+        self.images.order.retain(|key| key != &hash);
+        self.images.quality.insert(hash.clone(), pixels.requested);
+        if self
+            .images
+            .trim_to(crate::image_preview::CACHE_BYTES - bytes)
+        {
             for index in 0..self.model.row_count() {
                 if let Some(mut row) = self.model.row_data(index) {
                     row.thumbnail = Default::default();
@@ -1307,7 +1343,7 @@ impl App {
             }),
             Command::Route(route) => self.request_route(&route),
             Command::Keyboard(intent) => self.keyboard(intent),
-            Command::Thumbnail(key) => self.thumbnail_request(key),
+            Command::Thumbnail(key, size) => self.thumbnail_request(key, size),
             Command::SaveSettings => self.save_settings(),
             Command::SettingsEdited => self.settings_edited(),
             Command::SettingsAction(action) => self.settings_action(&action),

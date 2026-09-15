@@ -11,7 +11,9 @@ production instance cannot enable this worker; first quit that instance normally
 
 Runtime values cover colors, font sizes/weights, row and control sizes, internal
 radii, spacing and row shadows. The row foreground default is `color.row-text`.
-Search highlights read `color.accent-text` from the same snapshot. Theme changes
+Search highlights use `color.search-text` and `color.search-background` from the
+same snapshot. The native selection painter marks only matching UTF-8 ranges
+without bolding text; high contrast retains system colors and bold emphasis. Theme changes
 and valid edits restyle retained rows without issuing a new search or resetting
 selection/scroll. High contrast uses inherited system text colors for matches.
 

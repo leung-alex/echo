@@ -45,7 +45,7 @@ impl StyleSnapshot {
         value
     }
     pub fn match_color(&self, dark: bool) -> String {
-        let color = self.color("color.accent-text", dark);
+        let color = self.color("color.search-text", dark);
         let mut value = format!(
             "#{:02x}{:02x}{:02x}",
             color.red(),
@@ -193,7 +193,7 @@ mod tests {
         let mut doc = source();
         doc["tokens"]["color.row-text"]["value"] = "#12345680".into();
         doc["tokens"]["font.body"]["value"] = 18.into();
-        doc["tokens"]["color.accent-text"]["value"] = "#12345680".into();
+        doc["tokens"]["color.search-text"]["value"] = "#12345680".into();
         let next = parse(&doc).unwrap();
         assert_eq!(next.color("color.row-text", false).alpha(), 128);
         assert_eq!(next.length("font.body"), 18.0);
