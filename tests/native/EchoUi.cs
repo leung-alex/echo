@@ -344,6 +344,30 @@ public static class EchoUi
         for(int i=0;i<12;i++) Key(pid,title,0x26,false,false);
         for(int i=0;i<index;i++) Key(pid,title,0x28,false,false);
     }
+    public static void Expand(int pid,string title,string name)
+    {
+        var element=FindEdit(pid,title,name);object pattern;
+        if(!element.Current.IsEnabled || !element.TryGetCurrentPattern(ExpandCollapsePattern.Pattern,out pattern))
+            throw new InvalidOperationException("No enabled ExpandCollapsePattern: "+name);
+        ((ExpandCollapsePattern)pattern).Expand();
+    }
+    public static object PopupItems(int pid,string title)
+    {
+        return Root(pid,title).FindAll(TreeScope.Descendants,new PropertyCondition(AutomationElement.ControlTypeProperty,ControlType.ListItem))
+            .Cast<AutomationElement>().Select(e => {var b=e.Current.BoundingRectangle;return new {name=e.Current.Name,bounds=new[]{b.Left,b.Top,b.Width,b.Height}};}).ToArray();
+    }
+    public static void SelectPopupItem(int pid,string title,string name)
+    {
+        // Popup rows have their own Window ancestor in the accessibility tree.
+        // Search only below the registered owner, without the normal main-view filter.
+        var element=Root(pid,title).FindAll(TreeScope.Descendants,new PropertyCondition(AutomationElement.ControlTypeProperty,ControlType.ListItem))
+            .Cast<AutomationElement>().FirstOrDefault(e => e.Current.Name==name && e.Current.IsEnabled && !e.Current.IsOffscreen);
+        if(element==null)throw new InvalidOperationException("Owned popup row unavailable: "+name);
+        object pattern;
+        if(element.TryGetCurrentPattern(InvokePattern.Pattern,out pattern)){((InvokePattern)pattern).Invoke();return;}
+        if(element.TryGetCurrentPattern(SelectionItemPattern.Pattern,out pattern)){((SelectionItemPattern)pattern).Select();return;}
+        throw new InvalidOperationException("No popup selection/default action: "+name);
+    }
     public static void Toggle(int pid,string title,string name,bool enabled)
     {
         var element=Find(pid,title,name);object pattern;

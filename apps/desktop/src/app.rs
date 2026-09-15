@@ -885,6 +885,10 @@ impl App {
                     )))
                 });
         }
+        // The next activation resolves its home space from the in-process
+        // settings. Persisting on the worker alone leaves "last" stale until
+        // a restart or another settings snapshot arrives.
+        self.ui.resume_last_space_id = Some(self.surface.space.to_string());
         self.send(Work::Resume(self.surface.space));
     }
     fn dismiss(&mut self) {

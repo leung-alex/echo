@@ -25,6 +25,16 @@ export component SpaceChoice inherits Rectangle {
     function choose(index: int) {
         if (root.enabled && index >= 0 && index < root.model.length) { root.selected(index); }
     }
+    // Closing destroys the popup's repeated rows. Finish on this persistent
+    // component so no row callback traverses a destroyed parent to restore focus.
+    function dismiss-menu() {
+        menu.close();
+        focus.focus();
+    }
+    function commit-menu(index: int) {
+        root.dismiss-menu();
+        root.choose(index);
+    }
     height: 36px; min-width: 160px;
     border-radius: 4px; border-width: 1px;
     border-color: focus.has-focus ? EchoTheme.amber : EchoTheme.line;
@@ -53,7 +63,9 @@ export component SpaceChoice inherits Rectangle {
         }
     }
     menu := PopupWindow {
-        x: 0px; y: -4px; width: root.width;
+        // Keep every row above the field's bottom edge, inside the Settings
+        // card's native input region even when the window has transparent margins.
+        x: 0px; y: root.height - self.height; width: root.width;
         height: min(6, root.model.length) * 40px + 8px;
         close-policy: close-on-click-outside;
         forward-focus: menu-focus;
@@ -61,8 +73,8 @@ export component SpaceChoice inherits Rectangle {
         menu-focus := FocusScope {
             focus-changed-event => { root.popup-focused = self.has-focus; }
             key-pressed(event) => {
-                if (event.text == Key.Escape || event.text == Key.Tab) { menu.close(); focus.focus(); return event.text == Key.Tab ? reject : accept; }
-                if (event.text == Key.Return || event.text == " ") { root.choose(root.highlighted); menu.close(); focus.focus(); return accept; }
+                if (event.text == Key.Escape || event.text == Key.Tab) { root.dismiss-menu(); return event.text == Key.Tab ? reject : accept; }
+                if (event.text == Key.Return || event.text == " ") { root.commit-menu(root.highlighted); return accept; }
                 if (event.text == Key.DownArrow || event.text == Key.UpArrow || event.text == Key.Home || event.text == Key.End) {
                     root.highlighted = event.text == Key.Home ? 0 : event.text == Key.End ? root.model.length - 1 : clamp(root.highlighted + (event.text == Key.DownArrow ? 1 : -1), 0, root.model.length - 1);
                     if (root.highlighted * 40px < -menu-scroll.viewport-y) { menu-scroll.viewport-y = -root.highlighted * 40px; }
@@ -82,14 +94,14 @@ export component SpaceChoice inherits Rectangle {
                         background: index == root.highlighted || touch.has-hover ? EchoTheme.selection : transparent;
                         accessible-role: list-item; accessible-label: label;
                         accessible-item-selected: index == root.selected-index;
-                        accessible-action-default => { root.choose(index); menu.close(); focus.focus(); }
+                        accessible-action-default => { root.commit-menu(index); }
                         if (index == root.selected-index): Rectangle { x: 3px; y: 10px; width: 3px; height: 20px; border-radius: 2px; background: EchoTheme.amber; }
                         HorizontalLayout {
                             padding-left: 16px; padding-right: 12px; spacing: 10px;
                             Image { source: root.icon-at(index); colorize: EchoTheme.text; width: 18px; image-fit: contain; accessible-role: none; }
                             Text { text: label; color: EchoTheme.text; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; min-width: 0px; accessible-role: none; }
                         }
-                        touch := TouchArea { clicked => { root.choose(index); menu.close(); focus.focus(); } }
+                        touch := TouchArea { clicked => { root.commit-menu(index); } }
                     }
                 }
             }

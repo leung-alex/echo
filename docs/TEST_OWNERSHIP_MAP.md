@@ -33,6 +33,20 @@ Mutating native tests require separate authorization through `ECHO_WINDOWS_ACCEP
 
 Build, smoke, unit, accessibility-tree, and UI Automation results are not substitutes for physical environment evidence. In particular, text input or UIA tests cannot certify physical Chinese IME behavior, mixed-DPI multi-monitor behavior, or an eight-hour soak unless those exact scenarios were actually run and recorded.
 
+### Space home-screen regression
+
+`tests/native/Invoke-SpaceChoiceAcceptance.py` exercises the real SpaceChoice popup,
+including mouse row centers, accessibility default actions, keyboard cancellation,
+saved activation/restart, and renamed/reordered/deleted space identities. Run it
+separately with `ECHO_WINDOWS_ACCEPTANCE=1`, an executable built with
+`cargo build -p echo-desktop --locked --features native-test`, and
+`--executable <exe> --template <synthetic-fixture> --evidence <new-directory>`.
+The template must contain History, Favorites and two custom spaces (one empty),
+with capture disabled. `--repro-only` runs just the original crash regression.
+The script copies the fixture and records process exits, calls and screenshots;
+it never uses the installed application's data. This is automated native coverage,
+not physical-input certification.
+
 Inline completion's keyboard lease, target range, composition evidence and native
 selection verification belong to `echo-windows`; query selection and stale row
 gating belong to `echo-presentation`. See `docs/engineering/inline-completion.md`.

@@ -18,6 +18,9 @@ public static class EchoDriver
             object value = null;
             switch (args[0])
             {
+                case "expand": Require(args,4); EchoUi.Expand(pid,title,args[3]); break;
+                case "popup-items": value=EchoUi.PopupItems(pid,title); break;
+                case "popup-select": Require(args,4); EchoUi.SelectPopupItem(pid,title,args[3]); break;
                 case "benchmark-search": Require(args,4); value=EchoBenchmarks.Search(pid,title,Int32.Parse(args[3])); break;
                 case "benchmark-cycles": Require(args,5); value=EchoBenchmarks.Cycles(pid,title,args[3],Int32.Parse(args[4])); break;
                 case "window-count": value=EchoUi.WindowCount(pid); break;
