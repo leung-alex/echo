@@ -8,6 +8,22 @@ the still-current pre-show snapshot; an unverified target remains copy-only.
 Failures after inline activation never authorize a new ordinary paste target.
 History and Saved Items retain their distinct ownership and original payloads.
 
+Writable ValuePattern-only inputs enter ordinary Quick Insert directly after
+focus, process, ownership, and runtime identity validation. The captured target
+crosses the typed activation boundary without a second post-failure capture.
+This mode does not filter from external text or replace a query span. Selection
+pastes once into the original input through the existing ordinary paste adapter;
+delivery revalidates that same input. Read-only, password, unidentified, and
+non-editable controls remain ineligible. No application-name allowlist is used.
+
+When UIA returns an unfocused host or misreports keyboard focusability, ordinary
+paste can resolve MSAA's direct focus chain in the captured native focus window
+and at most 32 descendant HWNDs. Multiple distinct focused inputs are rejected.
+The MSAA input must report focused, focusable, writable, non-password text; its
+converted UIA element still requires input focus, writability, process ownership
+and a stable runtime identity. Capture and delivery use the same resolver. A
+TextPattern synthesized by this bridge does not enable inline replacement.
+
 Writable UIA Group composers (including Feishu chat) may enter inline mode when
 their TextPattern exposes an editor-scoped document and selectable range. Group
 is not sufficient by itself: focus, ownership, visibility, writability, range and

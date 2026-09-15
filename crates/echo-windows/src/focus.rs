@@ -286,6 +286,37 @@ impl FocusSnapshot {
         }
         result
     }
+    pub(crate) fn capture_plain_paste_target(
+        &self,
+        uia: &windows::Win32::UI::Accessibility::IUIAutomation,
+    ) -> Option<(PasteTarget, PopupAnchor)> {
+        if self.native_input.is_some() || self.native_blocked || !self.current() {
+            return None;
+        }
+        let probe = unsafe { automation::plain_paste_probe(uia, self)? };
+        let anchor = probe
+            .anchor
+            .map(|(target, source)| PopupAnchor {
+                geometry: geometry(target),
+                source,
+            })
+            .unwrap_or(self.anchor);
+        Some((
+            PasteTarget {
+                window_id: self.window_id,
+                window_class: native::window_class_name(WinHwnd(self.window_id as _))
+                    .unwrap_or_default(),
+                process_id: self.process_id,
+                process_started_at: self.process_started_at,
+                focused_control: Some(probe.identity),
+                app_name: None,
+                selected_text: None,
+                is_single_line: None,
+                geometry: anchor.geometry,
+            },
+            anchor,
+        ))
+    }
 }
 /// Bounded MTA validation, used only when the captured identity is a UIA element.
 pub fn warm_accessibility() {

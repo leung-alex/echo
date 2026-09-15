@@ -46,7 +46,8 @@ recapture Echo's own input control as the destination.
 - `desktop/app/quick_insert_window.rs`: size and position before show, compact
   Cover Flow stage with unchanged front-card renderer, separate manager geometry.
 
-The MTA caller waits at most 55 ms. A timeout does **not** cancel the external COM
+The MTA caller waits at most 200 ms, including embedded MSAA focus resolution.
+A timeout does **not** cancel the external COM
 call: the singleton worker remains busy until that call finishes, and no new
 worker is spawned. Late results cannot upgrade an already shown copy-only
 session. The next invocation can retry when the worker is available. No timer

@@ -469,8 +469,11 @@ impl App {
                             return;
                         }
                         let has_target = result.target.is_some();
-                        if self.inline_ui.unavailable && has_target && !self.stop_inline() {
-                            return;
+                        if self.inline_ui.unavailable && has_target {
+                            if !self.stop_inline() {
+                                return;
+                            }
+                            self.inline_ui.plain_paste = true;
                         }
                         if !self.send(Work::Adopt(epoch, result.target)) {
                             self.capture_pending = false;
@@ -730,7 +733,7 @@ impl App {
         }
         let center = self.prepare_window_geometry();
         if let Some(hook) = &self.hook {
-            hook.set_inline_popup(self.inline_active())?;
+            hook.set_inline_popup(self.popup_preserves_input_focus())?;
         }
         self.trim_timer.stop();
         self.hidden_generation = self.hidden_generation.wrapping_add(1);
@@ -790,9 +793,9 @@ impl App {
                 shell::fit_window(hwnd, first || center, 16.0)?;
             }
             if let Some(hook) = &self.hook {
-                hook.set_inline_popup(self.inline_active())?;
+                hook.set_inline_popup(self.popup_preserves_input_focus())?;
             }
-            if !self.inline_active() {
+            if !self.popup_preserves_input_focus() {
                 shell::focus_window(hwnd)?;
             }
         }
@@ -801,7 +804,7 @@ impl App {
             shell::ui_environment(self.hwnd)
         };
         self.apply_theme();
-        if self.inline_active() {
+        if self.popup_preserves_input_focus() {
             // Keyboard focus remains in the original input.
         } else if self.window.get_route().as_str() == "history" {
             self.window.invoke_focus_content();

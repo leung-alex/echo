@@ -58,6 +58,7 @@ pub enum InlineEvent {
         session: u64,
         reason: String,
         anchor: PopupAnchor,
+        captured_target: Option<PasteTarget>,
     },
     Compatibility {
         session: u64,
@@ -649,12 +650,13 @@ fn run(
                 let fallback_snapshot = snapshot.clone();
                 let result = begin(id, snapshot, &shared, &hook, &sender, automation.as_ref());
                 match result {
-                    Ok(active) => {
+                    Ok(Some(active)) => {
                         session = Some(active);
                         // Cover the gap between the initial read and subscription:
                         // composition may have ended without a subscribed event.
                         due = Some(Instant::now() + Duration::from_millis(20));
                     }
+                    Ok(None) => {}
                     Err(reason) => {
                         // A failed capability probe is NOT permission to focus Echo.
                         // Keep the session hook as an Enter shield until Esc/F6/dismiss.
@@ -670,6 +672,7 @@ fn run(
                                     session: id,
                                     reason,
                                     anchor,
+                                    captured_target: None,
                                 });
                             } else {
                                 shared.cancel(id,"Input changed during capability check; invoke again in the input");
@@ -778,7 +781,7 @@ fn begin(
     hook: &keyboard::InputHook,
     sender: &SyncSender<Request>,
     uia: Option<&windows::Win32::UI::Accessibility::IUIAutomation>,
-) -> Result<Session, String> {
+) -> Result<Option<Session>, String> {
     {
         let mut evidence = shared
             .composition_evidence
@@ -820,6 +823,18 @@ fn begin(
         }
     }
     let serial = shared.input_serial.load(Ordering::Acquire);
+    if let Some((target, anchor)) = uia.and_then(|uia| snapshot.capture_plain_paste_target(uia)) {
+        if shared.requested.load(Ordering::Acquire) != id || !snapshot.still_current() {
+            return Err("Input changed during plain paste activation".into());
+        }
+        (shared.callback)(InlineEvent::Unavailable {
+            session: id,
+            reason: "Plain paste mode: verified input without inline range support".into(),
+            anchor,
+            captured_target: Some(target),
+        });
+        return Ok(None);
+    }
     let backend = target::Target::open(&snapshot, uia)?;
     shared.record("target-open", 0);
     shared
@@ -865,7 +880,7 @@ fn begin(
         composing: composition == IME_ACTIVE,
         suspended: composition == IME_UNKNOWN,
     }));
-    Ok(Session {
+    Ok(Some(Session {
         id,
         backend,
         range,
@@ -873,7 +888,7 @@ fn begin(
         prepared: None,
         read_failures: 0,
         anchor,
-    })
+    }))
 }
 /// Returns true when input raced the provider read and needs one more deferred sample.
 fn observe(session: &mut Session, shared: &Shared) -> bool {

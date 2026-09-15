@@ -8,6 +8,7 @@ pub(super) struct InlineUi {
     pub ticket: Option<InlineTicket>,
     pub pending: bool,
     pub unavailable: bool,
+    pub plain_paste: bool,
     pub composing: bool,
     pub suspended: bool,
     pub above: Option<bool>,
@@ -27,7 +28,7 @@ impl InlineUi {
 }
 impl App {
     pub(super) fn sync_inline_editor_focus(&mut self) {
-        let editing = self.inline_active() && self.window.get_editor_open();
+        let editing = self.popup_preserves_input_focus() && self.window.get_editor_open();
         if editing == self.inline_ui.editor_focus {
             return;
         }
@@ -56,7 +57,7 @@ impl App {
             self.inline_ui.editor_focus = true;
         } else {
             if let Some(hook) = &self.hook {
-                if let Err(error) = hook.set_inline_popup(self.inline_active()) {
+                if let Err(error) = hook.set_inline_popup(self.popup_preserves_input_focus()) {
                     self.report(format!("Could not restore input mode: {error}"), true);
                     return;
                 }
@@ -73,11 +74,14 @@ impl App {
     pub(super) fn inline_active(&self) -> bool {
         self.inline_ui.ticket.is_some() || self.inline_ui.unavailable
     }
+    pub(super) fn popup_preserves_input_focus(&self) -> bool {
+        self.inline_active() || self.inline_ui.plain_paste
+    }
     pub(super) fn stop_inline(&mut self) -> bool {
         let _timing = crate::popup_timing::span("inline_retirement");
         // Retire the visual lease before permitting a new host Enter. The
         // adapter still drains any already-consumed physical key-up afterward.
-        if self.inline_active() || self.inline_ui.pending {
+        if self.popup_preserves_input_focus() || self.inline_ui.pending {
             if let Err(error) = self.window.hide() {
                 self.report(
                     &format!("Inline window could not hide; Enter remains protected: {error}"),
@@ -158,6 +162,7 @@ impl App {
                 session,
                 reason,
                 anchor,
+                captured_target,
             } => {
                 if session != self.session.epoch || !self.inline_ui.pending {
                     return;
@@ -185,10 +190,23 @@ impl App {
                 self.deck.show(SpaceId::HISTORY);
                 self.render_navigation();
                 self.pending_scroll = Some(0.0);
-                self.compatibility_notice = Some(format!("Input filtering unavailable: {reason}"));
+                self.compatibility_notice = Some(if captured_target.is_some() {
+                    "Plain paste mode: typing in this input does not filter history".into()
+                } else {
+                    format!("Input filtering unavailable: {reason}")
+                });
                 self.capture_pending = true;
                 self.set_busy();
-                if !self.send(Work::Begin(session, Context::QuickInsert, snapshot)) {
+                if let Some(target) = captured_target {
+                    self.handle(Event::Activated(
+                        session,
+                        Context::QuickInsert,
+                        Ok(crate::events::ActivationResult {
+                            target: Some(target),
+                            anchor: Some(anchor),
+                        }),
+                    ));
+                } else if !self.send(Work::Begin(session, Context::QuickInsert, snapshot)) {
                     self.dismiss();
                 }
             }

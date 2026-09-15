@@ -10,9 +10,10 @@ use std::time::Duration;
 use windows::{
     core::{Interface, BOOL},
     Win32::{
-        Foundation::HWND,
+        Foundation::{HWND, LPARAM},
         System::{Com::*, Ole::*, Variant::*},
         UI::Accessibility::*,
+        UI::WindowsAndMessaging::EnumChildWindows,
     },
 };
 pub(super) struct Probe {
@@ -85,10 +86,10 @@ pub(super) fn query(snapshot: FocusSnapshot, geometry: bool) -> Option<Probe> {
     }
     // A timeout discards the result, NOT the still-running COM call. Busy remains set
     // until the one worker actually returns. No fresh worker is spawned on timeout.
-    response
-        .recv_timeout(Duration::from_millis(55))
-        .ok()
-        .flatten()
+    // Embedded MSAA providers require several cross-process calls to resolve and
+    // revalidate the input. Keep a bounded wait without rejecting normal cold reads.
+    let result = response.recv_timeout(Duration::from_millis(200));
+    result.ok().flatten()
 }
 unsafe fn writable(element: &IUIAutomationElement) -> bool {
     if let Ok(value) = element.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
@@ -127,12 +128,176 @@ unsafe fn probe(uia: &IUIAutomation, snapshot: &FocusSnapshot, geometry: bool) -
     if !snapshot.current() {
         return None;
     }
+    let (element, legacy) = focused_element(uia, snapshot)?;
+    probe_element(uia, snapshot, geometry, &element, legacy)
+}
+// Some embedded providers return their native host from GetFocusedElement and
+// misreport UIA IsKeyboardFocusable on the actual input. Follow MSAA's direct
+// focus chain instead of scanning the entire subtree. Capture and delivery use
+// the same resolver, and the converted element still needs UIA identity checks.
+unsafe fn focused_element(
+    uia: &IUIAutomation,
+    snapshot: &FocusSnapshot,
+) -> Option<(IUIAutomationElement, bool)> {
     let element = uia.GetFocusedElement().ok()?;
-    let window = HWND(snapshot.window_id as _);
-    if element.CurrentProcessId().ok()? as u32 != snapshot.process_id
-        || !native::automation_element_belongs_to(uia, &element, window)
-        || !quick_insert_editable(&element)
+    if native::automation_element_has_input_focus(&element) {
+        return Some((element, false));
+    }
+    let host = HWND(snapshot.focused_handle as _);
+    if !snapshot.current()
+        || !native::native_control_belongs_to(
+            host,
+            HWND(snapshot.window_id as _),
+            snapshot.process_id,
+        )
     {
+        return None;
+    }
+    if let Some(element) = legacy_focused_element(uia, host) {
+        return Some((element, true));
+    }
+    // The GUI thread can focus a container HWND while its embedded provider lives
+    // on a child HWND. Bound the native host list, and require one unique focused
+    // input; never walk the potentially enormous accessibility tree.
+    let mut hosts = Vec::<HWND>::new();
+    let _ = EnumChildWindows(
+        Some(host),
+        Some(collect_host),
+        LPARAM(&mut hosts as *mut _ as isize),
+    );
+    if hosts.len() > 32 {
+        return None;
+    }
+    let mut found: Option<IUIAutomationElement> = None;
+    for child in hosts {
+        if !snapshot.current() {
+            return None;
+        }
+        if !native::native_control_belongs_to(
+            child,
+            HWND(snapshot.window_id as _),
+            snapshot.process_id,
+        ) {
+            continue;
+        }
+        if let Some(candidate) = legacy_focused_element(uia, child) {
+            if let Some(previous) = found.as_ref() {
+                if !uia
+                    .CompareElements(previous, &candidate)
+                    .is_ok_and(|v| v.as_bool())
+                {
+                    return None;
+                }
+            } else {
+                found = Some(candidate);
+            }
+        }
+    }
+    found.map(|element| (element, true))
+}
+unsafe extern "system" fn collect_host(host: HWND, data: LPARAM) -> BOOL {
+    let hosts = &mut *(data.0 as *mut Vec<HWND>);
+    hosts.push(host);
+    BOOL::from(hosts.len() <= 32)
+}
+unsafe fn legacy_focused_element(uia: &IUIAutomation, host: HWND) -> Option<IUIAutomationElement> {
+    let started = std::time::Instant::now();
+    let mut object = std::ptr::null_mut();
+    AccessibleObjectFromWindow(host, 0xffff_fffc, &IAccessible::IID, &mut object).ok()?;
+    if object.is_null() {
+        return None;
+    }
+    let mut accessible = IAccessible::from_raw(object);
+    for _ in 0..8 {
+        let mut focus = accessible.accFocus().ok()?;
+        let kind = focus.Anonymous.Anonymous.vt;
+        let next = if kind == VT_DISPATCH {
+            focus
+                .Anonymous
+                .Anonymous
+                .Anonymous
+                .pdispVal
+                .as_ref()
+                .and_then(|dispatch| dispatch.cast::<IAccessible>().ok())
+        } else {
+            None
+        };
+        let child = (kind == VT_I4).then(|| focus.Anonymous.Anonymous.Anonymous.lVal);
+        let _ = VariantClear(&mut focus);
+        if let Some(next) = next {
+            accessible = next;
+            continue;
+        }
+        let child = child?;
+        if child < 0 || started.elapsed() > Duration::from_secs(1) {
+            return None;
+        }
+        let child_variant = VARIANT::from(child);
+        let role = variant_i32(accessible.get_accRole(&child_variant).ok()?)?;
+        let state = variant_i32(accessible.get_accState(&child_variant).ok()?)?;
+        if !legacy_writable_focus(role, state) {
+            return None;
+        }
+        let element = uia.ElementFromIAccessible(&accessible, child).ok()?;
+        return Some(element);
+    }
+    None
+}
+unsafe fn variant_i32(mut value: VARIANT) -> Option<i32> {
+    let result =
+        (value.Anonymous.Anonymous.vt == VT_I4).then(|| value.Anonymous.Anonymous.Anonymous.lVal);
+    let _ = VariantClear(&mut value);
+    result
+}
+fn legacy_writable_focus(role: i32, state: i32) -> bool {
+    // MSAA ROLE_SYSTEM_TEXT; require FOCUSED + FOCUSABLE and reject
+    // UNAVAILABLE, READONLY and PROTECTED. UIA writability is checked as well.
+    role == 42 && state & 0x0010_0004 == 0x0010_0004 && state & (0x1 | 0x40 | 0x2000_0000) == 0
+}
+pub(super) unsafe fn plain_paste_probe(
+    uia: &IUIAutomation,
+    snapshot: &FocusSnapshot,
+) -> Option<Probe> {
+    let (element, legacy) = focused_element(uia, snapshot)?;
+    let has_text = element
+        .GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId)
+        .is_ok();
+    let read_only = element
+        .GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
+        .ok()
+        .and_then(|value| value.CurrentIsReadOnly().ok())
+        .map(|v| v.as_bool());
+    if !prefers_plain_paste(has_text, read_only, legacy) {
+        return None;
+    }
+    probe_element(uia, snapshot, true, &element, legacy)
+}
+fn prefers_plain_paste(has_text: bool, value_read_only: Option<bool>, legacy: bool) -> bool {
+    // The MSAA-to-UIA bridge may synthesize TextPattern. That does not establish
+    // inline selection/replacement support in the original focused provider.
+    (legacy || !has_text) && value_read_only == Some(false)
+}
+unsafe fn probe_element(
+    uia: &IUIAutomation,
+    snapshot: &FocusSnapshot,
+    geometry: bool,
+    element: &IUIAutomationElement,
+    legacy: bool,
+) -> Option<Probe> {
+    if !snapshot.current() {
+        return None;
+    }
+    let window = HWND(snapshot.window_id as _);
+    let process_matches = element.CurrentProcessId().ok() == Some(snapshot.process_id as i32);
+    let belongs = process_matches && native::automation_element_belongs_to(uia, element, window);
+    let editable = quick_insert_editable(element)
+        || (legacy
+            && element.CurrentControlType().ok() == Some(UIA_EditControlTypeId)
+            && element.CurrentIsEnabled().is_ok_and(|v| v.as_bool())
+            && element.CurrentHasKeyboardFocus().is_ok_and(|v| v.as_bool())
+            && element.CurrentIsPassword().is_ok_and(|v| !v.as_bool())
+            && writable(element));
+    if !process_matches || !belongs || !editable {
         return None;
     }
     let identity =
@@ -145,6 +310,31 @@ unsafe fn probe(uia: &IUIAutomation, snapshot: &FocusSnapshot, geometry: bool) -
         return None;
     }
     Some(Probe { identity, anchor })
+}
+#[cfg(test)]
+mod capability_tests {
+    use super::{legacy_writable_focus, prefers_plain_paste};
+    #[test]
+    fn legacy_focus_requires_writable_text_with_actual_keyboard_focus() {
+        let focused = 0x0010_0004;
+        assert!(legacy_writable_focus(42, 1074790404));
+        assert!(!legacy_writable_focus(42, focused & !4));
+        assert!(!legacy_writable_focus(42, focused & !0x0010_0000));
+        for blocked in [0x1, 0x40, 0x2000_0000] {
+            assert!(!legacy_writable_focus(42, focused | blocked));
+        }
+        assert!(!legacy_writable_focus(9, focused));
+    }
+    #[test]
+    fn value_only_writable_inputs_use_plain_paste_without_an_app_allowlist() {
+        assert!(prefers_plain_paste(false, Some(false), false));
+        assert!(!prefers_plain_paste(true, Some(false), false));
+        assert!(!prefers_plain_paste(false, Some(true), false));
+        assert!(!prefers_plain_paste(false, None, false));
+        assert!(prefers_plain_paste(true, Some(false), true));
+        assert!(!prefers_plain_paste(true, Some(true), true));
+        assert!(!prefers_plain_paste(true, None, true));
+    }
 }
 pub(crate) unsafe fn caret(element: &IUIAutomationElement) -> Option<(PhysicalRect, AnchorSource)> {
     // TextPattern2 may be advertised but fail for an empty/new control.
