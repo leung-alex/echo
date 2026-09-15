@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -72,6 +73,19 @@ func TestArchitectureDependencyPolicyAcceptsAdapterDirection(t *testing.T) {
 	metadata := []byte(`{"packages":[{"name":"echo-storage","dependencies":[{"name":"echo-engine"}]},{"name":"echo-windows","dependencies":[{"name":"echo-engine"}]},{"name":"echo-engine","dependencies":[]}]}`)
 	if err := validateCargoArchitecture(metadata); err != nil {
 		t.Fatalf("valid adapter graph was rejected: %v", err)
+	}
+}
+
+func TestDesktopUICompilationBoundary(t *testing.T) {
+	valid := []byte(`{"packages":[{"name":"echo-desktop","dependencies":[{"name":"echo-desktop-ui"}]},{"name":"echo-desktop-ui","dependencies":[{"name":"slint"}]}]}`)
+	if err := validateCargoArchitecture(valid); err != nil {
+		t.Fatalf("desktop UI dependency rejected: %v", err)
+	}
+	for _, dependency := range []string{"echo-desktop", "echo-engine", "echo-storage", "echo-windows", "echo-presentation"} {
+		metadata := []byte(fmt.Sprintf(`{"packages":[{"name":"echo-desktop-ui","dependencies":[{"name":%q}]}]}`, dependency))
+		if err := validateCargoArchitecture(metadata); err == nil {
+			t.Fatalf("UI compilation boundary accepted dependency on %s", dependency)
+		}
 	}
 }
 

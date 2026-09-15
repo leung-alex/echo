@@ -22,6 +22,10 @@ echo-storage -> echo-engine <- echo-windows
 
 ## Ownership
 
+The generated Slint code is compiled separately by `echo-desktop-ui` in
+`apps/desktop/ui-crate`, with source still in `apps/desktop/ui`. Desktop business
+changes reuse that dependency; UI or translation changes rebuild it normally.
+
 ### Engine
 
 `ingest` normalizes clipboard snapshots and applies capture policy. `history` owns history queries and actions. `saved_items` owns the distinct durable Saved Item concept. `quick_insert` owns retrieval, target sessions, copy, and insert orchestration. `settings` owns settings values. `preview` owns preview asset requirements without UI encoding.

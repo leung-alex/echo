@@ -1234,6 +1234,7 @@ dependencies = [
  "accesskit",
  "chrono",
  "echo-activation",
+ "echo-desktop-ui",
  "echo-engine",
  "echo-presentation",
  "echo-storage",
@@ -1246,8 +1247,16 @@ dependencies = [
  "serde_json",
  "sha2",
  "slint",
- "slint-build",
  "tempfile",
+]
+
+[[package]]
+name = "echo-desktop-ui"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "slint",
+ "slint-build",
 ]
 
 [[package]]

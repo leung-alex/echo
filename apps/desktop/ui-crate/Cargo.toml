@@ -1,0 +1,12 @@
+[package]
+name = "echo-desktop-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+slint = { version = "=1.17.1", default-features = false, features = ["std", "compat-1-2"] }
+
+[build-dependencies]
+serde_json.workspace = true
+slint-build = "=1.17.1"

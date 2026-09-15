@@ -12,6 +12,7 @@ native-test = ["echo-windows/native-test"]
 path = "src/lib.rs"
 
 [dependencies]
+echo-desktop-ui = { path = "ui-crate" }
 i-slint-backend-winit = { version = "=1.17.1", default-features = false, features = ["echo-software-present"] }
 echo-engine.workspace = true
 echo-storage.workspace = true
@@ -27,8 +28,6 @@ raw-window-handle = "0.6"
 slint = { version = "=1.17.1", default-features = false, features = ["std", "backend-winit", "renderer-software", "accessibility", "compat-1-2", "raw-window-handle-06", "unstable-winit-030"] }
 
 [build-dependencies]
-serde_json.workspace = true
-slint-build = "=1.17.1"
 embed-resource = "3.0.11"
 [dev-dependencies]
 accesskit = "=0.24.1"

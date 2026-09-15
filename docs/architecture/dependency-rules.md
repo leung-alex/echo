@@ -24,6 +24,12 @@ echo-storage -> echo-engine <- echo-windows
 
 `apps/desktop` may depend on engine, storage, Windows, activation, presentation, and Slint. It is the composition root and UI-thread/worker boundary. It must not own deduplication, capture policy, FTS query construction, blob reconciliation, thumbnail policy, or native paste-target validation.
 
+`apps/desktop/ui-crate` (`echo-desktop-ui`) compiles the Slint tree in
+`apps/desktop/ui` and bundles its translations. Desktop re-exports these generated
+types. The UI crate must not depend on any other Echo crate: business-only edits
+must not invalidate its compiled artifact. Windows resources remain in the host
+build script. Both crates retain the same development optimization level.
+
 Slint files may expose typed properties and callbacks, but must not reach storage, engine services, the named pipe, or Win32 directly. Slint component handles stay on the UI thread. Blocking work crosses `apps/desktop/src/service.rs` using typed Rust work and result messages; do not recreate command-name strings, JSON IPC, browser transports, or polling.
 
 Interfaces live next to the engine behavior that needs them. Do not create repository-wide `common`, `helpers`, `utils`, `manager`, or `interfaces` dumping grounds.

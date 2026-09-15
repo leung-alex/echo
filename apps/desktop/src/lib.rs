@@ -9,7 +9,7 @@ mod memory_lifecycle;
 mod memory_trace;
 mod native_model;
 mod popup_timing;
-slint::include_modules!();
+pub use echo_desktop_ui::*;
 #[cfg(windows)]
 mod app;
 #[cfg(windows)]

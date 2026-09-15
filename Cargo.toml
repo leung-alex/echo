@@ -6,6 +6,7 @@ members = [
     "crates/echo-activation",
     "crates/echo-presentation",
     "apps/desktop",
+    "apps/desktop/ui-crate",
 ]
 resolver = "2"
 
@@ -57,9 +58,16 @@ opt-level = 1
 # Keep line tables and backtraces without costly generated-variable metadata.
 debug = 1
 
+[profile.dev.package.echo-desktop-ui]
+opt-level = 1
+debug = 1
+
 # Tests exercise behavior and pixels; optimizing generated test bindings only
 # adds compile time. Runtime measurements use the separate perf profile.
 [profile.test.package.echo-desktop]
+opt-level = 0
+
+[profile.test.package.echo-desktop-ui]
 opt-level = 0
 
 [profile.release]
