@@ -25,6 +25,7 @@
   --echo-color-on-accent: #ffffff;
   --echo-color-panel: #f7f7f6;
   --echo-color-raised: #ffffff;
+  --echo-color-row-text: #555b60;
   --echo-color-selection: #edf5fa;
   --echo-color-shadow: #00000020;
   --echo-color-stage-edge: #dfe5e2;
@@ -125,6 +126,7 @@
   --echo-color-on-accent: #102430;
   --echo-color-panel: #161d23;
   --echo-color-raised: #1d252c;
+  --echo-color-row-text: #f4f6f7;
   --echo-color-selection: #253e4f;
   --echo-color-shadow: #00000066;
   --echo-color-stage-edge: #080d10;

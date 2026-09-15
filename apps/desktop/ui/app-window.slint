@@ -1,4 +1,5 @@
 export { I18n } from "i18n.slint";
+export { DesignTokens } from "echo-tokens.slint";
 import { I18n } from "i18n.slint";
 import { EnumChoice } from "enum-choice.slint";
 import { ListView, ScrollView, LineEdit, TextEdit, CheckBox, ComboBox, AboutSlint, Palette } from "std-widgets.slint";
@@ -210,6 +211,7 @@ export component AppWindow inherits Window {
     no-frame: true;
     background: transparent;
     default-font-family: "Microsoft YaHei UI"; default-font-size: T.font-body;
+    default-font-weight: T.font-weight-normal;
     page-focus := FocusScope {
         x: 0px; y: 0px; width: root.width; height: root.height;
         key-pressed(event) => { if (root.ime-composing()) { return reject; } return root.key-event(event.text,event.modifiers.control,event.modifiers.shift,"control") ? accept : reject; }

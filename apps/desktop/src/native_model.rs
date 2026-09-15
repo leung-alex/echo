@@ -78,6 +78,9 @@ impl EntryModel {
 }
 impl Model for EntryModel {
     type Data = crate::EntryRow;
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
     fn row_count(&self) -> usize {
         self.rows.borrow().len()
     }

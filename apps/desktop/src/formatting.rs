@@ -103,7 +103,7 @@ mod tests {
         crate::match_highlight::apply(
             &mut row,
             &mut echo_engine::FuzzyMatcher::new("PrivateSource"),
-            false,
+            "#285f80",
         );
         assert_eq!(row.match_count, 0);
         assert_eq!(row.body.as_str(), "visible payload");
@@ -112,7 +112,7 @@ mod tests {
         crate::match_highlight::apply(
             &mut row,
             &mut echo_engine::FuzzyMatcher::new("visible"),
-            false,
+            "#285f80",
         );
         assert!(row.match_count > 0);
     }

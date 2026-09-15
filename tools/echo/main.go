@@ -847,6 +847,9 @@ func (a *app) install() error {
 }
 
 func (a *app) build(release bool) error {
+	if err := a.generateTokens(false); err != nil {
+		return err
+	}
 	args := []string{"build", "-p", "echo-desktop", "--locked", "--no-default-features"}
 	if release {
 		args = append(args, "--release")
@@ -855,7 +858,14 @@ func (a *app) build(release bool) error {
 }
 
 func (a *app) dev() error {
-	return a.run("cargo", "run", "-p", "echo-desktop", "--locked", "--no-default-features")
+	if err := a.generateTokens(false); err != nil {
+		return err
+	}
+	path, err := filepath.Abs(filepath.Join(a.root, "design", "tokens", "echo.tokens.json"))
+	if err != nil {
+		return err
+	}
+	return a.runWithEnv(map[string]string{"ECHO_DEV_STYLE_SOURCE": path}, "cargo", "run", "-p", "echo-desktop", "--locked", "--no-default-features")
 }
 
 func (a *app) smoke() error { return a.runNativeGate("smoke") }

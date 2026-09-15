@@ -36,6 +36,7 @@ mod settings_controller;
 mod settings_geometry;
 mod side_previews;
 mod software_deck;
+mod styles;
 use dialogs::{Confirmation, Picker};
 thread_local! { static APP: RefCell<Option<Rc<RefCell<App>>>> = const { RefCell::new(None) }; }
 pub fn install(app: Rc<RefCell<App>>) {
@@ -174,6 +175,8 @@ struct Preview {
     total: u64,
 }
 pub struct App {
+    styles: crate::style::StyleSnapshot,
+    style_theme: Option<(bool, bool)>,
     window: AppWindow,
     surface: Surface,
     model: Rc<crate::native_model::EntryModel>,
@@ -252,6 +255,7 @@ impl App {
         args: Vec<String>,
         graphics: crate::graphics::GraphicsInfo,
         tray: shell::TrayController,
+        styles: crate::style::StyleSnapshot,
     ) -> Result<Rc<RefCell<Self>>, String> {
         let window = AppWindow::new().map_err(|e| e.to_string())?;
         window
@@ -271,6 +275,8 @@ impl App {
         surface.row_limit = 40;
         let environment = shell::ui_environment(None);
         let app = Rc::new(RefCell::new(Self {
+            styles,
+            style_theme: None,
             window,
             surface,
             model,
@@ -376,6 +382,13 @@ impl App {
             return;
         }
         match event {
+            #[cfg(debug_assertions)]
+            Event::Styles(styles) => {
+                self.styles = styles;
+                self.style_theme = None;
+                self.apply_styles();
+                eprintln!("[Echo styles] applied");
+            }
             Event::Inline(event) => self.inline_event(event),
             Event::Command(command) => self.command(command),
             Event::Shell(event) => self.shell_event(event),
@@ -1002,7 +1015,7 @@ impl App {
                             crate::match_highlight::apply(
                                 &mut row,
                                 &mut matcher,
-                                self.window.get_dark(),
+                                &self.highlight_color(),
                             );
                         }
                         row.selected =

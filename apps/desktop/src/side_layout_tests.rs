@@ -8,6 +8,7 @@ use slint::{
 use std::rc::Rc;
 
 slint::slint! {
+    export { DesignTokens } from "../ui/echo-tokens.slint";
     import { SpaceSideCard } from "../ui/software-cards.slint";
     export component SideLayoutFixture inherits Window {
         width: 500px; height: 300px;
@@ -32,6 +33,11 @@ fn side_text_pixels_stay_stable_while_only_the_frame_resizes() {
     let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
     slint::platform::set_platform(Box::new(TestPlatform(window.clone()))).unwrap();
     let ui = SideLayoutFixture::new().unwrap();
+    crate::style::apply_style!(
+        ui.global::<DesignTokens>(),
+        &crate::style::StyleSnapshot::default(),
+        false
+    );
     ui.show().unwrap();
     window.set_size(slint::PhysicalSize::new(500, 300));
     let capture = || {

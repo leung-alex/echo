@@ -1,7 +1,6 @@
 //! Presentation-only match formatting. Source payload and accessible names stay
 //! plain text. Markup metacharacters are escaped before applying trusted styling.
 use echo_engine::FuzzyMatcher;
-use echo_presentation::echo_tokens as t;
 use slint::StyledText;
 use std::ops::Range;
 fn escape(text: &str) -> String {
@@ -33,33 +32,30 @@ fn markup(text: &str, ranges: &[Range<usize>], color: &str) -> String {
             continue;
         }
         result.push_str(&escape(&text[end..range.start]));
-        result.push_str(&format!(
-            "<font color='{color}'>**{}**</font>",
-            escape(&text[range.clone()])
-        ));
+        let matched = escape(&text[range.clone()]);
+        if color.is_empty() {
+            result.push_str(&format!("**{matched}**"));
+        } else {
+            result.push_str(&format!("<font color='{color}'>**{matched}**</font>"));
+        }
         end = range.end;
     }
     result.push_str(&escape(&text[end..]));
     result
 }
-fn styled(text: &str, matcher: &mut FuzzyMatcher, dark: bool) -> (StyledText, i32) {
+fn styled(text: &str, matcher: &mut FuzzyMatcher, color: &str) -> (StyledText, i32) {
     let ranges = matcher.highlights(text);
     if ranges.is_empty() {
         return (StyledText::from_plain_text(text), 0);
     }
-    let color = if dark {
-        t::COLOR_ACCENT_TEXT_DARK
-    } else {
-        t::COLOR_ACCENT_TEXT_LIGHT
-    };
     let value = StyledText::from_markdown(&markup(text, &ranges, color))
         .unwrap_or_else(|_| StyledText::from_plain_text(text));
     (value, ranges.len() as i32)
 }
-pub fn apply(row: &mut crate::EntryRow, matcher: &mut FuzzyMatcher, dark: bool) {
-    let (title, a) = styled(row.title.as_str(), matcher, dark);
-    let (body, b) = styled(row.body.as_str(), matcher, dark);
-    let (tags, c) = styled(row.tags.as_str(), matcher, dark);
+pub fn apply(row: &mut crate::EntryRow, matcher: &mut FuzzyMatcher, color: &str) {
+    let (title, a) = styled(row.title.as_str(), matcher, color);
+    let (body, b) = styled(row.body.as_str(), matcher, color);
+    let (tags, c) = styled(row.tags.as_str(), matcher, color);
     row.title_rich = title;
     row.body_rich = body;
     row.tags_rich = tags;
@@ -68,6 +64,17 @@ pub fn apply(row: &mut crate::EntryRow, matcher: &mut FuzzyMatcher, dark: bool) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn system_text_color_and_alpha_are_preserved() {
+        let bold = markup("match", &[0..5], "");
+        assert_eq!(bold, "**match**");
+        let alpha = markup("match", &[0..5], "#12345680");
+        assert!(StyledText::from_markdown(&alpha).is_ok());
+        assert_ne!(
+            StyledText::from_markdown(&alpha).unwrap(),
+            StyledText::from_markdown(&markup("match", &[0..5], "#123456ff")).unwrap()
+        );
+    }
     #[test]
     fn markup_escapes_content_not_instructions() {
         let text = "<script> ** [x](url) & \\";

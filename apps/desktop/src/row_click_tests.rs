@@ -8,6 +8,7 @@ use slint::{
 use std::{cell::RefCell, rc::Rc};
 
 slint::slint! {
+    export { DesignTokens } from "../ui/echo-tokens.slint";
     import { EntryView } from "../ui/entry-row.slint";
     export component RowFixture inherits Window {
         width: 500px; height: 180px;
@@ -39,6 +40,11 @@ fn left_click_inserts_history_and_saved_space_rows() {
     slint::platform::set_platform(Box::new(TestPlatform)).unwrap();
     for saved in [false, true] {
         let ui = RowFixture::new().unwrap();
+        crate::style::apply_style!(
+            ui.global::<DesignTokens>(),
+            &crate::style::StyleSnapshot::default(),
+            false
+        );
         ui.set_saved(saved);
         ui.on_drag_data(|| {
             let mut data = slint::DataTransfer::default();

@@ -54,6 +54,11 @@ compilation cost once. Subsequent Rust host edits reuse it. Slint sources,
 translations, dependency versions, toolchain or profile changes can still require
 recompilation; do not run `cargo clean` during ordinary development.
 
+For numeric visual edits, use the [runtime styles workflow](runtime-styles.md).
+`echo.cmd dev` loads marked style values without recompilation or restart.
+Generated defaults live in the desktop host; their Slint property interface is
+stable across value-only edits. Keep full verification at the end of an iteration.
+
 For build diagnostics, use `cargo build -p echo-desktop --locked
 --no-default-features --timings`. Repeat without edits to check warm-cache reuse;
 after changing a host Rust source, `cargo build -vv` should report

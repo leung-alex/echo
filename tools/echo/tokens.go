@@ -13,9 +13,10 @@ import (
 )
 
 type designToken struct {
-	Type  string          `json:"type"`
-	Value json.RawMessage `json:"value"`
-	Dark  string          `json:"dark"`
+	Runtime bool            `json:"runtime,omitempty"`
+	Type    string          `json:"type"`
+	Value   json.RawMessage `json:"value"`
+	Dark    string          `json:"dark"`
 }
 type designDocument struct {
 	SchemaVersion int                    `json:"schemaVersion"`
@@ -40,6 +41,7 @@ func renderDesignTokens(data []byte) (map[string][]byte, error) {
 	}
 	sort.Strings(keys)
 	var css, dark, slint, rust strings.Builder
+	var defaults, setters, schema strings.Builder
 	css.WriteString("/* Generated from echo.tokens.json. Reference only; no browser runtime. */\n:root {\n")
 	dark.WriteString("[data-theme=\"dark\"] {\n")
 	slint.WriteString("// Generated from design/tokens/echo.tokens.json.\nexport global DesignTokens {\n    in-out property <bool> dark: false;\n")
@@ -51,6 +53,13 @@ func renderDesignTokens(data []byte) (map[string][]byte, error) {
 		}
 		slug := strings.ReplaceAll(name, ".", "-")
 		constant := strings.ToUpper(strings.ReplaceAll(slug, "-", "_"))
+		fmt.Fprintf(&schema, "    (%s, %s, %t),\n", strconv.Quote(name), strconv.Quote(token.Type), token.Runtime)
+		if token.Runtime {
+			if err := renderRuntimeToken(name, slug, token, &css, &dark, &slint, &defaults, &setters); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		switch token.Type {
 		case "color":
 			var light string
@@ -122,6 +131,7 @@ func renderDesignTokens(data []byte) (map[string][]byte, error) {
 	dark.WriteString("}\n")
 	slint.WriteString("}\n")
 	return map[string][]byte{
+		"apps/desktop/src/style_defaults.rs":          []byte("// Generated from design/tokens/echo.tokens.json.\nuse super::{StyleValue, StyleSnapshot};\n#[cfg(any(debug_assertions, test))]\npub(super) const SCHEMA: &[(&str, &str, bool)] = &[\n" + schema.String() + "];\npub(super) fn defaults() -> StyleSnapshot {\n    StyleSnapshot(std::collections::BTreeMap::from([\n" + defaults.String() + "    ]))\n}\nmacro_rules! apply_style {\n    ($global:expr, $style:expr, $dark:expr) => {{\n        let g = $global;\n        let s = $style;\n        let dark = $dark;\n" + setters.String() + "    }};\n}\npub(crate) use apply_style;\n"),
 		"design/tokens/echo.tokens.css":               []byte(css.String() + dark.String()),
 		"apps/desktop/ui/echo-tokens.slint":           []byte(slint.String()),
 		"crates/echo-presentation/src/echo_tokens.rs": []byte(rust.String()),
@@ -161,6 +171,9 @@ func (a *app) generateTokens(check bool) error {
 				return fmt.Errorf("design token drift in %s; run echo.cmd tokens", name)
 			}
 		} else {
+			if actual, err := os.ReadFile(path); err == nil && bytes.Equal(canonicalizeLineEndings(actual), expected) {
+				continue
+			}
 			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 				return err
 			}

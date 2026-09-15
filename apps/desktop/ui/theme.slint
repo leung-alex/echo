@@ -8,6 +8,8 @@ export global EchoTheme {
     in-out property <color> hc-highlight-text: #000000;
     in-out property <color> hc-muted: #ffffff;
     out property <color> text: high-contrast ? hc-text : T.color-text;
+    out property <color> row-text: high-contrast ? hc-text : T.color-row-text;
+    out property <color> selected-row-text: high-contrast ? hc-highlight-text : row-text;
     out property <color> muted: high-contrast ? hc-muted : T.color-muted;
     out property <color> canvas: high-contrast ? hc-background : T.color-canvas;
     out property <color> surface: high-contrast ? hc-background : T.color-panel;

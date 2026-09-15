@@ -133,10 +133,10 @@ export component EntryView inherits Rectangle {
         x: root.left-gutter; width: root.content-width;
         height: self.min-height;
         y: 2px + max(0px,(root.height - 10px - self.height)/2);
-        spacing: 4px; alignment: start;
+        spacing: T.space-1; alignment: start;
         if (root.favorites): StyledText {
             default-font-family: "Microsoft YaHei UI";
-            text: root.entry.title-rich; default-color: root.active ? EchoTheme.selected-text : EchoTheme.muted;
+            text: root.entry.title-rich; default-color: root.active ? EchoTheme.selected-row-text : EchoTheme.row-text;
             default-font-size: T.font-secondary; min-width: 0px; max-height: 40px; accessible-role: none;
         }
         if (root.entry.has-thumbnail): Rectangle {
@@ -146,13 +146,13 @@ export component EntryView inherits Rectangle {
             if (root.entry.thumbnail.width == 0): Text { text: @tr("Image"); color: EchoTheme.muted; horizontal-alignment: center; vertical-alignment: center; accessible-role: none; }
         }
         if (root.entry.body != "" && !root.entry.has-thumbnail && root.entry.match-count == 0): Text {
-            text: root.entry.body; color: root.active ? EchoTheme.selected-text : EchoTheme.text;
+            text: root.entry.body; color: root.active ? EchoTheme.selected-row-text : EchoTheme.row-text;
             font-family: "Microsoft YaHei UI"; font-size: T.font-body;
             wrap: word-wrap; overflow: elide; max-height: T.row-max-text-height; min-width: 0px; accessible-role: none;
         }
         if (root.entry.body != "" && !root.entry.has-thumbnail && root.entry.match-count > 0): StyledText {
             default-font-family: "Microsoft YaHei UI";
-            text: root.entry.body-rich; default-color: root.active ? EchoTheme.selected-text : EchoTheme.text; default-font-size: T.font-body; max-height: T.row-max-text-height; min-width: 0px; accessible-role: none;
+            text: root.entry.body-rich; default-color: root.active ? EchoTheme.selected-row-text : EchoTheme.row-text; default-font-size: T.font-body; max-height: T.row-max-text-height; min-width: 0px; accessible-role: none;
         }
         if (root.entry.tags != ""): StyledText {
             default-font-family: "Microsoft YaHei UI";

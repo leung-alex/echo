@@ -171,6 +171,35 @@ fn execute(
         .ok_or("Window is unavailable")?;
     match request.verb.as_str() {
         "ping" => Ok(serde_json::json!({"native_test":true,"pid":std::process::id()})),
+        "style_theme" => {
+            let mut a = app.borrow_mut();
+            match request.file.as_str() {
+                "light" | "dark" => {
+                    a.environment.high_contrast = false;
+                    a.settings.theme = echo_engine::ThemeMode::parse(&request.file).unwrap();
+                }
+                "high-contrast" => {
+                    a.environment.high_contrast = true;
+                }
+                _ => return Err("Unknown fixture theme".into()),
+            }
+            a.apply_theme();
+            Ok(serde_json::json!({"fixture_theme":request.file}))
+        }
+        "style_state" => {
+            let a = app.borrow();
+            let g = window.global::<crate::DesignTokens>();
+            let c = |c: slint::Color| [c.red(), c.green(), c.blue(), c.alpha()];
+            Ok(serde_json::json!({
+                "pid":std::process::id(), "row_color":c(g.get_color_row_text()),
+                "accent":c(g.get_color_accent_text()), "font":g.get_font_body(), "weight":g.get_font_weight_normal(),
+                "spacing":g.get_space_1(), "radius":g.get_row_radius(),
+                "dark":window.get_dark(), "high_contrast":a.environment.high_contrast,
+                "query":a.surface.query, "selection":a.surface.selection.map(|k| k.to_string()),
+                "scroll":window.get_scroll_y(), "rows":a.model.iter().map(|r|r.key.to_string()).collect::<Vec<_>>(),
+                "rich":a.model.iter().map(|r|format!("{:?}",r.body_rich)).collect::<Vec<_>>()
+            }))
+        }
         "query" => {
             window.set_query(request.file.clone().into());
             app.borrow_mut()

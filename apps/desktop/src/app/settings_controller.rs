@@ -186,6 +186,7 @@ impl App {
         };
         let changed = self.window.get_dark() != dark;
         self.window.set_dark(dark);
+        self.apply_styles();
         let t = self.window.global::<crate::EchoTheme>();
         let color = |c: u32| {
             slint::Color::from_rgb_u8(

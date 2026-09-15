@@ -9,6 +9,7 @@ mod memory_lifecycle;
 mod memory_trace;
 mod native_model;
 mod popup_timing;
+mod style;
 pub use echo_desktop_ui::*;
 #[cfg(windows)]
 mod app;
@@ -96,12 +97,18 @@ fn run_windows() -> Result<(), String> {
             "perspective":false, "fallback":graphics.fallback
         }),
     );
-    let application = app::App::new(hub.clone(), worker, args, graphics, shell.tray())?;
+    #[cfg(debug_assertions)]
+    let (styles, style_watcher) = style::development::start(hub.clone());
+    #[cfg(not(debug_assertions))]
+    let styles = style::StyleSnapshot::default();
+    let application = app::App::new(hub.clone(), worker, args, graphics, shell.tray(), styles)?;
     app::install(application.clone());
     hub.activate();
     #[cfg(feature = "native-test")]
     let _native_test = app::native_test::Controller::start(&application)?;
     let result = slint::run_event_loop_until_quit().map_err(|e| e.to_string());
+    #[cfg(debug_assertions)]
+    drop(style_watcher);
     let restart = application.borrow_mut().take_restart();
     application.borrow_mut().shutdown();
     app::uninstall();

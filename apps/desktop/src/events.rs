@@ -59,6 +59,8 @@ pub struct DragOrigin {
     pub key: RowKey,
 }
 pub enum Event {
+    #[cfg(debug_assertions)]
+    Styles(crate::style::StyleSnapshot),
     Inline(echo_windows::inline::InlineEvent),
     Shell(ShellEvent),
     Command(Command),
@@ -196,6 +198,13 @@ impl Hub {
                 return;
             }
             // Never coalesce across Confirm, Cancel or other control-event barriers.
+            #[cfg(debug_assertions)]
+            if matches!(
+                (&event, queue.back()),
+                (Event::Styles(_), Some(Event::Styles(_)))
+            ) {
+                queue.pop_back();
+            }
             if let Event::Inline(echo_windows::inline::InlineEvent::Changed { ticket, .. }) = &event
             {
                 if let Some(Event::Inline(echo_windows::inline::InlineEvent::Changed {
