@@ -1001,6 +1001,20 @@ impl Target {
             message(self.control, WM_PASTE, 0, 0).map(|_| ())
         }
     }
+    /// Receipt validation needs the current text of the SAME editor, not a new
+    /// selectable query. Chromium can expose inconsistent caret subranges after
+    /// multiline paste even while its scoped document is readable and correct.
+    /// Selection was already verified before dispatch; never use this for sealing.
+    pub(super) fn receipt_text(&self) -> Result<Vec<u16>, String> {
+        if !self.current() {
+            return Err("Original input focus changed before receipt".into());
+        }
+        if let Some(target) = &self.automation {
+            unsafe { text(&live_document(target)?.1) }
+        } else {
+            self.snapshot().map(|snapshot| snapshot.text)
+        }
+    }
     pub(super) fn normalize_inserted(&self, text: &str) -> Vec<u16> {
         if self
             .automation
@@ -1015,6 +1029,91 @@ impl Target {
                 .collect()
         } else {
             text.encode_utf16().collect()
+        }
+    }
+    pub(super) fn single_line_inserted(&self, text: &str) -> Option<[Vec<u16>; 2]> {
+        let target = self.automation.as_ref()?;
+        unsafe {
+            single_line_receipt(
+                &target.element.CurrentFrameworkId().ok()?.to_string(),
+                target.element.CurrentControlType().ok()? == UIA_EditControlTypeId,
+                &target.element.CurrentAriaProperties().ok()?.to_string(),
+                text,
+            )
+        }
+    }
+    pub(super) fn chromium_text_input(&self) -> bool {
+        self.automation.as_ref().is_some_and(|target| unsafe {
+            target
+                .element
+                .CurrentFrameworkId()
+                .is_ok_and(|s| s.to_string() == "Chrome")
+                && target.element.CurrentControlType().ok() == Some(UIA_EditControlTypeId)
+        })
+    }
+}
+fn single_line_receipt(
+    framework: &str,
+    edit: bool,
+    aria: &str,
+    text: &str,
+) -> Option<[Vec<u16>; 2]> {
+    // Chromium single-line inputs strip line breaks; its omnibox can replace
+    // them with spaces. These are receipt alternatives, never paste payloads.
+    // Explicit multiline editors and other providers retain exact validation.
+    if framework != "Chrome" || !edit || aria.split(';').any(|p| p.trim() == "multiline=true") {
+        return None;
+    }
+    let lf = text.replace("\r\n", "\n").replace('\r', "\n");
+    Some([
+        lf.replace('\n', "").encode_utf16().collect(),
+        lf.replace('\n', " ").encode_utf16().collect(),
+    ])
+}
+
+#[cfg(test)]
+mod single_line_receipt_tests {
+    use super::*;
+    fn units(text: &str) -> Vec<u16> {
+        text.encode_utf16().collect()
+    }
+    #[test]
+    fn chromium_newlines_are_removed_only_from_the_inserted_span() {
+        let original = units("before\n|query|\nafter");
+        let range = QueryRange::begin(&ComposerSnapshot {
+            text: original,
+            selection: 8..13,
+        })
+        .unwrap();
+        let payload = "Echo第一行ABC\r\nEcho第二行123\n📝";
+        let receipt = single_line_receipt("Chrome", true, "readonly=false", payload).unwrap();
+        assert!(range.matches_replacement(
+            &units("before\n|Echo第一行ABCEcho第二行123📝|\nafter"),
+            &receipt[0]
+        ));
+        assert!(range.matches_replacement(
+            &units("before\n|Echo第一行ABC Echo第二行123 📝|\nafter"),
+            &receipt[1]
+        ));
+        for changed in [
+            "before|Echo第一行ABCEcho第二行123📝|after",
+            "before\n|Echo第一行ABCEcho第二行12📝|\nafter",
+            "before\n|Echo第一行ABC Echo第二行123📝|\nafter",
+        ] {
+            assert!(!receipt
+                .iter()
+                .any(|r| range.matches_replacement(&units(changed), r)));
+        }
+    }
+    #[test]
+    fn multiline_and_unknown_providers_do_not_accept_removed_newlines() {
+        for (framework, edit, aria) in [
+            ("Chrome", true, "multiline=true;readonly=false"),
+            ("Chrome", false, ""),
+            ("Win32", true, ""),
+            ("", true, ""),
+        ] {
+            assert!(single_line_receipt(framework, edit, aria, "a\nb").is_none());
         }
     }
 }

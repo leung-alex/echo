@@ -440,6 +440,7 @@ class Run:
         self.check("first-popup-never-activates", self.test_first)
         self.check("delayed-acquisition-keeps-enter-protected", self.test_delayed_acquisition)
         self.check("composer-query-keeps-session-geometry-stable", self.test_height)
+        self.check("inline-panel-has-fixed-height", self.test_fixed_height)
         self.check("enter-replaces-query-not-prefix-or-suffix", self.test_exact_replacement)
         self.check("real-top-and-bottom-input-placement", self.test_input_placement)
         self.check("held-enter-never-leaks-submit-after-close", self.test_held)
@@ -862,6 +863,21 @@ class Run:
                 self.control_request("trace_end")
                 self.control_request("provider_fault")
         return results
+
+    def test_fixed_height(self):
+        if not self.args.native_test:
+            raise NotRun("Card dimensions require native-test diagnostics")
+        observations = []
+        for query in ("", QUERY, "no-result-fixed-height-9f183"):
+            self.reset(); self.open_inline()
+            if query:
+                self.type_query(query)
+            metrics = self.metrics()
+            height = metrics["panel"][3]
+            observations.append({"query": query, "rows": metrics["snapshot_model_count"], "height": height})
+            if abs(height - 520) > 1:
+                raise RuntimeError("Expected fixed 520 logical pixel card height: " + str(observations))
+        return observations
 
     def test_height(self):
         self.reset(); self.open_inline()

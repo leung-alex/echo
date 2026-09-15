@@ -11,7 +11,6 @@ pub(super) struct InlineUi {
     pub composing: bool,
     pub suspended: bool,
     pub above: Option<bool>,
-    pub base_height: Option<f32>,
     pub editor_focus: bool,
     #[allow(dead_code)] // Read by the isolated native-test diagnostics, not normal telemetry.
     pub backend: &'static str,

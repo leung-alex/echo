@@ -84,6 +84,16 @@ with the frozen original text and Undo enabled. This closes the clipboard-reader
 race where `WM_PASTE` can remove a selection without inserting clipboard text.
 RichEdit and UIA editors retain native clipboard paste and original formats; an
 unknown UIA editor never falls back to the standard Edit operation.
+Chromium Edit providers may change paragraph separators when pasting rich HTML.
+For a payload containing line breaks, receipt verification permits CR/LF changes
+only inside the sealed insertion span; every other UTF-16 unit and the frozen
+prefix/suffix must match. Single-line Chromium fields may also replace each line
+break with a space. This changes readback expectations only, never the retained
+clipboard formats, paste count, target identity checks, or request deadline.
+After dispatch, UIA receipt reads the bounded document of the same focused editor
+without reconstructing its caret subranges. Chromium may report inconsistent
+selection subranges after multiline paste; those are still mandatory before
+dispatch, but cannot veto an otherwise verified text receipt after dispatch.
 An unknown delivery outcome blocks another replacement in
 that session, retains focus and Enter protection, and requires the user to inspect
 the input and explicitly cancel or switch modes. No Enter replay, whole-editor

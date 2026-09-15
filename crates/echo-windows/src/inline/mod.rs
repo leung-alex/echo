@@ -1051,7 +1051,7 @@ fn paste(
             PasteDeliveryFailure::RangeUnavailable,
         ));
     }
-    session.backend.select(span, &snapshot, guard)?;
+    session.backend.select(span.clone(), &snapshot, guard)?;
     shared.record("selection-verified", snapshot.text.len() as u32);
     if let Some(c) = shared
         .capabilities
@@ -1130,6 +1130,8 @@ fn paste(
         ));
     }
     let expected = session.backend.normalize_inserted(&inserted);
+    let single_line = session.backend.single_line_inserted(&inserted);
+    let browser_line_breaks = session.backend.chromium_text_input();
     shared.record("paste-requested", expected.len() as u32);
     let lf = inserted
         .replace("\r\n", "\n")
@@ -1149,11 +1151,24 @@ fn paste(
             break;
         }
         shared.record("paste-readback-start", 0);
-        if let Ok(actual) = session.backend.snapshot() {
-            shared.record("paste-readback", actual.text.len() as u32);
-            if session.range.matches_replacement(&actual.text, &expected)
-                || session.range.matches_replacement(&actual.text, &lf)
-                || session.range.matches_replacement(&actual.text, &crlf)
+        if let Ok(actual) = session.backend.receipt_text() {
+            shared.record("paste-readback", actual.len() as u32);
+            if session.range.matches_replacement(&actual, &expected)
+                || session.range.matches_replacement(&actual, &lf)
+                || session.range.matches_replacement(&actual, &crlf)
+                || single_line.as_ref().is_some_and(|forms| {
+                    forms
+                        .iter()
+                        .any(|form| session.range.matches_replacement(&actual, form))
+                })
+                || (browser_line_breaks
+                    && matches_browser_line_breaks(
+                        &session.range,
+                        &actual,
+                        &expected,
+                        span.start,
+                        snapshot.text.len() - span.end,
+                    ))
             {
                 return Ok(PasteDelivery::Pasted);
             }
@@ -1167,9 +1182,77 @@ fn paste(
     ))
 }
 
+/// Chromium can expose additional paragraph separators after rich clipboard
+/// paste. Compare only the inserted span this way; the frozen context remains
+/// byte-for-byte exact and no non-line-break character may disappear or change.
+fn matches_browser_line_breaks(
+    range: &QueryRange,
+    actual: &[u16],
+    inserted: &[u16],
+    prefix_units: usize,
+    suffix_units: usize,
+) -> bool {
+    if !inserted.iter().any(|c| matches!(c, 10 | 13)) {
+        return false;
+    }
+    let Some(end) = actual.len().checked_sub(suffix_units) else {
+        return false;
+    };
+    let Some(middle) = actual.get(prefix_units..end) else {
+        return false;
+    };
+    range.matches_replacement(actual, middle)
+        && middle
+            .iter()
+            .filter(|c| !matches!(c, 10 | 13))
+            .eq(inserted.iter().filter(|c| !matches!(c, 10 | 13)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn chromium_rich_paste_accepts_paragraph_breaks_but_preserves_content_and_context() {
+        let u = |s: &str| s.encode_utf16().collect::<Vec<_>>();
+        let range = QueryRange::begin(&echo_engine::ComposerSnapshot {
+            text: u("pre\n|q|\npost"),
+            selection: 5..6,
+        })
+        .unwrap();
+        let payload = u("Echo第一行ABC\r\nEcho第二行123");
+        for actual in [
+            "pre\n|Echo第一行ABC\n\nEcho第二行123|\npost",
+            "pre\n|Echo第一行ABCEcho第二行123|\npost",
+        ] {
+            assert!(matches_browser_line_breaks(
+                &range,
+                &u(actual),
+                &payload,
+                5,
+                6
+            ));
+        }
+        for actual in [
+            "pre|Echo第一行ABCEcho第二行123|post",
+            "pre\n|Echo第一行ABCEcho第二行12|\npost",
+            "pre\n|Echo第一行ABC Echo第二行123|\npost",
+        ] {
+            assert!(!matches_browser_line_breaks(
+                &range,
+                &u(actual),
+                &payload,
+                5,
+                6
+            ));
+        }
+        assert!(!matches_browser_line_breaks(
+            &range,
+            &u("pre\n|a\nb|\npost"),
+            &u("ab"),
+            5,
+            6
+        ));
+    }
     #[test]
     fn image_receipt_requires_one_new_attachment_in_the_original_container() {
         fn observed(scope: i32, images: &[i32]) -> target::ImageObservation {

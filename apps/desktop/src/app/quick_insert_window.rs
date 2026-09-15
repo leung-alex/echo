@@ -127,35 +127,12 @@ impl App {
             }
             self.window.set_popup_card_width(card);
             let placement = if self.inline_active() {
-                let height = if let Some(height) = self.inline_ui.base_height {
-                    height
-                } else if self.surface.ready
-                    && !self.surface.loading
-                    && self.surface.presented_query.as_deref() == Some(self.surface.query.as_str())
-                    && self.deck.phase != Phase::Animating
-                {
-                    // Slint 1.17.1 materializes repeaters before its normal draw.
-                    // Geometry is needed before that draw, so run the same bounded
-                    // UI-thread pass here. No rendering or GPU readback is involved.
-                    // Keep this pinned-runtime seam local to native composition.
-                    let _timing = crate::popup_timing::span("instantiate_main_tree");
-                    slint::private_unstable_api::re_exports::WindowInner::from_pub(
-                        self.window.window(),
-                    )
-                    .ensure_tree_instantiated();
-                    let height = self.window.get_inline_content_height().clamp(180.0, 520.0);
-                    self.inline_ui.base_height = Some(height);
-                    height
-                } else if let Some(previous) = self.popup_placement {
-                    (previous.card.height as f32 / scale).clamp(180.0, 520.0)
-                } else {
-                    300.0
-                };
+                // Candidate count must not change the panel size, including a fresh empty session.
                 let placement = echo_windows::focus::place_inline_stage(
                     anchor,
                     width,
                     card,
-                    height,
+                    520.0,
                     t::STAGE_PADDING_Y,
                     self.inline_ui.above,
                 );
