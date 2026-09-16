@@ -16,14 +16,17 @@ pub(crate) use anchor::{anchor_for_element, resolve_anchor};
 pub use placement::{
     expand_popup_stage, place_card, place_inline, place_inline_stage, PopupPlacement,
 };
+pub(crate) use terminal::InputStatusEndpoint;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnchorSource {
     NativeCaret,
     AutomationCaret,
     AdjacentCharacter,
     AccessibleCaret,
+    InputMethodCaret,
     InputControl,
     Window,
+    Pointer,
 }
 impl AnchorSource {
     pub fn label(self) -> &'static str {
@@ -32,8 +35,10 @@ impl AnchorSource {
             Self::AutomationCaret => "uia-caret",
             Self::AdjacentCharacter => "adjacent-character",
             Self::AccessibleCaret => "msaa-caret",
+            Self::InputMethodCaret => "input-method-caret",
             Self::InputControl => "input-control",
             Self::Window => "window-fallback",
+            Self::Pointer => "pointer-fallback",
         }
     }
 }
@@ -53,6 +58,7 @@ pub struct FocusSnapshot {
     native_blocked: bool,
     captured_at: Instant,
     indicator_only: bool,
+    pointer: Option<PhysicalRect>,
 }
 pub struct CapturedActivation {
     pub target: Option<PasteTarget>,
@@ -123,6 +129,9 @@ fn caret_screen(info: &GUITHREADINFO, root: HWND, pid: u32) -> Option<PhysicalRe
     {
         return None;
     }
+    caret_rectangle(info)
+}
+fn caret_rectangle(info: &GUITHREADINFO) -> Option<PhysicalRect> {
     unsafe {
         // rcCaret has the target window's logical coordinate semantics, not ours.
         let previous = SetThreadDpiAwarenessContext(GetWindowDpiAwarenessContext(info.hwndCaret));
@@ -216,6 +225,15 @@ impl FocusSnapshot {
                 native_blocked,
                 captured_at: Instant::now(),
                 indicator_only: false,
+                pointer: {
+                    let mut point: POINT = std::mem::zeroed();
+                    (GetPhysicalCursorPos(&mut point) != 0).then_some(PhysicalRect {
+                        x: point.x,
+                        y: point.y,
+                        width: 1,
+                        height: 1,
+                    })
+                },
             }
         }
     }
@@ -306,7 +324,13 @@ impl FocusSnapshot {
         let probe = if let Some(identity) = self.plain_paste_window_identity() {
             automation::Probe {
                 identity,
-                anchor: None,
+                anchor: self
+                    .terminal_tsf_indicator()
+                    .map(|(_, a)| (a.geometry.target, a.source))
+                    .or_else(|| {
+                        self.warp_pointer_anchor()
+                            .map(|a| (a.geometry.target, a.source))
+                    }),
             }
         } else {
             unsafe { automation::plain_paste_probe(uia, self)? }

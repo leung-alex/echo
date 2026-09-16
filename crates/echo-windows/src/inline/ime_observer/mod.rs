@@ -85,6 +85,7 @@ pub(crate) struct Observer {
     view: MEMORY_MAPPED_VIEW_ADDRESS,
     atom: u16,
     window: HWND,
+    input: HWND,
     pid: u32,
     thread: u32,
     message: u32,
@@ -119,12 +120,30 @@ fn decode(sample: Sample, pid: u32, thread: u32, window: u64) -> Option<Observat
 }
 impl Observer {
     pub fn new(window: isize, pid: u32, started: u64, tsf_only: bool) -> Result<Self, String> {
-        Self::create(window, pid, started, u32::from(tsf_only))
+        Self::create(window, window, pid, started, u32::from(tsf_only))
     }
     pub fn status_only(window: isize, pid: u32, started: u64) -> Result<Self, String> {
-        Self::create(window, pid, started, STATE_ONLY)
+        Self::create(window, window, pid, started, STATE_ONLY)
     }
-    fn create(window: isize, pid: u32, started: u64, kind: u32) -> Result<Self, String> {
+    pub fn geometry_only(window: isize, pid: u32, started: u64) -> Result<Self, String> {
+        Self::create(window, window, pid, started, STATE_GEOMETRY)
+    }
+    pub fn status_at(target: crate::focus::InputStatusEndpoint) -> Result<Self, String> {
+        Self::create(
+            target.window,
+            target.input,
+            target.process,
+            target.started,
+            STATE_ONLY,
+        )
+    }
+    fn create(
+        window: isize,
+        input: isize,
+        pid: u32,
+        started: u64,
+        kind: u32,
+    ) -> Result<Self, String> {
         unsafe {
             let window = window as HWND;
             let mut owner = 0;
@@ -156,6 +175,7 @@ impl Observer {
                 view: MEMORY_MAPPED_VIEW_ADDRESS { Value: null_mut() },
                 atom: 0,
                 window,
+                input: input as HWND,
                 pid,
                 thread,
                 message: RegisterWindowMessageW(wide(MESSAGE).as_ptr()),
@@ -186,6 +206,7 @@ impl Observer {
             }
             let mut channel = Channel::new(pid, thread, window as u64, started, kind == 1);
             channel.tsf_only = kind;
+            channel.input_window = input as u64;
             std::ptr::write(observer.view.Value.cast::<Channel>(), channel);
             observer.atom = GlobalAddAtomW(name.as_ptr());
             if observer.atom == 0 {
@@ -208,8 +229,9 @@ impl Observer {
             let sample = observer
                 .sample()
                 .ok_or("IME observer target did not acknowledge a read")?;
-            if (kind == STATE_ONLY && sample.status != STATE_REPLY)
-                || (kind != STATE_ONLY && decode(sample, pid, thread, window as u64).is_none())
+            if (matches!(kind, STATE_ONLY | STATE_GEOMETRY) && sample.status != STATE_REPLY)
+                || (!matches!(kind, STATE_ONLY | STATE_GEOMETRY)
+                    && decode(sample, pid, thread, window as u64).is_none())
             {
                 return Err("IME observer returned an unavailable state".into());
             }
@@ -218,6 +240,30 @@ impl Observer {
     }
     pub fn read(&self) -> Option<Observation> {
         decode(self.sample()?, self.pid, self.thread, self.window as u64)
+    }
+    pub fn input_caret(&self) -> Option<echo_engine::PhysicalRect> {
+        let sample = self.sample()?;
+        let [left, top, right, bottom] = sample.caret;
+        (sample.status == STATE_REPLY && right > left && bottom > top).then_some(
+            echo_engine::PhysicalRect {
+                x: left,
+                y: top,
+                width: right - left,
+                height: bottom - top,
+            },
+        )
+    }
+    pub fn input_bounds(&self) -> Option<echo_engine::PhysicalRect> {
+        let sample = self.sample()?;
+        let [left, top, right, bottom] = sample.bounds;
+        (sample.status == STATE_REPLY && right > left && bottom > top).then_some(
+            echo_engine::PhysicalRect {
+                x: left,
+                y: top,
+                width: right - left,
+                height: bottom - top,
+            },
+        )
     }
     pub fn input_state(&self) -> Option<(echo_engine::InputMode, echo_engine::CompositionState)> {
         use echo_engine::{CompositionState, InputMode};
@@ -243,7 +289,7 @@ impl Observer {
             let mut pid = 0;
             if GetWindowThreadProcessId(self.window, &mut pid) != self.thread
                 || pid != self.pid
-                || GetAncestor(self.window, GA_ROOT) != GetForegroundWindow()
+                || GetAncestor(self.input, GA_ROOT) != GetForegroundWindow()
             {
                 return None;
             }

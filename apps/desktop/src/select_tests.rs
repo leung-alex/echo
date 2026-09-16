@@ -386,7 +386,7 @@ fn actual_settings_selects_update_drafts_and_survive_category_change() {
     key(slint::platform::Key::DownArrow);
     key(slint::platform::Key::Return);
     tick(210);
-    click(200., 199.);
+    click(200., 251.);
     assert_eq!(
         ui.get_global_hotkey(),
         "Alt+V",

@@ -167,7 +167,8 @@ impl App {
         }
     }
     pub(super) fn set_route(&mut self, route: &str) {
-        let reopen_manager = self.popup_preserves_input_focus() && route != "history" && self.surface.visible;
+        let reopen_manager =
+            self.popup_preserves_input_focus() && route != "history" && self.surface.visible;
         if self.popup_preserves_input_focus() && route != "history" {
             if !self.stop_inline() {
                 return;
@@ -253,7 +254,7 @@ impl App {
             return;
         }
         if self.window.get_route().as_str() != "history" {
-            self.request_route("history");
+            self.request_hide();
             return;
         }
         if self.surface.batch {

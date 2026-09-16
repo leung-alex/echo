@@ -172,3 +172,44 @@ pub(super) unsafe fn active() -> Option<bool> {
         _ => None,
     }
 }
+
+#[repr(C)]
+struct Context {
+    base: Unknown,
+    unused: [*const c_void; 6],
+    view: GetObject,
+    enum_views: *const c_void,
+    status: unsafe extern "system" fn(Handle, *mut [u32; 2]) -> i32,
+}
+#[repr(C)]
+struct ContextView {
+    base: Unknown,
+    from_point: *const c_void,
+    text_ext: unsafe extern "system" fn(Handle, u32, Handle, *mut [i32; 4], *mut i32) -> i32,
+    screen: unsafe extern "system" fn(Handle, *mut [i32; 4]) -> i32,
+    window: GetObject,
+}
+// No text or edit cookie is requested. GetScreenExt is the focused document's
+// display rectangle, never an inferred insertion caret.
+pub(super) unsafe fn input_bounds(input: Handle) -> Option<[i32; 4]> {
+    let manager = thread_manager()?;
+    let document = Com::receive(|out| (manager.table::<ThreadMgr>().get_focus)(manager.0, out))?;
+    let context = Com::receive(|out| (document.table::<DocumentMgr>().get_top)(document.0, out))?;
+    let mut status = [0; 2];
+    if (context.table::<Context>().status)(context.0, &mut status) < 0 || status[0] & 1 != 0 {
+        return None;
+    }
+    let view = Com::receive(|out| (context.table::<Context>().view)(context.0, out))?;
+    let mut window = null_mut();
+    if (view.table::<ContextView>().window)(view.0, &mut window) < 0 || window != input {
+        return None;
+    }
+    let mut bounds = [0; 4];
+    if (view.table::<ContextView>().screen)(view.0, &mut bounds) < 0
+        || bounds[2] <= bounds[0]
+        || bounds[3] <= bounds[1]
+    {
+        return None;
+    }
+    Some(bounds)
+}

@@ -1,7 +1,7 @@
 # Input method indicator
 
 The passive badge observes the current writable input independently of Quick Insert.
-Appearance settings contains **Input method indicator**, enabled by default. The
+Quick Input settings contains **Input method indicator**, enabled by default. The
 switch edits the settings draft; Save persists the choice and starts/stops observation.
 Cancel keeps the saved choice. No schema migration is required for the new defaulted
 `UiSettings.input_method_indicator` field.
@@ -14,14 +14,21 @@ Cancel keeps the saved choice. No schema migration is required for the new defau
   The existing Quick Insert protocol remains separate from status-only replies.
 - Presentation decides freshness, suppression and 48-by-36-DIP badge placement.
   The label uses 18-DIP text, an 8-DIP radius and an 8-DIP caret gap.
-- Desktop owns the Slint badge, expiry timer and theme binding. Its software frame
+- The badge stays black with bold white text regardless of the Echo theme. Chinese
+  uses Microsoft YaHei UI; English uses Segoe UI Variable Text.
+- Desktop owns the Slint badge and expiry timer. Its software frame
   is separate from the main card's buffer and frame-commit acknowledgements.
 
 Foreground/focus events invalidate samples. Mode is refreshed every 100ms while
 an input is valid; geometry events refresh the anchor and periodic revalidation
 checks identity/writability. Failed reads back off. Disabled observation releases
-hooks and stops sampling. Stale, unknown, composing, hidden, password and readonly
-targets do not show a badge. Window-only anchors are rejected.
+hooks and stops sampling. Stale, unknown-mode, hidden, password and readonly
+targets do not show a badge. Generic window-only anchors are rejected. Warp has an
+explicit pointer-status fallback: when precise geometry is unavailable, show the
+verified mode near the current mouse pointer while its window is foreground. This does
+not assert an editable control or caret location. Alt+V uses the pointer captured
+at activation, with the existing work-area clamping. Other applications keep
+their existing placement policy.
 
 Chinese/native and alphanumeric conversion states are interpreted together with
 the input language. Missing or conflicting evidence is Unknown. A keyboard layout
@@ -79,7 +86,60 @@ It does not authorize passive observation: the badge still requires a separately
 verified input position and mode. Inaccessible hosts such as Warp may therefore
 accept ordinary paste without providing enough information for a badge.
 
+Classic console observation resolves the real conhost IME thread independently
+from the shell PID reported by the console HWND. A focused console document may
+report read-only text while still exposing its insertion cursor; this exception
+is geometry-only and does not authorize reading commands or replacing ranges.
+Protocol v4 binds the dispatch HWND, input HWND, process creation time and thread.
+Normal state sampling does not request geometry, text or a TSF edit session.
+
+Terminal positioning also checks a focused TSF document's display bounds and an
+explicit IMM candidate exclusion rectangle. Whole-window bounds, default floating
+IME positions, missing coordinates and off-window rectangles are rejected.
+The tested Warp window returned a valid mode but only whole-window TSF bounds and
+no usable IMM caret: its precise popup placement and badge remain unsupported in
+that scene. Do not report this as a successful Warp positioning fix.
+
+Plain-paste popups retain their Esc/F6/Enter keyboard lease while focus remains in
+the terminal. Opening Settings retires that lease and activates the manager.
+Esc in Settings uses the same hide-to-tray path as its close button, including any
+existing unsaved-change confirmation.
+
+`Invoke-TerminalIndicatorAcceptance.py` checks a visible console badge, bounded
+sampling without focus invalidation loops, the complete Alt+V/Esc lifecycle, and
+Settings Esc using isolated data and owned windows. It does not mutate the
+clipboard or establish physical IME-switch/mixed-DPI acceptance.
+
 `tests/native/Invoke-TerminalPlainPasteAcceptance.ps1` runs isolated CMD/PowerShell
 readers through the clipboard preservation wrapper. The test checks actual received
 text and rejects a stale process identity. Warp and Windows Terminal require their
 own native acceptance; these fixtures do not establish support for their UI trees.
+
+## Warp TSF geometry investigation (2026-09-17)
+
+A disposable content-free probe on the focused Warp thread successfully obtained
+its existing TSF manager, document, context and read-only selection. Both synchronous
+and async-permitted read-session requests returned S_OK. GetTextExt on a collapsed
+local range also returned S_OK, but returned (2559,1439,2560,1439), a zero-height
+rectangle outside Warp's (112,343,1392,1143) window. It is unusable as a caret.
+The probe did not read text or modify the document, selection or input mode. Its
+balanced client registration and edit sessions are not included in production.
+Evidence is local under `.local/echo/tsf-probe/results.log`; this observation applies
+to the tested Warp build/context, not every possible future Warp version.
+
+`tests/native/Invoke-WarpCompatibilityAcceptance.py` checks this fallback against
+an already running Warp with a separate synthetic Echo instance. It checks the
+actual pointer-relative coordinates, pointer placement, focus preservation, badge suppression
+and Esc lifecycle without typing commands or changing the clipboard. Set
+`ECHO_WINDOWS_ACCEPTANCE=1` and supply `--executable` (native-test build) and a new
+`--evidence` directory. Physical Shift switching, split panes and mixed-DPI remain
+separate acceptance cases.
+
+Plain-paste popups explicitly own Up/Down and Tab/Shift+Tab for Echo browsing.
+This session-bound navigation lease does not fabricate IME or replacement-range
+evidence, and is retired when the popup hides.
+
+A known input mode stays visible during composition and candidate selection.
+Unknown composition state alone neither hides the badge nor backs off mode sampling;
+unknown input mode, stale focus and Quick Insert suppression still hide it. This
+changes only the passive badge, not Quick Insert composition/key safety.

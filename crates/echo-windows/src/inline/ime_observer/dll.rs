@@ -21,6 +21,8 @@ extern "system" {
     fn CallNextHookEx(hook: Handle, code: i32, wparam: usize, lparam: isize) -> isize;
     fn RegisterWindowMessageW(name: *const u16) -> u32;
     fn GetFocus() -> Handle;
+    fn ClientToScreen(window: Handle, point: *mut [i32; 2]) -> i32;
+    fn LogicalToPhysicalPointForPerMonitorDPI(window: Handle, point: *mut [i32; 2]) -> i32;
     fn GetAncestor(window: Handle, flags: u32) -> Handle;
     fn GetForegroundWindow() -> Handle;
     fn GetKeyboardLayout(thread: u32) -> Handle;
@@ -46,10 +48,39 @@ extern "system" {
 #[link(name = "imm32")]
 extern "system" {
     fn ImmGetContext(window: Handle) -> Handle;
+    fn ImmGetCandidateWindow(context: Handle, index: u32, form: *mut CandidateForm) -> i32;
+    fn ImmGetDefaultIMEWnd(window: Handle) -> Handle;
     fn ImmReleaseContext(window: Handle, context: Handle) -> i32;
     fn ImmGetCompositionStringW(context: Handle, index: u32, data: Handle, bytes: u32) -> i32;
     fn ImmGetOpenStatus(context: Handle) -> i32;
     fn ImmGetConversionStatus(context: Handle, conversion: *mut u32, sentence: *mut u32) -> i32;
+}
+#[repr(C)]
+struct CandidateForm {
+    index: u32,
+    style: u32,
+    point: [i32; 2],
+    area: [i32; 4],
+}
+unsafe fn candidate_caret(input: Handle, context: Handle) -> Option<[i32; 4]> {
+    let mut form: CandidateForm = std::mem::zeroed();
+    if ImmGetCandidateWindow(context, 0, &mut form) == 0 || form.style != 0x80 {
+        return None;
+    }
+    let [left, top, right, bottom] = form.area;
+    if bottom <= top || right < left || right - left > 64 || bottom - top > 256 {
+        return None;
+    }
+    let mut a = [left, top];
+    let mut b = [right.max(left + 1), bottom];
+    if ClientToScreen(input, &mut a) == 0
+        || ClientToScreen(input, &mut b) == 0
+        || LogicalToPhysicalPointForPerMonitorDPI(input, &mut a) == 0
+        || LogicalToPhysicalPointForPerMonitorDPI(input, &mut b) == 0
+    {
+        return None;
+    }
+    Some([a[0], a[1], b[0], b[1]])
 }
 fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(Some(0)).collect()
@@ -57,6 +88,7 @@ fn wide(value: &str) -> Vec<u16> {
 static MESSAGE_ID: OnceLock<u32> = OnceLock::new();
 
 unsafe fn sample(window: Handle, channel: &Channel) -> Sample {
+    let input = channel.input_window as Handle;
     let mut value = Sample::unknown();
     value.pid = GetCurrentProcessId();
     value.thread = GetCurrentThreadId();
@@ -65,8 +97,10 @@ unsafe fn sample(window: Handle, channel: &Channel) -> Sample {
     if value.pid != channel.target_pid
         || value.thread != channel.target_thread
         || value.window != channel.target_window
-        || GetFocus() != window
-        || GetAncestor(window, 2) != GetForegroundWindow()
+        || (input != window
+            && (channel.tsf_only != STATE_ONLY || ImmGetDefaultIMEWnd(input) != window))
+        || GetFocus() != input
+        || GetAncestor(input, 2) != GetForegroundWindow()
         || GetProcessTimes(
             GetCurrentProcess(),
             &mut created,
@@ -78,24 +112,30 @@ unsafe fn sample(window: Handle, channel: &Channel) -> Sample {
     {
         return value;
     }
-    if channel.tsf_only == STATE_ONLY {
+    if matches!(channel.tsf_only, STATE_ONLY | STATE_GEOMETRY) {
         let tsf_mode = tsf::mode();
         let tsf_active = tsf::active();
-        let context = ImmGetContext(window);
+        let context = ImmGetContext(input);
         let (mut imm_mode, mut imm_active) = (None, None);
         if !context.is_null() {
             let (mut conversion, mut sentence) = (0, 0);
             if ImmGetConversionStatus(context, &mut conversion, &mut sentence) != 0 {
                 imm_mode = Some((ImmGetOpenStatus(context) != 0, conversion));
             }
+            if channel.tsf_only == STATE_GEOMETRY {
+                value.caret = candidate_caret(input, context).unwrap_or([0; 4]);
+            }
             // Length only: this operation never copies preedit or input text.
             let bytes = ImmGetCompositionStringW(context, 8, std::ptr::null_mut(), 0);
             if bytes >= 0 {
                 imm_active = Some(bytes > 0);
             }
-            ImmReleaseContext(window, context);
+            ImmReleaseContext(input, context);
         }
         value.status = STATE_REPLY;
+        if channel.tsf_only == STATE_GEOMETRY {
+            value.bounds = tsf::input_bounds(input).unwrap_or([0; 4]);
+        }
         value.mode = mode(
             GetKeyboardLayout(0) as usize as u16,
             agree(tsf_mode, imm_mode),
@@ -108,7 +148,7 @@ unsafe fn sample(window: Handle, channel: &Channel) -> Sample {
         } else {
             0
         };
-        if GetFocus() != window || GetAncestor(window, 2) != GetForegroundWindow() {
+        if GetFocus() != input || GetAncestor(input, 2) != GetForegroundWindow() {
             value = Sample::unknown();
         }
         return value;
@@ -120,12 +160,12 @@ unsafe fn sample(window: Handle, channel: &Channel) -> Sample {
             None => 0,
         };
         // COM can reenter the host. Reject a focus transition during the read.
-        if GetFocus() != window || GetAncestor(window, 2) != GetForegroundWindow() {
+        if GetFocus() != input || GetAncestor(input, 2) != GetForegroundWindow() {
             value.status = 0;
         }
         return value;
     }
-    let context = ImmGetContext(window);
+    let context = ImmGetContext(input);
     if context.is_null() {
         return value;
     }
@@ -140,7 +180,7 @@ unsafe fn sample(window: Handle, channel: &Channel) -> Sample {
             value.units = bytes as u32 / 2;
         }
     }
-    ImmReleaseContext(window, context);
+    ImmReleaseContext(input, context);
     value
 }
 

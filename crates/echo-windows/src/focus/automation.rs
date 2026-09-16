@@ -128,6 +128,12 @@ unsafe fn probe(uia: &IUIAutomation, snapshot: &FocusSnapshot, geometry: bool) -
     if !snapshot.current() {
         return None;
     }
+    if snapshot.indicator_only
+        && native::window_class_name(HWND(snapshot.window_id as _)).as_deref()
+            == Some("ConsoleWindowClass")
+    {
+        return console_caret(uia, snapshot);
+    }
     let (element, legacy) = focused_element(uia, snapshot)?;
     probe_element(uia, snapshot, geometry, &element, legacy)
 }
@@ -486,4 +492,44 @@ mod tests {
             1
         );
     }
+}
+
+// Console text is exposed as a read-only document even at its input cursor.
+// This geometry-only exception never authorizes paste or range replacement.
+unsafe fn console_caret(uia: &IUIAutomation, snapshot: &FocusSnapshot) -> Option<Probe> {
+    let root = uia.ElementFromHandle(HWND(snapshot.window_id as _)).ok()?;
+    let mut owner = 0;
+    let ime = windows_sys::Win32::UI::Input::Ime::ImmGetDefaultIMEWnd(snapshot.window_id as _);
+    windows_sys::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(ime, &mut owner);
+    if owner == 0 || root.CurrentProcessId().ok()? != owner as i32 {
+        return None;
+    }
+    let walker = uia.ControlViewWalker().ok()?;
+    let mut element = walker.GetFirstChildElement(&root).ok()?;
+    for _ in 0..32 {
+        if element.CurrentControlType().ok() == Some(UIA_DocumentControlTypeId)
+            && element.CurrentProcessId().ok() == Some(owner as i32)
+            && element.CurrentHasKeyboardFocus().is_ok_and(|v| v.as_bool())
+            && element.CurrentIsEnabled().is_ok_and(|v| v.as_bool())
+            && element.CurrentIsPassword().is_ok_and(|v| !v.as_bool())
+            && element.CurrentIsOffscreen().is_ok_and(|v| !v.as_bool())
+        {
+            let anchor = caret(&element)?;
+            if !super::anchor::caret_in_control(
+                anchor.0,
+                native::window_rect(HWND(snapshot.window_id as _)),
+            ) || !snapshot.current()
+            {
+                return None;
+            }
+            return Some(Probe {
+                identity: PasteControlIdentity::AutomationRuntimeId(native::automation_runtime_id(
+                    &element,
+                )?),
+                anchor: Some(anchor),
+            });
+        }
+        element = walker.GetNextSiblingElement(&element).ok()?;
+    }
+    None
 }

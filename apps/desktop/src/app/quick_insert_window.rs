@@ -4,7 +4,7 @@ use echo_presentation::echo_tokens as t;
 use echo_windows::focus::{place_card, FocusSnapshot};
 impl App {
     pub(super) fn external_focus_lost(&mut self) {
-        if self.inline_active() || self.inline_ui.pending {
+        if self.popup_preserves_input_focus() || self.inline_ui.pending {
             return;
         }
         if self.session.context != Context::QuickInsert

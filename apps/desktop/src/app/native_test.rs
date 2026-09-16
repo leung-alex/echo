@@ -170,6 +170,20 @@ fn execute(
         .upgrade()
         .ok_or("Window is unavailable")?;
     match request.verb.as_str() {
+        "plain_paste_ack_fixture" => {
+            // Exercise the real completion/lease teardown without clipboard access.
+            // This is synthetic acknowledgement, not evidence of native delivery.
+            let mut a = app.borrow_mut();
+            if !a.inline_ui.plain_paste || a.session.context != Context::QuickInsert {
+                return Err("Fixture requires an active plain-paste popup".into());
+            }
+            let operation = a
+                .session
+                .begin(QuickInsertAction::Insert)
+                .ok_or("No ready paste session")?;
+            a.executed(operation, Ok(QuickInsertOutcome::Inserted));
+            Ok(serde_json::json!({"synthetic_acknowledgement":true,"clipboard_mutated":false}))
+        }
         "ping" => Ok(serde_json::json!({"native_test":true,"pid":std::process::id()})),
         "input_indicator" => Ok(app.borrow().input_indicator.diagnostics()),
         "input_indicator_setting" => {

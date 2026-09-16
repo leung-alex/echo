@@ -1,9 +1,9 @@
 //! Fixed-size, ephemeral target-thread observation. No key or edit commands.
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub const MAGIC: u64 = 0x4543484f494d4503;
+pub const MAGIC: u64 = 0x4543484f494d4504;
 pub const MAX_UNITS: usize = 2048;
-pub const MESSAGE: &str = "Echo.CompositionObservation.v3";
+pub const MESSAGE: &str = "Echo.CompositionObservation.v4";
 pub const PREFIX: &str = "Local\\Echo.CompositionObservation.";
 
 #[repr(C)]
@@ -12,6 +12,7 @@ pub struct Channel {
     pub target_pid: u32,
     pub target_thread: u32,
     pub target_window: u64,
+    pub input_window: u64,
     pub target_started: u64,
     pub tsf_only: u32,
     pub request: AtomicU64,
@@ -29,6 +30,8 @@ pub struct Sample {
     pub mode: u32,
     pub composition: u32,
     pub units: u32,
+    pub bounds: [i32; 4],
+    pub caret: [i32; 4],
     pub text: [u16; MAX_UNITS],
 }
 impl Sample {
@@ -41,6 +44,8 @@ impl Sample {
             mode: 0,
             composition: 0,
             units: 0,
+            bounds: [0; 4],
+            caret: [0; 4],
             text: [0; MAX_UNITS],
         }
     }
@@ -49,6 +54,7 @@ impl Sample {
 // Read-only status requests never populate text. Values are deliberately separate
 // from legacy composition status so a missing value cannot become English/idle.
 pub const STATE_ONLY: u32 = 2;
+pub const STATE_GEOMETRY: u32 = 3;
 pub const STATE_REPLY: u32 = 5;
 #[allow(dead_code)] // Also compiled into the standalone observer DLL.
 pub fn mode(language: u16, bits: Option<(bool, u32)>) -> u32 {
@@ -102,6 +108,7 @@ impl Channel {
             target_pid: pid,
             target_thread: thread,
             target_window: window,
+            input_window: window,
             target_started: started,
             tsf_only: u32::from(tsf_only),
             request: AtomicU64::new(0),

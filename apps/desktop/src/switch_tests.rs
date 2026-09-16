@@ -57,7 +57,7 @@ struct TestPlatform(
 );
 
 #[test]
-fn input_badge_keeps_size_contrast_and_transparent_corners() {
+fn input_badge_keeps_size_black_white_style_and_transparent_corners() {
     let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
     let now = Rc::new(std::cell::Cell::new(std::time::Duration::ZERO));
     slint::platform::set_platform(Box::new(TestPlatform(window.clone(), now))).unwrap();
@@ -73,54 +73,153 @@ fn input_badge_keeps_size_contrast_and_transparent_corners() {
             (48. * scale) as u32,
             (36. * scale) as u32,
         ));
-        for (fill, ink, contrast) in [
-            (0xeeeeee, 0x202020, false),
-            (0x383838, 0xeeeeee, false),
-            (0x000000, 0xffffff, true),
-        ] {
-            ui.set_fill(slint::Color::from_rgb_u8(
-                (fill >> 16) as u8,
-                (fill >> 8) as u8,
-                fill as u8,
-            ));
-            ui.set_ink(slint::Color::from_rgb_u8(
-                (ink >> 16) as u8,
-                (ink >> 8) as u8,
-                ink as u8,
-            ));
-            ui.set_contrast(contrast);
-            for mode in ["中", "EN"] {
-                ui.set_mode(mode.into());
-                let image = ui.window().take_snapshot().unwrap();
-                assert_eq!(
-                    (image.width(), image.height()),
-                    ((48. * scale) as u32, (36. * scale) as u32)
+        for mode in ["中", "EN"] {
+            ui.set_mode(mode.into());
+            let image = ui.window().take_snapshot().unwrap();
+            assert_eq!(
+                (image.width(), image.height()),
+                ((48. * scale) as u32, (36. * scale) as u32)
+            );
+            assert_eq!(image.as_slice()[0].a, 0);
+            assert!(image
+                .as_slice()
+                .iter()
+                .any(|p| p.a == 255 && p.r == 0 && p.g == 0 && p.b == 0));
+            assert!(image
+                .as_slice()
+                .iter()
+                .any(|p| p.a == 255 && p.r == 255 && p.g == 255 && p.b == 255));
+            {
+                let margin = (4. * scale) as usize;
+                let width = image.width() as usize;
+                let height = image.height() as usize;
+                let glyph: Vec<_> = image
+                    .as_slice()
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, p)| p.a == 255 && p.r > 32)
+                    .map(|(i, _)| (i % width, i / width))
+                    .collect();
+                assert!(!glyph.is_empty(), "missing glyph: {mode} at {scale}");
+                assert!(
+                    glyph.iter().all(|&(x, y)| {
+                        x >= margin && x < width - margin && y >= margin && y < height - margin
+                    }),
+                    "clipped glyph: {mode} at {scale}"
                 );
-                assert_eq!(image.as_slice()[0].a, 0);
-                assert!(image.as_slice().iter().any(|p| p.a == 255));
-                if !contrast {
-                    let margin = (4. * scale) as usize;
-                    let width = image.width() as usize;
-                    let height = image.height() as usize;
-                    let glyph: Vec<_> = image
-                        .as_slice()
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, p)| p.a == 255 && p.r.abs_diff((fill >> 16) as u8) > 32)
-                        .map(|(i, _)| (i % width, i / width))
-                        .collect();
-                    assert!(!glyph.is_empty(), "missing glyph: {mode} at {scale}");
-                    assert!(
-                        glyph.iter().all(|&(x, y)| {
-                            x >= margin && x < width - margin && y >= margin && y < height - margin
-                        }),
-                        "clipped glyph: {mode} at {scale}"
-                    );
-                }
             }
         }
     }
 }
+#[test]
+fn input_badge_flip_is_centered_serial_and_settles_to_latest_mode() {
+    use crate::IndicatorFlipPhase::{FlippingIn, FlippingOut, Idle};
+    let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+    let now = Rc::new(std::cell::Cell::new(std::time::Duration::ZERO));
+    slint::platform::set_platform(Box::new(TestPlatform(window.clone(), now.clone()))).unwrap();
+    let ui = crate::InputIndicatorWindow::new().unwrap();
+    ui.show().unwrap();
+    window.set_size(slint::PhysicalSize::new(48, 36));
+    let frame_index = std::cell::Cell::new(0);
+    let tick = |ms| {
+        now.set(now.get() + std::time::Duration::from_millis(ms));
+        slint::platform::update_timers_and_animations();
+        let frame = ui.window().take_snapshot().unwrap();
+        if let Some(directory) = std::env::var_os("ECHO_FLIP_TEST_FRAMES") {
+            let directory = std::path::PathBuf::from(directory);
+            std::fs::create_dir_all(&directory).unwrap();
+            image::save_buffer(
+                directory.join(format!("{:03}.png", frame_index.get())),
+                frame.as_bytes(),
+                frame.width(),
+                frame.height(),
+                image::ColorType::Rgba8,
+            )
+            .unwrap();
+            frame_index.set(frame_index.get() + 1);
+        }
+        assert_eq!((frame.width(), frame.height()), (48, 36));
+        assert_eq!(ui.window().size(), slint::PhysicalSize::new(48, 36));
+        assert!((ui.get_flip_x() * 2. + ui.get_flip_width() - 48.).abs() < 0.01);
+    };
+    ui.set_mode("中".into());
+    ui.set_reveal(true);
+    tick(0);
+    assert_eq!(ui.get_displayed_mode(), "中");
+    assert_eq!(ui.get_flip_phase(), Idle);
+    tick(120);
+    for (old, new) in [("中", "EN"), ("EN", "中")] {
+        ui.set_mode(new.into());
+        tick(0);
+        assert_eq!(ui.get_displayed_mode(), old);
+        assert_eq!(ui.get_flip_phase(), FlippingOut);
+        tick(40);
+        assert!(ui.get_flip_width() > 3. && ui.get_flip_width() < 48.);
+        assert_eq!(ui.get_displayed_mode(), old);
+        tick(40);
+        assert_eq!(ui.get_flip_phase(), FlippingIn);
+        assert_eq!(ui.get_displayed_mode(), new);
+        assert!(
+            (ui.get_flip_width() - 3.).abs() < 0.01,
+            "midpoint width {}",
+            ui.get_flip_width()
+        );
+        tick(40);
+        assert!(ui.get_flip_width() > 3. && ui.get_flip_width() < 48.);
+        tick(40);
+        assert_eq!(ui.get_flip_phase(), Idle);
+        assert_eq!(ui.get_flip_width(), 48.);
+    }
+    // Updates during both halves coalesce; only the latest target survives.
+    for (initial, other) in [("中", "EN"), ("EN", "中")] {
+        ui.set_animations(false);
+        ui.set_mode(initial.into());
+        tick(0);
+        ui.set_animations(true);
+        ui.set_mode(other.into());
+        tick(0);
+        tick(30);
+        ui.set_mode(initial.into());
+        tick(0);
+        tick(50);
+        assert_eq!(ui.get_displayed_mode(), initial);
+        tick(80);
+        assert_eq!(ui.get_flip_phase(), Idle);
+        ui.set_mode(other.into());
+        tick(0);
+        tick(80);
+        assert_eq!(ui.get_displayed_mode(), other);
+        ui.set_mode(initial.into());
+        tick(0);
+        tick(80);
+        tick(1);
+        tick(80);
+        tick(80);
+        assert_eq!(ui.get_flip_phase(), Idle);
+        assert_eq!(ui.get_displayed_mode(), ui.get_target_mode());
+        assert_eq!(ui.get_displayed_mode(), initial);
+    }
+    ui.set_mode("中".into());
+    ui.set_animations(false);
+    tick(0);
+    assert_eq!(ui.get_flip_phase(), Idle);
+    assert_eq!(ui.get_displayed_mode(), "中");
+    assert_eq!(ui.get_flip_width(), 48.);
+    ui.set_animations(true);
+    ui.set_mode("EN".into());
+    tick(0);
+    tick(30);
+    ui.set_reveal(false);
+    ui.set_mode("中".into());
+    tick(0);
+    ui.set_reveal(true);
+    tick(0);
+    assert_eq!(ui.get_displayed_mode(), "中");
+    assert_eq!(ui.get_flip_phase(), Idle);
+    assert_eq!(ui.get_flip_width(), 48.);
+    ui.hide().unwrap();
+}
+
 impl Platform for TestPlatform {
     fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, slint::PlatformError> {
         Ok(self.0.clone())
@@ -223,13 +322,13 @@ fn settings_render_in_both_languages_themes_and_narrow_widths() {
     let recorded = saves.clone();
     ui.on_save_settings(move || recorded.set(recorded.get() + 1));
     ui.set_global_hotkey_enabled(false);
-    click(840., 159.);
+    click(840., 211.);
     assert_eq!(ui.get_global_hotkey(), "Alt+V");
     assert!(ui.get_global_hotkey_enabled());
     assert_eq!(saves.get(), 0, "Reset must edit the draft without saving");
     ui.set_global_hotkey("Ctrl+Alt+J".into());
     ui.set_busy(true);
-    click(840., 159.);
+    click(840., 211.);
     assert_eq!(ui.get_global_hotkey(), "Ctrl+Alt+J");
     ui.set_busy(false);
     let retries = Rc::new(std::cell::Cell::new(0));
@@ -239,17 +338,17 @@ fn settings_render_in_both_languages_themes_and_narrow_widths() {
             recorded.set(recorded.get() + 1);
         }
     });
-    click(350., 210.);
+    click(350., 262.);
     assert_eq!(retries.get(), 0, "healthy binding must not expose Retry");
     ui.set_hotkey_registration_failed(true);
-    click(350., 210.);
+    click(350., 262.);
     assert_eq!(retries.get(), 1, "failed saved binding must expose Retry");
     ui.set_settings_dirty(true);
-    click(350., 210.);
+    click(350., 262.);
     assert_eq!(retries.get(), 1, "Retry must not apply an unsaved draft");
     ui.set_settings_dirty(false);
     ui.set_busy(true);
-    click(350., 210.);
+    click(350., 262.);
     assert_eq!(retries.get(), 1, "busy settings must reject Retry");
     ui.set_busy(false);
     ui.set_hotkey_registration_failed(false);
@@ -288,7 +387,7 @@ fn settings_render_in_both_languages_themes_and_narrow_widths() {
                         renderer.render(&mut pixels, physical_width as usize);
                     });
                     assert!(pixels.windows(2).any(|p| p[0] != p[1]));
-                    let row_y = if width == 320 { 199. } else { 159. };
+                    let row_y = if width == 320 { 251. } else { 211. };
                     ui.set_global_hotkey("Ctrl+Alt+J".into());
                     ui.set_global_hotkey_enabled(false);
                     click(width as f32 - 120., row_y);

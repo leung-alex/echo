@@ -1,5 +1,5 @@
 //! Placement and validity policy for a passive input-mode badge.
-use echo_engine::{CompositionState, InputAnchor, InputMode, InputStatus, PhysicalRect};
+use echo_engine::{InputAnchor, InputMode, InputStatus, PhysicalRect};
 use std::time::{Duration, Instant};
 
 pub fn visible(sample: &InputStatus, generation: u64, suppressed: bool, now: Instant) -> bool {
@@ -7,7 +7,6 @@ pub fn visible(sample: &InputStatus, generation: u64, suppressed: bool, now: Ins
         && sample.generation == generation
         && now.saturating_duration_since(sample.sampled_at) <= Duration::from_millis(250)
         && sample.mode != InputMode::Unknown
-        && sample.composition == CompositionState::Idle
 }
 
 pub fn place(sample: &InputStatus) -> Option<PhysicalRect> {
@@ -28,7 +27,7 @@ pub fn place(sample: &InputStatus) -> Option<PhysicalRect> {
         return None;
     }
     let x = match sample.anchor {
-        InputAnchor::Caret => {
+        InputAnchor::Caret | InputAnchor::Pointer => {
             let x = g
                 .target
                 .x
@@ -62,6 +61,7 @@ pub fn place(sample: &InputStatus) -> Option<PhysicalRect> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use echo_engine::CompositionState;
     fn sample() -> InputStatus {
         InputStatus {
             generation: 2,
@@ -91,7 +91,7 @@ mod tests {
         }
     }
     #[test]
-    fn rejects_stale_unknown_composing_and_suppressed_samples() {
+    fn rejects_stale_unknown_mode_and_suppressed_samples() {
         let mut s = sample();
         assert!(visible(&s, 2, false, s.sampled_at));
         assert!(!visible(&s, 3, false, s.sampled_at));
@@ -104,11 +104,52 @@ mod tests {
         ));
         s.mode = InputMode::Unknown;
         assert!(!visible(&s, 2, false, s.sampled_at));
-        s.mode = InputMode::English;
-        for state in [CompositionState::Composing, CompositionState::Unknown] {
-            s.composition = state;
-            assert!(!visible(&s, 2, false, s.sampled_at));
+    }
+    #[test]
+    fn known_mode_remains_visible_through_composition_and_candidate_selection() {
+        let mut s = sample();
+        for mode in [InputMode::Chinese, InputMode::English] {
+            s.mode = mode;
+            for composition in [
+                CompositionState::Idle,
+                CompositionState::Composing,
+                CompositionState::Unknown,
+            ] {
+                s.composition = composition;
+                assert!(visible(&s, 2, false, s.sampled_at));
+                assert!(!visible(&s, 3, false, s.sampled_at));
+                assert!(!visible(&s, 2, true, s.sampled_at));
+            }
         }
+    }
+    #[test]
+    fn pointer_status_follows_pointer_and_flips_at_screen_edges() {
+        let mut s = sample();
+        s.anchor = InputAnchor::Pointer;
+        s.geometry.target.width = 1;
+        s.geometry.target.height = 1;
+        assert_eq!(
+            place(&s).unwrap(),
+            PhysicalRect {
+                x: 109,
+                y: 56,
+                width: 48,
+                height: 36
+            }
+        );
+        s.geometry.target.x = 200;
+        assert_eq!(place(&s).unwrap().x, 209);
+        s.geometry.target.x = 790;
+        s.geometry.target.y = 0;
+        assert_eq!(
+            place(&s).unwrap(),
+            PhysicalRect {
+                x: 734,
+                y: 9,
+                width: 48,
+                height: 36
+            }
+        );
     }
     #[test]
     fn placement_flips_clamps_and_scales_on_negative_monitors() {

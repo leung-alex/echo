@@ -121,6 +121,20 @@ def main():
         fixture = start(fixture_exe, str(root), 'Echo Input Indicator Fixture')
         wait(lambda: (root / 'native-ready.json').exists(), 'owned fixture')
         call(True, op='reset', control='single', text='Synthetic input', start=3, length=0)
+        # An existing foreground app can deny a newly launched fixture's activation.
+        # Grant foreground permission, then target only this owned fixture HWND.
+        fixture_window = call(True, op='state')['window']
+        user32.SetForegroundWindow.argtypes = [ctypes.c_void_p]
+        user32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
+        owner = ctypes.c_ulong()
+        user32.GetWindowThreadProcessId(fixture_window, ctypes.byref(owner))
+        assert owner.value == fixture.pid, 'fixture HWND ownership changed'
+        if user32.GetForegroundWindow() != fixture_window:
+            user32.keybd_event(0x12, 0, 0, 0)
+            user32.keybd_event(0x12, 0, 2, 0)
+            user32.SetForegroundWindow(fixture_window)
+        wait(lambda: user32.GetForegroundWindow() == fixture_window, 'owned fixture foreground')
+        call(True, op='ime-english', control='single')
         first = check('english-state-and-default-enabled', lambda: wait(lambda: badge('EN'), 'EN indicator'))
         foreground = user32.GetForegroundWindow()
         assert foreground == first['sample']['window'], 'badge stole foreground focus'
@@ -128,6 +142,23 @@ def main():
         required = 0x08000000 | 0x80 | 0x20 | 0x80000
         assert style & required == required and style & 0x40000 == 0, hex(style)
         check('passive-tool-window', lambda: dict(ex_style=hex(style), foreground=foreground))
+        # Observe native focus and size throughout real owned-fixture mode flips.
+        from ctypes.wintypes import RECT
+        user32.GetWindowRect.argtypes = [ctypes.c_void_p, ctypes.POINTER(RECT)]
+        def badge_size():
+            rect = RECT()
+            assert user32.GetWindowRect(first['hwnd'], ctypes.byref(rect))
+            return (rect.right - rect.left, rect.bottom - rect.top)
+        fixed_size = badge_size()
+        for operation, label in [('ime-chinese', '中'), ('ime-english', 'EN')]:
+            call(True, op=operation, control='single')
+            wait(lambda: badge(label), 'flip target mode')
+            deadline = time.monotonic() + .25
+            while time.monotonic() < deadline:
+                assert user32.GetForegroundWindow() == foreground, 'flip took focus'
+                assert badge_size() == fixed_size, 'flip resized native window'
+                time.sleep(.01)
+        check('mode-flip-preserves-native-size-and-input-focus', lambda: dict(size=fixed_size))
         process = psutil.Process(echo.pid)
         cpu_start = sum(process.cpu_times()[:2])
         count_start = call(verb='input_indicator')['counts']
@@ -202,6 +233,16 @@ $targetProcessId = PROCESS_ID
 $roots = [System.Windows.Automation.AutomationElement]::RootElement.FindAll(
     [System.Windows.Automation.TreeScope]::Children,
     [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ProcessIdProperty,$targetProcessId))
+foreach ($ownedRoot in $roots) {
+    $quickInput = $ownedRoot.FindFirst([System.Windows.Automation.TreeScope]::Descendants,
+        [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::NameProperty,'快捷输入'))
+    if ($null -ne $quickInput) {
+        $invoke = $quickInput.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+        $invoke.Invoke()
+        Start-Sleep -Milliseconds 200
+        break
+    }
+}
 $foundCount = 0
 foreach ($ownedRoot in $roots) {
     $foundCount += $ownedRoot.FindAll([System.Windows.Automation.TreeScope]::Descendants,
@@ -214,7 +255,8 @@ foreach ($ownedRoot in $roots) {
                                         creationflags=subprocess.CREATE_NO_WINDOW, timeout=15).decode().strip()
         assert int(names) > 0, 'Chinese settings must expose the translated indicator name'
         check('settings-indicator-chinese-accessible-name', lambda: '输入法提示')
-        check('settings-appearance-rendered', lambda: 'settings-appearance.png')
+        call(verb='capture', file='settings-quick-input.png')
+        check('settings-quick-input-rendered', lambda: 'settings-quick-input.png')
         checks.append(dict(name='physical-microsoft-doubao-codex-browser-mixed-dpi', status='NOT_RUN',
                            evidence='Synthetic fixture and IMM commands do not certify physical input or other applications.'))
     except Exception as error:

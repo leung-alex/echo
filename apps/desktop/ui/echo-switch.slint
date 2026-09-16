@@ -18,6 +18,7 @@ export component EchoSwitch inherits Rectangle {
     function toggle() { if (root.enabled) { root.checked = !root.checked; } }
 
     caption := Text {
+        x: 0px;
         width: max(0px, parent.width - 48px); height: parent.height;
         text: root.text; color: EchoTheme.text; font-size: 14px;
         wrap: word-wrap; vertical-alignment: center;

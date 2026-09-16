@@ -55,13 +55,7 @@ impl Indicator {
             self.visible = false;
         }
     }
-    pub fn sync(
-        &mut self,
-        enabled: bool,
-        suppressed: bool,
-        theme: crate::EchoTheme<'_>,
-        environment: shell::UiEnvironment,
-    ) {
+    pub fn sync(&mut self, enabled: bool, suppressed: bool, environment: shell::UiEnvironment) {
         let Some(monitor) = self.monitor.as_ref() else {
             return;
         };
@@ -82,13 +76,6 @@ impl Indicator {
             self.hide();
             return;
         };
-        self.window.set_fill(if environment.high_contrast {
-            theme.get_surface()
-        } else {
-            theme.get_selection()
-        });
-        self.window.set_ink(theme.get_text());
-        self.window.set_contrast(environment.high_contrast);
         self.window.set_animations(environment.animations);
         self.window.set_mode(
             match sample.mode {

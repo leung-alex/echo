@@ -112,6 +112,7 @@ pub(super) struct Shared {
     requested: AtomicU64,
     active: AtomicU64,
     editor_session: AtomicU64,
+    navigation_session: AtomicU64,
     window: AtomicIsize,
     focus: AtomicIsize,
     process: AtomicU32,
@@ -142,6 +143,7 @@ impl Shared {
             requested: AtomicU64::new(0),
             active: AtomicU64::new(0),
             editor_session: AtomicU64::new(0),
+            navigation_session: AtomicU64::new(0),
             window: AtomicIsize::new(0),
             focus: AtomicIsize::new(0),
             process: AtomicU32::new(0),
@@ -432,8 +434,21 @@ impl InlineController {
             .active
             .compare_exchange(session, 0, Ordering::AcqRel, Ordering::Acquire);
         s.selectable.store(false, Ordering::Release);
+        let _ =
+            s.navigation_session
+                .compare_exchange(session, 0, Ordering::AcqRel, Ordering::Acquire);
         self.inner.hook.disarm(session);
         let _ = self.inner.sender.try_send(Request::Cancel(session));
+    }
+    /// Plain-paste browsing owns navigation without claiming an editable range or IME evidence.
+    pub fn own_plain_paste_navigation(&self, session: u64) {
+        let s = &self.inner.shared;
+        if session != 0
+            && s.active.load(Ordering::Acquire) == session
+            && s.requested.load(Ordering::Acquire) == session
+        {
+            s.navigation_session.store(session, Ordering::Release);
+        }
     }
     /// Temporarily give an Echo editor the keyboard without retiring the target.
     pub fn set_editor_active(&self, session: u64, active: bool) {

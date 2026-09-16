@@ -266,7 +266,7 @@ impl App {
                 self.prepare_window_geometry();
             }
             InlineEvent::Navigate { session, delta } => {
-                if self.inline_active()
+                if self.popup_preserves_input_focus()
                     && session == self.session.epoch
                     && !self.inline_ui.composing
                     && !self.inline_ui.suspended
@@ -275,7 +275,7 @@ impl App {
                 }
             }
             InlineEvent::SwitchSpace { session, delta } => {
-                if self.inline_active()
+                if self.popup_preserves_input_focus()
                     && session == self.session.epoch
                     && !self.inline_ui.composing
                     && !self.inline_ui.suspended
@@ -303,8 +303,8 @@ impl App {
                 self.execute(self.surface.selection.unwrap(), QuickInsertAction::Insert);
             }
             InlineEvent::Cancelled { session, reason } => {
-                if std::env::var_os("ECHO_TRACE_ESCAPE").is_some() { eprintln!("[DEBUG-esc] cancelled session={session} current={} active={} pending={} plain={}",self.session.epoch,self.inline_active(),self.inline_ui.pending,self.inline_ui.plain_paste); }
-                if session == self.session.epoch && (self.popup_preserves_input_focus() || self.inline_ui.pending)
+                if session == self.session.epoch
+                    && (self.popup_preserves_input_focus() || self.inline_ui.pending)
                 {
                     self.activation_focus = None;
                     self.dismiss();
@@ -312,7 +312,8 @@ impl App {
                 }
             }
             InlineEvent::Compatibility { session, reason } => {
-                if session == self.session.epoch && (self.popup_preserves_input_focus() || self.inline_ui.pending)
+                if session == self.session.epoch
+                    && (self.popup_preserves_input_focus() || self.inline_ui.pending)
                 {
                     self.open_manual_history(reason);
                 }

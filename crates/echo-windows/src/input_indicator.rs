@@ -8,7 +8,7 @@ use std::{
     cell::RefCell,
     ptr::null_mut,
     sync::{
-        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU64, Ordering},
         Arc,
     },
     thread::JoinHandle,
@@ -40,6 +40,7 @@ struct Shared {
     samples: AtomicU64,
     probes: AtomicU64,
     dirty: AtomicU32,
+    console_root: AtomicIsize,
     post: Arc<dyn Fn(Update) + Send + Sync>,
 }
 impl Shared {
@@ -71,6 +72,16 @@ unsafe extern "system" fn event(
         let Some(s) = state.as_ref().filter(|s| s.enabled.load(Ordering::Acquire)) else {
             return;
         };
+        // The console provider emits new MSAA focus object IDs while reading
+        // the same cursor. They do not denote a new input control; invalidating
+        // here creates a query/focus/query loop. Foreground changes still retire it.
+        if event == EVENT_OBJECT_FOCUS
+            && !hwnd.is_null()
+            && hwnd == GetForegroundWindow()
+            && s.console_root.load(Ordering::Acquire) == hwnd as isize
+        {
+            return;
+        }
         if event == EVENT_SYSTEM_FOREGROUND || event == EVENT_OBJECT_FOCUS {
             s.dirty.fetch_or(FOCUS, Ordering::Release);
             s.invalidate();
@@ -135,6 +146,7 @@ impl Monitor {
             samples: AtomicU64::new(0),
             probes: AtomicU64::new(0),
             dirty: AtomicU32::new(FOCUS),
+            console_root: AtomicIsize::new(0),
             post,
         });
         let state = shared.clone();
@@ -183,7 +195,10 @@ unsafe fn run(s: Arc<Shared>) {
     let mut hooks = None;
     let mut cached: Option<(
         FocusSnapshot,
-        echo_engine::PasteTarget,
+        (
+            Option<echo_engine::PasteControlIdentity>,
+            Option<crate::focus::InputStatusEndpoint>,
+        ),
         crate::focus::PopupAnchor,
     )> = None;
     let mut observer = None;
@@ -199,6 +214,7 @@ unsafe fn run(s: Arc<Shared>) {
         let enabled = s.enabled.load(Ordering::Acquire);
         if !enabled {
             hooks = None;
+            s.console_root.store(0, Ordering::Release);
             cached = None;
             observer = None;
             next = None;
@@ -208,6 +224,7 @@ unsafe fn run(s: Arc<Shared>) {
         }
         let dirty = s.dirty.swap(0, Ordering::AcqRel);
         if enabled && dirty & FOCUS != 0 {
+            s.console_root.store(0, Ordering::Release);
             cached = None;
             observer = None;
             failures = 0;
@@ -232,20 +249,37 @@ unsafe fn run(s: Arc<Shared>) {
                 || refreshed.elapsed() >= Duration::from_millis(500);
             if needs_probe {
                 s.probes.fetch_add(1, Ordering::Relaxed);
-                let found = snapshot.capture_target();
+                let observed = snapshot
+                    .console_indicator()
+                    .or_else(|| snapshot.terminal_tsf_indicator())
+                    .map(|(endpoint, anchor)| ((None, Some(endpoint)), anchor))
+                    .or_else(|| {
+                        let found = snapshot.capture_target();
+                        found
+                            .target
+                            .filter(|_| found.anchor.source != AnchorSource::Window)
+                            .map(|target| ((target.focused_control, None), found.anchor))
+                    })
+                    .or_else(|| {
+                        snapshot
+                            .warp_pointer_indicator()
+                            .map(|(endpoint, anchor)| ((None, Some(endpoint)), anchor))
+                    });
                 refreshed = Instant::now();
-                if let Some(target) = found
-                    .target
-                    .filter(|_| found.anchor.source != AnchorSource::Window)
-                {
-                    if cached
-                        .as_ref()
-                        .is_some_and(|(_, old, _)| old.focused_control != target.focused_control)
-                    {
+                if let Some((target, anchor)) = observed {
+                    if cached.as_ref().is_some_and(|(_, old, _)| old != &target) {
                         observer = None;
                         s.invalidate();
                     }
-                    cached = Some((snapshot.clone(), target, found.anchor));
+                    s.console_root.store(
+                        if target.1.is_some_and(|t| t.window != t.input) {
+                            snapshot.window_id
+                        } else {
+                            0
+                        },
+                        Ordering::Release,
+                    );
+                    cached = Some((snapshot.clone(), target, anchor));
                 } else {
                     cached = None;
                     observer = None;
@@ -255,7 +289,7 @@ unsafe fn run(s: Arc<Shared>) {
                 candidate_visible = cached.as_ref().is_some_and(|(_, _, anchor)| {
                     !matches!(
                         anchor.source,
-                        AnchorSource::Window | AnchorSource::InputControl
+                        AnchorSource::Window | AnchorSource::InputControl | AnchorSource::Pointer
                     ) && crate::inline::ime_window::visible_near(
                         snapshot.focused_handle as HWND,
                         anchor.geometry.target,
@@ -264,20 +298,19 @@ unsafe fn run(s: Arc<Shared>) {
                     .is_some()
                 });
             }
-            let sample = cached.as_ref().and_then(|(_, _, anchor)| {
-                let thread = GetWindowThreadProcessId(snapshot.focused_handle as HWND, null_mut());
+            let sample = cached.as_ref().and_then(|(_, target, anchor)| {
+                let thread = GetWindowThreadProcessId(target.1.map_or(snapshot.focused_handle, |t| t.window) as HWND, null_mut());
                 let layout = GetKeyboardLayout(thread);
                 let english_keyboard = layout as usize & 0x3ff == 0x09 && ImmIsIME(layout) == 0;
                 let state = if english_keyboard {
                     Some((InputMode::English, CompositionState::Idle))
                 } else {
                     if observer.is_none() {
-                        observer = Observer::status_only(
-                            snapshot.focused_handle,
-                            snapshot.process_id,
-                            snapshot.process_started_at,
-                        )
-                        .ok();
+                        observer = if let Some(endpoint) = target.1 {
+                            Observer::status_at(endpoint)
+                        } else {
+                            Observer::status_only(snapshot.focused_handle, snapshot.process_id, snapshot.process_started_at)
+                        }.ok();
                     }
                     observer.as_ref().and_then(Observer::input_state)
                 };
@@ -289,7 +322,9 @@ unsafe fn run(s: Arc<Shared>) {
                 if !snapshot.current() || s.generation.load(Ordering::Acquire) != generation {
                     return None;
                 }
-                let anchor = if snapshot.anchor.source == AnchorSource::NativeCaret {
+                let anchor = if anchor.source == AnchorSource::Pointer {
+                    snapshot.warp_pointer_indicator()?.1
+                } else if snapshot.anchor.source == AnchorSource::NativeCaret {
                     snapshot.anchor
                 } else {
                     *anchor
@@ -306,18 +341,18 @@ unsafe fn run(s: Arc<Shared>) {
                     } else {
                         composition
                     },
-                    anchor: if anchor.source == AnchorSource::InputControl {
-                        InputAnchor::Control
-                    } else {
-                        InputAnchor::Caret
+                    anchor: match anchor.source {
+                        AnchorSource::InputControl => InputAnchor::Control,
+                        AnchorSource::Pointer => InputAnchor::Pointer,
+                        _ => InputAnchor::Caret,
                     },
                     geometry: anchor.geometry,
                     sampled_at: Instant::now(),
                 })
             });
-            let valid = sample.as_ref().is_some_and(|s| {
-                s.mode != InputMode::Unknown && s.composition != CompositionState::Unknown
-            });
+            let valid = sample
+                .as_ref()
+                .is_some_and(|s| s.mode != InputMode::Unknown);
             (s.post)(Update {
                 generation: s.generation.load(Ordering::Acquire),
                 sample,
@@ -387,6 +422,7 @@ mod tests {
                 samples: AtomicU64::new(0),
                 probes: AtomicU64::new(0),
                 dirty: AtomicU32::new(0),
+                console_root: AtomicIsize::new(0),
                 post: Arc::new(move |u| observed.lock().unwrap().push(u.generation)),
             }),
             worker: None,

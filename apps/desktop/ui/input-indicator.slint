@@ -1,20 +1,74 @@
+export enum IndicatorFlipPhase { idle, flipping-out, flipping-in }
+
 export component InputIndicatorWindow inherits Window {
     title: "Echo Input Indicator";
     min-width: 48px; max-width: 48px; min-height: 36px; max-height: 36px;
     no-frame: true; always-on-top: true; background: transparent;
     in property <string> mode;
-    in property <color> fill;
-    in property <color> ink;
-    in property <bool> contrast;
     in property <bool> reveal;
     in property <bool> animations: true;
-    Rectangle {
+    out property <string> target-mode: root.mode;
+    out property <string> displayed-mode;
+    out property <IndicatorFlipPhase> flip-phase: idle;
+    out property <length> flip-width: surface.width;
+    out property <length> flip-x: surface.x;
+    private property <bool> flip-active;
+    private property <float> flip-progress: root.flip-active ? 1 : 0;
+    private property <float> face-scale: abs(2 * root.flip-progress - 1);
+    animate flip-progress {
+        duration: root.animations && root.reveal && root.flip-active ? 160ms : 0ms;
+        easing: ease-in-out;
+    }
+
+    function settle() {
+        root.displayed-mode = root.target-mode;
+        root.flip-active = false;
+        root.flip-phase = IndicatorFlipPhase.idle;
+    }
+    function accept-mode() {
+        if !root.animations || !root.reveal
+            || (root.displayed-mode != "中" && root.displayed-mode != "EN")
+            || (root.target-mode != "中" && root.target-mode != "EN") {
+            root.settle();
+        } else if root.flip-phase == IndicatorFlipPhase.idle && root.target-mode != root.displayed-mode {
+            root.flip-active = true;
+            root.flip-phase = IndicatorFlipPhase.flipping-out;
+        }
+    }
+    changed target-mode => { root.accept-mode(); }
+    changed reveal => { root.settle(); }
+    changed animations => { if !root.animations { root.settle(); } }
+    Timer {
+        interval: root.flip-phase == IndicatorFlipPhase.idle ? 1ms : 80ms;
+        running: root.animations && root.reveal
+            && (root.flip-phase != IndicatorFlipPhase.idle || root.target-mode != root.displayed-mode);
+        triggered => {
+            if root.flip-phase == IndicatorFlipPhase.flipping-out {
+                root.displayed-mode = root.target-mode;
+                root.flip-phase = IndicatorFlipPhase.flipping-in;
+            } else if root.flip-phase == IndicatorFlipPhase.flipping-in {
+                root.flip-active = false;
+                root.flip-phase = IndicatorFlipPhase.idle;
+            } else {
+                root.accept-mode();
+            }
+        }
+    }
+    surface := Rectangle {
+        x: (parent.width - self.width) / 2;
+        width: 3px + (parent.width - 3px) * root.face-scale;
+        height: parent.height;
+        clip: true;
         border-radius: 8px;
-        background: root.fill;
-        border-width: root.contrast ? 1px : 0px; border-color: root.ink;
+        background: #000000;
         opacity: root.reveal ? 1 : 0;
         animate opacity { duration: root.animations && root.reveal ? 100ms : 0ms; easing: ease-out; }
-        Text { text: root.mode; color: root.ink; font-size: 18px;
+        Text {
+            width: root.width; height: parent.height;
+            x: (parent.width - self.width) / 2;
+            opacity: root.face-scale;
+            text: root.displayed-mode; color: #ffffff; font-size: 18px; font-weight: 700;
+            font-family: root.displayed-mode == "中" ? "Microsoft YaHei UI" : "Segoe UI Variable Text";
             horizontal-alignment: center; vertical-alignment: center; }
     }
 }

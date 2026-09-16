@@ -22,6 +22,8 @@ pub enum CompositionState {
 pub enum InputAnchor {
     Caret,
     Control,
+    /// Explicit pointer fallback, not a detected text caret.
+    Pointer,
 }
 
 #[derive(Clone, Copy, Debug)]

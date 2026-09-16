@@ -503,6 +503,7 @@ impl App {
                             // popup hides; retiring it here strands a no-activate UI.
                             self.inline_ui.unavailable = false;
                             self.inline_ui.plain_paste = true;
+                            self.worker.inline.own_plain_paste_navigation(epoch);
                         }
                         if !self.send(Work::Adopt(epoch, result.target)) {
                             self.capture_pending = false;
@@ -580,7 +581,6 @@ impl App {
                 || (self.surface.visible
                     && self.quick_geometry_active
                     && !self.inline_ui.editor_focus),
-            self.window.global::<crate::EchoTheme>(),
             self.environment,
         );
     }
@@ -1590,7 +1590,7 @@ impl App {
         match completion {
             Completion::Stale => {}
             Completion::Inserted => {
-                if self.inline_active() {
+                if self.popup_preserves_input_focus() {
                     if !self.stop_inline() {
                         return;
                     }

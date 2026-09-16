@@ -67,7 +67,7 @@ export component SettingsPage inherits Rectangle {
     private property <int> section;
     changed section => {settings-scroll.viewport-y=0px;}
     private property <bool> narrow: root.width < 850px;
-    private property <[string]> categories: [@tr("Appearance"), @tr("Spaces"), @tr("Keyboard shortcuts")];
+    private property <[string]> categories: [@tr("Appearance"), @tr("Spaces"), @tr("Quick Input")];
     background: transparent;
     Image { x: 28px; y: settings-title.y + (settings-title.height - self.height) / 2; width: 26px; height: 26px; source: @image-url("favorite-icons/SettingsCog.svg"); colorize: EchoTheme.text; image-fit: contain; }
     settings-title := Text { x: 64px; y: 15px; text: @tr("Settings"); color: EchoTheme.text; font-size: T.font-setting-title; font-weight: 600; }
@@ -122,7 +122,6 @@ export component SettingsPage inherits Rectangle {
                 EnumChoice { enabled: !root.busy; model: [@tr("Light"), @tr("Dark")]; selected-index: root.theme-mode == "dark" ? 1 : 0; selected(value) => { root.theme-mode = self.current-index == 1 ? "dark" : "light"; } accessible-label: @tr("Theme"); }
                 Text { text: @tr("Language"); color: EchoTheme.text; }
                 EnumChoice { enabled: !root.busy; model: ["简体中文", "English"]; selected-index: root.language == "en" ? 1 : 0; selected(value) => { root.language = self.current-index == 1 ? "en" : "zh-CN"; } accessible-label: @tr("Language"); }
-                EchoSwitch { enabled: !root.busy; text: @tr("Input method indicator"); checked <=> root.input-method-indicator; }
             }
             if (root.section == 1): VerticalLayout {
                 spacing: 12px; alignment: start;
@@ -157,6 +156,7 @@ export component SettingsPage inherits Rectangle {
             }
             if (root.section == 2): VerticalLayout {
                 spacing: 16px; alignment: start;
+                EchoSwitch { enabled: !root.busy; text: @tr("Input method indicator"); checked <=> root.input-method-indicator; }
                 HorizontalLayout { spacing: 8px;
                     Text { text: @tr("Global quick insert shortcut"); color: EchoTheme.text; font-size: 14px; min-width: 0px; horizontal-stretch: 1; overflow: elide; vertical-alignment: center; }
                     LineEdit { width: max(72px,min(180px,settings-scroll.width * 0.32)); horizontal-stretch: 0; text <=> root.global-hotkey; accessible-label: @tr("Global quick insert shortcut"); enabled: !root.busy && root.global-hotkey-enabled; }
