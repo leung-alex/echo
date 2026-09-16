@@ -11,6 +11,7 @@ use windows_sys::Win32::{
 mod anchor;
 pub(crate) mod automation;
 mod placement;
+mod terminal;
 pub(crate) use anchor::{anchor_for_element, resolve_anchor};
 pub use placement::{
     expand_popup_stage, place_card, place_inline, place_inline_stage, PopupPlacement,
@@ -302,7 +303,14 @@ impl FocusSnapshot {
         if self.native_input.is_some() || self.native_blocked || !self.current() {
             return None;
         }
-        let probe = unsafe { automation::plain_paste_probe(uia, self)? };
+        let probe = if let Some(identity) = self.plain_paste_window_identity() {
+            automation::Probe {
+                identity,
+                anchor: None,
+            }
+        } else {
+            unsafe { automation::plain_paste_probe(uia, self)? }
+        };
         let anchor = probe
             .anchor
             .map(|(target, source)| PopupAnchor {

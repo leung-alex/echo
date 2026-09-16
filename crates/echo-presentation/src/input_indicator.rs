@@ -13,7 +13,7 @@ pub fn visible(sample: &InputStatus, generation: u64, suppressed: bool, now: Ins
 pub fn place(sample: &InputStatus) -> Option<PhysicalRect> {
     let g = sample.geometry;
     let scale = |dip: i32| ((f64::from(dip) * f64::from(g.dpi) / 96.).round() as i32).max(1);
-    let (width, height, gap) = (scale(32), scale(24), scale(8));
+    let (width, height, gap) = (scale(48), scale(36), scale(8));
     let work = g.work_area;
     if work.width < width || work.height < height || g.target.height <= 0 {
         return None;
@@ -117,24 +117,24 @@ mod tests {
             place(&s),
             Some(PhysicalRect {
                 x: 109,
-                y: 68,
-                width: 32,
-                height: 24
+                y: 56,
+                width: 48,
+                height: 36
             })
         );
         s.geometry.target.x = 790;
         s.geometry.target.y = 0;
-        assert_eq!(place(&s).unwrap().x, 750);
+        assert_eq!(place(&s).unwrap().x, 734);
         assert_eq!(place(&s).unwrap().y, 28);
         s.geometry.work_area.x = -800;
         s.geometry.target.x = -790;
         s.geometry.dpi = 144;
         let p = place(&s).unwrap();
-        assert_eq!((p.width, p.height), (48, 36));
+        assert_eq!((p.width, p.height), (72, 54));
         assert!(p.x >= -800 && p.x + p.width <= 0);
         s.anchor = InputAnchor::Control;
         s.geometry.target.width = 200;
-        assert_eq!(place(&s).unwrap().x, -638);
+        assert_eq!(place(&s).unwrap().x, -662);
         s.geometry.target.y = 700;
         assert!(place(&s).is_none());
     }

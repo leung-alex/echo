@@ -11,7 +11,7 @@ fn main() {
         .unwrap_or(15)
         .clamp(1, 300);
     let (sender, receiver) = mpsc::channel();
-    let _monitor = echo_windows::input_indicator::Monitor::start(
+    let monitor = echo_windows::input_indicator::Monitor::start(
         true,
         Arc::new(move |update| {
             let _ = sender.send(update);
@@ -20,7 +20,19 @@ fn main() {
     .unwrap();
     let start = Instant::now();
     let mut previous = String::new();
+    let mut inspected = Instant::now() - Duration::from_secs(1);
     while start.elapsed() < Duration::from_secs(seconds) {
+        if inspected.elapsed() >= Duration::from_secs(1) {
+            let snapshot = echo_windows::focus::FocusSnapshot::capture();
+            let target = snapshot.capture_target();
+            println!(
+                "focus={snapshot:?} accepted={} anchor={:?} counts={:?}",
+                target.target.is_some(),
+                target.anchor.source,
+                monitor.observation_counts()
+            );
+            inspected = Instant::now();
+        }
         let Ok(update) = receiver.recv_timeout(Duration::from_millis(250)) else {
             continue;
         };

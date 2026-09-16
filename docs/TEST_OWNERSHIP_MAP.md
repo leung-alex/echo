@@ -94,3 +94,11 @@ and valid settings, About, activation replay/malformed envelopes, and settings/
 deleted-item persistence after a real process restart. The old script has retired.
 The complete mapping, retained state tests and inapplicable product assumptions
 are documented in [retirement-test-map.md](engineering/retirement-test-map.md).
+
+## Terminal plain paste
+
+`echo-windows` owns the explicit terminal-host compatibility policy and stale
+identity checks. `terminal_plain_paste.rs` is opt-in native acceptance, invoked by
+`Invoke-TerminalPlainPasteAcceptance.ps1` inside the clipboard preservation wrapper.
+It verifies actual synthetic text delivery to owned CMD/PowerShell readers; Warp,
+Windows Terminal, physical IME input and passive badge positioning are separate.

@@ -395,6 +395,9 @@ mod windows_impl {
                 Some(PasteControlIdentity::NativeWindow { .. }) => {
                     focused_native_control_from_gui(hwnd, target.process_id)
                 }
+                Some(PasteControlIdentity::PlainPasteWindow { .. }) => {
+                    crate::focus::FocusSnapshot::capture().plain_paste_window_identity()
+                }
                 _ => focused_input_identity(hwnd, target.process_id),
             };
             let Some(current_control) = current_control else {
@@ -436,10 +439,13 @@ mod windows_impl {
                         PasteDelivery::Failed(PasteDeliveryFailure::NativePasteFailed)
                     })
                 }
-                PasteControlIdentity::AutomationRuntimeId(_) => Ok(match send_paste_shortcut() {
-                    Ok(()) => PasteDelivery::Pasted,
-                    Err(reason) => PasteDelivery::Failed(reason),
-                }),
+                PasteControlIdentity::AutomationRuntimeId(_)
+                | PasteControlIdentity::PlainPasteWindow { .. } => {
+                    Ok(match send_paste_shortcut() {
+                        Ok(()) => PasteDelivery::Pasted,
+                        Err(reason) => PasteDelivery::Failed(reason),
+                    })
+                }
             }
         }
     }
@@ -801,7 +807,7 @@ mod windows_impl {
         }
     }
 
-    fn process_path(process_id: u32) -> Option<String> {
+    pub(crate) fn process_path(process_id: u32) -> Option<String> {
         let process =
             unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id) }.ok()?;
         let mut buffer = vec![0_u16; 32_768];

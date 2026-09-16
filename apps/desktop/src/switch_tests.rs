@@ -70,8 +70,8 @@ fn input_badge_keeps_size_contrast_and_transparent_corners() {
             scale_factor: scale,
         });
         window.set_size(slint::PhysicalSize::new(
-            (32. * scale) as u32,
-            (24. * scale) as u32,
+            (48. * scale) as u32,
+            (36. * scale) as u32,
         ));
         for (fill, ink, contrast) in [
             (0xeeeeee, 0x202020, false),
@@ -94,10 +94,29 @@ fn input_badge_keeps_size_contrast_and_transparent_corners() {
                 let image = ui.window().take_snapshot().unwrap();
                 assert_eq!(
                     (image.width(), image.height()),
-                    ((32. * scale) as u32, (24. * scale) as u32)
+                    ((48. * scale) as u32, (36. * scale) as u32)
                 );
                 assert_eq!(image.as_slice()[0].a, 0);
                 assert!(image.as_slice().iter().any(|p| p.a == 255));
+                if !contrast {
+                    let margin = (4. * scale) as usize;
+                    let width = image.width() as usize;
+                    let height = image.height() as usize;
+                    let glyph: Vec<_> = image
+                        .as_slice()
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, p)| p.a == 255 && p.r.abs_diff((fill >> 16) as u8) > 32)
+                        .map(|(i, _)| (i % width, i / width))
+                        .collect();
+                    assert!(!glyph.is_empty(), "missing glyph: {mode} at {scale}");
+                    assert!(
+                        glyph.iter().all(|&(x, y)| {
+                            x >= margin && x < width - margin && y >= margin && y < height - margin
+                        }),
+                        "clipped glyph: {mode} at {scale}"
+                    );
+                }
             }
         }
     }

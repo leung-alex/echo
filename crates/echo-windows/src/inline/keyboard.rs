@@ -287,6 +287,7 @@ impl Local {
             UnhookWindowsHookEx(self.hook);
         }
         self.hook = replacement;
+        if std::env::var_os("ECHO_TRACE_ESCAPE").is_some() { eprintln!("[DEBUG-esc] armed {id}"); }
         self.clear_events();
         self.session = id;
         self.ime_window = 0;
@@ -488,6 +489,7 @@ unsafe extern "system" fn keyboard(code: i32, w: WPARAM, l: LPARAM) -> LRESULT {
     if input.dwExtraInfo == INJECTED_TAG || input.vkCode >= 256 {
         return CallNextHookEx(null_mut(), code, w, l);
     }
+    if input.vkCode == VK_ESCAPE as u32 && std::env::var_os("ECHO_TRACE_ESCAPE").is_some() { eprintln!("[DEBUG-esc] hook event {w}"); }
     let down = w as u32 == WM_KEYDOWN || w as u32 == WM_SYSKEYDOWN;
     let up = w as u32 == WM_KEYUP || w as u32 == WM_SYSKEYUP;
     if !down && !up {
@@ -541,6 +543,7 @@ unsafe extern "system" fn keyboard(code: i32, w: WPARAM, l: LPARAM) -> LRESULT {
             return false;
         }
         let session = state.shared.active.load(Ordering::Acquire);
+        if key == VK_ESCAPE as usize && std::env::var_os("ECHO_TRACE_ESCAPE").is_some() { eprintln!("[DEBUG-esc] early retiring={} active={session} local={}",state.retiring,state.session); }
         if state.retiring { return false; }
         if session == 0 || session != state.session {
             // Cancellation publication is not hook retirement. Until Disarm is
@@ -548,6 +551,9 @@ unsafe extern "system" fn keyboard(code: i32, w: WPARAM, l: LPARAM) -> LRESULT {
             return key == VK_RETURN as usize && reentrant_enter(down);
         }
         let target_match = state.target_match();
+        if down && key == VK_ESCAPE as usize && std::env::var_os("ECHO_TRACE_ESCAPE").is_some() {
+            eprintln!("[DEBUG-esc] session={session} local={} target={target_match:?} composition={} mods={} active={} requested={}", state.session, state.shared.verified_composition(), state.mods(), state.shared.active.load(Ordering::Acquire), state.shared.requested.load(Ordering::Acquire));
+        }
         if target_match != Some(true) {
             let consume = down && key == VK_RETURN as usize;
             if consume { GUARD.with(|g| { let mut lease = g.get(); lease.consumed_enter = true; g.set(lease); }); }

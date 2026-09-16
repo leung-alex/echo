@@ -250,11 +250,19 @@ unsafe fn run(s: Arc<Shared>) {
                     cached = None;
                     observer = None;
                 }
-                candidate_visible =
-                    crate::inline::ime_window::visible(snapshot.focused_handle as HWND).is_some();
-            } else if dirty & CANDIDATE != 0 {
-                candidate_visible =
-                    crate::inline::ime_window::visible(snapshot.focused_handle as HWND).is_some();
+            }
+            if needs_probe || dirty & CANDIDATE != 0 {
+                candidate_visible = cached.as_ref().is_some_and(|(_, _, anchor)| {
+                    !matches!(
+                        anchor.source,
+                        AnchorSource::Window | AnchorSource::InputControl
+                    ) && crate::inline::ime_window::visible_near(
+                        snapshot.focused_handle as HWND,
+                        anchor.geometry.target,
+                        anchor.geometry.dpi,
+                    )
+                    .is_some()
+                });
             }
             let sample = cached.as_ref().and_then(|(_, _, anchor)| {
                 let thread = GetWindowThreadProcessId(snapshot.focused_handle as HWND, null_mut());
@@ -274,6 +282,10 @@ unsafe fn run(s: Arc<Shared>) {
                     observer.as_ref().and_then(Observer::input_state)
                 };
                 let (mode, composition) = state?;
+                #[cfg(feature = "native-test")]
+                if std::env::var_os("ECHO_INPUT_STATUS_TRACE").is_some() {
+                    eprintln!("input-state pid={} mode={mode:?} raw={composition:?} candidate={candidate_visible}", snapshot.process_id);
+                }
                 if !snapshot.current() || s.generation.load(Ordering::Acquire) != generation {
                     return None;
                 }

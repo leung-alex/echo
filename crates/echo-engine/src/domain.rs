@@ -91,8 +91,17 @@ pub struct SourceContext {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PasteControlIdentity {
-    NativeWindow { handle: isize, class_name: String },
+    NativeWindow {
+        handle: isize,
+        class_name: String,
+    },
     AutomationRuntimeId(Vec<i32>),
+    /// Explicit user-initiated paste into a host without an editable UIA range.
+    /// This identity never authorizes passive input observation or range edits.
+    PlainPasteWindow {
+        focused_handle: isize,
+        class_name: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

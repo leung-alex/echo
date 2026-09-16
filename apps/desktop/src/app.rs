@@ -498,9 +498,10 @@ impl App {
                         }
                         let has_target = result.target.is_some();
                         if self.inline_ui.unavailable && has_target {
-                            if !self.stop_inline() {
-                                return;
-                            }
+                            // Plain paste still leaves keyboard focus in the host.
+                            // Keep the acknowledged Esc/F6/Enter lease until the
+                            // popup hides; retiring it here strands a no-activate UI.
+                            self.inline_ui.unavailable = false;
                             self.inline_ui.plain_paste = true;
                         }
                         if !self.send(Work::Adopt(epoch, result.target)) {

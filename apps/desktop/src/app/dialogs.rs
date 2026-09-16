@@ -167,8 +167,8 @@ impl App {
         }
     }
     pub(super) fn set_route(&mut self, route: &str) {
-        let reopen_manager = self.inline_active() && route != "history" && self.surface.visible;
-        if self.inline_active() && route != "history" {
+        let reopen_manager = self.popup_preserves_input_focus() && route != "history" && self.surface.visible;
+        if self.popup_preserves_input_focus() && route != "history" {
             if !self.stop_inline() {
                 return;
             }

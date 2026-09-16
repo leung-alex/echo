@@ -12,7 +12,8 @@ Cancel keeps the saved choice. No schema migration is required for the new defau
 - Windows owns one event/message worker, bounded focus/UIA queries and the shared
   target-thread observer. Status-only protocol requests never copy preedit text.
   The existing Quick Insert protocol remains separate from status-only replies.
-- Presentation decides freshness, suppression and 32-by-24-DIP badge placement.
+- Presentation decides freshness, suppression and 48-by-36-DIP badge placement.
+  The label uses 18-DIP text, an 8-DIP radius and an 8-DIP caret gap.
 - Desktop owns the Slint badge, expiry timer and theme binding. Its software frame
   is separate from the main card's buffer and frame-commit acknowledgements.
 
@@ -61,3 +62,24 @@ cargo run -p echo-windows --features native-test --example input_status_probe --
 This prints only target identity, mode and geometry changes. Verify physical Shift,
 Win+Space, candidate visibility, typing, scrolling, application transitions and
 mixed-DPI monitors separately. Mark scenarios not performed as NOT_RUN.
+
+Candidate-window suppression is limited to windows near the verified caret.
+Persistent IME toolbars and candidate windows next to another editor must not
+hide a badge merely because they overlap the foreground application's window.
+Set `ECHO_INPUT_STATUS_TRACE=1` for the native-test probe to compare raw composition
+state with the candidate-window filter; no input text is logged.
+
+## Terminal compatibility
+
+Explicit Alt+V in classic console hosts (CMD/PowerShell), Windows Terminal and Warp
+can use plain paste even when no editable UIA range is available. The host class,
+process identity and captured focus are revalidated before Ctrl+V. This mode does
+not read command text or replace a query range, and typing does not filter results.
+It does not authorize passive observation: the badge still requires a separately
+verified input position and mode. Inaccessible hosts such as Warp may therefore
+accept ordinary paste without providing enough information for a badge.
+
+`tests/native/Invoke-TerminalPlainPasteAcceptance.ps1` runs isolated CMD/PowerShell
+readers through the clipboard preservation wrapper. The test checks actual received
+text and rejects a stale process identity. Warp and Windows Terminal require their
+own native acceptance; these fixtures do not establish support for their UI trees.
