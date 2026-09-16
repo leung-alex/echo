@@ -7,21 +7,6 @@ fn space_icon(space: &echo_engine::Space) -> &str {
         _ => space.icon_key.as_deref().unwrap_or_default(),
     }
 }
-pub(super) fn accent(key: &str) -> slint::Color {
-    // Transparent means the built-in space follows the live UI theme accent.
-    if key == "default" {
-        return slint::Color::default();
-    }
-    let (r, g, b) = match key {
-        "blue" => (87, 146, 230),
-        "green" => (72, 166, 118),
-        "violet" => (160, 127, 220),
-        "rose" => (205, 115, 150),
-        "slate" => (138, 153, 166),
-        _ => (255, 196, 0),
-    };
-    slint::Color::from_rgb_u8(r, g, b)
-}
 impl App {
     pub(super) fn spaces_loaded(&mut self, result: Result<Vec<Space>, String>) {
         let spaces = match result {
@@ -40,7 +25,6 @@ impl App {
                     s.revision != space.revision
                         || s.title != space.title
                         || s.icon_key != space.icon_key
-                        || s.accent_key != space.accent_key
                 })
             {
                 self.previews.remove(&space.id);
@@ -89,11 +73,6 @@ impl App {
                     s.title.clone().into()
                 },
                 icon_key: space_icon(s).into(),
-                accent: accent(if s.id.is_system() {
-                    "default"
-                } else {
-                    &s.accent_key
-                }),
                 count: s.item_count.to_string().into(),
                 system: s.id.is_system(),
                 selected: s.id == selected,
@@ -151,12 +130,6 @@ impl App {
             };
             self.window.set_space_title(title.clone().into());
             self.window.set_space_icon(space_icon(space).into());
-            self.window
-                .set_space_accent(accent(if space.id.is_system() {
-                    "default"
-                } else {
-                    &space.accent_key
-                }));
             self.window
                 .set_navigation_label(format!("{}  ·  {} / {}", title, index + 1, count).into());
             let subtitle = if self.surface.loading {

@@ -1,4 +1,4 @@
-//! Static icon-key compatibility, with a bounded native picker model.
+//! Full icon catalog for the virtualized native icon grid.
 use crate::FavoriteIconChoice;
 use slint::{ModelRc, VecModel};
 use std::rc::Rc;
@@ -789,18 +789,9 @@ const KEYS: &[(&str, &str)] = &[
     ("XXs", "XXs"),
     ("XXsCrossed", "XXs Crossed"),
 ];
-pub fn choices(query: &str) -> ModelRc<FavoriteIconChoice> {
-    let query = query.trim().to_lowercase();
-    let limit = if query.is_empty() { 18 } else { 48 };
+pub fn choices() -> ModelRc<FavoriteIconChoice> {
     Rc::new(VecModel::from(
         KEYS.iter()
-            .filter(|(key, label)| {
-                query.is_empty()
-                    || key.to_lowercase().contains(&query)
-                    || label.to_lowercase().contains(&query)
-                    || crate::i18n::text(echo_engine::Language::Chinese, label).contains(&query)
-            })
-            .take(limit)
             .map(|(key, label)| FavoriteIconChoice {
                 key: (*key).into(),
                 label: (*label).into(),
@@ -823,10 +814,7 @@ mod tests {
         assert!(KEYS.len() > 500);
         assert_eq!(KEYS[0].0, "none");
         assert_eq!(KEYS[1].0, "Mail");
-        assert_eq!(choices("").row_count(), 18);
-        assert!(choices("a").row_count() <= 48);
-        assert!(choices("mAiL").iter().any(|r| r.key == "Mail"));
-        assert!(choices("邮件").iter().any(|r| r.key == "Mail"));
+        assert_eq!(choices().row_count(), KEYS.len());
         let catalog: std::collections::BTreeMap<String, String> =
             serde_json::from_str(include_str!("../i18n/zh-CN.json")).unwrap();
         for (_, label) in KEYS {
@@ -835,7 +823,6 @@ mod tests {
                 "missing icon translation: {label}"
             );
         }
-        assert_eq!(choices("__not_an_icon__").row_count(), 0);
     }
 }
 

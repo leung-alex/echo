@@ -6,7 +6,7 @@ function Start-FocusProcess([string]$Operation,[string[]]$Arguments) {
     return [Diagnostics.Process]::Start($info)
 }
 function Wait-Saved {
-    Wait-Until { !(D dump).Contains('Unsaved changes') -and (D dump).Contains('Your settings are saved') } 'settings save completion' 10000|Out-Null
+    Wait-Until { (D dump).Contains('Save | enabled=False') -and (D dump).Contains('Your settings are saved') } 'settings save completion' 10000|Out-Null
 }
 function Discard-Settings {
     Click 'Cancel'
@@ -32,7 +32,7 @@ Check 'default-global-hotkey-and-settings-ui' {
 }
 Check 'invalid-global-shortcut-cannot-save' {
     Set-Value 'Global quick insert shortcut' 'V'
-    Wait-Until {(D dump) -match 'Save changes \| enabled=False'} 'invalid shortcut disables Save'|Out-Null
+    Wait-Until {(D dump) -match 'Save \| enabled=False'} 'invalid shortcut disables Save'|Out-Null
     Assert-Binding 'Alt+V' $false
     Discard-Settings
     Open-KeyboardSettings
@@ -102,7 +102,7 @@ Check 'quick-insert-focus-loss-dismisses-without-pasting' {
 Check 'settings-rebind-applies-immediately-without-restart' {
     Open-KeyboardSettings
     Set-Value 'Global quick insert shortcut' 'Ctrl+Alt+J'
-    Click 'Save changes';Wait-Saved
+    Click 'Save';Wait-Saved
     Assert-Binding 'Alt+V' $true
     Assert-Binding 'Ctrl+Alt+J' $false
     if($NativeTest){Shot '04-keyboard-settings-rebound'}
@@ -125,7 +125,7 @@ Check 'occupied-shortcut-preserves-old-registration-and-settings' {
     $script:blocker=Start-FocusProcess 'block' @('Ctrl+Alt+K')
     Wait-Until {Test-Path (Join-Path $EvidenceRoot 'blocker.ready')} 'owned conflict reservation' 5000|Out-Null
     Set-Value 'Global quick insert shortcut' 'Ctrl+Alt+K'
-    Click 'Save changes'
+    Click 'Save'
     Wait-Until {(D dump) -match 'Cannot register|already.*use|occupied|Another app|conflict|Could not register|unable to register'} 'visible registration conflict' 10000|Out-Null
     Assert-Binding 'Ctrl+Alt+J' $false
     if($NativeTest){Shot '06-keyboard-conflict'}
@@ -140,10 +140,10 @@ Check 'occupied-shortcut-preserves-old-registration-and-settings' {
 
 Check 'global-shortcut-disable-and-reenable-without-restart' {
     D toggle $mainTitle @('Enable global quick insert shortcut','false')|Out-Null
-    Click 'Save changes';Wait-Saved
+    Click 'Save';Wait-Saved
     Assert-Binding 'Ctrl+Alt+J' $true
     D toggle $mainTitle @('Enable global quick insert shortcut','true')|Out-Null
-    Click 'Save changes';Wait-Saved
+    Click 'Save';Wait-Saved
     Assert-Binding 'Ctrl+Alt+J' $false
     'Disable released the shortcut; reenable restored it immediately'
 }

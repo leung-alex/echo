@@ -5,8 +5,6 @@ CREATE TABLE spaces (
  title TEXT NOT NULL,
  normalized_title TEXT NOT NULL UNIQUE,
  icon_key TEXT,
- accent_key TEXT NOT NULL DEFAULT 'amber'
-   CHECK(accent_key IN ('amber','blue','green','violet','rose','slate')),
  description TEXT NOT NULL DEFAULT '',
  order_key INTEGER NOT NULL,
  revision INTEGER NOT NULL DEFAULT 1 CHECK(revision>0),

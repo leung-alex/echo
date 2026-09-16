@@ -5,7 +5,6 @@ export { DesignTokens } from "echo-tokens.slint";
 export { SelectEnvironment } from "echo-select.slint";
 import { SelectEnvironment } from "echo-select.slint";
 import { I18n } from "i18n.slint";
-import { EnumChoice } from "enum-choice.slint";
 import { ListView, ScrollView, AboutSlint, Palette } from "std-widgets.slint";
 import { EchoTheme, EchoButton, Hint } from "theme.slint";
 import { EntryRow, MatchRange } from "entry-row.slint";
@@ -85,7 +84,6 @@ export component AppWindow inherits Window {
     in-out property <string> draft-icon;
     in property <[FavoriteIconChoice]> favorite-icon-choices;
     private property <bool> icon-picker-open;
-    callback filter-favorite-icons(string);
     changed editor-open => {
         if (!root.editor-open) { root.icon-picker-open = false; }
         root.viewport-changed();
@@ -135,7 +133,6 @@ export component AppWindow inherits Window {
     in property <bool> space-clearable;
     in property <string> space-subtitle;
     in property <string> space-icon;
-    in property <color> space-accent: EchoTheme.amber;
     in property <string> navigation-label;
     in property <bool> previous-enabled;
     in property <bool> next-enabled;
@@ -155,7 +152,6 @@ export component AppWindow inherits Window {
     in-out property <string> space-draft-title;
     in-out property <string> space-draft-description;
     in-out property <string> space-draft-icon;
-    in-out property <string> space-draft-accent: "amber";
     in property <bool> confirmation-open;
     in property <string> confirmation-title;
     in property <string> confirmation-body;
@@ -281,7 +277,7 @@ export component AppWindow inherits Window {
                 visible: root.route == "history";
                 inline-mode: root.inline-mode;
                 control-focus-mode:root.control-focus-mode;
-                title: root.space-title; subtitle: I18n.message(root.space-subtitle); icon-key: root.space-icon; accent: root.space-accent;
+                title: root.space-title; subtitle: I18n.message(root.space-subtitle); icon-key: root.space-icon;
                 rows: root.rows; favorites: root.active-view != "history"; clearable: root.space-clearable; capture-only: false;
                 loading: root.loading; stale: root.stale-rows; error: root.status-error;
                 empty-state-text: I18n.message(root.empty-state-text);
@@ -330,7 +326,7 @@ export component AppWindow inherits Window {
                 x: 0px; y: 0px; width: root.panel-width; height: root.panel-height;
                 inline-mode: root.inline-mode;
                 title: root.outgoing.title; subtitle: I18n.message(root.outgoing.subtitle);
-                icon-key: root.outgoing.icon-key; accent: root.outgoing.accent;
+                icon-key: root.outgoing.icon-key;
                 rows: root.outgoing.rows; favorites: root.outgoing.favorites; clearable: root.outgoing.clearable;
                 busy: true; modal: true; animating: true;
                 batch: root.outgoing.batch;
@@ -380,6 +376,7 @@ export component AppWindow inherits Window {
                 edited => { root.settings-edited(); }
                 save => { root.save-settings(); }
                 cancel => { root.settings-action("cancel"); }
+                hide => { root.dismiss(); }
                 action(action) => { root.settings-action(action); }
                 space-action(action,key) => { root.space-action(action,key); }
             }
@@ -477,7 +474,7 @@ export component AppWindow inherits Window {
                         icon-edit := LineEdit { text <=> root.draft-icon; accessible-label: @tr("Favorite icon"); enabled: !root.busy; min-width: 0px; }
                         choose-icon := EchoButton {
                             text: @tr("Choose icon"); enabled: !root.busy;
-                            clicked => { root.picking-space-icon = false; root.filter-favorite-icons(""); root.icon-picker-open = true; }
+                            clicked => { root.picking-space-icon = false; root.icon-picker-open = true; }
                         }
                     }
                         }
@@ -533,22 +530,24 @@ export component AppWindow inherits Window {
                     VerticalLayout {
                         padding: 24px; spacing: 12px; alignment: start;
                         Text { text: root.space-dialog-new ? @tr("New space") : @tr("Edit space"); color: EchoTheme.text; font-size: 23px; font-weight: 600; }
-                        Text { text: @tr("Name · 1–32 characters"); color: EchoTheme.muted; }
-                        space-name-input := LineEdit { text <=> root.space-draft-title; accessible-label: @tr("Space name"); enabled: !root.busy; }
-                        Text { text: @tr("Description · optional"); color: EchoTheme.muted; }
-                        LineEdit { text <=> root.space-draft-description; accessible-label: @tr("Space description"); enabled: !root.busy; }
+                        Text { text: @tr("Name"); color: EchoTheme.muted; }
                         HorizontalLayout {
                             spacing: 10px;
-                            LineEdit { text <=> root.space-draft-icon; accessible-label: @tr("Space icon"); enabled: !root.busy; }
-                            EchoButton { text: @tr("Choose icon"); enabled: !root.busy; clicked => { root.picking-space-icon = true; root.filter-favorite-icons(""); root.icon-picker-open = true; } }
+                            EchoButton {
+                                width: 36px; height: 36px; row-action: true; flat: true;
+                                icon: root.space-draft-icon == "" || root.space-draft-icon == "none" ? @image-url("favorite-icons/CircleDashed.svg") : FavoriteIconImages.image-for(root.space-draft-icon);
+                                label: @tr("Choose icon"); enabled: !root.busy;
+                                clicked => { root.picking-space-icon = true; root.icon-picker-open = true; }
+                            }
+                            space-name-input := LineEdit { min-width: 0px; text <=> root.space-draft-title; accessible-label: @tr("Space name"); enabled: !root.busy; }
                         }
-                        Text { text: @tr("Accent · a small marker, not a full-card fill"); color: EchoTheme.muted; wrap: word-wrap; min-width: 0px; }
-                        EnumChoice { model: [@tr("Amber"),@tr("Blue"),@tr("Green"),@tr("Violet"),@tr("Rose"),@tr("Slate")]; selected-index: root.space-draft-accent == "blue" ? 1 : root.space-draft-accent == "green" ? 2 : root.space-draft-accent == "violet" ? 3 : root.space-draft-accent == "rose" ? 4 : root.space-draft-accent == "slate" ? 5 : 0; selected(value) => { root.space-draft-accent = ["amber","blue","green","violet","rose","slate"][self.current-index]; } accessible-label: @tr("Space accent"); enabled: !root.busy; }
+                        Text { text: @tr("Description"); color: EchoTheme.muted; }
+                        LineEdit { text <=> root.space-draft-description; accessible-label: @tr("Space description"); enabled: !root.busy; }
                         if (root.status-error): Text { text: I18n.error(root.status); color: EchoTheme.danger; wrap: word-wrap; min-width: 0px; }
                         HorizontalLayout {
                             alignment: end; spacing: 10px;
                             EchoButton { text: @tr("Cancel"); enabled: !root.busy; clicked => { root.space-action("cancel",""); } }
-                            EchoButton { text: root.busy ? @tr("Saving…") : @tr("Save space"); primary: true; enabled: !root.busy; clicked => { root.space-action("save",""); } }
+                            EchoButton { text: root.busy ? @tr("Saving…") : @tr("Save"); primary: true; enabled: !root.busy; clicked => { root.space-action("save",""); } }
                         }
                     }
                 }
@@ -596,7 +595,6 @@ export component AppWindow inherits Window {
     if (root.icon-picker-open && (root.editor-open || root.space-dialog-open)): FavoriteIconPicker {
         choices: root.favorite-icon-choices;
         selected-key: root.picking-space-icon ? root.space-draft-icon : root.draft-icon;
-        filter(query) => { root.filter-favorite-icons(query); }
         chosen(key) => { if (root.picking-space-icon) { root.space-draft-icon = key; } else { root.draft-icon = key; } root.icon-picker-open = false; }
         dismissed => { root.icon-picker-open = false; }
     }
@@ -690,7 +688,6 @@ export component CardSnapshot inherits Window {
     in property <string> panel-title;
     in property <string> subtitle;
     in property <string> icon-key;
-    in property <color> accent;
     in property <[EntryRow]> rows;
     in property <bool> favorites;
     in property <bool> loading;
@@ -704,7 +701,7 @@ export component CardSnapshot inherits Window {
     SpacePanel {
         x: 0px; y: 0px; width: root.width; height: root.height;
         inline-mode:root.inline-mode;
-        title:root.panel-title;subtitle:root.subtitle;icon-key:root.icon-key;accent:root.accent;
+        title:root.panel-title;subtitle:root.subtitle;icon-key:root.icon-key;
         rows:root.rows;favorites:root.favorites;loading:root.loading;titles-only:root.titles-only;
         capture-only:true;query <=> root.query;
         navigation-hint:root.navigation-hint;

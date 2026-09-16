@@ -62,7 +62,6 @@ impl App {
                     title: w.get_space_title(),
                     subtitle: w.get_space_subtitle(),
                     icon_key: w.get_space_icon(),
-                    accent: w.get_space_accent(),
                     favorites: self.surface.space != SpaceId::HISTORY,
                     clearable: w.get_space_clearable(),
                     scroll_y: w.get_scroll_y(),

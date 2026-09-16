@@ -278,7 +278,7 @@ try{
             Invoke-Ui 'New content';Wait-Text 'Create favorite'|Out-Null
             Set-Ui 'Favorite name (required)' 'Echo retirement synthetic favorite'
             Set-Ui 'Favorite content' 'echo-retirement-synthetic-content'
-            Invoke-Ui 'Choose icon';Set-Ui 'Search favorite icons' 'mAiL'
+            Invoke-Ui 'Choose icon'
             Wait-Text 'Icon Mail'|Out-Null;Invoke-Ui 'Icon Mail'
             if((Ui 'read' @('Favorite icon')) -ne 'Mail'){throw 'Icon picker did not retain the Mail key'}
             Invoke-Ui 'Save favorite';Ready|Out-Null;Wait-Text 'Echo retirement synthetic favorite'|Out-Null
@@ -311,7 +311,7 @@ try{
             if($dump -match 'WGPU|Skia|Reflection quality|Graphics backend'){throw 'Retired graphics controls remain'}
             Invoke-Ui 'Play once';Start-Sleep -Milliseconds 250
             Ui 'theme' @('dark')|Out-Null;Shot '06-settings-dark'
-            Invoke-Ui 'Save changes'
+            Invoke-Ui 'Save'
             $saved=[Diagnostics.Stopwatch]::StartNew()
             do { $state=Bridge 'metrics'; if(!$state.settings.dirty){break}; Start-Sleep -Milliseconds 25 } while($saved.ElapsedMilliseconds -lt 10000)
             if($state.settings.dirty){throw 'Settings save did not complete'}
@@ -323,10 +323,10 @@ try{
             Set-Ui 'Maximum history entries' '0'
             $invalid=Bridge 'metrics'
             if($invalid.settings.valid -or !$invalid.settings.error.Contains('between 1 and 2000')){throw 'Invalid History limit was not rejected'}
-            if(!([string](Ui 'dump')).Contains('Save changes | enabled=False')){throw 'Invalid settings can be saved'}
+            if(!([string](Ui 'dump')).Contains('Save | enabled=False')){throw 'Invalid settings can be saved'}
             Set-Ui 'Maximum history entries' '2000';Set-Ui 'Total storage MiB' '513';Set-Ui 'Maximum item MiB' '32'
             if(!(Bridge 'metrics').settings.valid){throw 'Valid storage settings were rejected'}
-            Invoke-Ui 'Save changes'
+            Invoke-Ui 'Save'
             $saved=[Diagnostics.Stopwatch]::StartNew()
             do {$state=Bridge 'metrics';if(!$state.settings.dirty){break};Start-Sleep -Milliseconds 25}while($saved.ElapsedMilliseconds -lt 10000)
             if($state.settings.dirty -or !$state.settings.valid){throw 'Valid settings did not save'}

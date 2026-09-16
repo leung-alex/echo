@@ -130,7 +130,7 @@ def main():
         start('--settings')
         chinese = '设置' in ui('dump')
         section, combo, save, cancel = ('空间', '主屏幕', '保存更改', '取消') if chinese else (
-            'Spaces', 'Home screen', 'Save changes', 'Cancel')
+            'Spaces', 'Home screen', 'Save', 'Cancel')
         ui('invoke', section)
         pointer('activate-owned', section)
         state = ui('metrics')
@@ -234,7 +234,7 @@ def main():
             group = ('空间：' if chinese else 'Space ') + empty['title']
             ui('group-invoke', group, '编辑空间' if chinese else 'Edit space')
             ui('value', '空间名称' if chinese else 'Space name', 'Startup renamed')
-            ui('invoke', '保存空间' if chinese else 'Save space')
+            ui('invoke', '保存' if chinese else 'Save')
             wait(lambda: ui('read', combo) == 'Startup renamed', 'renamed choice label')
             group = ('空间：' if chinese else 'Space ') + 'Startup renamed'
             ui('group-invoke', group, '上移空间' if chinese else 'Move space up')

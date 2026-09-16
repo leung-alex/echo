@@ -444,42 +444,6 @@
       "type": "number",
       "value": 0.27
     },
-    "accent.amber": {
-      "type": "color",
-      "value": "#ffc400",
-      "dark": "#ffc400",
-      "runtime": true
-    },
-    "accent.blue": {
-      "type": "color",
-      "value": "#5792e6",
-      "dark": "#5792e6",
-      "runtime": true
-    },
-    "accent.green": {
-      "type": "color",
-      "value": "#48a676",
-      "dark": "#48a676",
-      "runtime": true
-    },
-    "accent.violet": {
-      "type": "color",
-      "value": "#a07fdc",
-      "dark": "#a07fdc",
-      "runtime": true
-    },
-    "accent.rose": {
-      "type": "color",
-      "value": "#cd7396",
-      "dark": "#cd7396",
-      "runtime": true
-    },
-    "accent.slate": {
-      "type": "color",
-      "value": "#8a99a6",
-      "dark": "#8a99a6",
-      "runtime": true
-    },
     "settings.card-max-width": {
       "type": "length",
       "value": 1040

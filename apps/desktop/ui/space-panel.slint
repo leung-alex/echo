@@ -9,7 +9,6 @@ export component SpacePanel inherits Rectangle {
     in property <string> subtitle;
     in property <string> icon-key;
     private property <image> header-icon: FavoriteIconImages.image-for(root.icon-key);
-    in property <color> accent: EchoTheme.amber;
     in property <[EntryRow]> rows;
     in property <bool> favorites;
     in property <bool> clearable;
@@ -93,7 +92,7 @@ export component SpacePanel inherits Rectangle {
     TouchArea {height:58px;enabled:!root.inline-mode && !root.capture-only && !root.busy;
         pointer-event(event) => {if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {root.drag();}}
     }
-    if (root.header-icon.width == 0): Rectangle {x:T.panel-padding;y:20px;width:4px;height:30px;background:root.accent.alpha == 0 ? EchoTheme.amber : root.accent;border-radius:2px;}
+    if (root.header-icon.width == 0): Rectangle {x:T.panel-padding;y:20px;width:4px;height:30px;background:EchoTheme.amber;border-radius:2px;}
     if (root.header-icon.width > 0): Image {
         x:T.panel-padding;y:22px;width:24px;height:24px;
         source:root.header-icon;colorize:EchoTheme.text;

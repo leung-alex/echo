@@ -6,8 +6,8 @@ function Start-FocusAsync([string]$Operation,[string[]]$Arguments) {
 }
 function Save-Hotkey([string]$Chord) {
     Set-Value 'Global quick insert shortcut' $Chord
-    Click 'Save changes';Assert-Binding $Chord $false
-    Wait-Until {!(D dump).Contains('Unsaved changes')} 'settings commit'|Out-Null
+    Click 'Save';Assert-Binding $Chord $false
+    Wait-Until {(D dump).Contains('Save | enabled=False')} 'settings commit'|Out-Null
 }
 function Choose-Synthetic {
     Query 'echo-perf-text-0013';Wait-Text 'echo-perf-text-0013'
@@ -27,7 +27,7 @@ Check 'default-global-binding-and-settings' {
 }
 Check 'invalid-shortcut-does-not-change-live-binding' {
     Set-Value 'Global quick insert shortcut' 'V';Wait-Text 'must include Ctrl or Alt'
-    $saveLine=@((D dump) -split "`r?`n"|Where-Object {$_ -match 'Save changes \| enabled=False'})
+    $saveLine=@((D dump) -split "`r?`n"|Where-Object {$_ -match 'Save \| enabled=False'})
     if(!$saveLine.Count){throw 'Invalid shortcut can still be saved.'}
     Assert-Binding 'Alt+V' $false;Set-Value 'Global quick insert shortcut' 'Alt+V'
     'plain V rejected; live Alt+V unchanged'
@@ -35,7 +35,7 @@ Check 'invalid-shortcut-does-not-change-live-binding' {
 Check 'registration-conflict-keeps-old-binding-and-settings' {
     $script:blocker=Start-FocusAsync 'block' @('Ctrl+Alt+J')
     Wait-Until {Test-Path (Join-Path $EvidenceRoot 'blocker.ready')} 'conflict fixture ready'|Out-Null
-    Set-Value 'Global quick insert shortcut' 'Ctrl+Alt+J';Click 'Save changes';Wait-Text 'Cannot register Ctrl+Alt+J'
+    Set-Value 'Global quick insert shortcut' 'Ctrl+Alt+J';Click 'Save';Wait-Text 'Cannot register Ctrl+Alt+J'
     Assert-Binding 'Alt+V' $false
     if($NativeTest){$m=D metrics;if($m.settings.ui.global_hotkey -ne 'Alt+V'){throw 'Failed registration changed persisted settings.'};Shot 'settings-shortcut-conflict'}
     [IO.File]::WriteAllText((Join-Path $EvidenceRoot 'stop-blocker'),'release')
@@ -62,11 +62,11 @@ Check 'repeat-keydown-and-toggle-are-single-window' {
 }
 Check 'disabled-global-shortcut-does-not-activate' {
     Open-KeyboardSettings;D toggle $mainTitle @('Enable global quick insert shortcut','false')|Out-Null
-    Click 'Save changes';Assert-Binding 'Ctrl+Alt+J' $true
+    Click 'Save';Assert-Binding 'Ctrl+Alt+J' $true
     D close|Out-Null;Wait-Hidden;Target-Command $target 'focus-primary'|Out-Null
     F 'hotkey' @([string]$targetProcess.Id,$target.title,'Ctrl+Alt+J')|Out-Null;Start-Sleep -Milliseconds 250
     if(D exists){throw 'Disabled shortcut still activates.'}
-    Open-KeyboardSettings;Click 'Reset';Click 'Save changes';Assert-Binding 'Alt+V' $false
+    Open-KeyboardSettings;Click 'Reset';Click 'Save';Assert-Binding 'Alt+V' $false
     'disable releases the binding; reset restores Alt+V on Save'
 }
 Check 'settings-persist-and-first-background-popup-is-anchored' {

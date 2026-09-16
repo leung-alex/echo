@@ -314,7 +314,6 @@ impl App {
                 self.window.set_space_draft_title("".into());
                 self.window.set_space_draft_description("".into());
                 self.window.set_space_draft_icon("Folder".into());
-                self.window.set_space_draft_accent("amber".into());
                 self.report("", false);
                 self.window.set_space_dialog_open(true);
             }
@@ -334,7 +333,6 @@ impl App {
                     .set_space_draft_description(space.description.into());
                 self.window
                     .set_space_draft_icon(space.icon_key.unwrap_or_default().into());
-                self.window.set_space_draft_accent(space.accent_key.into());
                 self.space_original = Some(self.space_draft_values());
                 self.report("", false);
                 self.window.set_space_dialog_open(true);
@@ -428,12 +426,11 @@ impl App {
             _ => {}
         }
     }
-    fn space_draft_values(&self) -> (String, String, String, String) {
+    fn space_draft_values(&self) -> (String, String, String) {
         (
             self.window.get_space_draft_title().to_string(),
             self.window.get_space_draft_description().to_string(),
             self.window.get_space_draft_icon().to_string(),
-            self.window.get_space_draft_accent().to_string(),
         )
     }
     fn space_dirty(&self) -> bool {
@@ -447,12 +444,11 @@ impl App {
         )
     }
     fn save_space(&mut self) {
-        let (title, description, icon, accent_key) = self.space_draft_values();
+        let (title, description, icon) = self.space_draft_values();
         let draft = SpaceDraft {
             title,
             description,
             icon_key: formatting::optional(&icon),
-            accent_key,
         };
         let draft = match draft.normalize() {
             Ok(value) => value,

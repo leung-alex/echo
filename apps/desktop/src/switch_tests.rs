@@ -25,6 +25,20 @@ slint::slint! {
         single := LineEdit { x: 10px; y: 10px; width: 260px; height: 36px; text: "Selected text"; }
         multi := TextEdit { x: 10px; y: 60px; width: 260px; height: 90px; text: "Selected text"; }
     }
+    import { FavoriteIconPicker, FavoriteIconChoice } from "../ui/favorite-icon-picker.slint";
+    export { FavoriteIconChoice } from "../ui/favorite-icon-picker.slint";
+    export { FavoriteIconImages } from "../ui/favorite-icon-images.slint";
+    export component IconGridFixture inherits Window {
+        width: 500px; height: 540px;
+        in property <[FavoriteIconChoice]> choices;
+        out property <string> chosen-key;
+        out property <bool> dismissed;
+        FavoriteIconPicker {
+            choices: root.choices;
+            chosen(key) => { root.chosen-key = key; }
+            dismissed => { root.dismissed = true; }
+        }
+    }
     export component SwitchFixture inherits Window {
         width: 240px; height: 60px;
         in-out property <bool> checked;
@@ -173,6 +187,9 @@ fn settings_render_in_both_languages_themes_and_narrow_widths() {
     assert_eq!(retries.get(), 1, "busy settings must reject Retry");
     ui.set_busy(false);
     ui.set_hotkey_registration_failed(false);
+    let dismissals = Rc::new(std::cell::Cell::new(0));
+    let recorded_dismissals = dismissals.clone();
+    ui.on_dismiss(move || recorded_dismissals.set(recorded_dismissals.get() + 1));
     for language in ["en", "zh-CN"] {
         slint::select_bundled_translation(language).unwrap();
         for dark in [false, true] {
@@ -215,6 +232,18 @@ fn settings_render_in_both_languages_themes_and_narrow_widths() {
                     assert!(!ui.get_global_hotkey_enabled(), "Switch at {width}/{scale}");
                     assert_eq!(saves.get(), 0);
                     ui.set_global_hotkey_enabled(true);
+                    let before = dismissals.get();
+                    click(width as f32 - 68., 55.);
+                    assert_eq!(
+                        dismissals.get(),
+                        before + 1,
+                        "Close must request hide at {width}/{scale}"
+                    );
+                    assert_eq!(
+                        ui.get_route(),
+                        "settings",
+                        "Close must not navigate to History"
+                    );
                     if let Some(directory) = std::env::var_os("ECHO_SETTINGS_RENDER_EVIDENCE") {
                         let directory = std::path::PathBuf::from(directory);
                         std::fs::create_dir_all(&directory).unwrap();
@@ -271,5 +300,81 @@ fn input_focus_and_selection_follow_monochrome_and_high_contrast_theme() {
             assert!(count > 500, "selected text and focus underline must use theme accent: {dark}/{high_contrast}/{multiline}: {count}");
         }
     }
+    ui.hide().unwrap();
+}
+
+#[test]
+fn icon_grid_click_keyboard_scroll_and_close() {
+    use slint::Model;
+    let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+    slint::platform::set_platform(Box::new(TestPlatform(window.clone(), Rc::default()))).unwrap();
+    let ui = IconGridFixture::new().unwrap();
+    ui.global::<FavoriteIconImages>()
+        .on_index_for(|key| crate::favorite_icons::index(key.as_str()));
+    let source = crate::favorite_icons::choices();
+    let last = source.row_data(source.row_count() - 1).unwrap().key;
+    ui.set_choices(
+        Rc::new(slint::VecModel::from(
+            source
+                .iter()
+                .map(|choice| FavoriteIconChoice {
+                    key: choice.key,
+                    label: choice.label,
+                })
+                .collect::<Vec<_>>(),
+        ))
+        .into(),
+    );
+    crate::style::apply_style!(
+        ui.global::<DesignTokens>(),
+        &crate::style::StyleSnapshot::default(),
+        false
+    );
+    ui.show().unwrap();
+    window.set_size(slint::PhysicalSize::new(500, 540));
+    let render = || {
+        let mut pixels = vec![slint::Rgb8Pixel::default(); 500 * 540];
+        window.request_redraw();
+        window.draw_if_needed(|r| {
+            r.render(&mut pixels, 500);
+        });
+        pixels
+    };
+    let pixels = render();
+    if let Some(path) = std::env::var_os("ECHO_ICON_GRID_RENDER") {
+        let bytes: Vec<u8> = pixels.iter().flat_map(|p| [p.r, p.g, p.b]).collect();
+        image::save_buffer(path, &bytes, 500, 540, image::ColorType::Rgb8).unwrap();
+    }
+    let click = |x, y| {
+        let position = LogicalPosition::new(x, y);
+        ui.window().dispatch_event(WindowEvent::PointerPressed {
+            position,
+            button: PointerEventButton::Left,
+        });
+        ui.window().dispatch_event(WindowEvent::PointerReleased {
+            position,
+            button: PointerEventButton::Left,
+        });
+    };
+    click(104., 112.);
+    assert_eq!(ui.get_chosen_key(), "Mail");
+    let key = |text: slint::SharedString| {
+        ui.window()
+            .dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
+        ui.window()
+            .dispatch_event(WindowEvent::KeyReleased { text });
+    };
+    for _ in 0..100 {
+        key(slint::platform::Key::DownArrow.into());
+    }
+    render();
+    key(slint::platform::Key::Return.into());
+    assert_eq!(
+        ui.get_chosen_key(),
+        last,
+        "keyboard must reach the end of the full catalog"
+    );
+    click(446., 64.);
+    assert!(ui.get_dismissed(), "top-right close icon must dismiss");
     ui.hide().unwrap();
 }

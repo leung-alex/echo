@@ -10,6 +10,7 @@ import { EnumChoice } from "enum-choice.slint";
 import { ShortcutRow } from "shortcut-row.slint";
 import { SpaceChoice } from "space-choice.slint";
 export component SettingsPage inherits Rectangle {
+    callback hide();
     in-out property <string> theme-mode;
     in-out property <string> language;
     in-out property <bool> global-hotkey-enabled;
@@ -68,6 +69,12 @@ export component SettingsPage inherits Rectangle {
     background: transparent;
     Image { x: 28px; y: settings-title.y + (settings-title.height - self.height) / 2; width: 26px; height: 26px; source: @image-url("favorite-icons/SettingsCog.svg"); colorize: EchoTheme.text; image-fit: contain; }
     settings-title := Text { x: 64px; y: 15px; text: @tr("Settings"); color: EchoTheme.text; font-size: T.font-setting-title; font-weight: 600; }
+    EchoButton {
+        x: parent.width - 60px; y: 15px; width: 32px; height: 32px;
+        row-action: true; flat: true; icon: @image-url("icons/close.svg");
+        label: @tr("Hide to tray"); enabled: !root.busy;
+        clicked => { root.hide(); }
+    }
     if (root.narrow): EchoSelect { enabled: !root.busy;
         x: 28px; y: 62px; width: parent.width - 56px; height: 36px;
         model: root.categories; selected-index: root.section; selection-changed(index) => { root.section = index; } accessible-label: @tr("Settings category");
@@ -92,7 +99,21 @@ export component SettingsPage inherits Rectangle {
         height: max(80px,parent.height - self.y - 95px);
         VerticalLayout {
             padding: 2px; spacing: 16px; alignment: start;
-            Text { text: root.categories[root.section]; color: EchoTheme.text; font-size: 20px; font-weight: 600; min-width: 0px; }
+            Rectangle {
+                height: max(section-title.preferred-height, root.section == 1 ? 32px : 0px);
+                section-title := Text {
+                    width: max(0px, parent.width - (root.section == 1 ? 40px : 0px));
+                    height: parent.height; vertical-alignment: center;
+                    text: root.categories[root.section]; color: EchoTheme.text;
+                    font-size: 20px; font-weight: 600;
+                }
+                if (root.section == 1): EchoButton {
+                    x: parent.width - self.width; y: (parent.height - self.height) / 2;
+                    width: 32px; height: 32px; row-action: true; flat: true;
+                    icon: @image-url("icons/plus.svg"); label: @tr("New space");
+                    enabled: !root.busy; clicked => { root.space-action("new", ""); }
+                }
+            }
             if (root.section == 0): VerticalLayout {
                 spacing: 12px; alignment: start;
                 Text { text: @tr("Theme"); color: EchoTheme.text; }
@@ -102,11 +123,10 @@ export component SettingsPage inherits Rectangle {
             }
             if (root.section == 1): VerticalLayout {
                 spacing: 12px; alignment: start;
-                Text { text: @tr("History and Favorites stay fixed. Other spaces are yours to organize."); color: EchoTheme.muted; wrap: word-wrap; min-width: 0px; }
                 for space in root.spaces: Rectangle {
                     accessible-role:groupbox;accessible-label:@tr("Space ") + space.title;
                     height: 64px;
-                    Rectangle { x: 0px; y: 16px; width: 3px; height: 24px; background: space.system ? EchoTheme.amber : space.accent; border-radius: 2px; }
+                    Rectangle { x: 0px; y: 16px; width: 3px; height: 24px; background: EchoTheme.amber; border-radius: 2px; }
                     Text { x: 14px; y: 7px; width: parent.width - (space.system ? 100px : 184px); height: 24px; text: space.title; color: EchoTheme.text; font-size: 15px; overflow: elide; }
                     Text { x: 14px; y: 33px; width: parent.width - 184px; text: space.count + @tr(" items"); color: EchoTheme.muted; font-size: 12px; overflow: elide; }
                     if (space.system): Text { x: parent.width - 76px; y: 20px; width: 72px; text: @tr("System"); color: EchoTheme.muted; font-size: 12px; }
@@ -119,7 +139,6 @@ export component SettingsPage inherits Rectangle {
                     }
                     Rectangle { y: parent.height - 1px; height: 1px; background: EchoTheme.line; }
                 }
-                EchoButton { text: @tr("New space"); icon: @image-url("icons/plus.svg"); enabled: !root.busy; clicked => { root.space-action("new",""); } }
                 EchoSwitch { enabled: !root.busy; text: @tr("Cycle from the last space back to the first"); checked <=> root.loop-spaces; }
                 EchoSwitch { enabled: !root.busy; text: @tr("Remember selection and scroll position in this session"); checked <=> root.remember-position; }
                 Text { text: @tr("Home screen"); color: EchoTheme.text; }
@@ -171,11 +190,11 @@ export component SettingsPage inherits Rectangle {
     }
     Rectangle {
         y: parent.height - 78px; height: 78px; background: transparent;
-        Text { x: 28px; y: 23px; width: max(0px,parent.width - 340px); text: root.error != "" ? I18n.error(root.error) : root.dirty ? @tr("Unsaved changes") : root.notice != "" && root.notice != "Settings saved" ? I18n.message(root.notice) : root.restart-required ? @tr("Restart required for graphics changes") : ""; color: root.error != "" ? EchoTheme.danger : EchoTheme.muted; overflow: elide; }
+        Text { x: 28px; y: 23px; width: max(0px,parent.width - 340px); text: root.error != "" ? I18n.error(root.error) : root.notice != "" && root.notice != "Settings saved" ? I18n.message(root.notice) : root.restart-required ? @tr("Restart required for graphics changes") : ""; color: root.error != "" ? EchoTheme.danger : EchoTheme.muted; overflow: elide; }
         HorizontalLayout {
             x: parent.width - 298px; y: 18px; width: 270px; height: 36px; spacing: 10px; alignment: end;
             EchoButton { text: @tr("Cancel"); enabled: !root.busy; clicked => { root.cancel(); } }
-            EchoButton { text: root.busy ? @tr("Saving…") : @tr("Save changes"); primary: true; enabled: root.dirty && root.valid && !root.busy; clicked => { root.save(); } }
+            EchoButton { text: root.busy ? @tr("Saving…") : @tr("Save"); primary: true; enabled: root.dirty && root.valid && !root.busy; clicked => { root.save(); } }
         }
     }
 }

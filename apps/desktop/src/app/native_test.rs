@@ -376,7 +376,7 @@ fn execute(
             let graphics: Option<serde_json::Value> = None;
             let mut metrics = serde_json::json!({"space":a.surface.space.0,"phase":format!("{:?}",a.deck.phase),
                 "ready":a.surface.ready,"loading":a.surface.loading,"visible":a.surface.visible,
-                "spaces":a.spaces.iter().map(|s|serde_json::json!({"id":s.id.0,"title":s.title,"icon":s.icon_key,"accent":s.accent_key,"count":s.item_count})).collect::<Vec<_>>(),
+                "spaces":a.spaces.iter().map(|s|serde_json::json!({"id":s.id.0,"title":s.title,"icon":s.icon_key,"count":s.item_count})).collect::<Vec<_>>(),
                 "renderer":a.graphics.renderer,"adapter":a.graphics.adapter,"backend":a.graphics.backend,"actual":a.window.get_actual_mode().as_str(),
                 "graphics":graphics,"snapshot_model_count":a.model.row_count(),"highlighted_rows":a.model.iter().filter(|r|r.match_count>0).count(),"match_spans":a.model.iter().map(|r|r.match_count).collect::<Vec<_>>(),"scroll_y":a.window.get_scroll_y(),"query":a.surface.query,"route":a.window.get_route().to_string(),
                 "requested":a.deck.requested.to_string(),"presented":a.deck.presented.to_string(),

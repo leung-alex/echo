@@ -6,7 +6,7 @@ use echo_engine::{
     SpaceId, SpaceKind, SpaceMutationResult, SpacePage, SpaceStore,
 };
 
-const SPACE_SELECT: &str = "SELECT s.id,s.kind,s.title,s.icon_key,s.accent_key,s.description,
+const SPACE_SELECT: &str = "SELECT s.id,s.kind,s.title,s.icon_key,s.description,
     s.order_key,s.revision,s.created_at,s.updated_at,
     CASE WHEN s.id=1 THEN (SELECT COUNT(*) FROM clipboard_entries)
     ELSE (SELECT COUNT(*) FROM space_memberships m WHERE m.space_id=s.id) END
@@ -24,13 +24,12 @@ fn map_space(row: &Row<'_>) -> rusqlite::Result<Space> {
         kind,
         title: row.get(2)?,
         icon_key: row.get(3)?,
-        accent_key: row.get(4)?,
-        description: row.get(5)?,
-        order_key: row.get(6)?,
-        revision: row.get(7)?,
-        created_at: row.get(8)?,
-        updated_at: row.get(9)?,
-        item_count: row.get::<_, i64>(10)?.max(0) as u64,
+        description: row.get(4)?,
+        order_key: row.get(5)?,
+        revision: row.get(6)?,
+        created_at: row.get(7)?,
+        updated_at: row.get(8)?,
+        item_count: row.get::<_, i64>(9)?.max(0) as u64,
     })
 }
 // Copy the immutable original representations and metadata, never the preview text.
@@ -321,9 +320,9 @@ impl ClipboardStore {
         let next = last
             .checked_add(1)
             .ok_or_else(|| SpaceError::Invalid("Space ordering overflow".into()))?;
-        tx.execute("INSERT INTO spaces(kind,title,normalized_title,icon_key,accent_key,description,order_key,revision,created_at,updated_at)
-            VALUES ('collection',?,?,?,?,?,?,1,?,?)",
-            params![draft.title,draft.normalized_title(),draft.icon_key,draft.accent_key,draft.description,next,now,now])?;
+        tx.execute("INSERT INTO spaces(kind,title,normalized_title,icon_key,description,order_key,revision,created_at,updated_at)
+            VALUES ('collection',?,?,?,?,?,1,?,?)",
+            params![draft.title,draft.normalized_title(),draft.icon_key,draft.description,next,now,now])?;
         let id = SpaceId(tx.last_insert_rowid());
         tx.commit()?;
         Ok(SpaceMutationResult {
@@ -345,8 +344,16 @@ impl ClipboardStore {
         let tx = self.connection.transaction()?;
         validate_space_tx(&tx, id, Some(revision))?;
         unique_title_tx(&tx, &draft, id.0)?;
-        tx.execute("UPDATE spaces SET title=?,normalized_title=?,icon_key=?,accent_key=?,description=? WHERE id=?",
-            params![draft.title,draft.normalized_title(),draft.icon_key,draft.accent_key,draft.description,id.0])?;
+        tx.execute(
+            "UPDATE spaces SET title=?,normalized_title=?,icon_key=?,description=? WHERE id=?",
+            params![
+                draft.title,
+                draft.normalized_title(),
+                draft.icon_key,
+                draft.description,
+                id.0
+            ],
+        )?;
         bump_space_tx(&tx, id)?;
         tx.commit()?;
         Ok(SpaceMutationResult {

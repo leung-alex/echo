@@ -1,11 +1,5 @@
 /* Generated from echo.tokens.json. Reference only; no browser runtime. */
 :root {
-  --echo-accent-amber: #ffc400;
-  --echo-accent-blue: #5792e6;
-  --echo-accent-green: #48a676;
-  --echo-accent-rose: #cd7396;
-  --echo-accent-slate: #8a99a6;
-  --echo-accent-violet: #a07fdc;
   --echo-budget-live-model-lru: 3;
   --echo-budget-page-size: 50;
   --echo-budget-texture-hard-mib: 64;
@@ -111,12 +105,6 @@
   --echo-window-workarea-margin: 16px;
 }
 [data-theme="dark"] {
-  --echo-accent-amber: #ffc400;
-  --echo-accent-blue: #5792e6;
-  --echo-accent-green: #48a676;
-  --echo-accent-rose: #cd7396;
-  --echo-accent-slate: #8a99a6;
-  --echo-accent-violet: #a07fdc;
   --echo-color-accent: #eeeeee;
   --echo-color-accent-text: #eeeeee;
   --echo-color-canvas: #0b1014;

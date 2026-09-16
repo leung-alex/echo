@@ -7,7 +7,6 @@ fn draft(name: &str) -> SpaceDraft {
     SpaceDraft {
         title: name.into(),
         icon_key: None,
-        accent_key: "amber".into(),
         description: String::new(),
     }
 }

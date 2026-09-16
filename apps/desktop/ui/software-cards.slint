@@ -11,7 +11,7 @@ export struct SidePreview { rows: [SidePreviewRow], loading: bool, message: stri
 
 // UI-thread model references, never a bitmap or another data/clipboard owner.
 export struct OutgoingPanel {
-    rows: [EntryRow], title: string, subtitle: string, icon-key: string, accent: color,
+    rows: [EntryRow], title: string, subtitle: string, icon-key: string,
     favorites: bool, clearable: bool, scroll-y: length, query: string,
     navigation-label: string, navigation-hint: string,
     previous-enabled: bool, next-enabled: bool, has-more: bool, has-previous: bool,

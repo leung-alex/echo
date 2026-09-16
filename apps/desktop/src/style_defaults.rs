@@ -2,12 +2,6 @@
 use super::{StyleValue, StyleSnapshot};
 #[cfg(any(debug_assertions, test))]
 pub(super) const SCHEMA: &[(&str, &str, bool)] = &[
-    ("accent.amber", "color", true),
-    ("accent.blue", "color", true),
-    ("accent.green", "color", true),
-    ("accent.rose", "color", true),
-    ("accent.slate", "color", true),
-    ("accent.violet", "color", true),
     ("budget.live-model-lru", "integer", false),
     ("budget.page-size", "integer", false),
     ("budget.texture-hard-mib", "integer", false),
@@ -114,12 +108,6 @@ pub(super) const SCHEMA: &[(&str, &str, bool)] = &[
 ];
 pub(super) fn defaults() -> StyleSnapshot {
     StyleSnapshot(std::collections::BTreeMap::from([
-        ("accent.amber".into(), StyleValue::Color(0xffc400ff, 0xffc400ff)),
-        ("accent.blue".into(), StyleValue::Color(0x5792e6ff, 0x5792e6ff)),
-        ("accent.green".into(), StyleValue::Color(0x48a676ff, 0x48a676ff)),
-        ("accent.rose".into(), StyleValue::Color(0xcd7396ff, 0xcd7396ff)),
-        ("accent.slate".into(), StyleValue::Color(0x8a99a6ff, 0x8a99a6ff)),
-        ("accent.violet".into(), StyleValue::Color(0xa07fdcff, 0xa07fdcff)),
         ("color.accent".into(), StyleValue::Color(0x202020ff, 0xeeeeeeff)),
         ("color.accent-text".into(), StyleValue::Color(0x202020ff, 0xeeeeeeff)),
         ("color.canvas".into(), StyleValue::Color(0xe9edebff, 0x0b1014ff)),
@@ -195,12 +183,6 @@ macro_rules! apply_style {
         let g = $global;
         let s = $style;
         let dark = $dark;
-        g.set_accent_amber(s.color("accent.amber", dark));
-        g.set_accent_blue(s.color("accent.blue", dark));
-        g.set_accent_green(s.color("accent.green", dark));
-        g.set_accent_rose(s.color("accent.rose", dark));
-        g.set_accent_slate(s.color("accent.slate", dark));
-        g.set_accent_violet(s.color("accent.violet", dark));
         g.set_color_accent(s.color("color.accent", dark));
         g.set_color_accent_text(s.color("color.accent-text", dark));
         g.set_color_canvas(s.color("color.canvas", dark));

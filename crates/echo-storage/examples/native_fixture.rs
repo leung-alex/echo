@@ -124,7 +124,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         action: SpaceAction::Create(SpaceDraft {
                             title: title.into(),
                             icon_key: Some("Folder".into()),
-                            accent_key: "blue".into(),
                             description: String::new(),
                         }),
                     })?
@@ -161,7 +160,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     action: SpaceAction::Create(SpaceDraft {
                         title: "Memory50 Work".into(),
                         icon_key: None,
-                        accent_key: "amber".into(),
                         description: String::new(),
                     }),
                 })?

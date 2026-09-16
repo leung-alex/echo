@@ -18,13 +18,7 @@ pub(super) fn connect(app: &App) {
     window
         .global::<crate::FavoriteIconImages>()
         .on_index_for(|key| crate::favorite_icons::index(key.as_str()));
-    window.set_favorite_icon_choices(crate::favorite_icons::choices(""));
-    let weak = window.as_weak();
-    window.on_filter_favorite_icons(move |query| {
-        if let Some(window) = weak.upgrade() {
-            window.set_favorite_icon_choices(crate::favorite_icons::choices(query.as_str()));
-        }
-    });
+    window.set_favorite_icon_choices(crate::favorite_icons::choices());
     callback!(on_query_edited,query=>Command::Query(query.to_string()));
     callback!(on_row_selected,key=>Command::Select(key.to_string()));
     callback!(on_row_action,action,key=>Command::Action(action.to_string(),key.to_string()));

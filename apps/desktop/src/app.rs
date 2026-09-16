@@ -248,7 +248,7 @@ pub struct App {
     editor_original: Option<(String, String, String)>,
     editor_tags: Vec<String>,
     space_edit_id: Option<(SpaceId, i64)>,
-    space_original: Option<(String, String, String, String)>,
+    space_original: Option<(String, String, String)>,
     inspect_intent: Option<(u64, String, RowKey)>,
     edit_created_copy: bool,
     wheel_delta: f32,

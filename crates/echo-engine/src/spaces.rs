@@ -35,7 +35,6 @@ pub struct Space {
     pub kind: SpaceKind,
     pub title: String,
     pub icon_key: Option<String>,
-    pub accent_key: String,
     pub description: String,
     pub order_key: i64,
     pub revision: i64,
@@ -47,7 +46,6 @@ pub struct Space {
 pub struct SpaceDraft {
     pub title: String,
     pub icon_key: Option<String>,
-    pub accent_key: String,
     pub description: String,
 }
 impl SpaceDraft {
@@ -68,11 +66,6 @@ impl SpaceDraft {
         }
         self.icon_key = crate::normalize_icon_key(self.icon_key.as_deref())
             .map_err(|e| SpaceError::Invalid(e.to_string()))?;
-        if !["amber", "blue", "green", "violet", "rose", "slate"]
-            .contains(&self.accent_key.as_str())
-        {
-            return Err(SpaceError::Invalid("Unknown space accent".into()));
-        }
         Ok(self)
     }
     pub fn normalized_title(&self) -> String {
@@ -189,7 +182,6 @@ mod tests {
         SpaceDraft {
             title: title.into(),
             icon_key: None,
-            accent_key: "amber".into(),
             description: String::new(),
         }
     }
