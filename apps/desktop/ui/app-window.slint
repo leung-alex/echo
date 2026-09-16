@@ -1,6 +1,7 @@
 import { TextEdit } from "echo-textedit.slint";
 import { LineEdit } from "echo-lineedit.slint";
 export { I18n } from "i18n.slint";
+export { InputIndicatorWindow } from "input-indicator.slint";
 export { DesignTokens } from "echo-tokens.slint";
 export { SelectEnvironment } from "echo-select.slint";
 import { SelectEnvironment } from "echo-select.slint";
@@ -125,6 +126,7 @@ export component AppWindow inherits Window {
     in-out property <string> frame-rate;
     in-out property <bool> loop-spaces;
     in-out property <bool> remember-position;
+    in-out property <bool> input-method-indicator;
     in-out property <bool> reflections;
     in-out property <bool> trim-when-hidden;
     in-out property <bool> reduce-on-battery;
@@ -368,6 +370,7 @@ export component AppWindow inherits Window {
                 frame-rate <=> root.frame-rate;
                 loop-spaces <=> root.loop-spaces;
                 remember-position <=> root.remember-position;
+                input-method-indicator <=> root.input-method-indicator;
                 reflections <=> root.reflections;
                 trim-when-hidden <=> root.trim-when-hidden;
                 reduce-on-battery <=> root.reduce-on-battery;

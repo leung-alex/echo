@@ -8,6 +8,8 @@ pub use software_frame::{AnimationClock, FrameOutcome, SoftwareFrame};
 mod common;
 mod hotkey;
 mod ime_mode;
+mod input_badge;
+pub use input_badge::configure_input_badge;
 mod pipe;
 mod tray;
 pub use hotkey::{HotkeyController, HotkeyReservation};

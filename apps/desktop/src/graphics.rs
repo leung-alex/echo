@@ -3,6 +3,15 @@ use crate::events::Hub;
 use std::sync::Arc;
 thread_local! { static FRAME_BEGIN: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) }; }
 thread_local! { static SOFTWARE_FRAME: std::cell::RefCell<echo_windows::shell::SoftwareFrame> = Default::default(); }
+thread_local! { static INPUT_BADGE: std::cell::RefCell<Option<(isize, echo_windows::shell::SoftwareFrame)>> = const { std::cell::RefCell::new(None) }; }
+pub fn register_input_badge(hwnd: isize) {
+    INPUT_BADGE.with(|slot| *slot.borrow_mut() = Some((hwnd, Default::default())));
+}
+pub fn release_input_badge() {
+    INPUT_BADGE.with(|slot| {
+        slot.borrow_mut().take();
+    });
+}
 thread_local! { static EXPECTED_FRAME: std::cell::RefCell<Option<(echo_presentation::slide::ContentFrame, Arc<Hub>)>> = const { std::cell::RefCell::new(None) }; }
 thread_local! { static CARD_COMMITS: std::cell::RefCell<Option<(std::rc::Rc<std::cell::Cell<u64>>, Arc<Hub>)>> = const { std::cell::RefCell::new(None) }; }
 pub fn software_card_commits(generation: std::rc::Rc<std::cell::Cell<u64>>, hub: Arc<Hub>) {
@@ -40,6 +49,15 @@ fn software(reason: Option<String>) -> Result<GraphicsInfo, String> {
         }));
         i_slint_backend_winit::echo_software::install(std::rc::Rc::new(
             |hwnd, width, height, draw| {
+                if let Some(result) = INPUT_BADGE.with(|slot| {
+                    let mut slot = slot.borrow_mut();
+                    slot.as_mut()
+                        .filter(|(window, _)| *window == hwnd)
+                        .map(|(_, frame)| frame.render(hwnd, width, height, draw))
+                }) {
+                    return result
+                        .map(|outcome| outcome != echo_windows::shell::FrameOutcome::Hidden);
+                }
                 let started = std::time::Instant::now();
                 let update_us = FRAME_BEGIN.with(|start| {
                     start

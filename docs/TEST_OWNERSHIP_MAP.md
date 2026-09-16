@@ -60,6 +60,13 @@ numbers do not certify desktop input latency or physical-input acceptance.
 
 Portable directory/ZIP and optional NSIS packaging are separate outputs. Successfully producing one output does not imply that installer behavior, upgrade/uninstall behavior, or a final release-candidate pass was tested. Report every gate as PASS, FAIL, or NOT RUN from observed evidence only.
 
+## Input method indicator
+
+Mode sampling and observer protocol tests belong to `echo-windows`; freshness and
+placement belong to `echo-presentation`; settings defaults belong to `echo-engine`;
+Slint/theme/DPI rendering belongs to desktop tests. The isolated native runner and
+physical-acceptance boundaries are documented in [Input method indicator](engineering/input-indicator.md).
+
 ## Product Boundary
 
 Echo tests start only Echo-owned processes and use isolated data directories. Favorites are backed by the distinct Saved Item model; no removed reusable-content product or compatibility route is part of the active architecture. Copy and insert assertions must verify retained original clipboard representations where the scenario depends on formats, rather than accepting preview text as equivalent.

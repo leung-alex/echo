@@ -2,7 +2,7 @@
 //! setting is changed. Only recognized candidate windows next to the active
 //! session's own input can suppress Echo's confirmation keys.
 use windows_sys::Win32::{Foundation::*, UI::WindowsAndMessaging::*};
-pub(super) unsafe fn candidate(hwnd: HWND, input: HWND) -> bool {
+pub(crate) unsafe fn candidate(hwnd: HWND, input: HWND) -> bool {
     if hwnd.is_null() || input.is_null() || hwnd == input {
         return false;
     }
@@ -35,7 +35,7 @@ pub(super) unsafe fn candidate(hwnd: HWND, input: HWND) -> bool {
         && a.bottom >= b.top - 128
         && a.top <= b.bottom + 128
 }
-pub(super) unsafe fn visible(input: HWND) -> Option<HWND> {
+pub(crate) unsafe fn visible(input: HWND) -> Option<HWND> {
     struct Search {
         input: HWND,
         found: HWND,

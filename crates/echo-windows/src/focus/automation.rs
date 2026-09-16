@@ -288,6 +288,12 @@ unsafe fn probe_element(
         return None;
     }
     let window = HWND(snapshot.window_id as _);
+    if element
+        .CurrentIsOffscreen()
+        .map_or(true, |value| value.as_bool())
+    {
+        return None;
+    }
     let process_matches = element.CurrentProcessId().ok() == Some(snapshot.process_id as i32);
     let belongs = process_matches && native::automation_element_belongs_to(uia, element, window);
     let editable = quick_insert_editable(element)

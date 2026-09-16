@@ -83,6 +83,7 @@ pub struct UiSettings {
     pub global_hotkey: String,
     pub startup_space: StartupSpace,
     pub remember_position: bool,
+    pub input_method_indicator: bool,
     pub query_on_switch: QueryOnSwitch,
     pub reflections: bool,
     pub side_content: SideContent,
@@ -102,6 +103,7 @@ impl Default for UiSettings {
             global_hotkey: "Alt+V".into(),
             startup_space: Default::default(),
             remember_position: true,
+            input_method_indicator: true,
             query_on_switch: Default::default(),
             reflections: false,
             side_content: Default::default(),
@@ -111,6 +113,21 @@ impl Default for UiSettings {
             reduce_on_battery: true,
             resume_last_space_id: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod input_indicator_tests {
+    use super::*;
+    #[test]
+    fn indicator_defaults_on_and_serializes_the_saved_choice() {
+        let mut value = UiSettings::default();
+        assert!(value.input_method_indicator);
+        value.input_method_indicator = false;
+        let decoded: UiSettings =
+            serde_json::from_str(&serde_json::to_string(&value).unwrap()).unwrap();
+        assert!(!decoded.input_method_indicator);
+        assert_eq!(decoded, value);
     }
 }
 impl UiSettings {

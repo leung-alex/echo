@@ -23,6 +23,7 @@ extern "system" {
     fn GetFocus() -> Handle;
     fn GetAncestor(window: Handle, flags: u32) -> Handle;
     fn GetForegroundWindow() -> Handle;
+    fn GetKeyboardLayout(thread: u32) -> Handle;
 }
 #[link(name = "kernel32")]
 extern "system" {
@@ -47,6 +48,8 @@ extern "system" {
     fn ImmGetContext(window: Handle) -> Handle;
     fn ImmReleaseContext(window: Handle, context: Handle) -> i32;
     fn ImmGetCompositionStringW(context: Handle, index: u32, data: Handle, bytes: u32) -> i32;
+    fn ImmGetOpenStatus(context: Handle) -> i32;
+    fn ImmGetConversionStatus(context: Handle, conversion: *mut u32, sentence: *mut u32) -> i32;
 }
 fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(Some(0)).collect()
@@ -73,6 +76,41 @@ unsafe fn sample(window: Handle, channel: &Channel) -> Sample {
         ) == 0
         || created != channel.target_started
     {
+        return value;
+    }
+    if channel.tsf_only == STATE_ONLY {
+        let tsf_mode = tsf::mode();
+        let tsf_active = tsf::active();
+        let context = ImmGetContext(window);
+        let (mut imm_mode, mut imm_active) = (None, None);
+        if !context.is_null() {
+            let (mut conversion, mut sentence) = (0, 0);
+            if ImmGetConversionStatus(context, &mut conversion, &mut sentence) != 0 {
+                imm_mode = Some((ImmGetOpenStatus(context) != 0, conversion));
+            }
+            // Length only: this operation never copies preedit or input text.
+            let bytes = ImmGetCompositionStringW(context, 8, std::ptr::null_mut(), 0);
+            if bytes >= 0 {
+                imm_active = Some(bytes > 0);
+            }
+            ImmReleaseContext(window, context);
+        }
+        value.status = STATE_REPLY;
+        value.mode = mode(
+            GetKeyboardLayout(0) as usize as u16,
+            agree(tsf_mode, imm_mode),
+        );
+        // An active source wins; TSF is authoritative for a TSF editor's idle state.
+        value.composition = if tsf_active == Some(true) || imm_active == Some(true) {
+            2
+        } else if tsf_active.or(imm_active) == Some(false) {
+            1
+        } else {
+            0
+        };
+        if GetFocus() != window || GetAncestor(window, 2) != GetForegroundWindow() {
+            value = Sample::unknown();
+        }
         return value;
     }
     if channel.tsf_only == 1 {

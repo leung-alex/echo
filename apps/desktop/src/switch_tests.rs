@@ -55,6 +55,53 @@ struct TestPlatform(
     Rc<MinimalSoftwareWindow>,
     Rc<std::cell::Cell<std::time::Duration>>,
 );
+
+#[test]
+fn input_badge_keeps_size_contrast_and_transparent_corners() {
+    let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+    let now = Rc::new(std::cell::Cell::new(std::time::Duration::ZERO));
+    slint::platform::set_platform(Box::new(TestPlatform(window.clone(), now))).unwrap();
+    let ui = crate::InputIndicatorWindow::new().unwrap();
+    ui.set_animations(false);
+    ui.set_reveal(true);
+    ui.show().unwrap();
+    for scale in [1., 1.25, 1.5, 2.] {
+        ui.window().dispatch_event(WindowEvent::ScaleFactorChanged {
+            scale_factor: scale,
+        });
+        window.set_size(slint::PhysicalSize::new(
+            (32. * scale) as u32,
+            (24. * scale) as u32,
+        ));
+        for (fill, ink, contrast) in [
+            (0xeeeeee, 0x202020, false),
+            (0x383838, 0xeeeeee, false),
+            (0x000000, 0xffffff, true),
+        ] {
+            ui.set_fill(slint::Color::from_rgb_u8(
+                (fill >> 16) as u8,
+                (fill >> 8) as u8,
+                fill as u8,
+            ));
+            ui.set_ink(slint::Color::from_rgb_u8(
+                (ink >> 16) as u8,
+                (ink >> 8) as u8,
+                ink as u8,
+            ));
+            ui.set_contrast(contrast);
+            for mode in ["中", "EN"] {
+                ui.set_mode(mode.into());
+                let image = ui.window().take_snapshot().unwrap();
+                assert_eq!(
+                    (image.width(), image.height()),
+                    ((32. * scale) as u32, (24. * scale) as u32)
+                );
+                assert_eq!(image.as_slice()[0].a, 0);
+                assert!(image.as_slice().iter().any(|p| p.a == 255));
+            }
+        }
+    }
+}
 impl Platform for TestPlatform {
     fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, slint::PlatformError> {
         Ok(self.0.clone())

@@ -59,6 +59,8 @@ pub struct DragOrigin {
     pub key: RowKey,
 }
 pub enum Event {
+    InputIndicator(echo_windows::input_indicator::Update),
+    InputIndicatorExpired,
     #[cfg(debug_assertions)]
     Styles(crate::style::StyleSnapshot),
     Inline(echo_windows::inline::InlineEvent),
@@ -185,6 +187,10 @@ impl Hub {
         );
         {
             let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+            // Passive observations carry no content or ordering-sensitive action.
+            if matches!(event, Event::InputIndicator(_)) {
+                queue.retain(|e| !matches!(e, Event::InputIndicator(_)));
+            }
             // Only worker-owned display results carry credits. UI/control and
             // shutdown events never wait behind data. Credits remain held while
             // the UI batch is delivered, not merely until dequeue.

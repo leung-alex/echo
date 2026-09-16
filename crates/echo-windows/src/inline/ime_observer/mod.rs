@@ -79,7 +79,7 @@ fn module() -> Result<isize, String> {
         .map_err(Clone::clone)
 }
 
-pub(super) struct Observer {
+pub(crate) struct Observer {
     hook: HHOOK,
     mapping: HANDLE,
     view: MEMORY_MAPPED_VIEW_ADDRESS,
@@ -89,7 +89,7 @@ pub(super) struct Observer {
     thread: u32,
     message: u32,
 }
-pub(super) struct Observation {
+pub(crate) struct Observation {
     pub active: bool,
     pub preedit: String,
 }
@@ -119,6 +119,12 @@ fn decode(sample: Sample, pid: u32, thread: u32, window: u64) -> Option<Observat
 }
 impl Observer {
     pub fn new(window: isize, pid: u32, started: u64, tsf_only: bool) -> Result<Self, String> {
+        Self::create(window, pid, started, u32::from(tsf_only))
+    }
+    pub fn status_only(window: isize, pid: u32, started: u64) -> Result<Self, String> {
+        Self::create(window, pid, started, STATE_ONLY)
+    }
+    fn create(window: isize, pid: u32, started: u64, kind: u32) -> Result<Self, String> {
         unsafe {
             let window = window as HWND;
             let mut owner = 0;
@@ -178,10 +184,9 @@ impl Observer {
             if observer.view.Value.is_null() {
                 return Err("IME observer channel mapping failed".into());
             }
-            std::ptr::write(
-                observer.view.Value.cast::<Channel>(),
-                Channel::new(pid, thread, window as u64, started, tsf_only),
-            );
+            let mut channel = Channel::new(pid, thread, window as u64, started, kind == 1);
+            channel.tsf_only = kind;
+            std::ptr::write(observer.view.Value.cast::<Channel>(), channel);
             observer.atom = GlobalAddAtomW(name.as_ptr());
             if observer.atom == 0 {
                 return Err("IME observer channel registration failed".into());
@@ -200,13 +205,40 @@ impl Observer {
             }
             // Installation alone is not capability evidence. Require the target's
             // synchronous identity-bound response before exposing this observer.
-            observer
-                .read()
-                .ok_or("IME observer target did not acknowledge a composition read")?;
+            let sample = observer
+                .sample()
+                .ok_or("IME observer target did not acknowledge a read")?;
+            if (kind == STATE_ONLY && sample.status != STATE_REPLY)
+                || (kind != STATE_ONLY && decode(sample, pid, thread, window as u64).is_none())
+            {
+                return Err("IME observer returned an unavailable state".into());
+            }
             Ok(observer)
         }
     }
     pub fn read(&self) -> Option<Observation> {
+        decode(self.sample()?, self.pid, self.thread, self.window as u64)
+    }
+    pub fn input_state(&self) -> Option<(echo_engine::InputMode, echo_engine::CompositionState)> {
+        use echo_engine::{CompositionState, InputMode};
+        let sample = self.sample()?;
+        if sample.status != STATE_REPLY || sample.units != 0 {
+            return None;
+        }
+        Some((
+            match sample.mode {
+                1 => InputMode::Chinese,
+                2 => InputMode::English,
+                _ => InputMode::Unknown,
+            },
+            match sample.composition {
+                1 => CompositionState::Idle,
+                2 => CompositionState::Composing,
+                _ => CompositionState::Unknown,
+            },
+        ))
+    }
+    fn sample(&self) -> Option<Sample> {
         unsafe {
             let mut pid = 0;
             if GetWindowThreadProcessId(self.window, &mut pid) != self.thread
@@ -237,7 +269,10 @@ impl Observer {
             if channel.response.load(Ordering::Acquire) != request {
                 return None;
             }
-            decode(sample, self.pid, self.thread, self.window as u64)
+            (sample.pid == self.pid
+                && sample.thread == self.thread
+                && sample.window == self.window as u64)
+                .then_some(sample)
         }
     }
 }

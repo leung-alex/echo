@@ -1,6 +1,10 @@
 fn main() {
-    let catalog: std::collections::BTreeMap<String, String> =
-        serde_json::from_str(include_str!("../i18n/zh-CN.json")).expect("read translation catalog");
+    // Cargo may rerun an existing build-script binary after the catalog changes.
+    // Read at execution time: include_str! would retain that binary's old catalog.
+    let catalog: std::collections::BTreeMap<String, String> = serde_json::from_str(
+        &std::fs::read_to_string("../i18n/zh-CN.json").expect("read translation catalog"),
+    )
+    .expect("parse translation catalog");
     let translations =
         std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("translations");
     let messages = translations.join("zh-CN/LC_MESSAGES");

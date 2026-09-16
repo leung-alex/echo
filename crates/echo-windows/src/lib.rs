@@ -6,7 +6,12 @@ pub mod allocation;
 #[cfg(windows)]
 pub mod focus;
 #[cfg(windows)]
+#[path = "inline/ime_observer/mod.rs"]
+mod ime_observer;
+#[cfg(windows)]
 pub mod inline;
+#[cfg(windows)]
+pub mod input_indicator;
 
 #[cfg(windows)]
 mod windows_impl {

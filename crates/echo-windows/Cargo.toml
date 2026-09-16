@@ -10,6 +10,10 @@ native-test = []
 [lib]
 path = "src/lib.rs"
 
+[[example]]
+name = "input_status_probe"
+required-features = ["native-test"]
+
 [dependencies]
 echo-engine.workspace = true
 windows.workspace = true

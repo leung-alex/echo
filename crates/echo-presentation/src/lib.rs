@@ -5,6 +5,7 @@ use echo_engine::{
 };
 use std::{collections::BTreeSet, fmt, str::FromStr};
 pub mod echo_tokens;
+pub mod input_indicator;
 pub mod interaction;
 pub mod navigation;
 pub mod session;

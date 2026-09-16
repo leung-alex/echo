@@ -1,4 +1,6 @@
 mod domain;
+mod input_status;
+pub use input_status::{CompositionState, InputAnchor, InputMode, InputStatus};
 mod instrumentation;
 
 mod fuzzy_search;

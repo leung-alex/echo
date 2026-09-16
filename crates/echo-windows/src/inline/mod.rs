@@ -14,8 +14,8 @@ use std::time::{Duration, Instant};
 mod composition;
 #[cfg(feature = "native-test")]
 pub mod diagnostics;
-mod ime_observer;
-mod ime_window;
+use crate::ime_observer;
+pub(crate) mod ime_window;
 mod key_policy;
 mod keyboard;
 mod payload;

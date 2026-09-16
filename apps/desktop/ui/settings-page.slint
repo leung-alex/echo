@@ -26,6 +26,7 @@ export component SettingsPage inherits Rectangle {
     in-out property <string> frame-rate;
     in-out property <bool> loop-spaces;
     in-out property <bool> remember-position;
+    in-out property <bool> input-method-indicator;
     in-out property <bool> reflections;
     in-out property <bool> trim-when-hidden;
     in-out property <bool> reduce-on-battery;
@@ -48,6 +49,7 @@ export component SettingsPage inherits Rectangle {
     changed frame-rate => { root.edited(); }
     changed loop-spaces => { root.edited(); }
     changed remember-position => { root.edited(); }
+    changed input-method-indicator => { root.edited(); }
     changed reflections => { root.edited(); }
     changed trim-when-hidden => { root.edited(); }
     changed reduce-on-battery => { root.edited(); }
@@ -120,6 +122,7 @@ export component SettingsPage inherits Rectangle {
                 EnumChoice { enabled: !root.busy; model: [@tr("Light"), @tr("Dark")]; selected-index: root.theme-mode == "dark" ? 1 : 0; selected(value) => { root.theme-mode = self.current-index == 1 ? "dark" : "light"; } accessible-label: @tr("Theme"); }
                 Text { text: @tr("Language"); color: EchoTheme.text; }
                 EnumChoice { enabled: !root.busy; model: ["简体中文", "English"]; selected-index: root.language == "en" ? 1 : 0; selected(value) => { root.language = self.current-index == 1 ? "en" : "zh-CN"; } accessible-label: @tr("Language"); }
+                EchoSwitch { enabled: !root.busy; text: @tr("Input method indicator"); checked <=> root.input-method-indicator; }
             }
             if (root.section == 1): VerticalLayout {
                 spacing: 12px; alignment: start;

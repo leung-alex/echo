@@ -171,6 +171,23 @@ fn execute(
         .ok_or("Window is unavailable")?;
     match request.verb.as_str() {
         "ping" => Ok(serde_json::json!({"native_test":true,"pid":std::process::id()})),
+        "input_indicator" => Ok(app.borrow().input_indicator.diagnostics()),
+        "input_indicator_setting" => {
+            let mut a = app.borrow_mut();
+            a.window.set_route("settings".into());
+            if request.file == "cancel" {
+                a.render_settings();
+            } else {
+                a.window.set_input_method_indicator(!request.paused);
+                a.settings_edited();
+                if request.file == "save" {
+                    a.save_settings();
+                }
+            }
+            Ok(
+                serde_json::json!({"draft":a.window.get_input_method_indicator(),"saved":a.ui.input_method_indicator}),
+            )
+        }
         "style_theme" => {
             let mut a = app.borrow_mut();
             match request.file.as_str() {
@@ -344,7 +361,7 @@ fn execute(
             Ok(serde_json::json!({"started":true,"source":"owned Slint renderer only"}))
         }
         "trace_end" => finish_trace(),
-        "capture" => {
+        "capture" | "input_indicator_capture" => {
             if request.file.is_empty()
                 || request.file.len() > 120
                 || !request.file.ends_with(".png")
@@ -357,7 +374,11 @@ fn execute(
             if path.exists() {
                 return Err("Evidence already exists".into());
             }
-            let snapshot = window.window().take_snapshot().map_err(|e| e.to_string())?;
+            let snapshot = if request.verb == "input_indicator_capture" {
+                app.borrow().input_indicator.snapshot()?
+            } else {
+                window.window().take_snapshot().map_err(|e| e.to_string())?
+            };
             image::save_buffer_with_format(
                 &path,
                 snapshot.as_bytes(),

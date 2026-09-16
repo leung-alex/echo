@@ -1,0 +1,20 @@
+export component InputIndicatorWindow inherits Window {
+    title: "Echo Input Indicator";
+    min-width: 32px; max-width: 32px; min-height: 24px; max-height: 24px;
+    no-frame: true; always-on-top: true; background: transparent;
+    in property <string> mode;
+    in property <color> fill;
+    in property <color> ink;
+    in property <bool> contrast;
+    in property <bool> reveal;
+    in property <bool> animations: true;
+    Rectangle {
+        border-radius: 6px;
+        background: root.fill;
+        border-width: root.contrast ? 1px : 0px; border-color: root.ink;
+        opacity: root.reveal ? 1 : 0;
+        animate opacity { duration: root.animations && root.reveal ? 100ms : 0ms; easing: ease-out; }
+        Text { text: root.mode; color: root.ink; font-size: 13px;
+            horizontal-alignment: center; vertical-alignment: center; }
+    }
+}

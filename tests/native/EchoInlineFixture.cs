@@ -158,6 +158,43 @@ public static class EchoInlineFixture {
         if(context!=IntPtr.Zero){try{ImmSetOpenStatus(context,false);}finally{ImmReleaseContext(input.Handle,context);}}
     }
     [DllImport("imm32.dll")] static extern bool ImmSetConversionStatus(IntPtr context,uint conversion,uint sentence);
+    [ComImport,Guid("71C6E74C-0F28-11D8-A82A-00065B84435C"),InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface ProfileManager {
+        [PreserveSig] int ActivateProfile(uint type,ushort language,ref Guid clsid,ref Guid profile,IntPtr layout,uint flags);
+        void DeactivateProfile(); void GetProfile(); void EnumProfiles(); void ReleaseInputProcessor();
+        void RegisterProfile(); void UnregisterProfile();
+        [PreserveSig] int GetActiveProfile(ref Guid category,out InputProfile profile);
+    }
+    [StructLayout(LayoutKind.Sequential)] struct InputProfile {
+        public uint Type; public ushort Language; public Guid ClassId,Profile,Category;
+        public IntPtr Substitute; public uint Capabilities; public IntPtr Layout; public uint Flags;
+    }
+    static void OwnedNativeMode(TextBoxBase input,bool chinese) {
+        if(GetForegroundWindow()!=form.Handle || !input.Focused)
+            throw new InvalidOperationException("Mode changes require the owned foreground input");
+        var context=ImmGetContext(input.Handle);
+        if(context==IntPtr.Zero)throw new InvalidOperationException("Owned IME context unavailable");
+        try {
+            if(!ImmSetOpenStatus(context,true)||!ImmSetConversionStatus(context,chinese?1u:0u,0))
+                throw new InvalidOperationException("Owned IME mode change failed");
+        } finally {ImmReleaseContext(input.Handle,context);}
+    }
+    static object OwnedProfile(TextBoxBase input,string clsidText,string profileText) {
+        ChineseForOwnedInput(input);
+        var clsid=new Guid(clsidText);var profile=new Guid(profileText);
+        var manager=(ProfileManager)Activator.CreateInstance(Type.GetTypeFromCLSID(new Guid("33C53A50-F456-4884-B049-85FD643ECFED")));
+        try {
+            // Current fixture thread only. Never set FORSESSION or ENABLEPROFILE.
+            int status=manager.ActivateProfile(1,0x804,ref clsid,ref profile,IntPtr.Zero,0);
+            if(status!=0)throw new InvalidOperationException("Owned profile activation: "+status.ToString("X"));
+            var category=new Guid("34745C63-B2F0-4784-8B67-5E12C8701A31");InputProfile active;
+            Marshal.ThrowExceptionForHR(manager.GetActiveProfile(ref category,out active));
+            if(active.ClassId!=clsid || active.Profile!=profile)
+                throw new InvalidOperationException("Active input profile did not match requested fixture profile");
+            OwnedNativeMode(input,true);
+            return new{clsid=active.ClassId,profile=active.Profile,language=active.Language};
+        } finally {Marshal.ReleaseComObject(manager);}
+    }
     static void ChineseForOwnedInput(TextBoxBase input) {
         InputLanguage found=null;
         foreach(InputLanguage language in InputLanguage.InstalledInputLanguages)
@@ -269,6 +306,11 @@ public static class EchoInlineFixture {
                     SetFocus(form.Handle); restore.Start();
                 }
                 if(op=="ime-chinese")ChineseForOwnedInput(inputs[(string)request["control"]]);
+                if(op=="ime-profile") {
+                    var active=OwnedProfile(inputs[(string)request["control"]],(string)request["clsid"],(string)request["profile"]);
+                    Atomic("native-response.json",new{id=id,status="PASS",value=active});return;
+                }
+                if(op=="ime-native-mode")OwnedNativeMode(inputs[(string)request["control"]],Convert.ToBoolean(request["chinese"]));
                 if(op=="ime-english")EnglishForOwnedInput(inputs[(string)request["control"]]);
                 if(op=="selection-policy")((OwnedTextBox)inputs["single"]).RejectSelection=Convert.ToBoolean(request["reject"]);
                 if(op=="read-refusal-policy")((OwnedTextBox)inputs["single"]).RefuseExternalReads=Convert.ToBoolean(request["enabled"]);

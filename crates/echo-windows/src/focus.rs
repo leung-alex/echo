@@ -51,6 +51,7 @@ pub struct FocusSnapshot {
     native_input: Option<PasteControlIdentity>,
     native_blocked: bool,
     captured_at: Instant,
+    indicator_only: bool,
 }
 pub struct CapturedActivation {
     pub target: Option<PasteTarget>,
@@ -153,6 +154,13 @@ fn caret_screen(info: &GUITHREADINFO, root: HWND, pid: u32) -> Option<PhysicalRe
     }
 }
 impl FocusSnapshot {
+    /// The passive badge may observe Echo's own input controls. Paste captures
+    /// retain the default exclusion; this snapshot never authorizes insertion.
+    pub(crate) fn capture_for_indicator() -> Self {
+        let mut snapshot = Self::capture();
+        snapshot.indicator_only = true;
+        snapshot
+    }
     /// No COM, UI Automation, message sends, or clipboard reads on the hotkey thread.
     pub fn capture() -> Self {
         unsafe {
@@ -206,6 +214,7 @@ impl FocusSnapshot {
                 native_input,
                 native_blocked,
                 captured_at: Instant::now(),
+                indicator_only: false,
             }
         }
     }
@@ -218,7 +227,7 @@ impl FocusSnapshot {
     pub(crate) fn current(&self) -> bool {
         if self.window_id == 0
             || self.process_id == 0
-            || self.is_echo()
+            || (!self.indicator_only && self.is_echo())
             || self.process_started_at == 0
             || self.captured_at.elapsed() > Duration::from_secs(1)
         {

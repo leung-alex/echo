@@ -608,6 +608,7 @@ fn fixed_tab_migration_preserves_settings_content_and_reopens() {
         expected.ui.language = Language::English;
         expected.ui.global_hotkey = "Ctrl+Alt+J".into();
         expected.ui.remember_position = false;
+        expected.ui.input_method_indicator = false;
         expected.clipboard.theme = ThemeMode::Dark;
         expected = s
             .save_settings_patch(SettingsPatch {

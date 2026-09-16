@@ -44,6 +44,76 @@ struct Enumerator {
     next: unsafe extern "system" fn(Handle, u32, *mut Handle, *mut u32) -> i32,
 }
 struct Com(Handle);
+
+const COMPARTMENTS: Guid = Guid(
+    0x7dcf57ac,
+    0x18ad,
+    0x438b,
+    [0x82, 0x4d, 0x97, 0x9b, 0xff, 0xb7, 0x4b, 0x7c],
+);
+const OPEN: Guid = Guid(
+    0x58273aad,
+    0x01bb,
+    0x4164,
+    [0x95, 0xc6, 0x75, 0x5b, 0xa0, 0xb5, 0x16, 0x2d],
+);
+const CONVERSION: Guid = Guid(
+    0xccf05dd8,
+    0x4a87,
+    0x11d7,
+    [0xa6, 0xe2, 0x00, 0x06, 0x5b, 0x84, 0x43, 0x5c],
+);
+#[repr(C)]
+struct CompartmentMgr {
+    base: Unknown,
+    get: unsafe extern "system" fn(Handle, *const Guid, *mut Handle) -> i32,
+}
+#[repr(C)]
+struct Variant {
+    vt: u16,
+    reserved: [u16; 3],
+    data: [usize; 2],
+}
+#[repr(C)]
+struct Compartment {
+    base: Unknown,
+    set: *const c_void,
+    get: unsafe extern "system" fn(Handle, *mut Variant) -> i32,
+}
+#[link(name = "oleaut32")]
+extern "system" {
+    fn VariantClear(value: *mut Variant) -> i32;
+}
+
+unsafe fn thread_manager() -> Option<Com> {
+    let module = GetModuleHandleW(super::wide("msctf.dll").as_ptr());
+    if module.is_null() {
+        return None;
+    }
+    let address = GetProcAddress(module, b"TF_GetThreadMgr\0".as_ptr());
+    if address.is_null() {
+        return None;
+    }
+    let get: unsafe extern "system" fn(*mut Handle) -> i32 = std::mem::transmute(address);
+    Com::receive(|out| get(out))
+}
+
+pub(super) unsafe fn mode() -> Option<(bool, u32)> {
+    let manager = thread_manager()?;
+    let compartments =
+        Com::receive(|out| (manager.table::<Unknown>().query)(manager.0, &COMPARTMENTS, out))?;
+    let read = |guid: &Guid| -> Option<u32> {
+        let compartment = Com::receive(|out| {
+            (compartments.table::<CompartmentMgr>().get)(compartments.0, guid, out)
+        })?;
+        let mut value: Variant = std::mem::zeroed();
+        let hr = (compartment.table::<Compartment>().get)(compartment.0, &mut value);
+        let result = (hr >= 0 && value.vt == 3).then_some(value.data[0] as u32);
+        VariantClear(&mut value);
+        result
+    };
+    Some((read(&OPEN)? != 0, read(&CONVERSION)?))
+}
 impl Com {
     unsafe fn table<T>(&self) -> &T {
         &**self.0.cast::<*const T>()

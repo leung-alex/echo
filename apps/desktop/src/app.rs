@@ -29,6 +29,7 @@ mod deck_controller;
 mod dialogs;
 mod editor_validation;
 mod inline_completion;
+mod input_indicator;
 #[cfg(feature = "native-test")]
 pub(crate) mod native_test;
 mod quick_insert_window;
@@ -211,6 +212,7 @@ pub struct App {
     hidden_generation: u64,
     inline_ui: inline_completion::InlineUi,
     inline_timer: Timer,
+    input_indicator: input_indicator::Indicator,
     compatibility_notice: Option<String>,
     mutation: Option<u64>,
     serial: u64,
@@ -282,6 +284,8 @@ impl App {
         let mut surface = Surface::new(QuickInsertView::History);
         surface.row_limit = 40;
         let environment = shell::ui_environment(None);
+        let input_indicator =
+            input_indicator::Indicator::new(bootstrap.ui.input_method_indicator, hub.clone())?;
         let app = Rc::new(RefCell::new(Self {
             styles,
             style_theme: None,
@@ -314,6 +318,7 @@ impl App {
             hidden_generation: 0,
             inline_ui: Default::default(),
             inline_timer: Timer::default(),
+            input_indicator,
             compatibility_notice: None,
             mutation: None,
             serial: 0,
@@ -398,6 +403,8 @@ impl App {
                 eprintln!("[Echo styles] applied");
             }
             Event::Inline(event) => self.inline_event(event),
+            Event::InputIndicator(update) => self.input_indicator.update(update),
+            Event::InputIndicatorExpired => {}
             Event::Command(command) => self.command(command),
             Event::Shell(event) => self.shell_event(event),
             Event::Ready(result) => match result {
@@ -565,6 +572,16 @@ impl App {
         }
         self.inline_results_ready();
         self.update_card_region();
+        self.input_indicator.sync(
+            self.ui.input_method_indicator,
+            self.capture_pending
+                || self.inline_ui.pending
+                || (self.surface.visible
+                    && self.quick_geometry_active
+                    && !self.inline_ui.editor_focus),
+            self.window.global::<crate::EchoTheme>(),
+            self.environment,
+        );
     }
     fn shell_event(&mut self, event: ShellEvent) {
         match event {
@@ -948,6 +965,7 @@ impl App {
         let _ = slint::quit_event_loop();
     }
     pub fn shutdown(&mut self) {
+        self.input_indicator.stop();
         crate::graphics::release_software_frame();
         self.stop_inline();
         self.quitting = true;

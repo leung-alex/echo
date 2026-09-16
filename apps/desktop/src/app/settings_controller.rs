@@ -51,6 +51,7 @@ impl App {
         value.global_hotkey = GlobalShortcut::parse(w.get_global_hotkey().as_str())?.canonical();
         value.loop_spaces = w.get_loop_spaces();
         value.remember_position = w.get_remember_position();
+        value.input_method_indicator = w.get_input_method_indicator();
         value.reflections = w.get_reflections();
         value.trim_when_hidden = w.get_trim_when_hidden();
         value.reduce_on_battery = w.get_reduce_on_battery();
@@ -83,6 +84,7 @@ impl App {
         w.set_frame_rate(u.frame_rate.as_str().into());
         w.set_loop_spaces(u.loop_spaces);
         w.set_remember_position(u.remember_position);
+        w.set_input_method_indicator(u.input_method_indicator);
         w.set_reflections(u.reflections);
         w.set_trim_when_hidden(u.trim_when_hidden);
         w.set_reduce_on_battery(u.reduce_on_battery);

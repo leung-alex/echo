@@ -83,7 +83,10 @@ fn run_windows() -> Result<(), String> {
         "core_ready",
         serde_json::json!({"background":args == ["--background"]}),
     );
-    if args == ["--background"] && !hub.wait_for_activation() {
+    if args == ["--background"]
+        && !worker.bootstrap.ui.input_method_indicator
+        && !hub.wait_for_activation()
+    {
         hub.close();
         drop(worker);
         drop(shell);
