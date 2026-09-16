@@ -8,13 +8,16 @@ fn space_icon(space: &echo_engine::Space) -> &str {
     }
 }
 pub(super) fn accent(key: &str) -> slint::Color {
+    // Transparent means the built-in space follows the live UI theme accent.
+    if key == "default" {
+        return slint::Color::default();
+    }
     let (r, g, b) = match key {
         "blue" => (87, 146, 230),
         "green" => (72, 166, 118),
         "violet" => (160, 127, 220),
         "rose" => (205, 115, 150),
         "slate" => (138, 153, 166),
-        "default" => (54, 120, 155),
         _ => (255, 196, 0),
     };
     slint::Color::from_rgb_u8(r, g, b)

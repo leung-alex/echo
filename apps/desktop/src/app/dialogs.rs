@@ -120,7 +120,7 @@ impl App {
         if self.unsaved() {
             self.ask_confirmation(
                 "Discard unsaved changes?",
-                "Your saved content stays intact. Discard this draft and hide Echo?",
+                "Unsaved changes will be lost. Saved content is kept.",
                 "Discard & hide",
                 false,
                 Confirmation::Hide,
@@ -138,7 +138,7 @@ impl App {
         if self.unsaved() {
             self.ask_confirmation(
                 "Discard changes and quit?",
-                "This closes Echo and stops clipboard capture. Saved content is kept.",
+                "Unsaved changes will be lost and clipboard capture will stop.",
                 "Quit Echo",
                 false,
                 Confirmation::Quit,
@@ -363,9 +363,13 @@ impl App {
                     self.report("System spaces cannot be deleted", true);
                     return;
                 }
-                self.ask_confirmation(&format!("Delete ‘{}’ space?",space.title),
-                    "Choose what happens to the content in this space. Other spaces are not affected.",
-                    "Delete space",true,Confirmation::DeleteSpace(id,space.revision));
+                self.ask_confirmation(
+                    &format!("Delete ‘{}’ space?", space.title),
+                    "Choose what to do with this space’s content.",
+                    "Delete space",
+                    true,
+                    Confirmation::DeleteSpace(id, space.revision),
+                );
             }
             "up" | "down" => self.space_mutation(
                 id,
@@ -544,7 +548,7 @@ impl App {
         } else {
             self.ask_confirmation(
                 "Delete this capture?",
-                "Only this History record will be removed. Saved copies are kept.",
+                "Deletes this history record. Saved copies are kept. This cannot be undone.",
                 "Delete capture",
                 true,
                 Confirmation::DeleteItem(item),
@@ -598,7 +602,7 @@ impl App {
             Picker::SpaceMenu => match key {
                 "clear" => {
                     self.close_picker();
-                    self.ask_confirmation("Clear clipboard history?","This removes unpinned captures. Pinned History and saved content are kept.","Clear unpinned",true,Confirmation::ClearHistory);
+                    self.ask_confirmation("Clear unpinned history?","Pinned history, Favorites and custom spaces are kept. This cannot be undone.","Clear",true,Confirmation::ClearHistory);
                 }
                 "new-item" => {
                     self.close_picker();
@@ -750,12 +754,21 @@ impl App {
             return;
         }
         match result {
-            Ok(details)=>match action.as_str() {
-                "edit"=>{self.close_picker();self.open_editor(Some(details.item));},
-                "delete"=>self.ask_confirmation("Delete saved content?",
-                    "This permanently deletes the content from this space. Other spaces are not affected.",
-                    "Delete content",true,Confirmation::DeleteItem(key)),_=>{},
-            },Err(e)=>self.report(e,true),
+            Ok(details) => match action.as_str() {
+                "edit" => {
+                    self.close_picker();
+                    self.open_editor(Some(details.item));
+                }
+                "delete" => self.ask_confirmation(
+                    "Delete saved content?",
+                    "Deletes this content from this space only. This cannot be undone.",
+                    "Delete content",
+                    true,
+                    Confirmation::DeleteItem(key),
+                ),
+                _ => {}
+            },
+            Err(e) => self.report(e, true),
         }
     }
     pub(super) fn new_item(&mut self) {

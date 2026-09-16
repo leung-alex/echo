@@ -66,7 +66,7 @@ Check 'disabled-global-shortcut-does-not-activate' {
     D close|Out-Null;Wait-Hidden;Target-Command $target 'focus-primary'|Out-Null
     F 'hotkey' @([string]$targetProcess.Id,$target.title,'Ctrl+Alt+J')|Out-Null;Start-Sleep -Milliseconds 250
     if(D exists){throw 'Disabled shortcut still activates.'}
-    Open-KeyboardSettings;Click 'Reset to Alt+V';Click 'Save changes';Assert-Binding 'Alt+V' $false
+    Open-KeyboardSettings;Click 'Reset';Click 'Save changes';Assert-Binding 'Alt+V' $false
     'disable releases the binding; reset restores Alt+V on Save'
 }
 Check 'settings-persist-and-first-background-popup-is-anchored' {

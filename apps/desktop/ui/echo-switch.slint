@@ -1,0 +1,60 @@
+import { EchoTheme } from "theme.slint";
+
+// OpenAI Apps SDK UI Switch: 32 x 19 track, 3px inset and cubic-move.
+export component EchoSwitch inherits Rectangle {
+    in-out property <bool> checked;
+    in property <bool> enabled: true;
+    in property <string> text;
+    in property <string> label: root.text;
+    min-width: 40px;
+    min-height: max(36px, caption.preferred-height + 12px);
+    forward-focus: focus;
+    accessible-role: checkbox;
+    accessible-label: root.label;
+    accessible-checkable: true;
+    accessible-checked: root.checked;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { root.toggle(); }
+    function toggle() { if (root.enabled) { root.checked = !root.checked; } }
+
+    caption := Text {
+        width: max(0px, parent.width - 48px); height: parent.height;
+        text: root.text; color: EchoTheme.text; font-size: 14px;
+        wrap: word-wrap; vertical-alignment: center;
+        opacity: root.enabled ? 1 : 0.45;
+        accessible-role: none;
+    }
+    track := Rectangle {
+        x: parent.width - 36px; y: (parent.height - self.height) / 2;
+        width: 32px; height: 19px; border-radius: 9.5px;
+        border-width: EchoTheme.high-contrast ? 1px : 0px;
+        border-color: EchoTheme.text;
+        opacity: root.enabled ? 1 : 0.45;
+        background: EchoTheme.high-contrast ? (root.checked ? EchoTheme.hc-highlight : EchoTheme.hc-background)
+            : root.checked ? (EchoTheme.dark ? #eeeeee : #202020)
+            : touch.has-hover && root.enabled ? (EchoTheme.dark ? #777777 : #cccccc)
+            : (EchoTheme.dark ? #666666 : #dddddd);
+        animate background { duration: 250ms; easing: cubic-bezier(0.65, 0, 0.35, 1); }
+        Rectangle {
+            x: root.checked ? 16px : 3px; y: 3px;
+            width: 13px; height: 13px; border-radius: 6.5px;
+            background: EchoTheme.high-contrast ? (root.checked ? EchoTheme.hc-highlight-text : EchoTheme.hc-text)
+                : EchoTheme.dark ? #111111 : #ffffff;
+            animate x { duration: 250ms; easing: cubic-bezier(0.65, 0, 0.35, 1); }
+        }
+    }
+    touch := TouchArea {
+        enabled: root.enabled; mouse-cursor: pointer;
+        clicked => { focus.focus(); root.toggle(); }
+    }
+    focus := FocusScope {
+        width: 0px;
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if (event.text == " " && !event.modifiers.control && !event.modifiers.alt) {
+                root.toggle(); return accept;
+            }
+            return reject;
+        }
+    }
+}

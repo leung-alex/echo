@@ -25,10 +25,12 @@ export global EchoTheme {
 
 export component EchoButton inherits Rectangle {
     in property <bool> row-action;
+    in property <bool> tooltip-enabled;
     in property <bool> execution-blocked;
     in property <bool> take-focus-on-click: true;
     in property <string> label;
     in property <string> text;
+    in property <length> font-size: 13px;
     in property <image> icon;
     in property <bool> primary;
     in property <bool> flat;
@@ -67,7 +69,7 @@ export component EchoButton inherits Rectangle {
         if (root.text != ""): Text {
             text: root.text;
             color: root.primary ? EchoTheme.on-accent : root.danger ? EchoTheme.danger : EchoTheme.text;
-            font-size: 13px;
+            font-size: root.font-size;
             font-weight: 600;
             vertical-alignment: center;
             horizontal-alignment: center;
@@ -86,7 +88,7 @@ export component EchoButton inherits Rectangle {
         mouse-cursor: pointer;
         clicked => { if (!root.execution-blocked) { if (root.take-focus-on-click) { focus.focus(); } root.clicked(); } }
     }
-    private property <bool> hint-requested: root.row-action && root.enabled && (touch.has-hover || focus.has-focus);
+    private property <bool> hint-requested: (root.row-action || root.tooltip-enabled) && root.enabled && (touch.has-hover || focus.has-focus);
     private property <bool> hint-visible: false;
     changed hint-requested => {root.hint-visible = false;}
     Timer {

@@ -120,8 +120,8 @@
     },
     "row.action-color": {
       "type": "color",
-      "value": "#70757b",
-      "dark": "#b7bdc5",
+      "value": "#707070",
+      "dark": "#bcbcbc",
       "runtime": true
     },
     "row.action-hover": {
@@ -362,8 +362,8 @@
     },
     "color.muted": {
       "type": "color",
-      "value": "#61788b",
-      "dark": "#b2c4d1",
+      "value": "#707070",
+      "dark": "#bcbcbc",
       "runtime": true
     },
     "color.faint": {
@@ -380,32 +380,32 @@
     },
     "color.accent": {
       "type": "color",
-      "value": "#36789b",
-      "dark": "#79b9dc",
+      "value": "#202020",
+      "dark": "#eeeeee",
       "runtime": true
     },
     "color.accent-text": {
       "type": "color",
-      "value": "#285f80",
-      "dark": "#a5d6f0",
+      "value": "#202020",
+      "dark": "#eeeeee",
       "runtime": true
     },
     "color.on-accent": {
       "type": "color",
       "value": "#ffffff",
-      "dark": "#102430",
+      "dark": "#111111",
       "runtime": true
     },
     "color.selection": {
       "type": "color",
-      "value": "#edf5fa",
-      "dark": "#253e4f",
+      "value": "#eeeeee",
+      "dark": "#383838",
       "runtime": true
     },
     "color.focus": {
       "type": "color",
-      "value": "#36789b",
-      "dark": "#91cceb",
+      "value": "#202020",
+      "dark": "#eeeeee",
       "runtime": true
     },
     "color.danger": {

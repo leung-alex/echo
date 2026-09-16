@@ -1,0 +1,202 @@
+import { LineEdit } from "echo-lineedit.slint";
+import { ScrollView } from "std-widgets.slint";
+import { EchoTheme } from "theme.slint";
+
+export global SelectEnvironment {
+    in-out property <length> window-width: 960px;
+    in-out property <length> window-height: 720px;
+    pure callback filter([string], string) -> [int];
+}
+
+export component EchoSelect inherits Rectangle {
+    in property <[string]> model;
+    in property <int> selected-index: -1;
+    in-out property <int> current-index: root.selected-index;
+    out property <string> current-value: root.current-index >= 0 && root.current-index < root.model.length ? root.model[root.current-index] : "";
+    in property <bool> enabled: true;
+    in property <bool> has-icons: false;
+    pure callback icon-at(int) -> image;
+    callback selection-changed(int);
+    out property <bool> expanded: menu.is-open;
+    private property <string> query;
+    private property <[int]> matches: SelectEnvironment.filter(root.model, root.query);
+    private property <int> highlighted;
+    private property <int> pending-index: -1;
+    private property <bool> closing;
+    private property <bool> revealed;
+    private property <float> progress: root.revealed ? 1 : 0;
+    animate progress { duration: root.closing ? 200ms : 350ms; easing: root.closing ? cubic-bezier(0.8, 0, 0.4, 1) : cubic-bezier(0.19, 1, 0.22, 1); }
+    private property <length> scroll-y;
+    private property <length> anchor-x;
+    private property <length> anchor-y;
+    private property <bool> searchable: root.model.length >= 15;
+    private property <length> search-height: root.searchable ? 44px : 0px;
+    private property <length> desired-height: min(400px, max(1, root.matches.length) * 36px + 12px + root.search-height);
+    private property <length> below: max(0px, SelectEnvironment.window-height - 30px - root.anchor-y - root.height);
+    private property <length> above: max(0px, root.anchor-y - 30px);
+    private property <bool> opens-below: root.below >= root.desired-height || root.below >= root.above;
+    private property <length> menu-height: min(root.desired-height, max(80px, root.opens-below ? root.below : root.above));
+    private property <length> menu-width: min(root.width, SelectEnvironment.window-width - 48px);
+    private property <length> menu-y: clamp(root.opens-below ? root.anchor-y + root.height + 6px : root.anchor-y - 6px - root.menu-height, 24px, max(24px, SelectEnvironment.window-height - 24px - root.menu-height));
+
+    changed selected-index => { root.current-index = root.selected-index; }
+    changed model => { if (root.expanded) { root.dismiss(); } }
+    changed enabled => { if (!root.enabled && root.expanded) { root.dismiss(); } }
+    changed query => { root.highlighted = 0; root.scroll-y = 0px; }
+    changed expanded => { if (!root.expanded) { root.revealed = false; root.closing = false; root.pending-index = -1; } }
+
+    public function open-menu() {
+        if (!root.enabled || root.model.length == 0) { return; }
+        if (root.expanded) { root.dismiss(); return; }
+        root.query = "";
+        root.highlighted = max(0, root.current-index);
+        root.scroll-y = -max(0, root.highlighted - 5) * 36px;
+        root.pending-index = -1;
+        root.closing = false;
+        root.revealed = false;
+        root.anchor-x = origin.absolute-position.x;
+        root.anchor-y = origin.absolute-position.y;
+        menu.show();
+    }
+    public function dismiss() {
+        root.pending-index = -1;
+        root.closing = true;
+        root.revealed = false;
+    }
+    function commit(index: int) {
+        if (!root.enabled || root.closing || index < 0 || index >= root.model.length) { return; }
+        root.pending-index = index;
+        root.closing = true;
+        root.revealed = false;
+    }
+    // This persistent component closes the popup before emitting a selection.
+    // The callback may replace the category/language and destroy its whole subtree.
+    function finish-close() {
+        let chosen = root.pending-index;
+        menu.close();
+        focus.focus();
+        root.pending-index = -1;
+        root.closing = false;
+        if (root.enabled && chosen >= 0 && chosen < root.model.length) {
+            root.current-index = chosen;
+            root.selection-changed(chosen);
+        }
+    }
+    Timer { interval: 1ms; running: root.expanded && !root.revealed && !root.closing; triggered => { root.revealed = true; } }
+    Timer { interval: 200ms; running: root.expanded && root.closing; triggered => { root.finish-close(); } }
+
+    height: 36px; min-width: 0px;
+    // Measure a zero-local-offset child: this Slint version adds an item's
+    // own x/y again when exposing absolute-position on a positioned component.
+    origin := Rectangle { x: 0px; y: 0px; width: 0px; height: 0px; }
+    background: EchoTheme.high-contrast ? EchoTheme.canvas : transparent;
+    border-width: 1px; border-radius: 8px;
+    border-color: focus.has-focus || root.expanded || trigger.has-hover ? EchoTheme.text : EchoTheme.line;
+    opacity: root.enabled ? 1 : 0.45;
+    forward-focus: focus;
+    accessible-role: combobox; accessible-enabled: root.enabled;
+    accessible-expandable: true; accessible-expanded: root.expanded;
+    accessible-value: root.current-value;
+    accessible-action-expand => { root.open-menu(); }
+    HorizontalLayout {
+        padding-left: 12px; padding-right: 12px; spacing: 8px;
+        if (root.has-icons): Image { source: root.icon-at(root.current-index); colorize: EchoTheme.text; width: 18px; image-fit: contain; accessible-role: none; }
+        Text { text: root.current-value; font-size: 14px; color: EchoTheme.text; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; min-width: 0px; accessible-role: none; }
+        Image { source: @image-url("icons/apps-sdk/ChevronDown.svg"); colorize: EchoTheme.muted; width: 16px; image-fit: contain; accessible-role: none; }
+    }
+    trigger := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { focus.focus(); root.open-menu(); } }
+    focus := FocusScope {
+        width: 0px; enabled: root.enabled;
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == " " || event.text == Key.DownArrow || event.text == Key.UpArrow) { root.open-menu(); return accept; }
+            return reject;
+        }
+    }
+    menu := PopupWindow {
+        // A window-sized transparent overlay gives outside clicks an animated exit.
+        // Actual menu geometry stays inside the opaque native card/input region.
+        x: -root.absolute-position.x; y: -root.absolute-position.y;
+        width: SelectEnvironment.window-width; height: SelectEnvironment.window-height;
+        close-policy: no-auto-close;
+        forward-focus: menu-focus;
+        menu-focus := FocusScope {
+            TouchArea { clicked => { root.dismiss(); } }
+            key-pressed(event) => {
+                if (event.text == Key.Escape) { root.dismiss(); return accept; }
+                if (event.text == Key.Tab) { root.pending-index = -1; root.finish-close(); return reject; }
+                if (event.text == Key.Return || (!root.searchable && event.text == " ")) {
+                    if (root.highlighted >= 0 && root.highlighted < root.matches.length) { root.commit(root.matches[root.highlighted]); }
+                    return accept;
+                }
+                if (event.text == Key.DownArrow || event.text == Key.UpArrow || (!root.searchable && (event.text == Key.Home || event.text == Key.End))) {
+                    root.highlighted = event.text == Key.Home ? 0 : event.text == Key.End ? root.matches.length - 1 : clamp(root.highlighted + (event.text == Key.DownArrow ? 1 : -1), 0, root.matches.length - 1);
+                    let view-height = root.menu-height - root.search-height - 12px;
+                    if (root.highlighted * 36px < -root.scroll-y) { root.scroll-y = -root.highlighted * 36px; }
+                    if ((root.highlighted + 1) * 36px > -root.scroll-y + view-height) { root.scroll-y = view-height - (root.highlighted + 1) * 36px; }
+                    return accept;
+                }
+                return reject;
+            }
+            panel := Rectangle {
+                // Keep content at its final geometry. Scaling font sizes/row
+                // metrics rerasterizes Chinese glyphs and makes text snap into place.
+                x: clamp(root.anchor-x, 24px, max(24px, SelectEnvironment.window-width - 24px - root.menu-width));
+                y: root.menu-y;
+                width: root.menu-width; height: root.menu-height;
+                opacity: root.progress;
+                frame := Rectangle {
+                    private property <float> scale: 0.95 + 0.05 * root.progress;
+                    x: parent.width * (1 - self.scale) / 2;
+                    y: root.opens-below ? 0px : parent.height * (1 - self.scale);
+                    width: parent.width * self.scale; height: parent.height * self.scale;
+                    background: EchoTheme.elevated; border-radius: 12px;
+                    border-width: 1px; border-color: EchoTheme.line;
+                    drop-shadow-blur: 12px; drop-shadow-offset-y: 4px; drop-shadow-color: EchoTheme.high-contrast ? transparent : #00000025;
+                }
+                TouchArea { } // Interior padding is not an outside click.
+                if (root.searchable): search-box := Rectangle {
+                    private property <bool> initial-focus-applied;
+                    x: 6px; y: 6px; width: parent.width - 12px; height: 34px;
+                    search := LineEdit {
+                        width: parent.width; height: parent.height;
+                        placeholder-text: @tr("Search options"); accessible-label: @tr("Search options");
+                        text <=> root.query; enabled: !root.closing;
+                        accepted => { if (root.matches.length > 0) { root.commit(root.matches[root.highlighted]); } }
+                    }
+                    // PopupWindow installs its forward-focus after constructing
+                    // children, so focus the search field on the following tick.
+                    Timer { interval: 1ms; running: !search-box.initial-focus-applied && !root.closing; triggered => { search-box.initial-focus-applied = true; search.focus(); } }
+                }
+                if (root.matches.length == 0): Text {
+                    x: 12px; y: root.search-height; width: parent.width - 24px; height: 36px;
+                    text: @tr("No matching options"); color: EchoTheme.muted; font-size: 14px;
+                    horizontal-alignment: center; vertical-alignment: center;
+                }
+                options := ScrollView {
+                    x: 6px; y: 6px + root.search-height;
+                    width: parent.width - 12px; height: max(0px,parent.height - self.y - 6px);
+                    vertical-scrollbar-policy: always-off; horizontal-scrollbar-policy: always-off;
+                    viewport-y <=> root.scroll-y;
+                    VerticalLayout {
+                        spacing: 0px; alignment: start;
+                        for source-index[index] in root.matches: Rectangle {
+                            height: 36px; border-radius: 7px;
+                            background: index == root.highlighted || touch.has-hover ? (EchoTheme.high-contrast ? EchoTheme.selection : EchoTheme.dark ? #ffffff14 : #0000000a) : transparent;
+                            accessible-role: list-item; accessible-label: root.model[source-index];
+                            accessible-item-selectable: true; accessible-item-selected: source-index == root.current-index;
+                            accessible-enabled: !root.closing;
+                            accessible-action-default => { root.commit(source-index); }
+                            HorizontalLayout {
+                                padding-left: 8px; padding-right: 8px; spacing: 8px;
+                                Image { source: @image-url("icons/apps-sdk/Check.svg"); opacity: source-index == root.current-index ? 1 : 0; colorize: EchoTheme.high-contrast && (index == root.highlighted || touch.has-hover) ? EchoTheme.selected-text : EchoTheme.text; width: 16px; image-fit: contain; accessible-role: none; }
+                                if (root.has-icons): Image { source: root.icon-at(source-index); colorize: EchoTheme.high-contrast && (index == root.highlighted || touch.has-hover) ? EchoTheme.selected-text : EchoTheme.text; width: 18px; image-fit: contain; accessible-role: none; }
+                                Text { text: root.model[source-index]; color: EchoTheme.high-contrast && (index == root.highlighted || touch.has-hover) ? EchoTheme.selected-text : EchoTheme.text; font-size: 14px; font-weight: source-index == root.current-index ? 600 : 400; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; min-width: 0px; accessible-role: none; }
+                            }
+                            touch := TouchArea { enabled: !root.closing; mouse-cursor: pointer; clicked => { root.commit(source-index); } }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

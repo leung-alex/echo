@@ -1,0 +1,275 @@
+use slint::{
+    platform::{
+        software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
+        Platform, PointerEventButton, WindowAdapter, WindowEvent,
+    },
+    ComponentHandle, LogicalPosition,
+};
+use std::rc::Rc;
+
+slint::slint! {
+    export { DesignTokens } from "../ui/echo-tokens.slint";
+    import { EchoSwitch } from "../ui/echo-switch.slint";
+    import { LineEdit } from "../ui/echo-lineedit.slint";
+    import { TextEdit } from "../ui/echo-textedit.slint";
+    export { EchoTheme } from "../ui/theme.slint";
+    import { Palette } from "std-widgets.slint";
+    export component InputAccentFixture inherits Window {
+        width: 280px; height: 160px;
+        in property <bool> dark;
+        changed dark => { Palette.color-scheme = root.dark ? ColorScheme.dark : ColorScheme.light; }
+        public function select-input(multiline: bool) {
+            if multiline { multi.focus(); multi.select-all(); }
+            else { single.focus(); single.select-all(); }
+        }
+        single := LineEdit { x: 10px; y: 10px; width: 260px; height: 36px; text: "Selected text"; }
+        multi := TextEdit { x: 10px; y: 60px; width: 260px; height: 90px; text: "Selected text"; }
+    }
+    export component SwitchFixture inherits Window {
+        width: 240px; height: 60px;
+        in-out property <bool> checked;
+        in property <bool> enabled: true;
+        EchoSwitch {
+            x: 10px; y: 10px; width: 220px; height: 36px;
+            text: "Switch label";
+            checked <=> root.checked; enabled: root.enabled;
+        }
+    }
+}
+
+struct TestPlatform(
+    Rc<MinimalSoftwareWindow>,
+    Rc<std::cell::Cell<std::time::Duration>>,
+);
+impl Platform for TestPlatform {
+    fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, slint::PlatformError> {
+        Ok(self.0.clone())
+    }
+    fn duration_since_start(&self) -> std::time::Duration {
+        self.1.get()
+    }
+}
+
+#[test]
+fn switch_label_track_keyboard_and_disabled_state() {
+    slint::platform::set_platform(Box::new(TestPlatform(
+        MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer),
+        Rc::default(),
+    )))
+    .unwrap();
+    let ui = SwitchFixture::new().unwrap();
+    crate::style::apply_style!(
+        ui.global::<DesignTokens>(),
+        &crate::style::StyleSnapshot::default(),
+        false
+    );
+    ui.show().unwrap();
+    let click = |x| {
+        let position = LogicalPosition::new(x, 28.);
+        ui.window().dispatch_event(WindowEvent::PointerPressed {
+            position,
+            button: PointerEventButton::Left,
+        });
+        ui.window().dispatch_event(WindowEvent::PointerReleased {
+            position,
+            button: PointerEventButton::Left,
+        });
+    };
+    let space = || {
+        ui.window()
+            .dispatch_event(WindowEvent::KeyPressed { text: " ".into() });
+        ui.window()
+            .dispatch_event(WindowEvent::KeyReleased { text: " ".into() });
+    };
+    click(40.);
+    assert!(ui.get_checked(), "label click must toggle and focus");
+    space();
+    assert!(!ui.get_checked(), "focused switch must support Space");
+    click(215.);
+    assert!(ui.get_checked(), "track click must toggle once");
+    ui.set_enabled(false);
+    click(40.);
+    click(215.);
+    space();
+    assert!(ui.get_checked(), "disabled switch must reject all input");
+    ui.set_enabled(true);
+    for expected in [false, true, false, true] {
+        click(215.);
+        assert_eq!(ui.get_checked(), expected, "rapid toggles must not be lost");
+    }
+    ui.hide().unwrap();
+}
+
+#[test]
+fn settings_render_in_both_languages_themes_and_narrow_widths() {
+    let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+    let now = Rc::new(std::cell::Cell::new(std::time::Duration::ZERO));
+    slint::platform::set_platform(Box::new(TestPlatform(window.clone(), now.clone()))).unwrap();
+    let ui = crate::AppWindow::new().unwrap();
+    ui.global::<crate::SelectEnvironment>()
+        .on_filter(crate::select::filter);
+    ui.set_route("settings".into());
+    ui.set_global_hotkey("Ctrl+Alt+J".into());
+    ui.set_global_hotkey_enabled(true);
+    ui.set_settings_valid(true);
+    crate::style::apply_style!(
+        ui.global::<crate::DesignTokens>(),
+        &crate::style::StyleSnapshot::default(),
+        false
+    );
+    ui.show().unwrap();
+    window.set_size(slint::PhysicalSize::new(960, 720));
+    let position = LogicalPosition::new(110., 220.);
+    ui.window().dispatch_event(WindowEvent::PointerPressed {
+        position,
+        button: PointerEventButton::Left,
+    });
+    ui.window().dispatch_event(WindowEvent::PointerReleased {
+        position,
+        button: PointerEventButton::Left,
+    });
+    let click = |x, y| {
+        let position = LogicalPosition::new(x, y);
+        ui.window().dispatch_event(WindowEvent::PointerPressed {
+            position,
+            button: PointerEventButton::Left,
+        });
+        ui.window().dispatch_event(WindowEvent::PointerReleased {
+            position,
+            button: PointerEventButton::Left,
+        });
+    };
+    let saves = Rc::new(std::cell::Cell::new(0));
+    let recorded = saves.clone();
+    ui.on_save_settings(move || recorded.set(recorded.get() + 1));
+    ui.set_global_hotkey_enabled(false);
+    click(840., 159.);
+    assert_eq!(ui.get_global_hotkey(), "Alt+V");
+    assert!(ui.get_global_hotkey_enabled());
+    assert_eq!(saves.get(), 0, "Reset must edit the draft without saving");
+    ui.set_global_hotkey("Ctrl+Alt+J".into());
+    ui.set_busy(true);
+    click(840., 159.);
+    assert_eq!(ui.get_global_hotkey(), "Ctrl+Alt+J");
+    ui.set_busy(false);
+    let retries = Rc::new(std::cell::Cell::new(0));
+    let recorded = retries.clone();
+    ui.on_settings_action(move |action| {
+        if action == "retry-hotkey" {
+            recorded.set(recorded.get() + 1);
+        }
+    });
+    click(350., 210.);
+    assert_eq!(retries.get(), 0, "healthy binding must not expose Retry");
+    ui.set_hotkey_registration_failed(true);
+    click(350., 210.);
+    assert_eq!(retries.get(), 1, "failed saved binding must expose Retry");
+    ui.set_settings_dirty(true);
+    click(350., 210.);
+    assert_eq!(retries.get(), 1, "Retry must not apply an unsaved draft");
+    ui.set_settings_dirty(false);
+    ui.set_busy(true);
+    click(350., 210.);
+    assert_eq!(retries.get(), 1, "busy settings must reject Retry");
+    ui.set_busy(false);
+    ui.set_hotkey_registration_failed(false);
+    for language in ["en", "zh-CN"] {
+        slint::select_bundled_translation(language).unwrap();
+        for dark in [false, true] {
+            ui.set_dark(dark);
+            crate::style::apply_style!(
+                ui.global::<crate::DesignTokens>(),
+                &crate::style::StyleSnapshot::default(),
+                dark
+            );
+            for width in [960, 320] {
+                for scale in [1., 1.5, 2.] {
+                    ui.window().dispatch_event(WindowEvent::ScaleFactorChanged {
+                        scale_factor: scale,
+                    });
+                    let physical_width = (width as f32 * scale) as u32;
+                    let physical_height = (720. * scale) as u32;
+                    window.set_size(slint::PhysicalSize::new(physical_width, physical_height));
+                    let mut pixels = vec![
+                        slint::Rgb8Pixel::default();
+                        (physical_width * physical_height) as usize
+                    ];
+                    window.request_redraw();
+                    window.draw_if_needed(|renderer| {
+                        renderer.render(&mut pixels, physical_width as usize);
+                    });
+                    now.set(now.get() + std::time::Duration::from_millis(300));
+                    slint::platform::update_timers_and_animations();
+                    window.request_redraw();
+                    window.draw_if_needed(|renderer| {
+                        renderer.render(&mut pixels, physical_width as usize);
+                    });
+                    assert!(pixels.windows(2).any(|p| p[0] != p[1]));
+                    let row_y = if width == 320 { 199. } else { 159. };
+                    ui.set_global_hotkey("Ctrl+Alt+J".into());
+                    ui.set_global_hotkey_enabled(false);
+                    click(width as f32 - 120., row_y);
+                    assert_eq!(ui.get_global_hotkey(), "Alt+V", "Reset at {width}/{scale}");
+                    assert!(ui.get_global_hotkey_enabled());
+                    click(width as f32 - 74., row_y);
+                    assert!(!ui.get_global_hotkey_enabled(), "Switch at {width}/{scale}");
+                    assert_eq!(saves.get(), 0);
+                    ui.set_global_hotkey_enabled(true);
+                    if let Some(directory) = std::env::var_os("ECHO_SETTINGS_RENDER_EVIDENCE") {
+                        let directory = std::path::PathBuf::from(directory);
+                        std::fs::create_dir_all(&directory).unwrap();
+                        let bytes: Vec<u8> = pixels.iter().flat_map(|p| [p.r, p.g, p.b]).collect();
+                        image::save_buffer(
+                            directory
+                                .join(format!("settings-{language}-{dark}-{width}-{scale}.png")),
+                            &bytes,
+                            physical_width,
+                            physical_height,
+                            image::ColorType::Rgb8,
+                        )
+                        .unwrap();
+                    }
+                }
+            }
+        }
+    }
+    ui.hide().unwrap();
+}
+
+#[test]
+fn input_focus_and_selection_follow_monochrome_and_high_contrast_theme() {
+    let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+    slint::platform::set_platform(Box::new(TestPlatform(window.clone(), Rc::default()))).unwrap();
+    let ui = InputAccentFixture::new().unwrap();
+    ui.show().unwrap();
+    window.set_size(slint::PhysicalSize::new(280, 160));
+    for (dark, high_contrast, expected) in [
+        (false, false, [32, 32, 32]),
+        (true, false, [238, 238, 238]),
+        (true, true, [255, 255, 0]),
+        (false, false, [32, 32, 32]),
+    ] {
+        ui.set_dark(dark);
+        crate::style::apply_style!(
+            ui.global::<DesignTokens>(),
+            &crate::style::StyleSnapshot::default(),
+            dark
+        );
+        ui.global::<EchoTheme>().set_high_contrast(high_contrast);
+        for multiline in [false, true] {
+            ui.invoke_select_input(multiline);
+            let mut pixels = vec![slint::Rgb8Pixel::default(); 280 * 160];
+            window.request_redraw();
+            window.draw_if_needed(|renderer| {
+                renderer.render(&mut pixels, 280);
+            });
+            let (start, end) = if multiline { (60, 150) } else { (10, 46) };
+            let count = pixels[start * 280..end * 280]
+                .iter()
+                .filter(|p| [p.r, p.g, p.b] == expected)
+                .count();
+            assert!(count > 500, "selected text and focus underline must use theme accent: {dark}/{high_contrast}/{multiline}: {count}");
+        }
+    }
+    ui.hide().unwrap();
+}

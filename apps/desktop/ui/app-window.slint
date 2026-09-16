@@ -1,8 +1,12 @@
+import { TextEdit } from "echo-textedit.slint";
+import { LineEdit } from "echo-lineedit.slint";
 export { I18n } from "i18n.slint";
 export { DesignTokens } from "echo-tokens.slint";
+export { SelectEnvironment } from "echo-select.slint";
+import { SelectEnvironment } from "echo-select.slint";
 import { I18n } from "i18n.slint";
 import { EnumChoice } from "enum-choice.slint";
-import { ListView, ScrollView, LineEdit, TextEdit, CheckBox, ComboBox, AboutSlint, Palette } from "std-widgets.slint";
+import { ListView, ScrollView, AboutSlint, Palette } from "std-widgets.slint";
 import { EchoTheme, EchoButton, Hint } from "theme.slint";
 import { EntryRow, MatchRange } from "entry-row.slint";
 import { FavoriteIconChoice, FavoriteIconPicker } from "favorite-icon-picker.slint";
@@ -113,6 +117,7 @@ export component AppWindow inherits Window {
     in-out property <bool> global-hotkey-enabled;
     in-out property <string> global-hotkey;
     in property <string> hotkey-status;
+    in property <bool> hotkey-registration-failed;
     in-out property <string> startup-space;
     in property <[string]> startup-space-names;
     in property <int> startup-space-index;
@@ -200,8 +205,9 @@ export component AppWindow inherits Window {
     public function focus-controls() {if (root.route == "history") {live-panel.focus-controls();} else if (root.route == "about") {settings-back.focus();} else {page-focus.focus();}}
     public function reset-scroll() { root.scroll-y = 0px; }
     public function reveal-selection() { live-panel.reveal-selection(); }
-    changed width => { root.viewport-changed(); }
-    changed height => { root.viewport-changed(); }
+    init => { SelectEnvironment.window-width = root.width; SelectEnvironment.window-height = root.height; }
+    changed width => { SelectEnvironment.window-width = root.width; root.viewport-changed(); }
+    changed height => { SelectEnvironment.window-height = root.height; root.viewport-changed(); }
     changed dark => { EchoTheme.dark = root.dark; Palette.color-scheme = root.dark ? ColorScheme.dark : ColorScheme.light; }
     title: "Echo Recall";
     preferred-width: T.window-width; preferred-height: T.window-height;
@@ -356,6 +362,7 @@ export component AppWindow inherits Window {
                 global-hotkey-enabled <=> root.global-hotkey-enabled;
                 global-hotkey <=> root.global-hotkey;
                 hotkey-status: root.hotkey-status;
+                hotkey-registration-failed: root.hotkey-registration-failed;
                 startup-space <=> root.startup-space;
                 startup-space-names: root.startup-space-names;
                 startup-space-index: root.startup-space-index;

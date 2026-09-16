@@ -264,6 +264,9 @@ impl App {
     ) -> Result<Rc<RefCell<Self>>, String> {
         let window = AppWindow::new().map_err(|e| e.to_string())?;
         window
+            .global::<crate::SelectEnvironment>()
+            .on_filter(crate::select::filter);
+        window
             .global::<crate::I18n>()
             .on_translate(|language, source| {
                 crate::i18n::text(Language::parse(&language).unwrap_or_default(), &source).into()
@@ -568,6 +571,9 @@ impl App {
             ShellEvent::QuickInsert(snapshot) => self.hotkey_activate(snapshot),
             ShellEvent::HotkeyStatus(status) => {
                 let previous = self.window.get_hotkey_status();
+                self.window.set_hotkey_registration_failed(
+                    !formatting::hotkey_status_is_informational(&status),
+                );
                 if !formatting::hotkey_status_is_informational(&status) {
                     self.window.set_settings_error(status.clone().into());
                 } else if self.window.get_settings_error() == previous {
@@ -1450,13 +1456,19 @@ impl App {
             return;
         }
         if action == "clear-all" && self.surface.space == SpaceId::HISTORY {
-            self.ask_confirmation("Clear unpinned history?", "This deletes unpinned History records. Pinned records and saved content in Favorites and custom spaces are kept.", "Clear all unpinned", true, dialogs::Confirmation::ClearHistory);
+            self.ask_confirmation(
+                "Clear unpinned history?",
+                "Pinned history, Favorites and custom spaces are kept. This cannot be undone.",
+                "Clear",
+                true,
+                dialogs::Confirmation::ClearHistory,
+            );
             return;
         }
         if action == "clear-all" && self.surface.space == SpaceId::FAVORITES {
             self.ask_confirmation(
                 "Clear Favorites?",
-                "This permanently clears all of Favorites, including items outside the current search or page. Other spaces and History are kept.",
+                "Clears all Favorites, including hidden results. Other spaces and History are kept. This cannot be undone.",
                 "Clear Favorites",
                 true,
                 dialogs::Confirmation::ClearFavorites(self.surface.revision),
@@ -1758,7 +1770,7 @@ impl App {
             "pin" if !ids.is_empty() => self.mutate(Mutation::BulkPin(ids)),
             "delete" if !ids.is_empty() => self.ask_confirmation(
                 "Delete selected history?",
-                "This removes the selected captures. Saved content is not affected.",
+                "Deletes selected history. Saved content is kept. This cannot be undone.",
                 "Delete",
                 true,
                 Confirmation::DeleteHistory(ids),

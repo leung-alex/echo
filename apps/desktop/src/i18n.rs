@@ -110,6 +110,24 @@ mod tests {
         }
     }
     #[test]
+    fn confirmation_source_strings_have_chinese_translations() {
+        for source in [include_str!("app.rs"), include_str!("app/dialogs.rs")] {
+            for call in source.split("self.ask_confirmation(").skip(1) {
+                let mut arguments = call.split("Confirmation::").next().unwrap();
+                while let Some(start) = arguments.find('"') {
+                    let mut strings = serde_json::Deserializer::from_str(&arguments[start..])
+                        .into_iter::<String>();
+                    let id = strings.next().unwrap().unwrap();
+                    assert!(
+                        catalog().contains_key(&id),
+                        "missing confirmation translation: {id}"
+                    );
+                    arguments = &arguments[start + strings.byte_offset()..];
+                }
+            }
+        }
+    }
+    #[test]
     fn every_slint_translation_is_in_the_catalog() {
         let ui = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui");
         for entry in std::fs::read_dir(ui).unwrap() {

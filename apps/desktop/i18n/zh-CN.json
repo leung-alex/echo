@@ -40,7 +40,9 @@
   "Remember selection and scroll position in this session": "在本次会话中记住选择和滚动位置",
   "Enable global quick insert shortcut": "启用全局快速插入快捷键",
   "Global quick insert shortcut": "全局快速插入快捷键",
-  "Reset to Alt+V": "重置为 Alt+V",
+  "Reset": "重置",
+  "Search options": "搜索选项",
+  "No matching options": "没有匹配的选项",
   "Retry saved shortcut": "重试已保存的快捷键",
   "Open Quick Insert near the text cursor": "在文本光标附近打开快速插入",
   "Filter suggestions in the original input": "在原输入框中筛选建议",
@@ -1047,5 +1049,16 @@
   "Actions": "操作",
   "Insert selected content": "插入所选内容",
   "Go back or hide Echo": "返回或隐藏 Echo",
-  "Up or Down arrow": "上方向键或下方向键"
+  "Up or Down arrow": "上方向键或下方向键",
+  "Clear unpinned history?": "清除未固定记录？",
+  "Pinned history, Favorites and custom spaces are kept. This cannot be undone.": "保留固定记录、收藏及自定义空间内容。无法撤销。",
+  "Clear Favorites?": "清空收藏？",
+  "Clears all Favorites, including hidden results. Other spaces and History are kept. This cannot be undone.": "清空全部收藏，包括未显示的内容。保留其他空间和历史记录。无法撤销。",
+  "Delete selected history?": "删除选中的历史记录？",
+  "Deletes selected history. Saved content is kept. This cannot be undone.": "删除选中的历史记录，保留已保存内容。无法撤销。",
+  "Unsaved changes will be lost. Saved content is kept.": "未保存的更改将丢失，已保存内容不变。",
+  "Unsaved changes will be lost and clipboard capture will stop.": "未保存的更改将丢失，并停止剪贴板采集。",
+  "Choose what to do with this space’s content.": "选择如何处理此空间的内容。",
+  "Deletes this history record. Saved copies are kept. This cannot be undone.": "删除此条历史记录，保留已保存副本。无法撤销。",
+  "Deletes this content from this space only. This cannot be undone.": "仅删除此空间中的该内容。无法撤销。"
 }

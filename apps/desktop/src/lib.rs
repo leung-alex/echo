@@ -10,6 +10,7 @@ mod memory_lifecycle;
 mod memory_trace;
 mod native_model;
 mod popup_timing;
+mod select;
 mod style;
 pub use echo_desktop_ui::*;
 #[cfg(windows)]
@@ -162,6 +163,10 @@ fn restart_application() -> Result<(), String> {
 
 #[cfg(test)]
 mod row_click_tests;
+#[cfg(test)]
+mod select_tests;
+#[cfg(test)]
+mod switch_tests;
 
 #[cfg(test)]
 mod search_text_tests;
