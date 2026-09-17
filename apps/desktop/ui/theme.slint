@@ -58,22 +58,28 @@ export component EchoButton inherits Rectangle {
     accessible-enabled: enabled && !execution-blocked;
     accessible-action-default => { if (enabled && !execution-blocked) { root.clicked(); } }
     content := HorizontalLayout {
-        padding: root.row-action ? 4px : 6px;
+        x: root.row-action ? 4px : 6px;
+        y: (parent.height - self.height) / 2;
+        width: parent.width - (root.row-action ? 8px : 12px);
+        height: root.row-action ? T.row-action-icon-size : 18px;
         spacing: 6px;
         alignment: root.left-aligned ? start : center;
         if (root.icon.width > 0): Image {
             source: root.icon;
             width: root.row-action ? T.row-action-icon-size : 18px;
             height: root.row-action ? T.row-action-icon-size : 18px;
+            image-fit: contain;
             colorize: root.row-action ? (EchoTheme.high-contrast ? (touch.has-hover ? EchoTheme.on-accent : EchoTheme.text) : root.danger ? EchoTheme.danger : T.row-action-color) : root.primary ? EchoTheme.on-accent : root.danger ? EchoTheme.danger : EchoTheme.muted;
         }
         if (root.text != ""): Text {
             text: root.text;
+            width: self.preferred-width;
+            height: parent.height;
             color: root.primary ? EchoTheme.on-accent : root.danger ? EchoTheme.danger : EchoTheme.text;
             font-size: root.font-size;
             font-weight: 600;
             vertical-alignment: center;
-            horizontal-alignment: center;
+            horizontal-alignment: left;
             accessible-role: none;
         }
     }
