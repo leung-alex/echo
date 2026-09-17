@@ -499,9 +499,13 @@ mod tests {
     use super::*;
     #[test]
     fn caption_region_excludes_controls_and_can_be_disabled_for_modals() {
-        let bounds = Some([280, 24, 1320, 82]);
+        // Settings reserves the trailing 60px for the custom close button.
+        // That control must stay client hit-testable instead of becoming HTCAPTION.
+        let bounds = Some([280, 24, 1260, 82]);
         assert!(caption_hit(bounds, [320, 56]));
         assert!(caption_hit(bounds, [900, 58]));
+        assert!(!caption_hit(bounds, [1260, 56]));
+        assert!(!caption_hit(bounds, [1290, 56]));
         assert!(!caption_hit(bounds, [400, 120]));
         assert!(!caption_hit(bounds, [279, 56]));
         assert!(!caption_hit(bounds, [1320, 56]));

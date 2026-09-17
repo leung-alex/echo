@@ -101,7 +101,8 @@ impl App {
                             (self.window.get_settings_card_left() * dpi).round() as i32,
                             (24.0 * dpi).round() as i32,
                             ((self.window.get_settings_card_left()
-                                + self.window.get_settings_card_width())
+                                + self.window.get_settings_card_width()
+                                - 60.0)
                                 * dpi)
                                 .round() as i32,
                             ((24.0 + 58.0) * dpi).round() as i32,

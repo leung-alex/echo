@@ -38,6 +38,7 @@ export component EchoButton inherits Rectangle {
     in property <bool> enabled: true;
     in property <bool> checked;
     in property <bool> selection-indicator;
+    in property <bool> left-aligned;
     callback clicked();
     out property <bool> focused: focus.has-focus;
     callback focus-changed(bool);
@@ -59,7 +60,7 @@ export component EchoButton inherits Rectangle {
     content := HorizontalLayout {
         padding: root.row-action ? 4px : 6px;
         spacing: 6px;
-        alignment: center;
+        alignment: root.left-aligned ? start : center;
         if (root.icon.width > 0): Image {
             source: root.icon;
             width: root.row-action ? T.row-action-icon-size : 18px;
@@ -77,7 +78,7 @@ export component EchoButton inherits Rectangle {
         }
     }
     if (root.selection-indicator && root.checked): Rectangle {
-        x: max(6px, (root.width - content.min-width) / 2 - 7px);
+        x: root.left-aligned ? 0px : max(6px, (root.width - content.min-width) / 2 - 7px);
         y: (parent.height - self.height) / 2;
         width: 3px; height: 22px; border-radius: 2px;
         background: EchoTheme.amber;

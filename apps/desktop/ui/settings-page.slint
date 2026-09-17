@@ -82,15 +82,16 @@ export component SettingsPage inherits Rectangle {
         model: root.categories; selected-index: root.section; selection-changed(index) => { root.section = index; } accessible-label: @tr("Settings category");
     }
     if (!root.narrow): VerticalLayout {
-        x: 20px; y: 75px; width: T.settings-nav-width; spacing: 8px; alignment: start;
+        x: 64px; y: 75px; width: 140px; spacing: 8px; alignment: start;
         for label[index] in root.categories: EchoButton {
+            icon: index == 0 ? @image-url("favorite-icons/ColorTheme.svg") : index == 1 ? @image-url("favorite-icons/BuildingWorkspace.svg") : @image-url("favorite-icons/KeyboardShortcut.svg");
             text: label; checked: root.section == index; selection-indicator: true;
             font-size: 15px;
-            flat: true; border-width: 0px; width: parent.width; height: 42px;
+            flat: true; border-width: 0px; width: parent.width; height: 42px; left-aligned: true;
             clicked => { root.section = index; }
         }
         Rectangle { height: 20px; }
-        EchoButton { text: @tr("Quit"); font-size: 15px; flat: true; border-width: 0px; danger: true; clicked => { root.action("quit"); } }
+        EchoButton { icon: @image-url("favorite-icons/ExitLogout.svg"); text: @tr("Quit"); font-size: 15px; flat: true; border-width: 0px; left-aligned: true; danger: true; clicked => { root.action("quit"); } }
     }
     settings-scroll := ScrollView {
         vertical-scrollbar-policy: always-off;
@@ -104,7 +105,8 @@ export component SettingsPage inherits Rectangle {
             Rectangle {
                 height: max(section-title.preferred-height, root.section == 1 ? 32px : 0px);
                 section-title := Text {
-                    width: max(0px, parent.width - (root.section == 1 ? 40px : 0px));
+                    x: root.section == 1 ? 14px : 0px;
+                    width: max(0px, parent.width - (root.section == 1 ? 54px : 0px));
                     height: parent.height; vertical-alignment: center;
                     text: root.categories[root.section]; color: EchoTheme.text;
                     font-size: 20px; font-weight: 600;
