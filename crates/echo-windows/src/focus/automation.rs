@@ -16,7 +16,7 @@ use windows::{
         UI::WindowsAndMessaging::EnumChildWindows,
     },
 };
-pub(super) struct Probe {
+pub(crate) struct Probe {
     pub identity: PasteControlIdentity,
     pub anchor: Option<(PhysicalRect, AnchorSource)>,
 }
@@ -44,13 +44,18 @@ fn broker() -> Option<&'static Broker> {
                     }
                     let automation: Option<IUIAutomation> =
                         CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER).ok();
+                    // Retain the provider connection, not its authorization. XAML
+                    // hosted inputs can take over a second to connect cold. Each
+                    // request still revalidates native ownership and live focus.
+                    let mut provider = None;
                     while let Ok(request) = receiver.recv() {
-                        let value = automation
-                            .as_ref()
-                            .and_then(|uia| probe(uia, &request.snapshot, request.geometry));
-                        let _ = request.reply.send(value);
+                        let value = automation.as_ref().and_then(|uia| {
+                            probe(uia, &request.snapshot, request.geometry, &mut provider)
+                        });
                         working.store(false, Ordering::Release);
+                        let _ = request.reply.send(value);
                     }
+                    drop(provider);
                     drop(automation);
                     CoUninitialize();
                 })
@@ -63,6 +68,20 @@ pub(super) fn warm() {
     let _ = broker();
 }
 pub(super) fn query(snapshot: FocusSnapshot, geometry: bool) -> Option<Probe> {
+    let timeout = Duration::from_millis(if snapshot.is_hosted_input() {
+        2500
+    } else {
+        200
+    });
+    begin_query(snapshot, geometry)?
+        .recv_timeout(timeout)
+        .ok()
+        .flatten()
+}
+pub(crate) fn begin_query(
+    snapshot: FocusSnapshot,
+    geometry: bool,
+) -> Option<mpsc::Receiver<Option<Probe>>> {
     let broker = broker()?;
     if broker
         .busy
@@ -84,12 +103,8 @@ pub(super) fn query(snapshot: FocusSnapshot, geometry: bool) -> Option<Probe> {
         broker.busy.store(false, Ordering::Release);
         return None;
     }
-    // A timeout discards the result, NOT the still-running COM call. Busy remains set
-    // until the one worker actually returns. No fresh worker is spawned on timeout.
-    // Embedded MSAA providers require several cross-process calls to resolve and
-    // revalidate the input. Keep a bounded wait without rejecting normal cold reads.
-    let result = response.recv_timeout(Duration::from_millis(200));
-    result.ok().flatten()
+    // A dropped receiver does not cancel COM or spawn another worker.
+    Some(response)
 }
 unsafe fn writable(element: &IUIAutomationElement) -> bool {
     if let Ok(value) = element.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
@@ -124,7 +139,17 @@ unsafe fn quick_insert_editable(element: &IUIAutomationElement) -> bool {
         native::automation_element_is_editable(element) && writable(element)
     }
 }
-unsafe fn probe(uia: &IUIAutomation, snapshot: &FocusSnapshot, geometry: bool) -> Option<Probe> {
+unsafe fn probe(
+    uia: &IUIAutomation,
+    snapshot: &FocusSnapshot,
+    geometry: bool,
+    provider: &mut Option<(isize, isize, IUIAutomationElement)>,
+) -> Option<Probe> {
+    if provider.as_ref().is_some_and(|(window, focus, _)| {
+        *window != snapshot.window_id || *focus != snapshot.focused_handle
+    }) {
+        *provider = None;
+    }
     if !snapshot.current() {
         return None;
     }
@@ -134,7 +159,11 @@ unsafe fn probe(uia: &IUIAutomation, snapshot: &FocusSnapshot, geometry: bool) -
     {
         return console_caret(uia, snapshot);
     }
-    let (element, legacy) = focused_element(uia, snapshot)?;
+    let retained = provider.as_ref().and_then(|(_, _, element)| {
+        native::automation_element_has_input_focus(element).then(|| (element.clone(), false))
+    });
+    let (element, legacy) = retained.or_else(|| focused_element(uia, snapshot))?;
+    *provider = Some((snapshot.window_id, snapshot.focused_handle, element.clone()));
     probe_element(uia, snapshot, geometry, &element, legacy)
 }
 // Some embedded providers return their native host from GetFocusedElement and
@@ -293,15 +322,13 @@ unsafe fn probe_element(
     if !snapshot.current() {
         return None;
     }
-    let window = HWND(snapshot.window_id as _);
     if element
         .CurrentIsOffscreen()
         .map_or(true, |value| value.as_bool())
     {
         return None;
     }
-    let process_matches = element.CurrentProcessId().ok() == Some(snapshot.process_id as i32);
-    let belongs = process_matches && native::automation_element_belongs_to(uia, element, window);
+    let belongs = snapshot.owns_automation_input(uia, element);
     let editable = quick_insert_editable(element)
         || (legacy
             && element.CurrentControlType().ok() == Some(UIA_EditControlTypeId)
@@ -309,7 +336,7 @@ unsafe fn probe_element(
             && element.CurrentHasKeyboardFocus().is_ok_and(|v| v.as_bool())
             && element.CurrentIsPassword().is_ok_and(|v| !v.as_bool())
             && writable(element));
-    if !process_matches || !belongs || !editable {
+    if !belongs || !editable {
         return None;
     }
     let identity =

@@ -112,7 +112,7 @@ impl App {
         let hub = self.hub.clone();
         self.inline_timer.start(
             TimerMode::SingleShot,
-            Duration::from_millis(650),
+            snapshot.inspection_timeout(),
             move || {
                 hub.post(Event::Command(Command::InlineTimeout(epoch)));
             },

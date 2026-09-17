@@ -22,7 +22,9 @@ fn main() {
     let mut previous = String::new();
     let mut inspected = Instant::now() - Duration::from_secs(1);
     while start.elapsed() < Duration::from_secs(seconds) {
-        if inspected.elapsed() >= Duration::from_secs(1) {
+        if !std::env::args().any(|arg| arg == "--monitor-only")
+            && inspected.elapsed() >= Duration::from_secs(1)
+        {
             let snapshot = echo_windows::focus::FocusSnapshot::capture();
             let target = snapshot.capture_target();
             println!(

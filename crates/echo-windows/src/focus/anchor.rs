@@ -77,9 +77,8 @@ pub(crate) fn anchor_for_element(
 pub(crate) fn resolve_anchor(snapshot: &FocusSnapshot, uia: Option<&IUIAutomation>) -> PopupAnchor {
     let element = uia.and_then(|uia| unsafe {
         let e = uia.GetFocusedElement().ok()?;
-        (e.CurrentProcessId().ok() == Some(snapshot.process_id as i32)
-            && e.CurrentHasKeyboardFocus().is_ok_and(|v| v.as_bool())
-            && native::automation_element_belongs_to(uia, &e, win(snapshot.window_id as HWND)))
+        (e.CurrentHasKeyboardFocus().is_ok_and(|v| v.as_bool())
+            && snapshot.owns_automation_input(uia, &e))
         .then_some(e)
     });
     anchor_for_element(snapshot, element.as_ref())

@@ -143,3 +143,42 @@ A known input mode stays visible during composition and candidate selection.
 Unknown composition state alone neither hides the badge nor backs off mode sampling;
 unknown input mode, stale focus and Quick Insert suppression still hide it. This
 changes only the passive badge, not Quick Insert composition/key safety.
+
+
+## Persistent switch diagnostics
+
+Mode flips last 80ms (40ms per half), with unchanged software rendering and native
+window geometry. Content-free diagnostics are enabled by default under
+`<ECHO_DATA_DIR>/logs/input-indicator.jsonl` (normally
+`%LOCALAPPDATA%/Echo/logs/input-indicator.jsonl`). Three rotated files
+`input-indicator.1.jsonl` through `.3.jsonl` retain recent history; each file is
+limited to approximately 1 MiB. Logs persist across restarts.
+
+Records include UTC time, Echo PID, sequence, observation generation, target PID
+and window handles, previous/target/displayed mode, animation phase, show/hide,
+sample age, and suppression/foreground/placement validity when hidden. They never
+contain input text, clipboard contents, or window titles. `target-changed`,
+`flip-start`, `flip-midpoint`, and `flip-complete` describe state-machine transitions,
+not proof that a compositor displayed each frame. `skip-hidden` and
+`skip-initial-or-invalid` help investigate Codex composer auto-refocus after sending.
+The observer logs changes before UI-event coalescing; this distinguishes a mode
+that never arrived from one merged before delivery. It cannot record unobserved
+changes between sampling intervals.
+
+A bounded 128-entry queue is drained by the existing domain worker. Producers
+never wait for disk or create another thread. Queue overflow is counted in the
+next accepted record's `dropped` field; disk errors do not stop input. Idle samples
+and individual rendered frames are not logged.
+
+
+A delivered mode change explicitly requests a redraw of the passive badge. Without
+this wake-up, Slint change handlers can wait until the next 100ms observation tick
+and the native surface can miss the entire flip after hide/refocus. Native
+acceptance enables `ECHO_INDICATOR_FRAME_TRACE` on its test build only, checks
+actual framebuffer spans across repeated focus restoration, and measures delivery
+to flip start. These test-only frame records are absent from normal builds.
+
+The software backend also requests a fresh native frame whenever a window is
+shown. A queued redraw consumed while hidden must not suppress later animation
+frames. Initial reveals still settle without flipping; native assertions distinguish
+those from switches delivered to an already visible badge.

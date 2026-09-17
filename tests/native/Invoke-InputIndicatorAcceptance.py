@@ -54,7 +54,8 @@ def main():
                     '/reference:System.Windows.Forms.dll', '/reference:System.Drawing.dll',
                     '/reference:System.Web.Extensions.dll', str(repo / 'tests/native/EchoInlineFixture.cs')],
                    check=True, creationflags=subprocess.CREATE_NO_WINDOW)
-    env = dict(os.environ, ECHO_DATA_DIR=str(root / 'data'), ECHO_NATIVE_TEST_ROOT=str(root), ECHO_RENDERER='software')
+    env = dict(os.environ, ECHO_DATA_DIR=str(root / 'data'), ECHO_NATIVE_TEST_ROOT=str(root), ECHO_RENDERER='software',
+               ECHO_INDICATOR_FRAME_TRACE='1')
     logs, children, checks = [], [], []
     sequence = 0
     user32 = ctypes.WinDLL('user32', use_last_error=True)
@@ -159,6 +160,46 @@ def main():
                 assert badge_size() == fixed_size, 'flip resized native window'
                 time.sleep(.01)
         check('mode-flip-preserves-native-size-and-input-focus', lambda: dict(size=fixed_size))
+        # State-machine callbacks alone do not establish visible animation.
+        # Exercise hide/refocus, then inspect actual software framebuffer spans.
+        def trace_events():
+            path = root / 'data/logs/input-indicator.jsonl'
+            return [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines()]
+
+        flips = []
+        for cycle in range(4):
+            call(True, op='focus', control='readonly')
+            wait(lambda: badge(visible=False), 'refocus hides badge')
+            call(True, op='focus', control='single')
+            call(True, op='ime-english', control='single')
+            wait(lambda: badge('EN'), 'refocus restores EN')
+            time.sleep(.2)
+            first_sequence = trace_events()[-1]['sequence']
+            call(True, op='ime-chinese', control='single')
+            wait(lambda: badge('中'), 'refocus mode delivered')
+            time.sleep(.2)
+            trace = [e for e in trace_events() if e['sequence'] > first_sequence]
+            delivered = next(e for e in trace if e['event'] == 'mode-delivered')
+            if not delivered['details']['visible']:
+                # Some IMEs restore focus during their mode command. A fresh
+                # reveal deliberately settles directly instead of replaying old text.
+                assert any(e['event'] == 'skip-hidden' for e in trace), trace
+                assert badge('中'), 'fresh reveal has stale mode'
+                flips.append(dict(cycle=cycle, first_reveal=True))
+                continue
+            started = next(e for e in trace if e['event'] == 'flip-start')
+            frames = [e['details'] for e in trace if e['event'] == 'native-test-frame']
+            assert any(0 < f['span'] < fixed_size[0] - 3 for f in frames), trace
+            assert all((f['width'], f['height']) == fixed_size for f in frames), frames
+            assert user32.GetForegroundWindow() == foreground, 'refocus flip stole focus'
+            delay = started['utc_ms'] - delivered['utc_ms']
+            assert delay < 75, ('passive redraw waited for sampling', delay)
+            flips.append(dict(cycle=cycle, start_delay_ms=delay, spans=[f['span'] for f in frames]))
+        assert sum('spans' in flip for flip in flips) >= 3, flips
+        check('visible-flip-after-refocus', lambda: flips)
+        call(True, op='ime-english', control='single')
+        wait(lambda: badge('EN'), 'restore EN after refocus checks')
+        time.sleep(.2)
         process = psutil.Process(echo.pid)
         cpu_start = sum(process.cpu_times()[:2])
         count_start = call(verb='input_indicator')['counts']

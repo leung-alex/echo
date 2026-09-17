@@ -202,6 +202,12 @@ unsafe fn run(s: Arc<Shared>) {
         crate::focus::PopupAnchor,
     )> = None;
     let mut observer = None;
+    // Hosted XAML providers can block for a second between calls. Geometry
+    // refresh must not block the independent, fresh IME mode samples.
+    let mut pending: Option<(
+        FocusSnapshot,
+        std::sync::mpsc::Receiver<Option<crate::focus::automation::Probe>>,
+    )> = None;
     let mut refreshed = Instant::now();
     let mut next = Some(Instant::now());
     let mut failures = 0u32;
@@ -217,6 +223,7 @@ unsafe fn run(s: Arc<Shared>) {
             s.console_root.store(0, Ordering::Release);
             cached = None;
             observer = None;
+            pending = None;
             next = None;
         } else if hooks.is_none() {
             hooks = Some(Hooks::install());
@@ -227,6 +234,7 @@ unsafe fn run(s: Arc<Shared>) {
             s.console_root.store(0, Ordering::Release);
             cached = None;
             observer = None;
+            pending = None;
             failures = 0;
             next = Some(Instant::now());
         }
@@ -244,27 +252,65 @@ unsafe fn run(s: Arc<Shared>) {
                 cached = None;
                 observer = None;
             }
+            if pending.as_ref().is_some_and(|(old, _)| {
+                !old.current()
+                    || old.focused_handle != snapshot.focused_handle
+                    || old.window_id != snapshot.window_id
+            }) {
+                pending = None;
+            }
+            let completed = pending
+                .as_ref()
+                .and_then(|(_, response)| match response.try_recv() {
+                    Ok(value) => Some(value),
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(None),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                });
+            let hosted = snapshot.is_hosted_input();
             let needs_probe = cached.is_none()
                 || dirty & GEOMETRY != 0
                 || refreshed.elapsed() >= Duration::from_millis(500);
-            if needs_probe {
+            if hosted && needs_probe && pending.is_none() && completed.is_none() {
                 s.probes.fetch_add(1, Ordering::Relaxed);
-                let observed = snapshot
-                    .console_indicator()
-                    .or_else(|| snapshot.terminal_tsf_indicator())
-                    .map(|(endpoint, anchor)| ((None, Some(endpoint)), anchor))
-                    .or_else(|| {
-                        let found = snapshot.capture_target();
-                        found
-                            .target
-                            .filter(|_| found.anchor.source != AnchorSource::Window)
-                            .map(|target| ((target.focused_control, None), found.anchor))
+                pending = crate::focus::automation::begin_query(snapshot.clone(), true)
+                    .map(|response| (snapshot.clone(), response));
+            }
+            if completed.is_some() || !hosted && needs_probe {
+                if !hosted {
+                    s.probes.fetch_add(1, Ordering::Relaxed);
+                }
+                let observed = if hosted {
+                    pending = None;
+                    completed.flatten().and_then(|probe| {
+                        let (rect, source) = probe.anchor?;
+                        (source != AnchorSource::Window).then(|| {
+                            (
+                                (Some(probe.identity), None),
+                                crate::focus::PopupAnchor {
+                                    geometry: crate::focus::geometry(rect),
+                                    source,
+                                },
+                            )
+                        })
                     })
-                    .or_else(|| {
-                        snapshot
-                            .warp_pointer_indicator()
-                            .map(|(endpoint, anchor)| ((None, Some(endpoint)), anchor))
-                    });
+                } else {
+                    snapshot
+                        .console_indicator()
+                        .or_else(|| snapshot.terminal_tsf_indicator())
+                        .map(|(endpoint, anchor)| ((None, Some(endpoint)), anchor))
+                        .or_else(|| {
+                            let found = snapshot.capture_target();
+                            found
+                                .target
+                                .filter(|_| found.anchor.source != AnchorSource::Window)
+                                .map(|target| ((target.focused_control, None), found.anchor))
+                        })
+                        .or_else(|| {
+                            snapshot
+                                .warp_pointer_indicator()
+                                .map(|(endpoint, anchor)| ((None, Some(endpoint)), anchor))
+                        })
+                };
                 refreshed = Instant::now();
                 if let Some((target, anchor)) = observed {
                     if cached.as_ref().is_some_and(|(_, old, _)| old != &target) {
@@ -309,7 +355,7 @@ unsafe fn run(s: Arc<Shared>) {
                         observer = if let Some(endpoint) = target.1 {
                             Observer::status_at(endpoint)
                         } else {
-                            Observer::status_only(snapshot.focused_handle, snapshot.process_id, snapshot.process_started_at)
+                            snapshot.input_endpoint().ok_or_else(|| "Input owner unavailable".to_string()).and_then(|input| Observer::status_only(input.window, input.process, input.started))
                         }.ok();
                     }
                     observer.as_ref().and_then(Observer::input_state)
@@ -357,12 +403,23 @@ unsafe fn run(s: Arc<Shared>) {
                 generation: s.generation.load(Ordering::Acquire),
                 sample,
             });
-            if valid {
+            if valid || pending.is_some() || hosted && cached.is_some() {
                 failures = 0;
                 next = Some(Instant::now() + Duration::from_millis(100));
             } else {
                 failures = failures.saturating_add(1);
-                next = (cached.is_some() || failures < 4)
+                // Hosted XAML may still be connecting on the bounded UIA broker
+                // after the normal retry window. Keep a finite, slower warm-up
+                // budget; every attempt captures and validates fresh focus.
+                let attempts = if snapshot
+                    .input_endpoint()
+                    .is_some_and(|input| input.process != snapshot.process_id)
+                {
+                    8
+                } else {
+                    4
+                };
+                next = (cached.is_some() || failures < attempts)
                     .then(|| Instant::now() + Duration::from_millis(250 * (1 << failures.min(3))));
                 observer = None;
             }

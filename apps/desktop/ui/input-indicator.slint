@@ -16,39 +16,48 @@ export component InputIndicatorWindow inherits Window {
     private property <float> flip-progress: root.flip-active ? 1 : 0;
     private property <float> face-scale: abs(2 * root.flip-progress - 1);
     animate flip-progress {
-        duration: root.animations && root.reveal && root.flip-active ? 160ms : 0ms;
+        duration: root.animations && root.reveal && root.flip-active ? 80ms : 0ms;
         easing: ease-in-out;
     }
 
+    callback trace(string, string, string, IndicatorFlipPhase);
+    function log(event: string) {
+        root.trace(event, root.target-mode, root.displayed-mode, root.flip-phase);
+    }
     function settle() {
         root.displayed-mode = root.target-mode;
         root.flip-active = false;
         root.flip-phase = IndicatorFlipPhase.idle;
+        root.log("settled");
     }
     function accept-mode() {
         if !root.animations || !root.reveal
             || (root.displayed-mode != "中" && root.displayed-mode != "EN")
             || (root.target-mode != "中" && root.target-mode != "EN") {
+            root.log(!root.animations ? "skip-disabled" : !root.reveal ? "skip-hidden" : "skip-initial-or-invalid");
             root.settle();
         } else if root.flip-phase == IndicatorFlipPhase.idle && root.target-mode != root.displayed-mode {
             root.flip-active = true;
             root.flip-phase = IndicatorFlipPhase.flipping-out;
+            root.log("flip-start");
         }
     }
-    changed target-mode => { root.accept-mode(); }
-    changed reveal => { root.settle(); }
+    changed target-mode => { root.log("target-changed"); root.accept-mode(); }
+    changed reveal => { root.log(root.reveal ? "revealed" : "hidden"); root.settle(); }
     changed animations => { if !root.animations { root.settle(); } }
     Timer {
-        interval: root.flip-phase == IndicatorFlipPhase.idle ? 1ms : 80ms;
+        interval: root.flip-phase == IndicatorFlipPhase.idle ? 1ms : 40ms;
         running: root.animations && root.reveal
             && (root.flip-phase != IndicatorFlipPhase.idle || root.target-mode != root.displayed-mode);
         triggered => {
             if root.flip-phase == IndicatorFlipPhase.flipping-out {
                 root.displayed-mode = root.target-mode;
                 root.flip-phase = IndicatorFlipPhase.flipping-in;
+                root.log("flip-midpoint");
             } else if root.flip-phase == IndicatorFlipPhase.flipping-in {
                 root.flip-active = false;
                 root.flip-phase = IndicatorFlipPhase.idle;
+                root.log("flip-complete");
             } else {
                 root.accept-mode();
             }

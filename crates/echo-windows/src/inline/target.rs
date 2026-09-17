@@ -94,6 +94,8 @@ pub(super) struct Target {
     pub(super) paste_target: PasteTarget,
     control: isize,
     thread: u32,
+    input_process: u32,
+    input_started: u64,
     automation: Option<AutomationTarget>,
     native_composition: Option<IUIAutomationTextEditPattern>,
     native_element: Option<IUIAutomationElement>,
@@ -113,7 +115,21 @@ impl Target {
             return Err("Original input focus changed before activation".into());
         }
         let window = HWND(snapshot.window_id as _);
+        if let Some(settings) = uia.and_then(|uia| uia.cast::<IUIAutomation2>().ok()) {
+            let timeout = if snapshot.is_hosted_input() {
+                2000
+            } else {
+                200
+            };
+            unsafe {
+                let _ = settings.SetConnectionTimeout(timeout);
+                let _ = settings.SetTransactionTimeout(timeout);
+            }
+        }
         native::validate_target_integrity(snapshot.process_id)
+            .map_err(|_| "Elevated input is not available for inline replacement")?;
+        let endpoint = snapshot.input_endpoint().ok_or("Input owner unavailable")?;
+        native::validate_target_integrity(endpoint.process)
             .map_err(|_| "Elevated input is not available for inline replacement")?;
         let mut automation = None;
         let identity = if let Some(identity) =
@@ -126,10 +142,7 @@ impl Target {
                 let element = uia
                     .GetFocusedElement()
                     .map_err(|_| "The input does not expose its focused text element")?;
-                if element.CurrentProcessId().ok() != Some(snapshot.process_id as i32)
-                    || !native::automation_element_belongs_to(uia, &element, window)
-                    || !inline_editable(&element)
-                {
+                if !snapshot.owns_automation_input(uia, &element) || !inline_editable(&element) {
                     return Err(
                         "The input is protected, read-only, or not a verified text editor".into(),
                     );
@@ -192,6 +205,8 @@ impl Target {
             },
             control,
             thread,
+            input_process: endpoint.process,
+            input_started: endpoint.started,
             automation,
             native_composition,
             native_element,
@@ -419,6 +434,17 @@ impl Target {
             return false;
         }
         if let Some(a) = &self.automation {
+            if self.input_process != self.paste_target.process_id {
+                let snapshot = FocusSnapshot::capture();
+                if !snapshot.input_endpoint().is_some_and(|input| {
+                    input.input == self.control
+                        && input.process == self.input_process
+                        && input.started == self.input_started
+                }) || !snapshot.owns_automation_input(&a.uia, &a.element)
+                {
+                    return false;
+                }
+            }
             unsafe {
                 focused_in_editor(a) == Some(true)
                     && a.element.CurrentIsEnabled().is_ok_and(|v| v.as_bool())
@@ -596,8 +622,8 @@ impl Target {
                 .set(Instant::now() + Duration::from_millis(500));
             *observer = super::ime_observer::Observer::new(
                 self.control,
-                self.paste_target.process_id,
-                self.paste_target.process_started_at,
+                self.input_process,
+                self.input_started,
                 tsf_only,
             )
             .ok();

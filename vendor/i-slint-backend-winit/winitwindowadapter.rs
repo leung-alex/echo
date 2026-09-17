@@ -1146,6 +1146,12 @@ impl WinitWindowAdapter {
             }
 
             winit_window.set_visible(true);
+            #[cfg(feature = "echo-software-present")]
+            if crate::echo_software::presenter().is_some() {
+                // A redraw queued while hidden may have been consumed without
+                // painting. Start a fresh native frame on every visibility epoch.
+                winit_window.request_redraw();
+            }
 
             // Refresh the SlintContext color-scheme now that the window is mapped: on some platforms
             // `winit_window.theme()` only reports a real value once the window is shown.

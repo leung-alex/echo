@@ -5,6 +5,8 @@ static ALLOCATOR: echo_windows::allocation::AccountedSystem =
     echo_windows::allocation::AccountedSystem;
 mod favorite_icons;
 mod image_preview;
+#[cfg(windows)]
+mod indicator_trace;
 mod match_highlight;
 mod memory_lifecycle;
 mod memory_trace;

@@ -243,12 +243,75 @@ impl FocusSnapshot {
     pub fn still_current(&self) -> bool {
         self.current()
     }
+    /// Bound activation without rejecting hosted providers during connection.
+    pub fn inspection_timeout(&self) -> Duration {
+        Duration::from_millis(if self.is_hosted_input() { 3000 } else { 650 })
+    }
+    pub(crate) fn is_hosted_input(&self) -> bool {
+        unsafe {
+            let mut owner = 0;
+            let input = self.focused_handle as HWND;
+            !input.is_null()
+                && GetWindowThreadProcessId(input, &mut owner) != 0
+                && owner != 0
+                && owner != self.process_id
+                && GetAncestor(input, GA_ROOT) as isize == self.window_id
+        }
+    }
+    /// The foreground host and its focused input can have different owners.
+    /// Keep the host identity for activation; sample IME on the verified child.
+    pub(crate) fn input_endpoint(&self) -> Option<InputStatusEndpoint> {
+        if !self.current() || self.focused_handle == 0 {
+            return None;
+        }
+        unsafe {
+            let input = self.focused_handle as HWND;
+            let mut process = 0;
+            if GetWindowThreadProcessId(input, &mut process) == 0
+                || process == 0
+                || GetAncestor(input, GA_ROOT) as isize != self.window_id
+            {
+                return None;
+            }
+            Some(InputStatusEndpoint {
+                window: self.focused_handle,
+                input: self.focused_handle,
+                process,
+                started: native::process_started_at(process)?,
+            })
+        }
+    }
+
+    pub(crate) fn owns_automation_input(
+        &self,
+        uia: &windows::Win32::UI::Accessibility::IUIAutomation,
+        element: &windows::Win32::UI::Accessibility::IUIAutomationElement,
+    ) -> bool {
+        let Some(endpoint) = self.input_endpoint() else {
+            return false;
+        };
+        unsafe {
+            element.CurrentProcessId().ok() == Some(endpoint.process as i32)
+                && (endpoint.process == self.process_id
+                    || native::validate_target_integrity(endpoint.process).is_ok())
+                && native::automation_element_belongs_to(
+                    uia,
+                    element,
+                    win(if endpoint.process == self.process_id {
+                        self.window_id as HWND
+                    } else {
+                        endpoint.input as HWND
+                    }),
+                )
+        }
+    }
     pub(crate) fn current(&self) -> bool {
         if self.window_id == 0
             || self.process_id == 0
             || (!self.indicator_only && self.is_echo())
             || self.process_started_at == 0
-            || self.captured_at.elapsed() > Duration::from_secs(1)
+            || self.captured_at.elapsed()
+                > Duration::from_secs(if self.is_hosted_input() { 3 } else { 1 })
         {
             return false;
         }
@@ -392,5 +455,56 @@ pub fn restore_after_dismiss(snapshot: &FocusSnapshot) {
         {
             SetForegroundWindow(hwnd);
         }
+    }
+}
+
+#[cfg(test)]
+mod hosted_input_tests {
+    use super::*;
+
+    /// Read-only live regression: explicitly focus an empty hosted search box.
+    /// No clipboard, text input or window activation is performed by this test.
+    #[test]
+    #[ignore = "requires ECHO_HOSTED_INPUT_HWND and the focused hosted search box"]
+    fn hosted_search_capture_retains_input_and_geometry() {
+        let window: isize = std::env::var("ECHO_HOSTED_INPUT_HWND")
+            .expect("explicit hosted window required")
+            .parse()
+            .unwrap();
+        let snapshot = FocusSnapshot::capture();
+        assert_eq!(snapshot.window_id, window);
+        let mut input_process = 0;
+        unsafe { GetWindowThreadProcessId(snapshot.focused_handle as HWND, &mut input_process) };
+        assert_ne!(input_process, 0);
+        assert_ne!(
+            input_process, snapshot.process_id,
+            "must exercise cross-process hosting"
+        );
+        // The bounded caller may time out while a hosted XAML provider connects
+        // cold. Retry fresh snapshots as the production passive monitor does.
+        let deadline = Instant::now() + Duration::from_secs(8);
+        let captured = loop {
+            let fresh = FocusSnapshot::capture();
+            assert_eq!(fresh.window_id, window, "foreground changed during test");
+            let captured = fresh.capture_target();
+            if captured.target.is_some() || Instant::now() >= deadline {
+                break captured;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        };
+        assert!(
+            captured.target.is_some(),
+            "hosted input rejected: {snapshot:?}"
+        );
+        assert_ne!(captured.anchor.source, AnchorSource::Window);
+        assert_eq!(
+            focused_identity(win(window as HWND), snapshot.process_id),
+            captured.target.unwrap().focused_control,
+            "delivery must resolve the same input identity"
+        );
+        assert!(
+            focused_identity(win(snapshot.focused_handle as HWND), input_process).is_none(),
+            "a child must not impersonate the foreground host"
+        );
     }
 }

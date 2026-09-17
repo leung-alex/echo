@@ -53,7 +53,20 @@ fn software(reason: Option<String>) -> Result<GraphicsInfo, String> {
                     let mut slot = slot.borrow_mut();
                     slot.as_mut()
                         .filter(|(window, _)| *window == hwnd)
-                        .map(|(_, frame)| frame.render(hwnd, width, height, draw))
+                        .map(|(_, frame)| {
+                            let mut traced_draw = |pixels: &mut [u32], fresh: bool| {
+                                let changed = draw(pixels, fresh);
+                                #[cfg(feature = "native-test")]
+                                if std::env::var_os("ECHO_INDICATOR_FRAME_TRACE").is_some() && height > 0 && width > 0 {
+                                    let row = &pixels[(height as usize / 2) * width as usize..][..width as usize];
+                                    let columns: Vec<_> = row.iter().enumerate().filter(|(_, p)| (**p >> 24) > 128).map(|(x, _)| x).collect();
+                                    let span = columns.first().zip(columns.last()).map_or(0, |(first, last)| last - first + 1);
+                                    crate::indicator_trace::record("native-test-frame", serde_json::json!({"span":span,"changed":changed,"width":width,"height":height}));
+                                }
+                                changed
+                            };
+                            frame.render(hwnd, width, height, &mut traced_draw)
+                        })
                 }) {
                     return result
                         .map(|outcome| outcome != echo_windows::shell::FrameOutcome::Hidden);

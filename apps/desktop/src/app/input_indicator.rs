@@ -14,13 +14,42 @@ pub(super) struct Indicator {
 impl Indicator {
     pub fn new(enabled: bool, hub: Arc<Hub>) -> Result<Self, String> {
         let events = hub.clone();
+        let last_observation = std::sync::Mutex::new(None);
         let monitor = Monitor::start(
             enabled,
-            Arc::new(move |update| events.post(Event::InputIndicator(update))),
+            Arc::new(move |update| {
+                let key = (
+                    update.generation,
+                    update
+                        .sample
+                        .map(|s| (s.mode, s.window, s.focused_window, s.process)),
+                );
+                let mut last = last_observation.lock().unwrap_or_else(|e| e.into_inner());
+                if last.as_ref() != Some(&key) {
+                    crate::indicator_trace::record(
+                        "observation-changed",
+                        serde_json::json!({
+                        "generation":update.generation,"sample":update.sample.map(|s| serde_json::json!({
+                            "mode":format!("{:?}",s.mode),"window":s.window,"focused_window":s.focused_window,"process":s.process,
+                            "age_ms":s.sampled_at.elapsed().as_millis()}))}),
+                    );
+                    *last = Some(key);
+                }
+                events.post(Event::InputIndicator(update));
+            }),
         )?;
+        let window = crate::InputIndicatorWindow::new().map_err(|e| e.to_string())?;
+        let weak = window.as_weak();
+        window.on_trace(move |event, target, displayed, phase| {
+            if let Some(window) = weak.upgrade() {
+                crate::indicator_trace::record(event.as_str(), serde_json::json!({
+                    "target":target.as_str(),"displayed":displayed.as_str(),"phase":format!("{phase:?}"),
+                    "reveal":window.get_reveal(),"animations":window.get_animations()}));
+            }
+        });
         Ok(Self {
             monitor: Some(monitor),
-            window: crate::InputIndicatorWindow::new().map_err(|e| e.to_string())?,
+            window,
             sample: None,
             visible: false,
             hwnd: None,
@@ -35,6 +64,10 @@ impl Indicator {
             .as_ref()
             .is_none_or(|m| m.generation() != update.generation)
         {
+            crate::indicator_trace::record(
+                "discard-stale-update",
+                serde_json::json!({"generation":update.generation}),
+            );
             return;
         }
         self.sample = update.sample;
@@ -50,6 +83,7 @@ impl Indicator {
     }
     pub fn hide(&mut self) {
         if self.visible {
+            crate::indicator_trace::record("window-hide", serde_json::Value::Null);
             self.window.set_reveal(false);
             let _ = self.window.hide();
             self.visible = false;
@@ -73,9 +107,34 @@ impl Indicator {
         let Some((sample, rect)) =
             sample.and_then(|s| echo_presentation::input_indicator::place(&s).map(|p| (s, p)))
         else {
+            if self.visible {
+                crate::indicator_trace::record(
+                    "hide-reason",
+                    serde_json::json!({
+                    "enabled":enabled,"suppressed":suppressed,"generation":monitor.generation(),
+                    "sample":self.sample.map(|s| serde_json::json!({"generation":s.generation,
+                        "mode":format!("{:?}",s.mode),"age_ms":s.sampled_at.elapsed().as_millis(),
+                        "foreground_matches":echo_windows::input_indicator::foreground_matches(&s),
+                        "placement_valid":echo_presentation::input_indicator::place(&s).is_some()}))}),
+                );
+            }
             self.hide();
             return;
         };
+        let mode_changed = self.window.get_mode().as_str()
+            != match sample.mode {
+                InputMode::Chinese => "中",
+                InputMode::English => "EN",
+                InputMode::Unknown => "",
+            };
+        if mode_changed {
+            crate::indicator_trace::record(
+                "mode-delivered",
+                serde_json::json!({
+                "generation":sample.generation,"old":self.window.get_mode().as_str(),
+                "new":format!("{:?}",sample.mode),"visible":self.visible,"age_ms":sample.sampled_at.elapsed().as_millis()}),
+            );
+        }
         self.window.set_animations(environment.animations);
         self.window.set_mode(
             match sample.mode {
@@ -85,6 +144,11 @@ impl Indicator {
             }
             .into(),
         );
+        if mode_changed {
+            // Mode change handlers must not wait for the next observation tick
+            // to wake this passive window after a hide/show cycle.
+            self.window.window().request_redraw();
+        }
         if self.position != Some(rect) {
             self.window
                 .window()
@@ -122,6 +186,7 @@ impl Indicator {
             crate::graphics::register_input_badge(hwnd);
             self.hwnd = Some(hwnd);
         }
+        crate::indicator_trace::record("window-show", serde_json::Value::Null);
         self.visible = true;
         self.window.set_reveal(true);
         Ok(())

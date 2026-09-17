@@ -131,6 +131,7 @@ pub(super) struct Shared {
     may_compose: AtomicBool,
     ime_ui: AtomicU8,
     native_identity: AtomicBool,
+    hosted_input: AtomicBool,
     dirty_queued: AtomicBool,
     callback: EventHandler,
     started_at: Instant,
@@ -162,6 +163,7 @@ impl Shared {
             may_compose: AtomicBool::new(false),
             ime_ui: AtomicU8::new(IME_UNKNOWN),
             native_identity: AtomicBool::new(false),
+            hosted_input: AtomicBool::new(false),
             dirty_queued: AtomicBool::new(false),
             callback,
             started_at: Instant::now(),
@@ -534,13 +536,19 @@ impl InlineController {
         payload: &[ClipboardRepresentation],
     ) -> Result<(), String> {
         let text = payload::InsertPayload::retain(payload)?;
-        let guard = Deadline::new(Duration::from_millis(600));
+        let timeout =
+            Duration::from_millis(if self.inner.shared.hosted_input.load(Ordering::Acquire) {
+                3000
+            } else {
+                600
+            });
+        let guard = Deadline::new(timeout);
         let (reply, response) = mpsc::sync_channel(1);
         self.inner
             .sender
             .try_send(Request::Check(ticket, text, guard.clone(), reply))
             .map_err(|_| "Inline service is busy")?;
-        match response.recv_timeout(Duration::from_millis(600)) {
+        match response.recv_timeout(timeout) {
             Ok(result) => result,
             Err(_) => {
                 guard.cancelled.store(true, Ordering::Release);
@@ -549,13 +557,19 @@ impl InlineController {
         }
     }
     pub fn paste(&self, ticket: InlineTicket, sequence: u64) -> Result<PasteDelivery, String> {
-        let guard = Deadline::new(Duration::from_millis(900));
+        let timeout =
+            Duration::from_millis(if self.inner.shared.hosted_input.load(Ordering::Acquire) {
+                3000
+            } else {
+                900
+            });
+        let guard = Deadline::new(timeout);
         let (reply, response) = mpsc::sync_channel(1);
         self.inner
             .sender
             .try_send(Request::Paste(ticket, sequence, guard.clone(), reply))
             .map_err(|_| "Inline service is busy")?;
-        match response.recv_timeout(Duration::from_millis(900)) {
+        match response.recv_timeout(timeout) {
             Ok(result) => {
                 self.inner.shared.record("paste-reply-received", 0);
                 result
@@ -808,9 +822,17 @@ fn begin(
     }
     shared.window.store(snapshot.window_id, Ordering::Release);
     shared
+        .hosted_input
+        .store(snapshot.is_hosted_input(), Ordering::Release);
+    shared
         .focus
         .store(snapshot.focused_handle, Ordering::Release);
-    shared.process.store(snapshot.process_id, Ordering::Release);
+    shared.process.store(
+        snapshot
+            .input_endpoint()
+            .map_or(snapshot.process_id, |input| input.process),
+        Ordering::Release,
+    );
     shared.thread.store(
         unsafe {
             windows_sys::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(

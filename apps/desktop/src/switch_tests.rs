@@ -118,6 +118,13 @@ fn input_badge_flip_is_centered_serial_and_settles_to_latest_mode() {
     let now = Rc::new(std::cell::Cell::new(std::time::Duration::ZERO));
     slint::platform::set_platform(Box::new(TestPlatform(window.clone(), now.clone()))).unwrap();
     let ui = crate::InputIndicatorWindow::new().unwrap();
+    let events = Rc::new(std::cell::RefCell::new(Vec::new()));
+    let trace = events.clone();
+    ui.on_trace(move |event, target, displayed, _phase| {
+        trace
+            .borrow_mut()
+            .push((event.to_string(), target.to_string(), displayed.to_string()));
+    });
     ui.show().unwrap();
     window.set_size(slint::PhysicalSize::new(48, 36));
     let frame_index = std::cell::Cell::new(0);
@@ -149,14 +156,15 @@ fn input_badge_flip_is_centered_serial_and_settles_to_latest_mode() {
     assert_eq!(ui.get_flip_phase(), Idle);
     tick(120);
     for (old, new) in [("中", "EN"), ("EN", "中")] {
+        events.borrow_mut().clear();
         ui.set_mode(new.into());
         tick(0);
         assert_eq!(ui.get_displayed_mode(), old);
         assert_eq!(ui.get_flip_phase(), FlippingOut);
-        tick(40);
+        tick(20);
         assert!(ui.get_flip_width() > 3. && ui.get_flip_width() < 48.);
         assert_eq!(ui.get_displayed_mode(), old);
-        tick(40);
+        tick(20);
         assert_eq!(ui.get_flip_phase(), FlippingIn);
         assert_eq!(ui.get_displayed_mode(), new);
         assert!(
@@ -164,11 +172,20 @@ fn input_badge_flip_is_centered_serial_and_settles_to_latest_mode() {
             "midpoint width {}",
             ui.get_flip_width()
         );
-        tick(40);
+        tick(20);
         assert!(ui.get_flip_width() > 3. && ui.get_flip_width() < 48.);
-        tick(40);
+        tick(20);
         assert_eq!(ui.get_flip_phase(), Idle);
         assert_eq!(ui.get_flip_width(), 48.);
+        let trace = events.borrow();
+        let phases: Vec<_> = trace
+            .iter()
+            .filter(|(event, _, _)| event.starts_with("flip-"))
+            .collect();
+        assert_eq!(phases.len(), 3);
+        assert_eq!(phases[0], &("flip-start".into(), new.into(), old.into()));
+        assert_eq!(phases[1], &("flip-midpoint".into(), new.into(), new.into()));
+        assert_eq!(phases[2], &("flip-complete".into(), new.into(), new.into()));
     }
     // Updates during both halves coalesce; only the latest target survives.
     for (initial, other) in [("中", "EN"), ("EN", "中")] {
@@ -178,27 +195,50 @@ fn input_badge_flip_is_centered_serial_and_settles_to_latest_mode() {
         ui.set_animations(true);
         ui.set_mode(other.into());
         tick(0);
-        tick(30);
+        tick(20);
         ui.set_mode(initial.into());
         tick(0);
-        tick(50);
+        tick(20);
         assert_eq!(ui.get_displayed_mode(), initial);
-        tick(80);
+        tick(40);
         assert_eq!(ui.get_flip_phase(), Idle);
         ui.set_mode(other.into());
         tick(0);
-        tick(80);
+        tick(40);
         assert_eq!(ui.get_displayed_mode(), other);
         ui.set_mode(initial.into());
         tick(0);
-        tick(80);
+        tick(40);
         tick(1);
-        tick(80);
-        tick(80);
+        tick(40);
+        tick(40);
         assert_eq!(ui.get_flip_phase(), Idle);
         assert_eq!(ui.get_displayed_mode(), ui.get_target_mode());
         assert_eq!(ui.get_displayed_mode(), initial);
     }
+    // Timers can end and restart a flip without rendering the idle reset.
+    ui.set_animations(false);
+    ui.set_mode("中".into());
+    tick(0);
+    ui.set_animations(true);
+    ui.set_mode("EN".into());
+    tick(0);
+    tick(40);
+    ui.set_mode("中".into());
+    tick(0);
+    for ms in [40, 1] {
+        now.set(now.get() + std::time::Duration::from_millis(ms));
+        slint::platform::update_timers_and_animations();
+    }
+    tick(0);
+    tick(20);
+    assert!(
+        ui.get_flip_width() > 3. && ui.get_flip_width() < 47.,
+        "queued flip did not compress: {}",
+        ui.get_flip_width()
+    );
+    tick(20);
+    tick(40);
     ui.set_mode("中".into());
     ui.set_animations(false);
     tick(0);
@@ -208,7 +248,7 @@ fn input_badge_flip_is_centered_serial_and_settles_to_latest_mode() {
     ui.set_animations(true);
     ui.set_mode("EN".into());
     tick(0);
-    tick(30);
+    tick(20);
     ui.set_reveal(false);
     ui.set_mode("中".into());
     tick(0);

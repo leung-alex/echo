@@ -133,6 +133,7 @@ impl Worker {
                 return Err(error.to_string());
             }
         };
+        crate::indicator_trace::initialize(sender.clone());
         Ok(Self {
             #[cfg(feature = "native-test")]
             capture_disabled: _capture_disabled,
@@ -273,7 +274,9 @@ fn run(
         .ok();
     let images = image_lane::Lane::start(services.library.store().clone(), hub.clone());
     hub.post(Event::Ready(Ok(settings)));
+    let mut indicator_log = crate::indicator_trace::Writer::new(path.join("logs"));
     while let Ok((search_generation, work)) = control.try_recv().or_else(|_| receiver.recv()) {
+        indicator_log.drain();
         let cancelled = || search_epoch.load(Ordering::Acquire) != search_generation;
         match work {
             Work::Diagnostics(report) => {
