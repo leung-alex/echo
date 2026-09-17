@@ -133,6 +133,7 @@ public static class EchoInlineFixture {
     [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint process);
     [DllImport("user32.dll")] static extern IntPtr SetFocus(IntPtr window);
+    [DllImport("user32.dll")] static extern void NotifyWinEvent(uint eventId, IntPtr hwnd, int objectId, int childId);
     [DllImport("imm32.dll")] static extern IntPtr ImmGetContext(IntPtr hwnd);
     [DllImport("imm32.dll")] static extern bool ImmReleaseContext(IntPtr hwnd,IntPtr context);
     [DllImport("imm32.dll")] static extern bool ImmGetOpenStatus(IntPtr context);
@@ -312,6 +313,10 @@ public static class EchoInlineFixture {
                 }
                 if(op=="ime-native-mode")OwnedNativeMode(inputs[(string)request["control"]],Convert.ToBoolean(request["chinese"]));
                 if(op=="ime-english")EnglishForOwnedInput(inputs[(string)request["control"]]);
+                if(op=="focus-signal") {
+                    var edit=inputs[(string)request["control"]];
+                    NotifyWinEvent(0x8005,edit.Handle,-4,0);
+                }
                 if(op=="selection-policy")((OwnedTextBox)inputs["single"]).RejectSelection=Convert.ToBoolean(request["reject"]);
                 if(op=="read-refusal-policy")((OwnedTextBox)inputs["single"]).RefuseExternalReads=Convert.ToBoolean(request["enabled"]);
                 if(op=="acquisition-delay-policy")((OwnedTextBox)inputs["single"]).AcquisitionDelayMs=Math.Max(0,Math.Min(500,Convert.ToInt32(request["delay_ms"])));

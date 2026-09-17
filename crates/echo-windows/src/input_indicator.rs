@@ -28,9 +28,82 @@ const WAKE: u32 = WM_APP + 113;
 const FOCUS: u32 = 1;
 const GEOMETRY: u32 = 2;
 const CANDIDATE: u32 = 4;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InvalidationTrigger {
+    Foreground,
+    ObjectFocus,
+    Geometry,
+    Candidate,
+    TargetChanged,
+    SettingsEnable,
+    SettingsDisable,
+    SnapshotSuperseded,
+    HostedProbePending,
+    Polling,
+}
+impl InvalidationTrigger {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Foreground => "foreground",
+            Self::ObjectFocus => "object-focus",
+            Self::Geometry => "geometry",
+            Self::Candidate => "candidate",
+            Self::TargetChanged => "target-changed",
+            Self::SettingsEnable => "settings-enable",
+            Self::SettingsDisable => "settings-disable",
+            Self::SnapshotSuperseded => "snapshot-superseded",
+            Self::HostedProbePending => "hosted-probe-pending",
+            Self::Polling => "polling",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnavailableReason {
+    SettingsDisabled,
+    NoEditableTarget,
+    HostedProbeDisconnected,
+    ObserverUnavailable,
+    ModeUnavailable,
+    PointerAnchorUnavailable,
+}
+impl UnavailableReason {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SettingsDisabled => "settings-disabled",
+            Self::NoEditableTarget => "no-editable-target",
+            Self::HostedProbeDisconnected => "hosted-probe-disconnected",
+            Self::ObserverUnavailable => "observer-unavailable",
+            Self::ModeUnavailable => "mode-unavailable",
+            Self::PointerAnchorUnavailable => "pointer-anchor-unavailable",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum Observation {
+    Revalidating {
+        trigger: InvalidationTrigger,
+    },
+    Observed {
+        sample: InputStatus,
+        process_name: Option<String>,
+        trigger: InvalidationTrigger,
+        elapsed_ms: u64,
+    },
+    Unavailable {
+        reason: UnavailableReason,
+        process_name: Option<String>,
+        trigger: InvalidationTrigger,
+        elapsed_ms: u64,
+    },
+}
+
+#[derive(Clone, Debug)]
 pub struct Update {
     pub generation: u64,
-    pub sample: Option<InputStatus>,
+    pub observation: Observation,
 }
 struct Shared {
     enabled: AtomicBool,
@@ -44,11 +117,20 @@ struct Shared {
     post: Arc<dyn Fn(Update) + Send + Sync>,
 }
 impl Shared {
-    fn invalidate(&self) {
+    fn invalidate(&self, trigger: InvalidationTrigger) {
         let generation = self.generation.fetch_add(1, Ordering::AcqRel) + 1;
         (self.post)(Update {
             generation,
-            sample: None,
+            observation: if trigger == InvalidationTrigger::SettingsDisable {
+                Observation::Unavailable {
+                    reason: UnavailableReason::SettingsDisabled,
+                    process_name: None,
+                    trigger,
+                    elapsed_ms: 0,
+                }
+            } else {
+                Observation::Revalidating { trigger }
+            },
         });
     }
     fn wake(&self) {
@@ -84,7 +166,11 @@ unsafe extern "system" fn event(
         }
         if event == EVENT_SYSTEM_FOREGROUND || event == EVENT_OBJECT_FOCUS {
             s.dirty.fetch_or(FOCUS, Ordering::Release);
-            s.invalidate();
+            s.invalidate(if event == EVENT_SYSTEM_FOREGROUND {
+                InvalidationTrigger::Foreground
+            } else {
+                InvalidationTrigger::ObjectFocus
+            });
         } else if (EVENT_OBJECT_IME_SHOW..=EVENT_OBJECT_IME_CHANGE).contains(&event) {
             s.dirty.fetch_or(CANDIDATE, Ordering::Release);
         } else if !hwnd.is_null()
@@ -171,7 +257,11 @@ impl Monitor {
     }
     pub fn set_enabled(&self, enabled: bool) {
         if self.shared.enabled.swap(enabled, Ordering::AcqRel) != enabled {
-            self.shared.invalidate();
+            self.shared.invalidate(if enabled {
+                InvalidationTrigger::SettingsEnable
+            } else {
+                InvalidationTrigger::SettingsDisable
+            });
             self.shared.dirty.fetch_or(FOCUS, Ordering::Release);
             self.shared.wake();
         }
@@ -241,6 +331,15 @@ unsafe fn run(s: Arc<Shared>) {
         if enabled && (dirty != 0 && cached.is_some() || next.is_some_and(|t| Instant::now() >= t))
         {
             let generation = s.generation.load(Ordering::Acquire);
+            let probe_trigger = if dirty & FOCUS != 0 {
+                InvalidationTrigger::ObjectFocus
+            } else if dirty & GEOMETRY != 0 {
+                InvalidationTrigger::Geometry
+            } else if dirty & CANDIDATE != 0 {
+                InvalidationTrigger::Candidate
+            } else {
+                InvalidationTrigger::Polling
+            };
             s.samples.fetch_add(1, Ordering::Relaxed);
             let snapshot = FocusSnapshot::capture_for_indicator();
             let same = cached.as_ref().is_some_and(|(old, _, _)| {
@@ -259,11 +358,15 @@ unsafe fn run(s: Arc<Shared>) {
             }) {
                 pending = None;
             }
+            let mut hosted_disconnected = false;
             let completed = pending
                 .as_ref()
                 .and_then(|(_, response)| match response.try_recv() {
                     Ok(value) => Some(value),
-                    Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(None),
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        hosted_disconnected = true;
+                        Some(None)
+                    }
                     Err(std::sync::mpsc::TryRecvError::Empty) => None,
                 });
             let hosted = snapshot.is_hosted_input();
@@ -315,7 +418,7 @@ unsafe fn run(s: Arc<Shared>) {
                 if let Some((target, anchor)) = observed {
                     if cached.as_ref().is_some_and(|(_, old, _)| old != &target) {
                         observer = None;
-                        s.invalidate();
+                        s.invalidate(InvalidationTrigger::TargetChanged);
                     }
                     s.console_root.store(
                         if target.1.is_some_and(|t| t.window != t.input) {
@@ -344,8 +447,14 @@ unsafe fn run(s: Arc<Shared>) {
                     .is_some()
                 });
             }
+            let probe_started = Instant::now();
+            let process_name = process_basename(snapshot.process_id);
+            let mut unavailable_reason = UnavailableReason::NoEditableTarget;
             let sample = cached.as_ref().and_then(|(_, target, anchor)| {
-                let thread = GetWindowThreadProcessId(target.1.map_or(snapshot.focused_handle, |t| t.window) as HWND, null_mut());
+                let thread = GetWindowThreadProcessId(
+                    target.1.map_or(snapshot.focused_handle, |t| t.window) as HWND,
+                    null_mut(),
+                );
                 let layout = GetKeyboardLayout(thread);
                 let english_keyboard = layout as usize & 0x3ff == 0x09 && ImmIsIME(layout) == 0;
                 let state = if english_keyboard {
@@ -355,21 +464,41 @@ unsafe fn run(s: Arc<Shared>) {
                         observer = if let Some(endpoint) = target.1 {
                             Observer::status_at(endpoint)
                         } else {
-                            snapshot.input_endpoint().ok_or_else(|| "Input owner unavailable".to_string()).and_then(|input| Observer::status_only(input.window, input.process, input.started))
-                        }.ok();
+                            snapshot
+                                .input_endpoint()
+                                .ok_or_else(|| "Input owner unavailable".to_string())
+                                .and_then(|input| {
+                                    Observer::status_only(input.window, input.process, input.started)
+                                })
+                        }
+                        .ok();
                     }
                     observer.as_ref().and_then(Observer::input_state)
                 };
-                let (mode, composition) = state?;
+                let Some((mode, composition)) = state else {
+                    unavailable_reason = UnavailableReason::ObserverUnavailable;
+                    return None;
+                };
+                if mode == InputMode::Unknown {
+                    unavailable_reason = UnavailableReason::ModeUnavailable;
+                    return None;
+                }
                 #[cfg(feature = "native-test")]
                 if std::env::var_os("ECHO_INPUT_STATUS_TRACE").is_some() {
-                    eprintln!("input-state pid={} mode={mode:?} raw={composition:?} candidate={candidate_visible}", snapshot.process_id);
+                    eprintln!(
+                        "input-state pid={} mode={mode:?} raw={composition:?} candidate={candidate_visible}",
+                        snapshot.process_id
+                    );
                 }
                 if !snapshot.current() || s.generation.load(Ordering::Acquire) != generation {
                     return None;
                 }
                 let anchor = if anchor.source == AnchorSource::Pointer {
-                    snapshot.warp_pointer_indicator()?.1
+                    let Some((_, anchor)) = snapshot.warp_pointer_indicator() else {
+                        unavailable_reason = UnavailableReason::PointerAnchorUnavailable;
+                        return None;
+                    };
+                    anchor
                 } else if snapshot.anchor.source == AnchorSource::NativeCaret {
                     snapshot.anchor
                 } else {
@@ -396,13 +525,42 @@ unsafe fn run(s: Arc<Shared>) {
                     sampled_at: Instant::now(),
                 })
             });
-            let valid = sample
-                .as_ref()
-                .is_some_and(|s| s.mode != InputMode::Unknown);
-            (s.post)(Update {
-                generation: s.generation.load(Ordering::Acquire),
-                sample,
-            });
+            let current_generation = s.generation.load(Ordering::Acquire);
+            let valid = sample.is_some();
+            if current_generation == generation {
+                let elapsed_ms = probe_started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+                let observation = if let Some(sample) = sample {
+                    Observation::Observed {
+                        sample,
+                        process_name,
+                        trigger: probe_trigger,
+                        elapsed_ms,
+                    }
+                } else if !snapshot.current() {
+                    Observation::Revalidating {
+                        trigger: InvalidationTrigger::SnapshotSuperseded,
+                    }
+                } else if pending.is_some() {
+                    Observation::Revalidating {
+                        trigger: InvalidationTrigger::HostedProbePending,
+                    }
+                } else {
+                    Observation::Unavailable {
+                        reason: if hosted_disconnected {
+                            UnavailableReason::HostedProbeDisconnected
+                        } else {
+                            unavailable_reason
+                        },
+                        process_name,
+                        trigger: probe_trigger,
+                        elapsed_ms,
+                    }
+                };
+                (s.post)(Update {
+                    generation,
+                    observation,
+                });
+            }
             if valid || pending.is_some() || hosted && cached.is_some() {
                 failures = 0;
                 next = Some(Instant::now() + Duration::from_millis(100));
@@ -434,6 +592,16 @@ unsafe fn run(s: Arc<Shared>) {
     drop(observer);
     drop(hooks);
     EVENTS.with(|slot| *slot.borrow_mut() = None);
+}
+
+/// Content-free executable basename used by diagnostics. Full paths are never exposed.
+pub fn process_basename(process_id: u32) -> Option<String> {
+    crate::windows_impl::process_path(process_id).and_then(|path| {
+        std::path::Path::new(&path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_owned)
+    })
 }
 
 /// Fast UI-thread guard; no COM or cross-process messages.

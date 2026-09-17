@@ -166,6 +166,45 @@ def main():
             path = root / 'data/logs/input-indicator.jsonl'
             return [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines()]
 
+        # Reproduce the captured race without changing the actual focused target:
+        # repeated accessibility focus notifications must revalidate in-place,
+        # not clear a freshly displayed badge.
+        churn_start = trace_events()[-1]['sequence']
+        for _ in range(12):
+            call(True, op='focus-signal', control='single')
+            assert badge('EN'), 'same-target focus signal hid badge'
+            time.sleep(.015)
+        time.sleep(.3)
+        churn_trace = [e for e in trace_events() if e['sequence'] > churn_start]
+        starts = [e for e in churn_trace if e['event'] == 'retention-start']
+        replacements = [e for e in churn_trace if e['event'] == 'retention-replaced']
+        hides = [e for e in churn_trace if e['event'] == 'window-hide']
+        assert starts and replacements, churn_trace
+        assert not hides, churn_trace
+        assert badge('EN'), 'same-target revalidation did not settle visible'
+        check('same-target-focus-revalidation-does-not-flicker', lambda: dict(
+            cycles=12, retention_starts=len(starts), retention_replacements=len(replacements)))
+
+        # Diagnostics may expose only executable basenames, never document text,
+        # titles, or full executable paths.
+        diagnostic = [e for e in churn_trace if e['event'] == 'observation-changed']
+        names = [e['details'].get('process_name') for e in diagnostic
+                 if e['details'].get('process_name')]
+        assert fixture_exe.name in names, names
+        serialized = json.dumps(churn_trace, ensure_ascii=False)
+        assert str(root).lower() not in serialized.lower(), 'diagnostics leaked a full path'
+        forbidden = {'window_title', 'title', 'text', 'clipboard', 'document'}
+        def keys(value):
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    yield key
+                    yield from keys(child)
+            elif isinstance(value, list):
+                for child in value:
+                    yield from keys(child)
+        assert not (forbidden & set(keys(churn_trace))), 'diagnostics leaked content fields'
+        check('indicator-log-is-content-free', lambda: dict(process_names=sorted(set(names))))
+
         flips = []
         for cycle in range(4):
             call(True, op='focus', control='readonly')
@@ -212,6 +251,9 @@ def main():
         assert samples <= elapsed * 15, (samples, elapsed)
         check('quiet-input-observation-budget', lambda: dict(seconds=elapsed, samples=samples,
             probes=probes, one_core_cpu_percent=100 * (sum(process.cpu_times()[:2]) - cpu_start) / elapsed))
+        call(True, op='focus', control='single')
+        wait(lambda: user32.GetForegroundWindow() == fixture_window, 'fixture foreground before themes')
+        wait(lambda: badge('EN'), 'restore EN before themes')
         call(verb='input_indicator_capture', file='badge-light.png')
         for theme in ['dark', 'high-contrast', 'light']:
             call(verb='style_theme', file=theme)
