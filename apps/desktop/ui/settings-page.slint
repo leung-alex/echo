@@ -9,6 +9,39 @@ import { SpaceVm } from "space-models.slint";
 import { EnumChoice } from "enum-choice.slint";
 import { ShortcutRow } from "shortcut-row.slint";
 import { SpaceChoice } from "space-choice.slint";
+
+component SettingsNavButton inherits Rectangle {
+    in property <string> text;
+    in property <image> icon;
+    in property <bool> checked;
+    in property <bool> enabled: true;
+    callback clicked();
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if (root.enabled) { root.clicked(); } }
+    border-radius: 8px;
+    background: root.checked ? EchoTheme.selection : (touch.has-hover ? EchoTheme.surface : transparent);
+    opacity: root.enabled ? 1 : 0.45;
+    forward-focus: focus;
+    focus := FocusScope {
+        width: 0px;
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == " ") { root.clicked(); return accept; }
+            return reject;
+        }
+    }
+    content := HorizontalLayout {
+        x: 10px; y: (parent.height - self.height) / 2;
+        width: parent.width - 20px; height: 16px; spacing: 8px; alignment: start;
+        Image { source: root.icon; width: 16px; height: 16px; image-fit: contain; colorize: EchoTheme.text; }
+        Text { text: root.text; width: self.preferred-width; height: parent.height; color: EchoTheme.text; font-size: 15px; font-weight: root.checked ? T.font-weight-medium : T.font-weight-normal; vertical-alignment: center; horizontal-alignment: left; accessible-role: none; }
+    }
+    if (focus.has-focus): Rectangle { x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px; border-radius: 7px; border-width: 1px; border-color: EchoTheme.amber; background: transparent; accessible-role: none; }
+    touch := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { focus.focus(); root.clicked(); } }
+}
+
 export component SettingsPage inherits Rectangle {
     callback hide();
     in-out property <string> theme-mode;
@@ -82,16 +115,13 @@ export component SettingsPage inherits Rectangle {
         model: root.categories; selected-index: root.section; selection-changed(index) => { root.section = index; } accessible-label: @tr("Settings category");
     }
     if (!root.narrow): VerticalLayout {
-        x: 64px; y: 75px; width: 140px; spacing: 8px; alignment: start;
-        for label[index] in root.categories: EchoButton {
+        x: 64px; y: 75px; width: 184px; spacing: 4px;
+        for label[index] in root.categories: SettingsNavButton {
             icon: index == 0 ? @image-url("favorite-icons/ColorTheme.svg") : index == 1 ? @image-url("favorite-icons/BuildingWorkspace.svg") : @image-url("favorite-icons/KeyboardShortcut.svg");
-            text: label; checked: root.section == index; selection-indicator: true;
-            font-size: 15px;
-            flat: true; border-width: 0px; width: parent.width; height: 42px; left-aligned: true;
+            text: label; checked: root.section == index;
+            width: parent.width; height: 36px;
             clicked => { root.section = index; }
         }
-        Rectangle { height: 20px; }
-        EchoButton { icon: @image-url("favorite-icons/ExitLogout.svg"); text: @tr("Quit"); font-size: 15px; flat: true; border-width: 0px; left-aligned: true; danger: true; clicked => { root.action("quit"); } }
     }
     settings-scroll := ScrollView {
         vertical-scrollbar-policy: always-off;
@@ -105,8 +135,8 @@ export component SettingsPage inherits Rectangle {
             Rectangle {
                 height: max(section-title.preferred-height, root.section == 1 ? 32px : 0px);
                 section-title := Text {
-                    x: root.section == 1 ? 14px : 0px;
-                    width: max(0px, parent.width - (root.section == 1 ? 54px : 0px));
+                    x: 0px;
+                    width: max(0px, parent.width - (root.section == 1 ? 40px : 0px));
                     height: parent.height; vertical-alignment: center;
                     text: root.categories[root.section]; color: EchoTheme.text;
                     font-size: 20px; font-weight: 600;

@@ -338,7 +338,8 @@ fn settings_render_in_both_languages_themes_and_narrow_widths() {
     );
     ui.show().unwrap();
     window.set_size(slint::PhysicalSize::new(960, 720));
-    let position = LogicalPosition::new(110., 220.);
+    // The compact desktop navigation places Quick Input at this center point.
+    let position = LogicalPosition::new(110., 197.);
     ui.window().dispatch_event(WindowEvent::PointerPressed {
         position,
         button: PointerEventButton::Left,
