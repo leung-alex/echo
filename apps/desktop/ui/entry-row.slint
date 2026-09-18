@@ -108,7 +108,9 @@ export component EntryView inherits Rectangle {
         background: root.active || entry.pinned ? EchoTheme.amber : EchoTheme.muted;
     }
     if (favorites && root.favorite-icon.width > 0): Image {
-        x: 9px; y: 15px; width: T.row-icon-size; height: T.row-icon-size;
+        // Keep the icon clear of the selection rail and center it in the row's card.
+        x: 16px; y: 2px + max(0px,(parent.height - 10px - self.height)/2);
+        width: T.row-icon-size; height: T.row-icon-size;
         source: root.favorite-icon;
         colorize: root.active ? EchoTheme.selected-text : EchoTheme.muted;
     }
