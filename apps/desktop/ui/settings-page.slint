@@ -38,7 +38,6 @@ component SettingsNavButton inherits Rectangle {
         Image { source: root.icon; width: 16px; height: 16px; image-fit: contain; colorize: EchoTheme.text; }
         Text { text: root.text; width: self.preferred-width; height: parent.height; color: EchoTheme.text; font-size: 15px; font-weight: root.checked ? T.font-weight-medium : T.font-weight-normal; vertical-alignment: center; horizontal-alignment: left; accessible-role: none; }
     }
-    if (focus.has-focus): Rectangle { x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px; border-radius: 7px; border-width: 1px; border-color: EchoTheme.amber; background: transparent; accessible-role: none; }
     touch := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { focus.focus(); root.clicked(); } }
 }
 
