@@ -1,42 +1,61 @@
+import { LineEdit } from "echo-lineedit.slint";
 import { I18n } from "i18n.slint";
 import { ListView } from "std-widgets.slint";
 import { EchoTheme, EchoButton } from "theme.slint";
-import { FavoriteIconImages } from "favorite-icon-images.slint";
+import { LucideIconImages } from "lucide-icon-images.slint";
+
 export struct FavoriteIconChoice { key: string, label: string }
+
 export component FavoriteIconPicker inherits Rectangle {
     in property <[FavoriteIconChoice]> choices;
     in property <string> selected-key;
+    in-out property <string> query;
+    callback query-edited(string);
     callback chosen(string);
     callback dismissed();
     private property <int> active-index: -1;
     private property <int> columns: max(1, floor((dialog.width - 36px) / 44px));
+
     function move-active(delta: int) {
+        if (root.choices.length == 0) { return; }
         root.active-index = min(root.choices.length - 1, max(0, root.active-index + delta));
         let top = floor(root.active-index / root.columns) * 44px;
         icon-list.viewport-y = min(0px, max(icon-list.height - icon-list.viewport-height,
             top < -icon-list.viewport-y ? -top : top + 44px > -icon-list.viewport-y + icon-list.height ? icon-list.height - top - 44px : icon-list.viewport-y));
     }
+
     background: #00000080;
     TouchArea { }
     FocusScope {
         key-pressed(event) => {
             if (event.text == Key.Escape) { root.dismissed(); return accept; }
-            if (event.text == Key.Tab) { if (close.focused) { grid-focus.focus(); } else { close.focus(); } return accept; }
+            if (event.text == Key.Tab) { if (close.focused) { search.focus(); } else if (search.has-focus) { grid-focus.focus(); } else { close.focus(); } return accept; }
             return reject;
         }
         dialog := Rectangle {
             x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
-            width: min(460px,parent.width - 24px); height: min(480px,parent.height - 24px);
+            width: min(460px,parent.width - 24px); height: min(520px,parent.height - 24px);
             background: EchoTheme.elevated; border-color: EchoTheme.line; border-width: 1px; border-radius: 14px;
             accessible-role: groupbox; accessible-label: @tr("Choose an icon");
-            init => { grid-focus.focus(); }
+            init => { search.focus(); root.query-edited(""); }
             VerticalLayout {
                 padding: 18px; spacing: 12px;
                 HorizontalLayout {
                     Text { text: @tr("Choose an icon"); color: EchoTheme.text; font-size: 20px; font-weight: 650; vertical-alignment: center; }
                     close := EchoButton { width: 32px; height: 32px; row-action: true; flat: true; icon: @image-url("icons/close.svg"); label: @tr("Close icon picker"); clicked => { root.dismissed(); } }
                 }
+                search := LineEdit {
+                    height: 36px;
+                    text <=> root.query;
+                    placeholder-text: @tr("Search icons");
+                    accessible-label: @tr("Search icons");
+                    edited => {
+                        root.active-index = root.choices.length > 0 ? 0 : -1;
+                        root.query-edited(self.text);
+                    }
+                }
                 grid-focus := FocusScope {
+                    vertical-stretch: 1;
                     key-pressed(event) => {
                         if (event.text == Key.RightArrow) { root.move-active(1); return accept; }
                         if (event.text == Key.LeftArrow) { root.move-active(-1); return accept; }
@@ -45,7 +64,12 @@ export component FavoriteIconPicker inherits Rectangle {
                         if ((event.text == Key.Return || event.text == " ") && root.active-index >= 0 && root.active-index < root.choices.length) { root.chosen(root.choices[root.active-index].key); return accept; }
                         return reject;
                     }
+                    if (root.choices.length == 0): Text {
+                        text: root.query == "" ? @tr("No icons available") : @tr("No matching icons");
+                        color: EchoTheme.muted; horizontal-alignment: center; vertical-alignment: center;
+                    }
                     icon-list := ListView {
+                        visible: root.choices.length > 0;
                         width: parent.width; height: parent.height;
                         horizontal-scrollbar-policy: always-off;
                         for row in ceil(root.choices.length / root.columns): HorizontalLayout {
@@ -57,9 +81,9 @@ export component FavoriteIconPicker inherits Rectangle {
                                 width: max(0px, (icon-list.visible-width - (root.columns - 1) * 4px) / root.columns); height: 40px; horizontal-stretch: 0;
                                 visible: self.valid; enabled: self.valid; flat: true;
                                 take-focus-on-click: false;
-                                icon: self.choice.key == "none" ? @image-url("favorite-icons/CircleDashed.svg") : FavoriteIconImages.image-for(self.choice.key);
+                                icon: LucideIconImages.image-for(self.choice.key);
                                 label: I18n.message(self.choice.label);
-                                checked: self.index == root.active-index || self.choice.key == root.selected-key || (self.choice.key == "none" && root.selected-key == "");
+                                checked: self.index == root.active-index || self.choice.key == root.selected-key;
                                 clicked => { root.chosen(self.choice.key); }
                             }
                         }

@@ -4,11 +4,13 @@ import { EchoTheme, EchoButton } from "theme.slint";
 import { DesignTokens as T } from "echo-tokens.slint";
 import { EntryRow, EntryView } from "entry-row.slint";
 import { FavoriteIconImages } from "favorite-icon-images.slint";
+import { LucideIconImages } from "lucide-icon-images.slint";
 export component SpacePanel inherits Rectangle {
     in property <string> title;
     in property <string> subtitle;
     in property <string> icon-key;
-    private property <image> header-icon: FavoriteIconImages.image-for(root.icon-key);
+    in property <bool> system-space;
+    private property <image> header-icon: root.system-space ? FavoriteIconImages.image-for(root.icon-key) : LucideIconImages.image-for(root.icon-key);
     in property <[EntryRow]> rows;
     in property <bool> favorites;
     in property <bool> clearable;

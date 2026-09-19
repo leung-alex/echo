@@ -13,6 +13,7 @@ path = "src/lib.rs"
 
 [dependencies]
 echo-desktop-ui = { path = "ui-crate" }
+echo-icon-assets = { path = "icon-crate" }
 i-slint-backend-winit = { version = "=1.17.1", default-features = false, features = ["echo-software-present"] }
 echo-engine.workspace = true
 echo-storage.workspace = true

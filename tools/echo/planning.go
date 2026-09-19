@@ -148,6 +148,9 @@ func ownerPackages(plan OwnerPlan) ([]string, bool) {
 			storage = true
 		}
 	}
+	if packages["echo-desktop"] {
+		add("echo-icon-assets")
+	}
 	names := make([]string, 0, len(packages))
 	for name := range packages {
 		names = append(names, name)

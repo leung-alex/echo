@@ -1374,6 +1374,7 @@ impl App {
             Command::SettingsAction(action) => self.settings_action(&action),
             Command::SpaceAction(action, key) => self.space_action(&action, &key),
             Command::PickerQuery(query) => self.picker_query(query),
+            Command::IconQuery(query) => self.icon_query(query),
             Command::PickerMore => self.picker_more(),
             Command::PickerSelect(key) => self.picker_select(&key),
             Command::Confirm(answer) => self.confirm(&answer),

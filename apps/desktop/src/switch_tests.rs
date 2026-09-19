@@ -27,15 +27,28 @@ slint::slint! {
     }
     import { FavoriteIconPicker, FavoriteIconChoice } from "../ui/favorite-icon-picker.slint";
     export { FavoriteIconChoice } from "../ui/favorite-icon-picker.slint";
+    export { LucideIconImages } from "../ui/lucide-icon-images.slint";
+    import { FavoriteIconImages } from "../ui/favorite-icon-images.slint";
     export { FavoriteIconImages } from "../ui/favorite-icon-images.slint";
+    export component SystemIconFixture inherits Window {
+        width: 64px; height: 32px; background: #ffffff;
+        in property <string> icon-key: "History";
+        in property <color> tint: #202020;
+        Image { x: 0px; width: 32px; height: 32px; colorize: root.tint;
+            source: FavoriteIconImages.image-for(root.icon-key); }
+        Image { x: 32px; width: 32px; height: 32px; colorize: root.tint;
+            source: @image-url("../ui/favorite-icons/History.svg"); }
+    }
     export component IconGridFixture inherits Window {
         width: 500px; height: 540px;
         in property <[FavoriteIconChoice]> choices;
         out property <string> chosen-key;
         out property <bool> dismissed;
+        out property <string> query;
         FavoriteIconPicker {
             choices: root.choices;
             chosen(key) => { root.chosen-key = key; }
+            query-edited(value) => { root.query = value; }
             dismissed => { root.dismissed = true; }
         }
     }
@@ -510,14 +523,76 @@ fn input_focus_and_selection_follow_monochrome_and_high_contrast_theme() {
 }
 
 #[test]
+fn system_icons_load_on_demand_and_match_compiled_svg_pixels() {
+    let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+    slint::platform::set_platform(Box::new(TestPlatform(window.clone(), Rc::default()))).unwrap();
+    let ui = SystemIconFixture::new().unwrap();
+    let requested = Rc::new(std::cell::RefCell::new(std::collections::BTreeSet::new()));
+    let calls = requested.clone();
+    ui.global::<FavoriteIconImages>().on_image_for(move |key| {
+        calls.borrow_mut().insert(key.to_string());
+        crate::favorite_icons::image(key.as_str())
+    });
+    ui.show().unwrap();
+    for scale in [1., 1.25, 1.5, 2.] {
+        ui.window().dispatch_event(WindowEvent::ScaleFactorChanged {
+            scale_factor: scale,
+        });
+        window.set_size(slint::PhysicalSize::new(
+            (64. * scale) as u32,
+            (32. * scale) as u32,
+        ));
+        for color in [
+            slint::Color::from_rgb_u8(32, 32, 32),
+            slint::Color::from_rgb_u8(238, 238, 238),
+            slint::Color::from_rgb_u8(255, 255, 0),
+        ] {
+            ui.set_tint(color);
+            let pixels = ui.window().take_snapshot().unwrap();
+            let half = pixels.width() as usize / 2;
+            assert!(pixels
+                .as_slice()
+                .iter()
+                .any(|p| p.r != 255 || p.g != 255 || p.b != 255));
+            for row in pixels.as_slice().chunks_exact(half * 2) {
+                assert_eq!(
+                    &row[..half],
+                    &row[half..],
+                    "system SVG pixels at scale {scale}"
+                );
+            }
+        }
+    }
+    assert_eq!(
+        *requested.borrow(),
+        std::collections::BTreeSet::from(["History".to_owned()])
+    );
+    for key in ["none", "unknown"] {
+        ui.set_icon_key(key.into());
+        let pixels = ui.window().take_snapshot().unwrap();
+        let half = pixels.width() as usize / 2;
+        for row in pixels.as_slice().chunks_exact(half * 2) {
+            assert!(row[..half]
+                .iter()
+                .all(|p| p.r == 255 && p.g == 255 && p.b == 255));
+        }
+    }
+    ui.hide().unwrap();
+}
+
+#[test]
 fn icon_grid_click_keyboard_scroll_and_close() {
     use slint::Model;
     let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
     slint::platform::set_platform(Box::new(TestPlatform(window.clone(), Rc::default()))).unwrap();
     let ui = IconGridFixture::new().unwrap();
-    ui.global::<FavoriteIconImages>()
-        .on_index_for(|key| crate::favorite_icons::index(key.as_str()));
-    let source = crate::favorite_icons::choices();
+    let requested = Rc::new(std::cell::RefCell::new(std::collections::BTreeSet::new()));
+    let image_requests = requested.clone();
+    ui.global::<LucideIconImages>().on_image_for(move |key| {
+        image_requests.borrow_mut().insert(key.to_string());
+        crate::lucide_icons::image(key.as_str())
+    });
+    let source = crate::lucide_icons::choices();
     let last = source.row_data(source.row_count() - 1).unwrap().key;
     ui.set_choices(
         Rc::new(slint::VecModel::from(
@@ -547,6 +622,12 @@ fn icon_grid_click_keyboard_scroll_and_close() {
         pixels
     };
     let pixels = render();
+    assert!(requested.borrow().contains("lucide-a-arrow-down"));
+    assert!(
+        requested.borrow().len() < 100,
+        "opening the picker must not decode the full catalog: {}",
+        requested.borrow().len()
+    );
     if let Some(path) = std::env::var_os("ECHO_ICON_GRID_RENDER") {
         let bytes: Vec<u8> = pixels.iter().flat_map(|p| [p.r, p.g, p.b]).collect();
         image::save_buffer(path, &bytes, 500, 540, image::ColorType::Rgb8).unwrap();
@@ -562,15 +643,16 @@ fn icon_grid_click_keyboard_scroll_and_close() {
             button: PointerEventButton::Left,
         });
     };
-    click(104., 112.);
-    assert_eq!(ui.get_chosen_key(), "Mail");
+    click(60., 140.);
+    assert_eq!(ui.get_chosen_key(), "lucide-a-arrow-down");
     let key = |text: slint::SharedString| {
         ui.window()
             .dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
         ui.window()
             .dispatch_event(WindowEvent::KeyReleased { text });
     };
-    for _ in 0..100 {
+    key(slint::platform::Key::Tab.into());
+    for _ in 0..300 {
         key(slint::platform::Key::DownArrow.into());
     }
     render();
@@ -580,7 +662,8 @@ fn icon_grid_click_keyboard_scroll_and_close() {
         last,
         "keyboard must reach the end of the full catalog"
     );
-    click(446., 64.);
+    click(446., 46.);
     assert!(ui.get_dismissed(), "top-right close icon must dismiss");
+    assert_eq!(ui.get_query(), "", "picker starts with an empty search");
     ui.hide().unwrap();
 }

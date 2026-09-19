@@ -11,7 +11,8 @@ import { EchoTheme, EchoButton, Hint } from "theme.slint";
 import { EntryRow, MatchRange } from "entry-row.slint";
 import { FavoriteIconChoice, FavoriteIconPicker } from "favorite-icon-picker.slint";
 import { FavoriteIconImages } from "favorite-icon-images.slint";
-export { EntryRow, MatchRange, EchoTheme, FavoriteIconChoice, FavoriteIconImages, SpaceVm, ActionVm }
+import { LucideIconImages } from "lucide-icon-images.slint";
+export { EntryRow, MatchRange, EchoTheme, FavoriteIconChoice, FavoriteIconImages, LucideIconImages, SpaceVm, ActionVm }
 
 import { DesignTokens as T } from "echo-tokens.slint";
 import { SpacePanel } from "space-panel.slint";
@@ -195,6 +196,7 @@ export component AppWindow inherits Window {
     callback settings-action(string);
     callback picker-selected(string);
     callback picker-query-edited(string);
+    callback icon-query-edited(string);
     callback picker-next();
     callback confirm(string);
     callback viewport-changed();
@@ -279,7 +281,7 @@ export component AppWindow inherits Window {
                 visible: root.route == "history";
                 inline-mode: root.inline-mode;
                 control-focus-mode:root.control-focus-mode;
-                title: root.space-title; subtitle: I18n.message(root.space-subtitle); icon-key: root.space-icon;
+                title: root.space-title; subtitle: I18n.message(root.space-subtitle); icon-key: root.space-icon; system-space: root.active-view == "history" || root.active-view == "favorites";
                 rows: root.rows; favorites: root.active-view != "history"; clearable: root.space-clearable; capture-only: false;
                 loading: root.loading; stale: root.stale-rows; error: root.status-error;
                 empty-state-text: I18n.message(root.empty-state-text);
@@ -328,7 +330,7 @@ export component AppWindow inherits Window {
                 x: 0px; y: 0px; width: root.panel-width; height: root.panel-height;
                 inline-mode: root.inline-mode;
                 title: root.outgoing.title; subtitle: I18n.message(root.outgoing.subtitle);
-                icon-key: root.outgoing.icon-key;
+                icon-key: root.outgoing.icon-key; system-space: !root.outgoing.favorites;
                 rows: root.outgoing.rows; favorites: root.outgoing.favorites; clearable: root.outgoing.clearable;
                 busy: true; modal: true; animating: true;
                 batch: root.outgoing.batch;
@@ -408,11 +410,11 @@ export component AppWindow inherits Window {
                 if (event.text == Key.Tab) {
                     if (event.modifiers.shift) {
                         if (name-edit.has-focus) { cancel-button.focus(); } else if (content-edit.has-focus) { name-edit.focus(); }
-                        else if (icon-edit.has-focus) { content-edit.focus(); }
-                        else if (choose-icon.focused) { icon-edit.focus(); } else if (save-button.focused) { choose-icon.focus(); } else { save-button.focus(); }
+                        else if (favorite-icon-button.focused) { content-edit.focus(); }
+                        else if (save-button.focused) { favorite-icon-button.focus(); } else { save-button.focus(); }
                     } else {
-                        if (name-edit.has-focus) { content-edit.focus(); } else if (content-edit.has-focus) { icon-edit.focus(); }
-                        else if (icon-edit.has-focus) { choose-icon.focus(); } else if (choose-icon.focused) { save-button.focus(); }
+                        if (name-edit.has-focus) { content-edit.focus(); } else if (content-edit.has-focus) { favorite-icon-button.focus(); }
+                        else if (favorite-icon-button.focused) { save-button.focus(); }
                         else if (save-button.focused) { cancel-button.focus(); } else { name-edit.focus(); }
                     } return accept;
                 } return reject;
@@ -432,19 +434,24 @@ export component AppWindow inherits Window {
                         VerticalLayout {
                             spacing: 10px;
                     HorizontalLayout {
-                        alignment: start; spacing: 4px;
-                        Text { text: "*"; color: EchoTheme.danger; font-size: 12px; }
-                        Text { text: @tr("Name"); color: EchoTheme.muted; font-size: 12px; }
-                    }
-                    Rectangle {
-                        height: 36px;
-                        name-edit := LineEdit {
-                            width: parent.width; height: parent.height;
-                            text <=> root.draft-name; accessible-label: @tr("Favorite name (required)"); enabled: !root.busy;
-                            private property <int> focus-request: root.editor-name-focus-request;
-                            changed focus-request => { editor-scroll.viewport-y = 0px; self.focus(); }
+                        spacing: 10px;
+                        favorite-icon-button := EchoButton {
+                            width: 36px; height: 36px; row-action: true; flat: true;
+                            icon: root.draft-icon == "" || root.draft-icon == "none" ? @image-url("favorite-icons/CircleDashed.svg") : LucideIconImages.image-for(root.draft-icon);
+                            label: @tr("Favorite icon"); enabled: !root.busy;
+                            clicked => { root.picking-space-icon = false; root.icon-picker-open = true; }
                         }
-                        Rectangle { width: parent.width; height: parent.height; background: transparent; border-radius: 4px; border-width: root.editor-name-invalid ? 1px : 0px; border-color: EchoTheme.danger; }
+                        Text { text: "*"; color: EchoTheme.danger; font-size: 12px; }
+                        Rectangle {
+                            height: 36px; horizontal-stretch: 1; min-width: 0px;
+                            name-edit := LineEdit {
+                                width: parent.width; height: parent.height;
+                                text <=> root.draft-name; accessible-label: @tr("Favorite name (required)"); enabled: !root.busy;
+                                private property <int> focus-request: root.editor-name-focus-request;
+                                changed focus-request => { editor-scroll.viewport-y = 0px; self.focus(); }
+                            }
+                            Rectangle { width: parent.width; height: parent.height; background: transparent; border-radius: 4px; border-width: root.editor-name-invalid ? 1px : 0px; border-color: EchoTheme.danger; }
+                        }
                     }
                     if (root.editor-name-invalid): Text { text: @tr("Enter a name."); color: EchoTheme.danger; wrap: word-wrap; font-size: 12px; min-width: 0px; }
                     content-label := HorizontalLayout {
@@ -468,25 +475,13 @@ export component AppWindow inherits Window {
                         Rectangle { width: parent.width; height: parent.height; background: transparent; border-radius: 4px; border-width: root.editor-content-invalid ? 1px : 0px; border-color: EchoTheme.danger; }
                     }
                     if (root.editor-content-invalid): Text { text: @tr("Enter content."); color: EchoTheme.danger; wrap: word-wrap; font-size: 12px; min-width: 0px; }
-                    Text { text: @tr("Favorite icon"); color: EchoTheme.muted; font-size: 12px; }
-                    HorizontalLayout {
-                        spacing: 8px;
-                        if (FavoriteIconImages.image-for(root.draft-icon).width > 0): Image {
-                            width: 24px; height: 24px; source: FavoriteIconImages.image-for(root.draft-icon); colorize: EchoTheme.text;
-                        }
-                        icon-edit := LineEdit { text <=> root.draft-icon; accessible-label: @tr("Favorite icon"); enabled: !root.busy; min-width: 0px; }
-                        choose-icon := EchoButton {
-                            text: @tr("Choose icon"); enabled: !root.busy;
-                            clicked => { root.picking-space-icon = false; root.icon-picker-open = true; }
-                        }
-                    }
                         }
                     }
                     if (root.editor-error != ""): Text { text: I18n.error(root.editor-error); color: EchoTheme.danger; wrap: word-wrap; font-size: 12px; min-width: 0px; }
                     HorizontalLayout {
                         spacing: 10px; alignment: end;
                         cancel-button := EchoButton { text: @tr("Cancel"); enabled: !root.busy; clicked => { root.cancel-editor(); } }
-                        save-button := EchoButton { text: root.busy ? @tr("Saving…") : @tr("Save favorite"); primary: true; enabled: !root.busy; clicked => { root.save-favorite(); } }
+                        save-button := EchoButton { text: root.busy ? @tr("Saving…") : @tr("Save"); primary: true; enabled: !root.busy; clicked => { root.save-favorite(); } }
                     }
                 }
             }
@@ -538,7 +533,7 @@ export component AppWindow inherits Window {
                             spacing: 10px;
                             EchoButton {
                                 width: 36px; height: 36px; row-action: true; flat: true;
-                                icon: root.space-draft-icon == "" || root.space-draft-icon == "none" ? @image-url("favorite-icons/CircleDashed.svg") : FavoriteIconImages.image-for(root.space-draft-icon);
+                                icon: root.space-draft-icon == "" || root.space-draft-icon == "none" ? @image-url("favorite-icons/CircleDashed.svg") : LucideIconImages.image-for(root.space-draft-icon);
                                 label: @tr("Choose icon"); enabled: !root.busy;
                                 clicked => { root.picking-space-icon = true; root.icon-picker-open = true; }
                             }
@@ -598,6 +593,7 @@ export component AppWindow inherits Window {
     if (root.icon-picker-open && (root.editor-open || root.space-dialog-open)): FavoriteIconPicker {
         choices: root.favorite-icon-choices;
         selected-key: root.picking-space-icon ? root.space-draft-icon : root.draft-icon;
+        query-edited(query) => { root.icon-query-edited(query); }
         chosen(key) => { if (root.picking-space-icon) { root.space-draft-icon = key; } else { root.draft-icon = key; } root.icon-picker-open = false; }
         dismissed => { root.icon-picker-open = false; }
     }
@@ -674,43 +670,5 @@ export component AppWindow inherits Window {
                 }
             }
         }
-    }
-}
-
-// Offscreen-only component. The injected adapter never creates a native window.
-export component CardSnapshot inherits Window {
-    in property <string> navigation-hint;
-    in property <bool> previous-enabled;
-    in property <bool> next-enabled;
-    in property <bool> has-more;
-    in property <bool> has-previous;
-    in property <bool> batch;
-    in property <int> selected-count;
-    in property <bool> quick-insert;
-    in property <bool> inline-mode;
-    in property <string> panel-title;
-    in property <string> subtitle;
-    in property <string> icon-key;
-    in property <[EntryRow]> rows;
-    in property <bool> favorites;
-    in property <bool> loading;
-    in property <bool> titles-only;
-    in property <bool> dark;
-    in-out property <string> query;
-    in property <string> navigation-label;
-    in-out property <length> scroll-y;
-    changed dark => {EchoTheme.dark = root.dark; Palette.color-scheme = root.dark ? ColorScheme.dark : ColorScheme.light;}
-    background:transparent;default-font-family: "Microsoft YaHei UI";default-font-size:T.font-body;
-    SpacePanel {
-        x: 0px; y: 0px; width: root.width; height: root.height;
-        inline-mode:root.inline-mode;
-        title:root.panel-title;subtitle:root.subtitle;icon-key:root.icon-key;
-        rows:root.rows;favorites:root.favorites;loading:root.loading;titles-only:root.titles-only;
-        capture-only:true;query <=> root.query;
-        navigation-hint:root.navigation-hint;
-        previous-enabled:root.previous-enabled;next-enabled:root.next-enabled;
-        has-more:root.has-more;has-previous:root.has-previous;
-        batch:root.batch;selected-count:root.selected-count;quick-insert:root.quick-insert;
-        scroll-y <=> root.scroll-y;navigation-label:root.navigation-label;
     }
 }

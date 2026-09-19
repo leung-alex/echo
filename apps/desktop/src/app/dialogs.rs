@@ -314,7 +314,7 @@ impl App {
                 self.window.set_space_dialog_new(true);
                 self.window.set_space_draft_title("".into());
                 self.window.set_space_draft_description("".into());
-                self.window.set_space_draft_icon("Folder".into());
+                self.window.set_space_draft_icon("lucide-folder".into());
                 self.report("", false);
                 self.window.set_space_dialog_open(true);
             }
@@ -332,8 +332,11 @@ impl App {
                 self.window.set_space_draft_title(space.title.into());
                 self.window
                     .set_space_draft_description(space.description.into());
-                self.window
-                    .set_space_draft_icon(space.icon_key.unwrap_or_default().into());
+                self.window.set_space_draft_icon(
+                    crate::lucide_icons::normalize_user_key(space.icon_key.as_deref())
+                        .unwrap_or_default()
+                        .into(),
+                );
                 self.space_original = Some(self.space_draft_values());
                 self.report("", false);
                 self.window.set_space_dialog_open(true);
@@ -653,6 +656,14 @@ impl App {
             Picker::Closed => {}
         }
     }
+    pub(super) fn icon_query(&mut self, query: String) {
+        if query.len() > 256 {
+            return;
+        }
+        self.window
+            .set_favorite_icon_choices(crate::lucide_icons::choices_matching(&query));
+    }
+
     pub(super) fn picker_query(&mut self, query: String) {
         if !matches!(self.picker, Picker::Catalog(_)) || query.len() > 16 * 1024 {
             return;
@@ -812,10 +823,11 @@ impl App {
         );
         self.editor_tags = item.as_ref().map(|i| i.tags.clone()).unwrap_or_default();
         self.window.set_draft_icon(
-            item.as_ref()
-                .and_then(|i| i.icon_key.clone())
-                .unwrap_or_default()
-                .into(),
+            crate::lucide_icons::normalize_user_key(
+                item.as_ref().and_then(|i| i.icon_key.as_deref()),
+            )
+            .unwrap_or_default()
+            .into(),
         );
         self.window
             .set_content_editable(item.as_ref().is_none_or(|i| i.editable_text.is_some()));

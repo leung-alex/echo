@@ -7,6 +7,7 @@ mod favorite_icons;
 mod image_preview;
 #[cfg(windows)]
 mod indicator_trace;
+mod lucide_icons;
 mod match_highlight;
 mod memory_lifecycle;
 mod memory_trace;

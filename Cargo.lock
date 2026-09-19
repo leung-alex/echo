@@ -1236,6 +1236,7 @@ dependencies = [
  "echo-activation",
  "echo-desktop-ui",
  "echo-engine",
+ "echo-icon-assets",
  "echo-presentation",
  "echo-storage",
  "echo-windows",
@@ -1273,6 +1274,13 @@ dependencies = [
  "thiserror 2.0.20",
  "unicode-normalization",
  "unicode-segmentation",
+]
+
+[[package]]
+name = "echo-icon-assets"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]

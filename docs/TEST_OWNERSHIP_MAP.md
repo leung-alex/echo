@@ -10,6 +10,7 @@
 | Activation | `crates/echo-activation/src` | Echo envelope encoding, validation, and `--echo-activate` parsing. |
 | Presentation | `crates/echo-presentation/src` | Query/load generations, bounded windows, opaque row keys, selection, keyboard/IME intent, activation epochs, and stale completion handling. |
 | Desktop | `apps/desktop/src` | Typed worker/event contracts, Slint binding behavior that can be tested without launching the UI, activation routing, lifecycle decisions, and renderer selection policy. |
+| Icon assets | `apps/desktop/icon-crate` | Full Lucide catalog/alias and legacy key/label coverage, byte-exact packed original SVGs, invalid keys; desktop tests cover decoding, lazy loading, system icon pixel parity and picker interaction. Desktop owner gates include this package. |
 | Native UI acceptance | `tests/native` | Real native Echo executable and UI Automation against isolated synthetic data for the scenarios explicitly implemented by each gate. |
 | Tooling | `tools/echo/*_test.go` | Command dispatch, flags, ownership planning, canonical storage leak-gate wiring, architecture boundaries, browser-stack retirement, bootstrap independence, packaging orchestration, and cleanup. |
 

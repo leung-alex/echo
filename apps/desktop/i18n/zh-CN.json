@@ -1054,5 +1054,7 @@
   "Unsaved changes will be lost and clipboard capture will stop.": "未保存的更改将丢失，并停止剪贴板采集。",
   "Choose what to do with this space’s content.": "选择如何处理此空间的内容。",
   "Deletes this history record. Saved copies are kept. This cannot be undone.": "删除此条历史记录，保留已保存副本。无法撤销。",
-  "Deletes this content from this space only. This cannot be undone.": "仅删除此空间中的该内容。无法撤销。"
+  "Deletes this content from this space only. This cannot be undone.": "仅删除此空间中的该内容。无法撤销。",
+  "Search icons": "搜索图标",
+  "No icons available": "没有可用图标"
 }

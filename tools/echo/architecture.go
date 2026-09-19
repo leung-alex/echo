@@ -61,7 +61,9 @@ func validateCargoArchitecture(metadata []byte) error {
 		"echo-activation":   {},
 		"echo-presentation": {"echo-engine": true},
 		"echo-desktop-ui":   {},
+		"echo-icon-assets":  {},
 		"echo-desktop": {
+			"echo-icon-assets":  true,
 			"echo-desktop-ui":   true,
 			"echo-activation":   true,
 			"echo-presentation": true,

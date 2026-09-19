@@ -17,8 +17,11 @@ pub(super) fn connect(app: &App) {
     }
     window
         .global::<crate::FavoriteIconImages>()
-        .on_index_for(|key| crate::favorite_icons::index(key.as_str()));
-    window.set_favorite_icon_choices(crate::favorite_icons::choices());
+        .on_image_for(|key| crate::favorite_icons::image(key.as_str()));
+    window
+        .global::<crate::LucideIconImages>()
+        .on_image_for(|key| crate::lucide_icons::image(key.as_str()));
+    window.set_favorite_icon_choices(crate::lucide_icons::choices());
     callback!(on_query_edited,query=>Command::Query(query.to_string()));
     callback!(on_row_selected,key=>Command::Select(key.to_string()));
     callback!(on_row_action,action,key=>Command::Action(action.to_string(),key.to_string()));
@@ -48,6 +51,7 @@ pub(super) fn connect(app: &App) {
     callback!(on_navigate_space,delta=>Command::Keyboard(Intent::SwitchSpace(delta)));
     callback!(on_picker_selected,key=>Command::PickerSelect(key.to_string()));
     callback!(on_picker_query_edited,query=>Command::PickerQuery(query.to_string()));
+    callback!(on_icon_query_edited,query=>Command::IconQuery(query.to_string()));
     callback!(on_picker_next,=>Command::PickerMore);
     callback!(on_confirm,answer=>Command::Confirm(answer.to_string()));
     let weak = window.as_weak();

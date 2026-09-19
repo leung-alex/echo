@@ -17,7 +17,10 @@ fn main() {
             serde_json::to_string(translation).unwrap()
         ));
     }
-    std::fs::write(messages.join("echo-desktop-ui.po"), po).unwrap();
+    let output = messages.join("echo-desktop-ui.po");
+    if std::fs::read(&output).ok().as_deref() != Some(po.as_bytes()) {
+        std::fs::write(output, po).unwrap();
+    }
     println!("cargo:rerun-if-changed=../i18n/zh-CN.json");
     let configuration = slint_build::CompilerConfiguration::new()
         .with_style("fluent".into())

@@ -1,6 +1,7 @@
 import { EchoSelect } from "echo-select.slint";
 import { SpaceVm } from "space-models.slint";
 import { FavoriteIconImages } from "favorite-icon-images.slint";
+import { LucideIconImages } from "lucide-icon-images.slint";
 
 export component SpaceChoice inherits EchoSelect {
     in property <[SpaceVm]> spaces;
@@ -9,6 +10,6 @@ export component SpaceChoice inherits EchoSelect {
     selection-changed(index) => { root.selected(index); }
     icon-at(index) => {
         if (index < 0 || index >= root.spaces.length) { return @image-url("favorite-icons/Clock.svg"); }
-        return root.spaces[index].icon-key == "" ? @image-url("favorite-icons/Folder.svg") : FavoriteIconImages.image-for(root.spaces[index].icon-key);
+        return root.spaces[index].icon-key == "" ? @image-url("favorite-icons/Folder.svg") : root.spaces[index].system ? FavoriteIconImages.image-for(root.spaces[index].icon-key) : LucideIconImages.image-for(root.spaces[index].icon-key);
     }
 }

@@ -37,6 +37,7 @@ pub enum Command {
     SettingsAction(String),
     SpaceAction(String, String),
     PickerQuery(String),
+    IconQuery(String),
     PickerMore,
     PickerSelect(String),
     Confirm(String),

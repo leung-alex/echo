@@ -9,7 +9,8 @@ Desktop is Echo's native Rust composition root. Read `docs/architecture/overview
 - `src/service.rs` owns the background worker and its typed Rust work/result messages.
 - `src/events.rs` owns typed events delivered back to the Slint event loop.
 - `ui/*.slint` owns visual structure, component properties, callbacks, and accessibility metadata.
-- `build.rs` compiles the Slint interface and embeds Windows resources.
+- `ui-crate/build.rs` compiles the Slint interface and translations; host `build.rs` embeds Windows resources.
+- `icon-crate` owns the immutable Lucide and system catalogs/SVG bytes. Keep it independent of UI and business code; do not generate whole-gallery Slint image arrays.
 
 Business policy belongs to `echo-engine`. Framework-independent presentation state, interaction interpretation, opaque row keys, pagination generations, and session epochs belong to `echo-presentation`. Win32 clipboard, focus, paste, named-pipe, tray, and HWND behavior belongs to `echo-windows`.
 

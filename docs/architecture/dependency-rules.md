@@ -30,6 +30,12 @@ types. The UI crate must not depend on any other Echo crate: business-only edits
 must not invalidate its compiled artifact. Windows resources remain in the host
 build script. Both crates retain the same development optimization level.
 
+`apps/desktop/icon-crate` (`echo-icon-assets`) owns only immutable Lucide/system metadata
+and SVG bytes. It must not depend on another Echo crate or Slint. Desktop adapts
+individual SVGs to Slint images on the UI thread. The UI crate declares the image
+callback without importing the asset crate, so catalog changes do not regenerate
+the Slint component tree. Preserve original SVGs, persisted icon keys, and aliases.
+
 Slint files may expose typed properties and callbacks, but must not reach storage, engine services, the named pipe, or Win32 directly. Slint component handles stay on the UI thread. Blocking work crosses `apps/desktop/src/service.rs` using typed Rust work and result messages; do not recreate command-name strings, JSON IPC, browser transports, or polling.
 
 Interfaces live next to the engine behavior that needs them. Do not create repository-wide `common`, `helpers`, `utils`, `manager`, or `interfaces` dumping grounds.

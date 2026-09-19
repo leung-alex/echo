@@ -98,6 +98,10 @@ def main():
     lines += ['OpenAI Apps SDK UI icons (0f00143c7a639906f1621fe58e1b6be7b5bea46d)',
               'Source: https://github.com/openai/apps-sdk-ui', '',
               icon_license.read_text(encoding='utf-8').rstrip(), '']
+    lines += ['Lucide user icon assets (lucide-static 1.47.0)',
+              'Source: https://github.com/lucide-icons/lucide',
+              'Integrity: sha512-yWIrkdXc688Feq5VjOktsKmV5Ikc7y5Nu3rrdtbr8nWjkJWk8QlnZfVtIak22Af+fNhZ7k4cTJpZo1zmj7X5sA==',
+              'Text: licenses/b495047bd93a9b06913511076f504daba17d5bbeb3e0650f3bb53a4220329c57.txt', '']
     (destination / 'THIRD-PARTY-NOTICES.txt').write_text('\n'.join(lines), encoding='utf-8')
     print(json.dumps(dict(packages=len(inventory), standalone_text_not_shipped=missing)))
 

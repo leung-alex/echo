@@ -26,6 +26,13 @@ The generated Slint code is compiled separately by `echo-desktop-ui` in
 `apps/desktop/ui-crate`, with source still in `apps/desktop/ui`. Desktop business
 changes reuse that dependency; UI or translation changes rebuild it normally.
 
+Lucide and system icon metadata and original SVG bytes are compiled separately by
+`echo-icon-assets` in `apps/desktop/icon-crate`. Its small resource loader exposes
+the full catalog and individual SVGs. The Slint image callback requests only
+instantiated icons; it does not construct a whole-gallery image array. Decoded
+images are retained by the requesting component properties, without a separate
+resident gallery cache. Business or layout edits do not recompile the asset crate.
+
 ### Engine
 
 `ingest` normalizes clipboard snapshots and applies capture policy. `history` owns history queries and actions. `saved_items` owns the distinct durable Saved Item concept. `quick_insert` owns retrieval, target sessions, copy, and insert orchestration. `settings` owns settings values. `preview` owns preview asset requirements without UI encoding.

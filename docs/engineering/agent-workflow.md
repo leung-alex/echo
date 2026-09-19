@@ -64,6 +64,30 @@ For build diagnostics, use `cargo build -p echo-desktop --locked
 after changing a host Rust source, `cargo build -vv` should report
 `Fresh echo-desktop-ui`. Timing reports live under `target/cargo-timings`.
 
+Lucide and system SVG resources have a separate `echo-icon-assets` compilation boundary.
+`tools/icons/generate_lucide.py <lucide-static directory> <repo>` updates the
+vendored metadata and SVGs only when their bytes change; `--check` validates the
+catalog/SVG inventory. The asset build script packs the SVGs as immutable data,
+with no generated Slint image array. Business-only edits should keep both
+`echo-desktop-ui` and `echo-icon-assets` fresh. Changing a catalog or SVG rebuilds
+the resource crate; changing Slint rebuilds the UI crate. A final Release link/LTO
+can still run when the application changes, even when dependencies are fresh.
+Do not claim that a cached dependency eliminates all final-link work.
+
+Ordinary Release retains optimization level 3 and Thin LTO, with incremental
+compilation enabled. Only `echo-desktop` and `echo-desktop-ui` use 16 codegen units;
+other Release packages keep one unit. Profile/toolchain changes populate a new
+cache once. Keep that cost separate from unchanged/business/UI edit comparisons,
+and use `--message-format=json` artifact `fresh` flags to verify reuse. Incremental
+data increases local target disk usage; do not clean it as part of routine builds.
+
+`system-catalog.json` preserves all 745 legacy SVG keys and the curated labels
+(including the empty `none` choice). `system_svg(key)` resolves original bytes;
+the desktop callback decodes only requested images. The former unused legacy
+picker model and `CardSnapshot` export no longer enter production compilation.
+Translations, packed resources and token generation write outputs only when
+their bytes change, so an unchanged generation keeps the output timestamp.
+
 The default desktop build and canonical build/package commands use Slint software rendering without WGPU or Skia. The card carousel moves and resizes native Slint components; the outside of the card stage is transparent. Optional GPU/Skia features are retired; ECHO_RENDERER accepts only software. `native-test` is restricted to the isolated acceptance executable and must never be enabled in a distribution build. Do not claim universal hardware support from compilation.
 
 Packaging supports portable directory/ZIP output and an optional NSIS installer. Report which output was actually produced and tested. Do not infer installer coverage or a final release-candidate pass from compilation or archive creation.

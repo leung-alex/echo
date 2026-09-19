@@ -89,6 +89,29 @@ func TestDesktopUICompilationBoundary(t *testing.T) {
 	}
 }
 
+func TestIconAssetCompilationBoundary(t *testing.T) {
+	valid := []byte(`{"packages":[{"name":"echo-desktop","dependencies":[{"name":"echo-icon-assets"}]},{"name":"echo-icon-assets","dependencies":[{"name":"serde_json"}]}]}`)
+	if err := validateCargoArchitecture(valid); err != nil {
+		t.Fatal(err)
+	}
+	for _, dependency := range []string{"echo-desktop", "echo-desktop-ui", "echo-engine", "echo-storage", "echo-windows", "echo-presentation"} {
+		metadata := []byte(fmt.Sprintf(`{"packages":[{"name":"echo-icon-assets","dependencies":[{"name":%q}]}]}`, dependency))
+		if err := validateCargoArchitecture(metadata); err == nil {
+			t.Fatalf("icon assets must not depend on %s", dependency)
+		}
+	}
+}
+
+func TestIconAssetEditsRetainResourceAndConsumerTests(t *testing.T) {
+	for _, path := range []string{"apps/desktop/icon-crate/catalog.json", "apps/desktop/ui/lucide-icons/activity.svg"} {
+		known, owners := ownersForPath(path)
+		packages, _ := ownerPackages(OwnerPlan{Owners: owners})
+		if !known || !contains(packages, "echo-icon-assets") || !contains(packages, "echo-desktop") {
+			t.Fatalf("resource edit omitted resource or consumer tests: %s: %v", path, packages)
+		}
+	}
+}
+
 func TestCapturePathRejectsPerCaptureReconcile(t *testing.T) {
 	source := "pub fn record_capture(&mut self) { self.reconcile_blob_store(); }\n"
 	if err := rejectReconcileInCaptureFunctions(source); err == nil {

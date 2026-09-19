@@ -7,6 +7,7 @@ members = [
     "crates/echo-presentation",
     "apps/desktop",
     "apps/desktop/ui-crate",
+    "apps/desktop/icon-crate",
 ]
 resolver = "2"
 
@@ -71,9 +72,19 @@ opt-level = 0
 opt-level = 0
 
 [profile.release]
+# Reuse unchanged optimized code across local Release builds.
+incremental = true
 lto = "thin"
 codegen-units = 1
 strip = "debuginfo"
+
+# Bound the expensive host/UI compilation units without changing optimization
+# levels or widening code generation for the stable dependency graph.
+[profile.release.package.echo-desktop]
+codegen-units = 16
+
+[profile.release.package.echo-desktop-ui]
+codegen-units = 16
 
 [patch.crates-io]
 i-slint-backend-winit = { path = "vendor/i-slint-backend-winit" }

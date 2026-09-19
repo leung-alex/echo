@@ -2,6 +2,7 @@ import { DesignTokens as T } from "echo-tokens.slint";
 import { I18n } from "i18n.slint";
 import { EchoTheme } from "theme.slint";
 import { FavoriteIconImages } from "favorite-icon-images.slint";
+import { LucideIconImages } from "lucide-icon-images.slint";
 import { EntryRow } from "entry-row.slint";
 import { SpaceVm } from "space-models.slint";
 import { CardShadow } from "card-shadow.slint";
@@ -42,7 +43,7 @@ export component SpaceSideCard inherits Rectangle {
     Image {
         x: 20px; y: 22px;
         width: 24px; height: 24px;
-        source: FavoriteIconImages.image-for(root.space.icon-key); colorize: EchoTheme.text;
+        source: root.space.system ? FavoriteIconImages.image-for(root.space.icon-key) : LucideIconImages.image-for(root.space.icon-key); colorize: EchoTheme.text;
         accessible-role: none;
     }
     Text {

@@ -20,8 +20,9 @@ an editable flat reconstruction; it is not the raster artwork's original source.
 The taskbar ICO alias has identical bytes to the main ICO. It is not embedded
 as a second resource group. Alternative monochrome tray assets are retained as
 source assets only. Functional glyphs and Saved Item icon choices are unchanged.
-There is no additional HWND for the offscreen CardSnapshot. Existing window
-visibility, focus and application identity policies are unchanged.
+The retired offscreen `CardSnapshot` component has been removed from production
+UI compilation. Existing window visibility, focus and application identity
+policies are unchanged.
 
 The main ICO SHA-256 is
 `d471ffee2a44a7731dd8c7d65c914545e4eff2de0bbd94b4c051a00a270ead68`.

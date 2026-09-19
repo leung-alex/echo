@@ -1,0 +1,2986 @@
+[
+  {
+    "key": "none",
+    "label": "No icon"
+  },
+  {
+    "key": "Mail",
+    "label": "Mail"
+  },
+  {
+    "key": "Phone",
+    "label": "Phone"
+  },
+  {
+    "key": "MapPin",
+    "label": "Map Pin"
+  },
+  {
+    "key": "Terminal",
+    "label": "Terminal"
+  },
+  {
+    "key": "Code",
+    "label": "Code"
+  },
+  {
+    "key": "Link",
+    "label": "Link"
+  },
+  {
+    "key": "File",
+    "label": "File"
+  },
+  {
+    "key": "Folder",
+    "label": "Folder"
+  },
+  {
+    "key": "Document",
+    "label": "Document"
+  },
+  {
+    "key": "Clipboard",
+    "label": "Clipboard"
+  },
+  {
+    "key": "Star",
+    "label": "Star"
+  },
+  {
+    "key": "Tag",
+    "label": "Tag"
+  },
+  {
+    "key": "Key",
+    "label": "Key"
+  },
+  {
+    "key": "Calendar",
+    "label": "Calendar"
+  },
+  {
+    "key": "User",
+    "label": "User"
+  },
+  {
+    "key": "Home",
+    "label": "Home"
+  },
+  {
+    "key": "Suitcase",
+    "label": "Suitcase"
+  },
+  {
+    "key": "AddMember",
+    "label": "Add Member"
+  },
+  {
+    "key": "AddSources",
+    "label": "Add Sources"
+  },
+  {
+    "key": "Agent",
+    "label": "Agent"
+  },
+  {
+    "key": "AgentMode",
+    "label": "Agent Mode"
+  },
+  {
+    "key": "AllGizmos",
+    "label": "All Gizmos"
+  },
+  {
+    "key": "AllProductsExplore",
+    "label": "All Products Explore"
+  },
+  {
+    "key": "Analytics",
+    "label": "Analytics"
+  },
+  {
+    "key": "AnalyzeData",
+    "label": "Analyze Data"
+  },
+  {
+    "key": "ApiKey",
+    "label": "Api Key"
+  },
+  {
+    "key": "ApiKeyAdmin",
+    "label": "Api Key Admin"
+  },
+  {
+    "key": "ApiKeyServiceAccount",
+    "label": "Api Key Service Account"
+  },
+  {
+    "key": "ApiKeys",
+    "label": "Api Keys"
+  },
+  {
+    "key": "Archive",
+    "label": "Archive"
+  },
+  {
+    "key": "Array",
+    "label": "Array"
+  },
+  {
+    "key": "ArrowBottomLeftSm",
+    "label": "Arrow Bottom Left Sm"
+  },
+  {
+    "key": "ArrowBottomRightSm",
+    "label": "Arrow Bottom Right Sm"
+  },
+  {
+    "key": "ArrowCurved",
+    "label": "Arrow Curved"
+  },
+  {
+    "key": "ArrowCurvedLeft",
+    "label": "Arrow Curved Left"
+  },
+  {
+    "key": "ArrowCurvedRight",
+    "label": "Arrow Curved Right"
+  },
+  {
+    "key": "ArrowCurvedRightXs",
+    "label": "Arrow Curved Right Xs"
+  },
+  {
+    "key": "ArrowCurvedRightXs24px",
+    "label": "Arrow Curved Right Xs24px"
+  },
+  {
+    "key": "ArrowDown",
+    "label": "Arrow Down"
+  },
+  {
+    "key": "ArrowDownLg",
+    "label": "Arrow Down Lg"
+  },
+  {
+    "key": "ArrowDownSm",
+    "label": "Arrow Down Sm"
+  },
+  {
+    "key": "ArrowLeft",
+    "label": "Arrow Left"
+  },
+  {
+    "key": "ArrowLeftLg",
+    "label": "Arrow Left Lg"
+  },
+  {
+    "key": "ArrowLeftSm",
+    "label": "Arrow Left Sm"
+  },
+  {
+    "key": "ArrowRight",
+    "label": "Arrow Right"
+  },
+  {
+    "key": "ArrowRightLg",
+    "label": "Arrow Right Lg"
+  },
+  {
+    "key": "ArrowRightSm",
+    "label": "Arrow Right Sm"
+  },
+  {
+    "key": "ArrowRotateCcw",
+    "label": "Arrow Rotate Ccw"
+  },
+  {
+    "key": "ArrowRotateCw",
+    "label": "Arrow Rotate Cw"
+  },
+  {
+    "key": "ArrowTopLeftSm",
+    "label": "Arrow Top Left Sm"
+  },
+  {
+    "key": "ArrowTopRightSm",
+    "label": "Arrow Top Right Sm"
+  },
+  {
+    "key": "ArrowUp",
+    "label": "Arrow Up"
+  },
+  {
+    "key": "ArrowUpLg",
+    "label": "Arrow Up Lg"
+  },
+  {
+    "key": "ArrowUpRight",
+    "label": "Arrow Up Right"
+  },
+  {
+    "key": "ArrowUpSm",
+    "label": "Arrow Up Sm"
+  },
+  {
+    "key": "AspectRatio11",
+    "label": "Aspect Ratio11"
+  },
+  {
+    "key": "AspectRatio169",
+    "label": "Aspect Ratio169"
+  },
+  {
+    "key": "AspectRatio34",
+    "label": "Aspect Ratio34"
+  },
+  {
+    "key": "AspectRatio43",
+    "label": "Aspect Ratio43"
+  },
+  {
+    "key": "AspectRatio916",
+    "label": "Aspect Ratio916"
+  },
+  {
+    "key": "Assistant",
+    "label": "Assistant"
+  },
+  {
+    "key": "Astronout",
+    "label": "Astronout"
+  },
+  {
+    "key": "AtSign",
+    "label": "At Sign"
+  },
+  {
+    "key": "Atom",
+    "label": "Atom"
+  },
+  {
+    "key": "AutoPairApps",
+    "label": "Auto Pair Apps"
+  },
+  {
+    "key": "AutoSuggestedEdits",
+    "label": "Auto Suggested Edits"
+  },
+  {
+    "key": "Autocomplete",
+    "label": "Autocomplete"
+  },
+  {
+    "key": "AvatarFilledProfile",
+    "label": "Avatar Filled Profile"
+  },
+  {
+    "key": "AvatarProfile",
+    "label": "Avatar Profile"
+  },
+  {
+    "key": "Back10s",
+    "label": "Back10s"
+  },
+  {
+    "key": "Back15s",
+    "label": "Back15s"
+  },
+  {
+    "key": "BackLarge",
+    "label": "Back Large"
+  },
+  {
+    "key": "BackSmall",
+    "label": "Back Small"
+  },
+  {
+    "key": "BackToApp",
+    "label": "Back To App"
+  },
+  {
+    "key": "BackgroundConversation",
+    "label": "Background Conversation"
+  },
+  {
+    "key": "BalancingScale",
+    "label": "Balancing Scale"
+  },
+  {
+    "key": "BarChart",
+    "label": "Bar Chart"
+  },
+  {
+    "key": "BarChartFilled",
+    "label": "Bar Chart Filled"
+  },
+  {
+    "key": "Batch",
+    "label": "Batch"
+  },
+  {
+    "key": "Batches",
+    "label": "Batches"
+  },
+  {
+    "key": "Bell",
+    "label": "Bell"
+  },
+  {
+    "key": "BellFilled",
+    "label": "Bell Filled"
+  },
+  {
+    "key": "Beta",
+    "label": "Beta"
+  },
+  {
+    "key": "Bills",
+    "label": "Bills"
+  },
+  {
+    "key": "Blend",
+    "label": "Blend"
+  },
+  {
+    "key": "BlendingCurveSharp",
+    "label": "Blending Curve Sharp"
+  },
+  {
+    "key": "BlendingCurveSmooth",
+    "label": "Blending Curve Smooth"
+  },
+  {
+    "key": "BlendingCurveSubtle",
+    "label": "Blending Curve Subtle"
+  },
+  {
+    "key": "Bolt",
+    "label": "Bolt"
+  },
+  {
+    "key": "Book",
+    "label": "Book"
+  },
+  {
+    "key": "BookBookmark",
+    "label": "Book Bookmark"
+  },
+  {
+    "key": "BookClock",
+    "label": "Book Clock"
+  },
+  {
+    "key": "BookClosed",
+    "label": "Book Closed"
+  },
+  {
+    "key": "BookOpen",
+    "label": "Book Open"
+  },
+  {
+    "key": "BookWrench",
+    "label": "Book Wrench"
+  },
+  {
+    "key": "Boolean",
+    "label": "Boolean"
+  },
+  {
+    "key": "Brain",
+    "label": "Brain"
+  },
+  {
+    "key": "Branch",
+    "label": "Branch"
+  },
+  {
+    "key": "BranchAlt",
+    "label": "Branch Alt"
+  },
+  {
+    "key": "Bug",
+    "label": "Bug"
+  },
+  {
+    "key": "BuilderProfileCard",
+    "label": "Builder Profile Card"
+  },
+  {
+    "key": "BuildingWorkspace",
+    "label": "Building Workspace"
+  },
+  {
+    "key": "Business",
+    "label": "Business"
+  },
+  {
+    "key": "BusinessFilled",
+    "label": "Business Filled"
+  },
+  {
+    "key": "Cabinet",
+    "label": "Cabinet"
+  },
+  {
+    "key": "CalendarAlt",
+    "label": "Calendar Alt"
+  },
+  {
+    "key": "CalendarToday",
+    "label": "Calendar Today"
+  },
+  {
+    "key": "Camera",
+    "label": "Camera"
+  },
+  {
+    "key": "CameraFilledPhoto",
+    "label": "Camera Filled Photo"
+  },
+  {
+    "key": "CameraPhoto",
+    "label": "Camera Photo"
+  },
+  {
+    "key": "CaptionCcOff",
+    "label": "Caption Cc Off"
+  },
+  {
+    "key": "CaptionCcOn",
+    "label": "Caption Cc On"
+  },
+  {
+    "key": "CaptionOff",
+    "label": "Caption Off"
+  },
+  {
+    "key": "CaptionOn",
+    "label": "Caption On"
+  },
+  {
+    "key": "Card",
+    "label": "Card"
+  },
+  {
+    "key": "CaretDown",
+    "label": "Caret Down"
+  },
+  {
+    "key": "CaretLeft",
+    "label": "Caret Left"
+  },
+  {
+    "key": "CaretRight",
+    "label": "Caret Right"
+  },
+  {
+    "key": "CaretUp",
+    "label": "Caret Up"
+  },
+  {
+    "key": "Category",
+    "label": "Category"
+  },
+  {
+    "key": "Certificate",
+    "label": "Certificate"
+  },
+  {
+    "key": "Chart",
+    "label": "Chart"
+  },
+  {
+    "key": "ChartXAxis",
+    "label": "Chart XAxis"
+  },
+  {
+    "key": "ChartYAxis",
+    "label": "Chart YAxis"
+  },
+  {
+    "key": "Chat",
+    "label": "Chat"
+  },
+  {
+    "key": "ChatCompose",
+    "label": "Chat Compose"
+  },
+  {
+    "key": "ChatDashedCheckedTemp",
+    "label": "Chat Dashed Checked Temp"
+  },
+  {
+    "key": "ChatDashedTemp",
+    "label": "Chat Dashed Temp"
+  },
+  {
+    "key": "ChatTemporary",
+    "label": "Chat Temporary"
+  },
+  {
+    "key": "ChatTripleDots",
+    "label": "Chat Triple Dots"
+  },
+  {
+    "key": "Chats",
+    "label": "Chats"
+  },
+  {
+    "key": "Check",
+    "label": "Check"
+  },
+  {
+    "key": "CheckCircle",
+    "label": "Check Circle"
+  },
+  {
+    "key": "CheckCircleDashed",
+    "label": "Check Circle Dashed"
+  },
+  {
+    "key": "CheckCircleFilled",
+    "label": "Check Circle Filled"
+  },
+  {
+    "key": "CheckLg",
+    "label": "Check Lg"
+  },
+  {
+    "key": "CheckMd",
+    "label": "Check Md"
+  },
+  {
+    "key": "ChevronDown",
+    "label": "Chevron Down"
+  },
+  {
+    "key": "ChevronDownLg",
+    "label": "Chevron Down Lg"
+  },
+  {
+    "key": "ChevronDownMd",
+    "label": "Chevron Down Md"
+  },
+  {
+    "key": "ChevronDownUp",
+    "label": "Chevron Down Up"
+  },
+  {
+    "key": "ChevronDownVector",
+    "label": "Chevron Down Vector"
+  },
+  {
+    "key": "ChevronLeft",
+    "label": "Chevron Left"
+  },
+  {
+    "key": "ChevronLeftLg",
+    "label": "Chevron Left Lg"
+  },
+  {
+    "key": "ChevronLeftMd",
+    "label": "Chevron Left Md"
+  },
+  {
+    "key": "ChevronRight",
+    "label": "Chevron Right"
+  },
+  {
+    "key": "ChevronRightAlt",
+    "label": "Chevron Right Alt"
+  },
+  {
+    "key": "ChevronRightLg",
+    "label": "Chevron Right Lg"
+  },
+  {
+    "key": "ChevronRightMd",
+    "label": "Chevron Right Md"
+  },
+  {
+    "key": "ChevronSmallDown",
+    "label": "Chevron Small Down"
+  },
+  {
+    "key": "ChevronSmallLeft",
+    "label": "Chevron Small Left"
+  },
+  {
+    "key": "ChevronSmallRight",
+    "label": "Chevron Small Right"
+  },
+  {
+    "key": "ChevronSmallUp",
+    "label": "Chevron Small Up"
+  },
+  {
+    "key": "ChevronUp",
+    "label": "Chevron Up"
+  },
+  {
+    "key": "ChevronUpDown",
+    "label": "Chevron Up Down"
+  },
+  {
+    "key": "ChevronUpLg",
+    "label": "Chevron Up Lg"
+  },
+  {
+    "key": "ChevronUpMd",
+    "label": "Chevron Up Md"
+  },
+  {
+    "key": "Circle",
+    "label": "Circle"
+  },
+  {
+    "key": "CircleDashed",
+    "label": "Circle Dashed"
+  },
+  {
+    "key": "CircleQuestion",
+    "label": "Circle Question"
+  },
+  {
+    "key": "ClappingBoardClosed",
+    "label": "Clapping Board Closed"
+  },
+  {
+    "key": "ClappingBoardOpen",
+    "label": "Clapping Board Open"
+  },
+  {
+    "key": "Cleanup",
+    "label": "Cleanup"
+  },
+  {
+    "key": "Clear",
+    "label": "Clear"
+  },
+  {
+    "key": "Click",
+    "label": "Click"
+  },
+  {
+    "key": "Clip",
+    "label": "Clip"
+  },
+  {
+    "key": "ClipboardCopy",
+    "label": "Clipboard Copy"
+  },
+  {
+    "key": "Clock",
+    "label": "Clock"
+  },
+  {
+    "key": "Clock10s",
+    "label": "Clock10s"
+  },
+  {
+    "key": "Clock15s",
+    "label": "Clock15s"
+  },
+  {
+    "key": "Clock20s",
+    "label": "Clock20s"
+  },
+  {
+    "key": "Clock5s",
+    "label": "Clock5s"
+  },
+  {
+    "key": "ClockOff",
+    "label": "Clock Off"
+  },
+  {
+    "key": "CloseBold",
+    "label": "Close Bold"
+  },
+  {
+    "key": "CodeSquareSlash",
+    "label": "Code Square Slash"
+  },
+  {
+    "key": "Collapse",
+    "label": "Collapse"
+  },
+  {
+    "key": "CollapseLarge",
+    "label": "Collapse Large"
+  },
+  {
+    "key": "CollapseLeft",
+    "label": "Collapse Left"
+  },
+  {
+    "key": "CollapseLg",
+    "label": "Collapse Lg"
+  },
+  {
+    "key": "CollapseRight",
+    "label": "Collapse Right"
+  },
+  {
+    "key": "CollapseSm",
+    "label": "Collapse Sm"
+  },
+  {
+    "key": "CollapseSmall",
+    "label": "Collapse Small"
+  },
+  {
+    "key": "ColorTheme",
+    "label": "Color Theme"
+  },
+  {
+    "key": "Comment",
+    "label": "Comment"
+  },
+  {
+    "key": "Commit",
+    "label": "Commit"
+  },
+  {
+    "key": "Compare",
+    "label": "Compare"
+  },
+  {
+    "key": "CompareArrows",
+    "label": "Compare Arrows"
+  },
+  {
+    "key": "Compass",
+    "label": "Compass"
+  },
+  {
+    "key": "Complete",
+    "label": "Complete"
+  },
+  {
+    "key": "ComposeCanvasEditStar",
+    "label": "Compose Canvas Edit Star"
+  },
+  {
+    "key": "ComposeDashedTemporary",
+    "label": "Compose Dashed Temporary"
+  },
+  {
+    "key": "ComposeEditSquare",
+    "label": "Compose Edit Square"
+  },
+  {
+    "key": "Confetti",
+    "label": "Confetti"
+  },
+  {
+    "key": "ConfettiParty",
+    "label": "Confetti Party"
+  },
+  {
+    "key": "Connect",
+    "label": "Connect"
+  },
+  {
+    "key": "ConnectApps",
+    "label": "Connect Apps"
+  },
+  {
+    "key": "ConnectedDynamicGpt",
+    "label": "Connected Dynamic Gpt"
+  },
+  {
+    "key": "ConnectorsConnectedApps",
+    "label": "Connectors Connected Apps"
+  },
+  {
+    "key": "Copy",
+    "label": "Copy"
+  },
+  {
+    "key": "CreditCard",
+    "label": "Credit Card"
+  },
+  {
+    "key": "Credits",
+    "label": "Credits"
+  },
+  {
+    "key": "Cube",
+    "label": "Cube"
+  },
+  {
+    "key": "Cursor",
+    "label": "Cursor"
+  },
+  {
+    "key": "Customize",
+    "label": "Customize"
+  },
+  {
+    "key": "DarkMode",
+    "label": "Dark Mode"
+  },
+  {
+    "key": "DataControls",
+    "label": "Data Controls"
+  },
+  {
+    "key": "DeepSearchTelescope",
+    "label": "Deep Search Telescope"
+  },
+  {
+    "key": "Delete",
+    "label": "Delete"
+  },
+  {
+    "key": "DeleteAccount",
+    "label": "Delete Account"
+  },
+  {
+    "key": "Desktop",
+    "label": "Desktop"
+  },
+  {
+    "key": "DiningEvents",
+    "label": "Dining Events"
+  },
+  {
+    "key": "DisabledCursor",
+    "label": "Disabled Cursor"
+  },
+  {
+    "key": "Dock",
+    "label": "Dock"
+  },
+  {
+    "key": "Documentation",
+    "label": "Documentation"
+  },
+  {
+    "key": "DollarCircle",
+    "label": "Dollar Circle"
+  },
+  {
+    "key": "Dot",
+    "label": "Dot"
+  },
+  {
+    "key": "DotsHorizontal",
+    "label": "Dots Horizontal"
+  },
+  {
+    "key": "DotsHorizontalCircle",
+    "label": "Dots Horizontal Circle"
+  },
+  {
+    "key": "DotsHorizontalMoreMenu",
+    "label": "Dots Horizontal More Menu"
+  },
+  {
+    "key": "DotsVertical",
+    "label": "Dots Vertical"
+  },
+  {
+    "key": "DotsVerticalCircle",
+    "label": "Dots Vertical Circle"
+  },
+  {
+    "key": "DotsVerticalMoreMenu",
+    "label": "Dots Vertical More Menu"
+  },
+  {
+    "key": "DoubleChevronLeft",
+    "label": "Double Chevron Left"
+  },
+  {
+    "key": "DoubleChevronRight",
+    "label": "Double Chevron Right"
+  },
+  {
+    "key": "Download",
+    "label": "Download"
+  },
+  {
+    "key": "DownloadCircle",
+    "label": "Download Circle"
+  },
+  {
+    "key": "DownloadGifWatermark",
+    "label": "Download Gif Watermark"
+  },
+  {
+    "key": "DownloadSimple",
+    "label": "Download Simple"
+  },
+  {
+    "key": "DownloadVideo",
+    "label": "Download Video"
+  },
+  {
+    "key": "DownloadVideoWatermark",
+    "label": "Download Video Watermark"
+  },
+  {
+    "key": "Dropdown",
+    "label": "Dropdown"
+  },
+  {
+    "key": "DropdownVector",
+    "label": "Dropdown Vector"
+  },
+  {
+    "key": "Dumbbell",
+    "label": "Dumbbell"
+  },
+  {
+    "key": "EarthTravelWorld",
+    "label": "Earth Travel World"
+  },
+  {
+    "key": "Edit",
+    "label": "Edit"
+  },
+  {
+    "key": "EditAlt",
+    "label": "Edit Alt"
+  },
+  {
+    "key": "EditDalleImage",
+    "label": "Edit Dalle Image"
+  },
+  {
+    "key": "EditPencil",
+    "label": "Edit Pencil"
+  },
+  {
+    "key": "EditStar",
+    "label": "Edit Star"
+  },
+  {
+    "key": "EditXs",
+    "label": "Edit Xs"
+  },
+  {
+    "key": "Education",
+    "label": "Education"
+  },
+  {
+    "key": "Email",
+    "label": "Email"
+  },
+  {
+    "key": "EmojiAdd",
+    "label": "Emoji Add"
+  },
+  {
+    "key": "EmojiLists",
+    "label": "Emoji Lists"
+  },
+  {
+    "key": "EmojiRemove",
+    "label": "Emoji Remove"
+  },
+  {
+    "key": "EmojiSections",
+    "label": "Emoji Sections"
+  },
+  {
+    "key": "EmojiWords",
+    "label": "Emoji Words"
+  },
+  {
+    "key": "EmptyCircle",
+    "label": "Empty Circle"
+  },
+  {
+    "key": "EmptyCircleFilled",
+    "label": "Empty Circle Filled"
+  },
+  {
+    "key": "EnterLogin",
+    "label": "Enter Login"
+  },
+  {
+    "key": "Enum",
+    "label": "Enum"
+  },
+  {
+    "key": "Equal",
+    "label": "Equal"
+  },
+  {
+    "key": "Error",
+    "label": "Error"
+  },
+  {
+    "key": "ExclamationMarkCircle",
+    "label": "Exclamation Mark Circle"
+  },
+  {
+    "key": "ExitLogout",
+    "label": "Exit Logout"
+  },
+  {
+    "key": "Expand",
+    "label": "Expand"
+  },
+  {
+    "key": "ExpandLarge",
+    "label": "Expand Large"
+  },
+  {
+    "key": "ExpandLg",
+    "label": "Expand Lg"
+  },
+  {
+    "key": "ExpandMd",
+    "label": "Expand Md"
+  },
+  {
+    "key": "ExpandSm",
+    "label": "Expand Sm"
+  },
+  {
+    "key": "ExpandSmall",
+    "label": "Expand Small"
+  },
+  {
+    "key": "Explore",
+    "label": "Explore"
+  },
+  {
+    "key": "ExploreSora",
+    "label": "Explore Sora"
+  },
+  {
+    "key": "ExternalLink",
+    "label": "External Link"
+  },
+  {
+    "key": "Eye",
+    "label": "Eye"
+  },
+  {
+    "key": "EyeClosed",
+    "label": "Eye Closed"
+  },
+  {
+    "key": "EyeOff",
+    "label": "Eye Off"
+  },
+  {
+    "key": "FeaturedWreath",
+    "label": "Featured Wreath"
+  },
+  {
+    "key": "File3d",
+    "label": "File3d"
+  },
+  {
+    "key": "FileAudio",
+    "label": "File Audio"
+  },
+  {
+    "key": "FileBlank",
+    "label": "File Blank"
+  },
+  {
+    "key": "FileCode",
+    "label": "File Code"
+  },
+  {
+    "key": "FileDocument",
+    "label": "File Document"
+  },
+  {
+    "key": "FileImage",
+    "label": "File Image"
+  },
+  {
+    "key": "FilePresentation",
+    "label": "File Presentation"
+  },
+  {
+    "key": "FileSpreadsheet",
+    "label": "File Spreadsheet"
+  },
+  {
+    "key": "FileSpreedsheet",
+    "label": "File Spreedsheet"
+  },
+  {
+    "key": "FileUpload",
+    "label": "File Upload"
+  },
+  {
+    "key": "FileVideo",
+    "label": "File Video"
+  },
+  {
+    "key": "FileZip",
+    "label": "File Zip"
+  },
+  {
+    "key": "Filter",
+    "label": "Filter"
+  },
+  {
+    "key": "FineTuning",
+    "label": "Fine Tuning"
+  },
+  {
+    "key": "FistBump",
+    "label": "Fist Bump"
+  },
+  {
+    "key": "Flag",
+    "label": "Flag"
+  },
+  {
+    "key": "Flash",
+    "label": "Flash"
+  },
+  {
+    "key": "Flask",
+    "label": "Flask"
+  },
+  {
+    "key": "FlaskFilled",
+    "label": "Flask Filled"
+  },
+  {
+    "key": "FolderDocumentsFinder",
+    "label": "Folder Documents Finder"
+  },
+  {
+    "key": "FolderOpen",
+    "label": "Folder Open"
+  },
+  {
+    "key": "FolderPlus",
+    "label": "Folder Plus"
+  },
+  {
+    "key": "FolderPlusAdd",
+    "label": "Folder Plus Add"
+  },
+  {
+    "key": "FolderShared",
+    "label": "Folder Shared"
+  },
+  {
+    "key": "FolderSharedOpen",
+    "label": "Folder Shared Open"
+  },
+  {
+    "key": "FolderStuffed",
+    "label": "Folder Stuffed"
+  },
+  {
+    "key": "FolderUnshare",
+    "label": "Folder Unshare"
+  },
+  {
+    "key": "Folders",
+    "label": "Folders"
+  },
+  {
+    "key": "Followup",
+    "label": "Followup"
+  },
+  {
+    "key": "Forum",
+    "label": "Forum"
+  },
+  {
+    "key": "Forward",
+    "label": "Forward"
+  },
+  {
+    "key": "Forward10s",
+    "label": "Forward10s"
+  },
+  {
+    "key": "Forward15s",
+    "label": "Forward15s"
+  },
+  {
+    "key": "Frozen",
+    "label": "Frozen"
+  },
+  {
+    "key": "Function",
+    "label": "Function"
+  },
+  {
+    "key": "Functions",
+    "label": "Functions"
+  },
+  {
+    "key": "GenerateSuggestedEdits",
+    "label": "Generate Suggested Edits"
+  },
+  {
+    "key": "Glasses",
+    "label": "Glasses"
+  },
+  {
+    "key": "Globe",
+    "label": "Globe"
+  },
+  {
+    "key": "GlobeAltRealTimeSearch",
+    "label": "Globe Alt Real Time Search"
+  },
+  {
+    "key": "GlobeFilled",
+    "label": "Globe Filled"
+  },
+  {
+    "key": "GlobeOffRealTimeSearch",
+    "label": "Globe Off Real Time Search"
+  },
+  {
+    "key": "GlobeRealTimeSearch",
+    "label": "Globe Real Time Search"
+  },
+  {
+    "key": "GlobeSpin",
+    "label": "Globe Spin"
+  },
+  {
+    "key": "Go",
+    "label": "Go"
+  },
+  {
+    "key": "GoFilled",
+    "label": "Go Filled"
+  },
+  {
+    "key": "Graduate",
+    "label": "Graduate"
+  },
+  {
+    "key": "GraduationCap",
+    "label": "Graduation Cap"
+  },
+  {
+    "key": "Grid",
+    "label": "Grid"
+  },
+  {
+    "key": "GridAlt",
+    "label": "Grid Alt"
+  },
+  {
+    "key": "Group",
+    "label": "Group"
+  },
+  {
+    "key": "GroupFilled",
+    "label": "Group Filled"
+  },
+  {
+    "key": "Groups",
+    "label": "Groups"
+  },
+  {
+    "key": "Hamburger",
+    "label": "Hamburger"
+  },
+  {
+    "key": "HandBack",
+    "label": "Hand Back"
+  },
+  {
+    "key": "HandFront",
+    "label": "Hand Front"
+  },
+  {
+    "key": "HandPeace",
+    "label": "Hand Peace"
+  },
+  {
+    "key": "HandRaised",
+    "label": "Hand Raised"
+  },
+  {
+    "key": "HandRaisedHey",
+    "label": "Hand Raised Hey"
+  },
+  {
+    "key": "HandWavingBye",
+    "label": "Hand Waving Bye"
+  },
+  {
+    "key": "HapticFeedback",
+    "label": "Haptic Feedback"
+  },
+  {
+    "key": "Headphones",
+    "label": "Headphones"
+  },
+  {
+    "key": "Health",
+    "label": "Health"
+  },
+  {
+    "key": "Heart",
+    "label": "Heart"
+  },
+  {
+    "key": "HeartFilled",
+    "label": "Heart Filled"
+  },
+  {
+    "key": "HeartFilledXs",
+    "label": "Heart Filled Xs"
+  },
+  {
+    "key": "HeartXs",
+    "label": "Heart Xs"
+  },
+  {
+    "key": "Help",
+    "label": "Help"
+  },
+  {
+    "key": "History",
+    "label": "History"
+  },
+  {
+    "key": "HistoryOff",
+    "label": "History Off"
+  },
+  {
+    "key": "HistoryOn",
+    "label": "History On"
+  },
+  {
+    "key": "HomeAlt",
+    "label": "Home Alt"
+  },
+  {
+    "key": "Identity",
+    "label": "Identity"
+  },
+  {
+    "key": "IdentityMeSecure",
+    "label": "Identity Me Secure"
+  },
+  {
+    "key": "ImageCaption",
+    "label": "Image Caption"
+  },
+  {
+    "key": "ImageSquare",
+    "label": "Image Square"
+  },
+  {
+    "key": "ImageSquarePictureLibrary",
+    "label": "Image Square Picture Library"
+  },
+  {
+    "key": "ImageToText",
+    "label": "Image To Text"
+  },
+  {
+    "key": "ImageWide",
+    "label": "Image Wide"
+  },
+  {
+    "key": "ImageWideFilled",
+    "label": "Image Wide Filled"
+  },
+  {
+    "key": "ImageWidePictureLibrary",
+    "label": "Image Wide Picture Library"
+  },
+  {
+    "key": "Images",
+    "label": "Images"
+  },
+  {
+    "key": "Info",
+    "label": "Info"
+  },
+  {
+    "key": "InfoCircle",
+    "label": "Info Circle"
+  },
+  {
+    "key": "Inpaint",
+    "label": "Inpaint"
+  },
+  {
+    "key": "InpaintRespond",
+    "label": "Inpaint Respond"
+  },
+  {
+    "key": "Inspiration",
+    "label": "Inspiration"
+  },
+  {
+    "key": "InspirationFilled",
+    "label": "Inspiration Filled"
+  },
+  {
+    "key": "Interactiv",
+    "label": "Interactiv"
+  },
+  {
+    "key": "InternalKnowledge",
+    "label": "Internal Knowledge"
+  },
+  {
+    "key": "InternalKnowledgeOptimizedForCircle",
+    "label": "Internal Knowledge Optimized For Circle"
+  },
+  {
+    "key": "Invoice",
+    "label": "Invoice"
+  },
+  {
+    "key": "Io",
+    "label": "Io"
+  },
+  {
+    "key": "JumpToCaption",
+    "label": "Jump To Caption"
+  },
+  {
+    "key": "Kettlebell",
+    "label": "Kettlebell"
+  },
+  {
+    "key": "Keyboard",
+    "label": "Keyboard"
+  },
+  {
+    "key": "KeyboardShortcut",
+    "label": "Keyboard Shortcut"
+  },
+  {
+    "key": "Lab",
+    "label": "Lab"
+  },
+  {
+    "key": "Language",
+    "label": "Language"
+  },
+  {
+    "key": "Latency",
+    "label": "Latency"
+  },
+  {
+    "key": "Lifesaver",
+    "label": "Lifesaver"
+  },
+  {
+    "key": "LightMode",
+    "label": "Light Mode"
+  },
+  {
+    "key": "Lightbulb",
+    "label": "Lightbulb"
+  },
+  {
+    "key": "Lightbulb20",
+    "label": "Lightbulb20"
+  },
+  {
+    "key": "Lightbulb22",
+    "label": "Lightbulb22"
+  },
+  {
+    "key": "Lightbulb22Filled",
+    "label": "Lightbulb22Filled"
+  },
+  {
+    "key": "LightbulbGlow",
+    "label": "Lightbulb Glow"
+  },
+  {
+    "key": "LinkDisabledBold",
+    "label": "Link Disabled Bold"
+  },
+  {
+    "key": "LinkExternalWebsite",
+    "label": "Link External Website"
+  },
+  {
+    "key": "LocalServices",
+    "label": "Local Services"
+  },
+  {
+    "key": "Lock",
+    "label": "Lock"
+  },
+  {
+    "key": "LockKeyHole",
+    "label": "Lock Key Hole"
+  },
+  {
+    "key": "Logout",
+    "label": "Logout"
+  },
+  {
+    "key": "Loop",
+    "label": "Loop"
+  },
+  {
+    "key": "LoopLong",
+    "label": "Loop Long"
+  },
+  {
+    "key": "LoopNormal",
+    "label": "Loop Normal"
+  },
+  {
+    "key": "LoopShort",
+    "label": "Loop Short"
+  },
+  {
+    "key": "LoopXs",
+    "label": "Loop Xs"
+  },
+  {
+    "key": "Lotus",
+    "label": "Lotus"
+  },
+  {
+    "key": "Love",
+    "label": "Love"
+  },
+  {
+    "key": "MagnifyingGlassSearch",
+    "label": "Magnifying Glass Search"
+  },
+  {
+    "key": "MagnifyingGlassSmSearch",
+    "label": "Magnifying Glass Sm Search"
+  },
+  {
+    "key": "ManageHistory",
+    "label": "Manage History"
+  },
+  {
+    "key": "Maps",
+    "label": "Maps"
+  },
+  {
+    "key": "MapsAddress",
+    "label": "Maps Address"
+  },
+  {
+    "key": "MapsDirections",
+    "label": "Maps Directions"
+  },
+  {
+    "key": "MarkerCode",
+    "label": "Marker Code"
+  },
+  {
+    "key": "MarkerData",
+    "label": "Marker Data"
+  },
+  {
+    "key": "MarkerMultiple",
+    "label": "Marker Multiple"
+  },
+  {
+    "key": "MarkerQuote",
+    "label": "Marker Quote"
+  },
+  {
+    "key": "Mcp",
+    "label": "Mcp"
+  },
+  {
+    "key": "Members",
+    "label": "Members"
+  },
+  {
+    "key": "MembersFilled",
+    "label": "Members Filled"
+  },
+  {
+    "key": "MemoryFilledSm",
+    "label": "Memory Filled Sm"
+  },
+  {
+    "key": "MemoryOffRemember",
+    "label": "Memory Off Remember"
+  },
+  {
+    "key": "MemoryOnRemember",
+    "label": "Memory On Remember"
+  },
+  {
+    "key": "MemoryWriteSm",
+    "label": "Memory Write Sm"
+  },
+  {
+    "key": "Menu",
+    "label": "Menu"
+  },
+  {
+    "key": "MenuInverted",
+    "label": "Menu Inverted"
+  },
+  {
+    "key": "MenuSidebar",
+    "label": "Menu Sidebar"
+  },
+  {
+    "key": "Menubar",
+    "label": "Menubar"
+  },
+  {
+    "key": "Messaging",
+    "label": "Messaging"
+  },
+  {
+    "key": "Mic",
+    "label": "Mic"
+  },
+  {
+    "key": "MicFilled",
+    "label": "Mic Filled"
+  },
+  {
+    "key": "MicFilledOff",
+    "label": "Mic Filled Off"
+  },
+  {
+    "key": "MicLgDictate",
+    "label": "Mic Lg Dictate"
+  },
+  {
+    "key": "MicOff",
+    "label": "Mic Off"
+  },
+  {
+    "key": "MinimizeDown",
+    "label": "Minimize Down"
+  },
+  {
+    "key": "MinimizeLeft",
+    "label": "Minimize Left"
+  },
+  {
+    "key": "MinimizeRight",
+    "label": "Minimize Right"
+  },
+  {
+    "key": "MinimizeTop",
+    "label": "Minimize Top"
+  },
+  {
+    "key": "Minus",
+    "label": "Minus"
+  },
+  {
+    "key": "MinusCircle",
+    "label": "Minus Circle"
+  },
+  {
+    "key": "MinusCircleFilled",
+    "label": "Minus Circle Filled"
+  },
+  {
+    "key": "Mobile",
+    "label": "Mobile"
+  },
+  {
+    "key": "Moon",
+    "label": "Moon"
+  },
+  {
+    "key": "MoonSunSystem",
+    "label": "Moon Sun System"
+  },
+  {
+    "key": "MoreCircleMenuDots",
+    "label": "More Circle Menu Dots"
+  },
+  {
+    "key": "Music",
+    "label": "Music"
+  },
+  {
+    "key": "MyGptProfileMe",
+    "label": "My Gpt Profile Me"
+  },
+  {
+    "key": "Name",
+    "label": "Name"
+  },
+  {
+    "key": "NewsPaper",
+    "label": "News Paper"
+  },
+  {
+    "key": "NoTraining",
+    "label": "No Training"
+  },
+  {
+    "key": "Nodes",
+    "label": "Nodes"
+  },
+  {
+    "key": "Notebook",
+    "label": "Notebook"
+  },
+  {
+    "key": "NotebookCheck",
+    "label": "Notebook Check"
+  },
+  {
+    "key": "NotebookNarrow",
+    "label": "Notebook Narrow"
+  },
+  {
+    "key": "NotebookPencil",
+    "label": "Notebook Pencil"
+  },
+  {
+    "key": "Notepad",
+    "label": "Notepad"
+  },
+  {
+    "key": "NotificationBell",
+    "label": "Notification Bell"
+  },
+  {
+    "key": "NotificationOffBell",
+    "label": "Notification Off Bell"
+  },
+  {
+    "key": "Number",
+    "label": "Number"
+  },
+  {
+    "key": "Object",
+    "label": "Object"
+  },
+  {
+    "key": "On",
+    "label": "On"
+  },
+  {
+    "key": "OpenLeft",
+    "label": "Open Left"
+  },
+  {
+    "key": "OpenRight",
+    "label": "Open Right"
+  },
+  {
+    "key": "OpenaiLogoBold",
+    "label": "Openai Logo Bold"
+  },
+  {
+    "key": "OpenaiLogoBoldBoundingBox",
+    "label": "Openai Logo Bold Bounding Box"
+  },
+  {
+    "key": "OpenaiLogoRegular",
+    "label": "Openai Logo Regular"
+  },
+  {
+    "key": "OpenaiLogoRegularBoundingBox",
+    "label": "Openai Logo Regular Bounding Box"
+  },
+  {
+    "key": "OpenaiLogoWebappVariable480",
+    "label": "Openai Logo Webapp Variable480"
+  },
+  {
+    "key": "Operator",
+    "label": "Operator"
+  },
+  {
+    "key": "Order",
+    "label": "Order"
+  },
+  {
+    "key": "PageBlank",
+    "label": "Page Blank"
+  },
+  {
+    "key": "Paid",
+    "label": "Paid"
+  },
+  {
+    "key": "Paperclip",
+    "label": "Paperclip"
+  },
+  {
+    "key": "PaperclipAttach",
+    "label": "Paperclip Attach"
+  },
+  {
+    "key": "ParentControl",
+    "label": "Parent Control"
+  },
+  {
+    "key": "PastedText",
+    "label": "Pasted Text"
+  },
+  {
+    "key": "Pause",
+    "label": "Pause"
+  },
+  {
+    "key": "PauseCircle",
+    "label": "Pause Circle"
+  },
+  {
+    "key": "PauseCircleFilled",
+    "label": "Pause Circle Filled"
+  },
+  {
+    "key": "PauseOutline",
+    "label": "Pause Outline"
+  },
+  {
+    "key": "PauseSm",
+    "label": "Pause Sm"
+  },
+  {
+    "key": "Paw",
+    "label": "Paw"
+  },
+  {
+    "key": "Pencil",
+    "label": "Pencil"
+  },
+  {
+    "key": "PencilSparkle",
+    "label": "Pencil Sparkle"
+  },
+  {
+    "key": "PencilSquare",
+    "label": "Pencil Square"
+  },
+  {
+    "key": "Pens",
+    "label": "Pens"
+  },
+  {
+    "key": "PhoneMissed",
+    "label": "Phone Missed"
+  },
+  {
+    "key": "PhoneRing",
+    "label": "Phone Ring"
+  },
+  {
+    "key": "PhoneWaves",
+    "label": "Phone Waves"
+  },
+  {
+    "key": "PictureInPicture",
+    "label": "Picture In Picture"
+  },
+  {
+    "key": "Pin",
+    "label": "Pin"
+  },
+  {
+    "key": "PinFilled",
+    "label": "Pin Filled"
+  },
+  {
+    "key": "PinWindow",
+    "label": "Pin Window"
+  },
+  {
+    "key": "Plane",
+    "label": "Plane"
+  },
+  {
+    "key": "PlantDesk",
+    "label": "Plant Desk"
+  },
+  {
+    "key": "Play",
+    "label": "Play"
+  },
+  {
+    "key": "PlayCircle",
+    "label": "Play Circle"
+  },
+  {
+    "key": "PlayCircleFilled",
+    "label": "Play Circle Filled"
+  },
+  {
+    "key": "PlayOutline",
+    "label": "Play Outline"
+  },
+  {
+    "key": "PlaySm",
+    "label": "Play Sm"
+  },
+  {
+    "key": "PlayTriangle",
+    "label": "Play Triangle"
+  },
+  {
+    "key": "Playground",
+    "label": "Playground"
+  },
+  {
+    "key": "Plugin",
+    "label": "Plugin"
+  },
+  {
+    "key": "PluginPuzzle",
+    "label": "Plugin Puzzle"
+  },
+  {
+    "key": "Plus",
+    "label": "Plus"
+  },
+  {
+    "key": "Plus14px",
+    "label": "Plus14px"
+  },
+  {
+    "key": "PlusCircle",
+    "label": "Plus Circle"
+  },
+  {
+    "key": "PlusCircleAdd",
+    "label": "Plus Circle Add"
+  },
+  {
+    "key": "PlusCircleFilled",
+    "label": "Plus Circle Filled"
+  },
+  {
+    "key": "PlusComposer",
+    "label": "Plus Composer"
+  },
+  {
+    "key": "PlusFilled",
+    "label": "Plus Filled"
+  },
+  {
+    "key": "PlusLg",
+    "label": "Plus Lg"
+  },
+  {
+    "key": "PlusLg18pxAdd",
+    "label": "Plus Lg18px Add"
+  },
+  {
+    "key": "PlusSm12px",
+    "label": "Plus Sm12px"
+  },
+  {
+    "key": "PlusSquareAdd",
+    "label": "Plus Square Add"
+  },
+  {
+    "key": "PopOutWindow",
+    "label": "Pop Out Window"
+  },
+  {
+    "key": "PresetDefault",
+    "label": "Preset Default"
+  },
+  {
+    "key": "PresetSelected",
+    "label": "Preset Selected"
+  },
+  {
+    "key": "PrivacyIntern",
+    "label": "Privacy Intern"
+  },
+  {
+    "key": "ProDiamond",
+    "label": "Pro Diamond"
+  },
+  {
+    "key": "ProFilledDiamond",
+    "label": "Pro Filled Diamond"
+  },
+  {
+    "key": "ProductTag",
+    "label": "Product Tag"
+  },
+  {
+    "key": "PullRequestClosed",
+    "label": "Pull Request Closed"
+  },
+  {
+    "key": "PullRequestDraft",
+    "label": "Pull Request Draft"
+  },
+  {
+    "key": "PullRequestMerged",
+    "label": "Pull Request Merged"
+  },
+  {
+    "key": "PullRequestOpen",
+    "label": "Pull Request Open"
+  },
+  {
+    "key": "Pulse",
+    "label": "Pulse"
+  },
+  {
+    "key": "Question",
+    "label": "Question"
+  },
+  {
+    "key": "QuestionMark",
+    "label": "Question Mark"
+  },
+  {
+    "key": "QuestionMarkCircle",
+    "label": "Question Mark Circle"
+  },
+  {
+    "key": "QuickStart",
+    "label": "Quick Start"
+  },
+  {
+    "key": "Quote",
+    "label": "Quote"
+  },
+  {
+    "key": "QuoteReplyFilledQuoteXs",
+    "label": "Quote Reply Filled Quote Xs"
+  },
+  {
+    "key": "RadioSelected",
+    "label": "Radio Selected"
+  },
+  {
+    "key": "ReadingLevel",
+    "label": "Reading Level"
+  },
+  {
+    "key": "Record",
+    "label": "Record"
+  },
+  {
+    "key": "Regenerate",
+    "label": "Regenerate"
+  },
+  {
+    "key": "RegenerateOff",
+    "label": "Regenerate Off"
+  },
+  {
+    "key": "RegenerateStar",
+    "label": "Regenerate Star"
+  },
+  {
+    "key": "Reload",
+    "label": "Reload"
+  },
+  {
+    "key": "RemixMild",
+    "label": "Remix Mild"
+  },
+  {
+    "key": "RemixMildXs",
+    "label": "Remix Mild Xs"
+  },
+  {
+    "key": "RemixStrong",
+    "label": "Remix Strong"
+  },
+  {
+    "key": "RemixSubtle",
+    "label": "Remix Subtle"
+  },
+  {
+    "key": "RemoveForeverPermanently",
+    "label": "Remove Forever Permanently"
+  },
+  {
+    "key": "RemoveRedEye",
+    "label": "Remove Red Eye"
+  },
+  {
+    "key": "Reply",
+    "label": "Reply"
+  },
+  {
+    "key": "Report",
+    "label": "Report"
+  },
+  {
+    "key": "Resend",
+    "label": "Resend"
+  },
+  {
+    "key": "ResetChat",
+    "label": "Reset Chat"
+  },
+  {
+    "key": "Resolution1080p",
+    "label": "Resolution1080p"
+  },
+  {
+    "key": "Resolution360p",
+    "label": "Resolution360p"
+  },
+  {
+    "key": "Resolution480p",
+    "label": "Resolution480p"
+  },
+  {
+    "key": "Resolution720p",
+    "label": "Resolution720p"
+  },
+  {
+    "key": "RestoreUntrash",
+    "label": "Restore Untrash"
+  },
+  {
+    "key": "Rewind",
+    "label": "Rewind"
+  },
+  {
+    "key": "Robot",
+    "label": "Robot"
+  },
+  {
+    "key": "RobotHead",
+    "label": "Robot Head"
+  },
+  {
+    "key": "RobotHeadSad",
+    "label": "Robot Head Sad"
+  },
+  {
+    "key": "SavedFilledXs",
+    "label": "Saved Filled Xs"
+  },
+  {
+    "key": "SavedXs",
+    "label": "Saved Xs"
+  },
+  {
+    "key": "Scales",
+    "label": "Scales"
+  },
+  {
+    "key": "Scissor",
+    "label": "Scissor"
+  },
+  {
+    "key": "ScissorXs",
+    "label": "Scissor Xs"
+  },
+  {
+    "key": "ScreenPosition",
+    "label": "Screen Position"
+  },
+  {
+    "key": "Search",
+    "label": "Search"
+  },
+  {
+    "key": "SearchConnector",
+    "label": "Search Connector"
+  },
+  {
+    "key": "SearchFeed",
+    "label": "Search Feed"
+  },
+  {
+    "key": "SearchXs",
+    "label": "Search Xs"
+  },
+  {
+    "key": "SelectText",
+    "label": "Select Text"
+  },
+  {
+    "key": "Settings",
+    "label": "Settings"
+  },
+  {
+    "key": "SettingsCircle",
+    "label": "Settings Circle"
+  },
+  {
+    "key": "SettingsCog",
+    "label": "Settings Cog"
+  },
+  {
+    "key": "SettingsSlider",
+    "label": "Settings Slider"
+  },
+  {
+    "key": "SettingsWrench",
+    "label": "Settings Wrench"
+  },
+  {
+    "key": "Share",
+    "label": "Share"
+  },
+  {
+    "key": "ShareChat",
+    "label": "Share Chat"
+  },
+  {
+    "key": "ShareScreen",
+    "label": "Share Screen"
+  },
+  {
+    "key": "ShareScreenFilled",
+    "label": "Share Screen Filled"
+  },
+  {
+    "key": "ShareScreenOff",
+    "label": "Share Screen Off"
+  },
+  {
+    "key": "ShareScreenOffFilled",
+    "label": "Share Screen Off Filled"
+  },
+  {
+    "key": "ShieldCheck",
+    "label": "Shield Check"
+  },
+  {
+    "key": "ShieldKey",
+    "label": "Shield Key"
+  },
+  {
+    "key": "ShieldLock",
+    "label": "Shield Lock"
+  },
+  {
+    "key": "ShieldPerson",
+    "label": "Shield Person"
+  },
+  {
+    "key": "ShoppingBag",
+    "label": "Shopping Bag"
+  },
+  {
+    "key": "Shortcuts",
+    "label": "Shortcuts"
+  },
+  {
+    "key": "Shuffle",
+    "label": "Shuffle"
+  },
+  {
+    "key": "Sidebar",
+    "label": "Sidebar"
+  },
+  {
+    "key": "SidebarCollapseLeft",
+    "label": "Sidebar Collapse Left"
+  },
+  {
+    "key": "SidebarCollapseRight",
+    "label": "Sidebar Collapse Right"
+  },
+  {
+    "key": "SidebarFloatingLeft",
+    "label": "Sidebar Floating Left"
+  },
+  {
+    "key": "SidebarFloatingOpenLeft",
+    "label": "Sidebar Floating Open Left"
+  },
+  {
+    "key": "SidebarFloatingOpenRight",
+    "label": "Sidebar Floating Open Right"
+  },
+  {
+    "key": "SidebarFloatingRight",
+    "label": "Sidebar Floating Right"
+  },
+  {
+    "key": "SidebarLeft",
+    "label": "Sidebar Left"
+  },
+  {
+    "key": "SidebarMenuMobile",
+    "label": "Sidebar Menu Mobile"
+  },
+  {
+    "key": "SidebarMenuMobileBadgeCutout",
+    "label": "Sidebar Menu Mobile Badge Cutout"
+  },
+  {
+    "key": "SidebarOpenLeft",
+    "label": "Sidebar Open Left"
+  },
+  {
+    "key": "SidebarOpenLeftAlt",
+    "label": "Sidebar Open Left Alt"
+  },
+  {
+    "key": "SidebarOpenRight",
+    "label": "Sidebar Open Right"
+  },
+  {
+    "key": "SidebarOpenRightAlt",
+    "label": "Sidebar Open Right Alt"
+  },
+  {
+    "key": "SidebarRight",
+    "label": "Sidebar Right"
+  },
+  {
+    "key": "SimpleRelax",
+    "label": "Simple Relax"
+  },
+  {
+    "key": "SimpleSad",
+    "label": "Simple Sad"
+  },
+  {
+    "key": "SimpleSmile",
+    "label": "Simple Smile"
+  },
+  {
+    "key": "Skip",
+    "label": "Skip"
+  },
+  {
+    "key": "Sleep",
+    "label": "Sleep"
+  },
+  {
+    "key": "Snorkle",
+    "label": "Snorkle"
+  },
+  {
+    "key": "Snowflake",
+    "label": "Snowflake"
+  },
+  {
+    "key": "SoraBasicPopcorn",
+    "label": "Sora Basic Popcorn"
+  },
+  {
+    "key": "SoraProDirector",
+    "label": "Sora Pro Director"
+  },
+  {
+    "key": "SoundOffSimpleMute",
+    "label": "Sound Off Simple Mute"
+  },
+  {
+    "key": "SoundOffSpeaker",
+    "label": "Sound Off Speaker"
+  },
+  {
+    "key": "SoundOnReadOutLoudSpeaker",
+    "label": "Sound On Read Out Loud Speaker"
+  },
+  {
+    "key": "Sparkle",
+    "label": "Sparkle"
+  },
+  {
+    "key": "SparkleDouble",
+    "label": "Sparkle Double"
+  },
+  {
+    "key": "SparkleFilledPlus",
+    "label": "Sparkle Filled Plus"
+  },
+  {
+    "key": "SparklePlus",
+    "label": "Sparkle Plus"
+  },
+  {
+    "key": "Sparkles",
+    "label": "Sparkles"
+  },
+  {
+    "key": "SparklesFilled",
+    "label": "Sparkles Filled"
+  },
+  {
+    "key": "Speak",
+    "label": "Speak"
+  },
+  {
+    "key": "SpeechToText",
+    "label": "Speech To Text"
+  },
+  {
+    "key": "Speed",
+    "label": "Speed"
+  },
+  {
+    "key": "SpeedometerLatencySpeed",
+    "label": "Speedometer Latency Speed"
+  },
+  {
+    "key": "Spelling",
+    "label": "Spelling"
+  },
+  {
+    "key": "Spin",
+    "label": "Spin"
+  },
+  {
+    "key": "SquareCheckCheckboxChecked",
+    "label": "Square Check Checkbox Checked"
+  },
+  {
+    "key": "SquareCheckFilledCheckboxCheckedFilled",
+    "label": "Square Check Filled Checkbox Checked Filled"
+  },
+  {
+    "key": "SquareCheckboxUnchecked",
+    "label": "Square Checkbox Unchecked"
+  },
+  {
+    "key": "SquareCode",
+    "label": "Square Code"
+  },
+  {
+    "key": "SquareFilledTableLegend",
+    "label": "Square Filled Table Legend"
+  },
+  {
+    "key": "SquareImage",
+    "label": "Square Image"
+  },
+  {
+    "key": "SquarePlus",
+    "label": "Square Plus"
+  },
+  {
+    "key": "SquarePlusAlt",
+    "label": "Square Plus Alt"
+  },
+  {
+    "key": "SquareTableLegend",
+    "label": "Square Table Legend"
+  },
+  {
+    "key": "SquareText",
+    "label": "Square Text"
+  },
+  {
+    "key": "Stack",
+    "label": "Stack"
+  },
+  {
+    "key": "StarFilled",
+    "label": "Star Filled"
+  },
+  {
+    "key": "StartStrokeMd",
+    "label": "Start Stroke Md"
+  },
+  {
+    "key": "Status",
+    "label": "Status"
+  },
+  {
+    "key": "Stethoscope",
+    "label": "Stethoscope"
+  },
+  {
+    "key": "StickyNote",
+    "label": "Sticky Note"
+  },
+  {
+    "key": "Stop",
+    "label": "Stop"
+  },
+  {
+    "key": "StopCircle",
+    "label": "Stop Circle"
+  },
+  {
+    "key": "StopCircleFilled",
+    "label": "Stop Circle Filled"
+  },
+  {
+    "key": "StopOutline",
+    "label": "Stop Outline"
+  },
+  {
+    "key": "StopSm",
+    "label": "Stop Sm"
+  },
+  {
+    "key": "StopStrokeMd",
+    "label": "Stop Stroke Md"
+  },
+  {
+    "key": "Stopwatch",
+    "label": "Stopwatch"
+  },
+  {
+    "key": "Storage",
+    "label": "Storage"
+  },
+  {
+    "key": "Storyboard",
+    "label": "Storyboard"
+  },
+  {
+    "key": "String",
+    "label": "String"
+  },
+  {
+    "key": "Studio",
+    "label": "Studio"
+  },
+  {
+    "key": "Stuff",
+    "label": "Stuff"
+  },
+  {
+    "key": "StuffTools",
+    "label": "Stuff Tools"
+  },
+  {
+    "key": "SubscriptionPlan",
+    "label": "Subscription Plan"
+  },
+  {
+    "key": "SuggestEdit",
+    "label": "Suggest Edit"
+  },
+  {
+    "key": "SuitcaseFilledWorkBusiness",
+    "label": "Suitcase Filled Work Business"
+  },
+  {
+    "key": "SuitcaseWorkBusiness",
+    "label": "Suitcase Work Business"
+  },
+  {
+    "key": "Sun",
+    "label": "Sun"
+  },
+  {
+    "key": "SystemMode",
+    "label": "System Mode"
+  },
+  {
+    "key": "TBoneRaw",
+    "label": "TBone Raw"
+  },
+  {
+    "key": "TableCellFilled",
+    "label": "Table Cell Filled"
+  },
+  {
+    "key": "TableCellsFilled",
+    "label": "Table Cells Filled"
+  },
+  {
+    "key": "TableColumnFilled",
+    "label": "Table Column Filled"
+  },
+  {
+    "key": "TableFilled",
+    "label": "Table Filled"
+  },
+  {
+    "key": "TableRowFilled",
+    "label": "Table Row Filled"
+  },
+  {
+    "key": "Tap",
+    "label": "Tap"
+  },
+  {
+    "key": "Tasks",
+    "label": "Tasks"
+  },
+  {
+    "key": "Telescope",
+    "label": "Telescope"
+  },
+  {
+    "key": "TerminalLg",
+    "label": "Terminal Lg"
+  },
+  {
+    "key": "Terms",
+    "label": "Terms"
+  },
+  {
+    "key": "Text",
+    "label": "Text"
+  },
+  {
+    "key": "TextLonger",
+    "label": "Text Longer"
+  },
+  {
+    "key": "TextPrompt",
+    "label": "Text Prompt"
+  },
+  {
+    "key": "TextShorter",
+    "label": "Text Shorter"
+  },
+  {
+    "key": "TextShorterConcise",
+    "label": "Text Shorter Concise"
+  },
+  {
+    "key": "TextToSpeech",
+    "label": "Text To Speech"
+  },
+  {
+    "key": "ThumbDown",
+    "label": "Thumb Down"
+  },
+  {
+    "key": "ThumbDownFilled",
+    "label": "Thumb Down Filled"
+  },
+  {
+    "key": "ThumbMixed",
+    "label": "Thumb Mixed"
+  },
+  {
+    "key": "ThumbUp",
+    "label": "Thumb Up"
+  },
+  {
+    "key": "ThumbUpFilled",
+    "label": "Thumb Up Filled"
+  },
+  {
+    "key": "ThumbnailLarge",
+    "label": "Thumbnail Large"
+  },
+  {
+    "key": "ThumbnailMedium",
+    "label": "Thumbnail Medium"
+  },
+  {
+    "key": "ThumbnailSmall",
+    "label": "Thumbnail Small"
+  },
+  {
+    "key": "Thumbs",
+    "label": "Thumbs"
+  },
+  {
+    "key": "Timer",
+    "label": "Timer"
+  },
+  {
+    "key": "Tools",
+    "label": "Tools"
+  },
+  {
+    "key": "ToolsSkills",
+    "label": "Tools Skills"
+  },
+  {
+    "key": "Translate",
+    "label": "Translate"
+  },
+  {
+    "key": "Trash",
+    "label": "Trash"
+  },
+  {
+    "key": "TrashRemove",
+    "label": "Trash Remove"
+  },
+  {
+    "key": "Trending",
+    "label": "Trending"
+  },
+  {
+    "key": "TriangleExclamationErrorWarning",
+    "label": "Triangle Exclamation Error Warning"
+  },
+  {
+    "key": "TriangleExclamationFilledErrorWarning",
+    "label": "Triangle Exclamation Filled Error Warning"
+  },
+  {
+    "key": "TrophyTop",
+    "label": "Trophy Top"
+  },
+  {
+    "key": "TuningFork",
+    "label": "Tuning Fork"
+  },
+  {
+    "key": "Unarchive",
+    "label": "Unarchive"
+  },
+  {
+    "key": "Undo",
+    "label": "Undo"
+  },
+  {
+    "key": "Unlink",
+    "label": "Unlink"
+  },
+  {
+    "key": "Unpin",
+    "label": "Unpin"
+  },
+  {
+    "key": "Upgrade",
+    "label": "Upgrade"
+  },
+  {
+    "key": "UpgradePlan",
+    "label": "Upgrade Plan"
+  },
+  {
+    "key": "UploadDocuments",
+    "label": "Upload Documents"
+  },
+  {
+    "key": "Upscale",
+    "label": "Upscale"
+  },
+  {
+    "key": "UpscaleXs",
+    "label": "Upscale Xs"
+  },
+  {
+    "key": "Usage",
+    "label": "Usage"
+  },
+  {
+    "key": "UserAdd",
+    "label": "User Add"
+  },
+  {
+    "key": "UserGpts",
+    "label": "User Gpts"
+  },
+  {
+    "key": "UserHeart",
+    "label": "User Heart"
+  },
+  {
+    "key": "UserLock",
+    "label": "User Lock"
+  },
+  {
+    "key": "UserVoice",
+    "label": "User Voice"
+  },
+  {
+    "key": "Users",
+    "label": "Users"
+  },
+  {
+    "key": "Variation2v2",
+    "label": "Variation2v2"
+  },
+  {
+    "key": "VariationV21",
+    "label": "Variation V21"
+  },
+  {
+    "key": "VariationV31",
+    "label": "Variation V31"
+  },
+  {
+    "key": "VariationV32",
+    "label": "Variation V32"
+  },
+  {
+    "key": "VariationV33",
+    "label": "Variation V33"
+  },
+  {
+    "key": "VariationV41",
+    "label": "Variation V41"
+  },
+  {
+    "key": "VariationV42",
+    "label": "Variation V42"
+  },
+  {
+    "key": "VariationV43",
+    "label": "Variation V43"
+  },
+  {
+    "key": "VariationV44",
+    "label": "Variation V44"
+  },
+  {
+    "key": "VersionsV1",
+    "label": "Versions V1"
+  },
+  {
+    "key": "Video",
+    "label": "Video"
+  },
+  {
+    "key": "VideoCaption",
+    "label": "Video Caption"
+  },
+  {
+    "key": "VideoFilled",
+    "label": "Video Filled"
+  },
+  {
+    "key": "VideoFilledOff",
+    "label": "Video Filled Off"
+  },
+  {
+    "key": "VideoGrid",
+    "label": "Video Grid"
+  },
+  {
+    "key": "VideoList",
+    "label": "Video List"
+  },
+  {
+    "key": "VideoToText",
+    "label": "Video To Text"
+  },
+  {
+    "key": "Videos",
+    "label": "Videos"
+  },
+  {
+    "key": "Voice",
+    "label": "Voice"
+  },
+  {
+    "key": "Voice4Bars",
+    "label": "Voice4Bars"
+  },
+  {
+    "key": "Voice5BarsSoundwave",
+    "label": "Voice5Bars Soundwave"
+  },
+  {
+    "key": "VoiceBold",
+    "label": "Voice Bold"
+  },
+  {
+    "key": "VoiceInputAreaMobileFilledVoiceXs",
+    "label": "Voice Input Area Mobile Filled Voice Xs"
+  },
+  {
+    "key": "VoiceLight",
+    "label": "Voice Light"
+  },
+  {
+    "key": "Warning",
+    "label": "Warning"
+  },
+  {
+    "key": "WarningFilledWrapCenteredForCircle",
+    "label": "Warning Filled Wrap Centered For Circle"
+  },
+  {
+    "key": "WarningWrapCenteredForCircle",
+    "label": "Warning Wrap Centered For Circle"
+  },
+  {
+    "key": "Wave",
+    "label": "Wave"
+  },
+  {
+    "key": "WebsiteNetwork",
+    "label": "Website Network"
+  },
+  {
+    "key": "Whisk",
+    "label": "Whisk"
+  },
+  {
+    "key": "WhisperAutoSubmit",
+    "label": "Whisper Auto Submit"
+  },
+  {
+    "key": "Widget",
+    "label": "Widget"
+  },
+  {
+    "key": "WidgetAdd",
+    "label": "Widget Add"
+  },
+  {
+    "key": "WorkWithApps",
+    "label": "Work With Apps"
+  },
+  {
+    "key": "Workspace",
+    "label": "Workspace"
+  },
+  {
+    "key": "Wreath",
+    "label": "Wreath"
+  },
+  {
+    "key": "WriteAlt",
+    "label": "Write Alt"
+  },
+  {
+    "key": "WriteAlt2",
+    "label": "Write Alt2"
+  },
+  {
+    "key": "Writing",
+    "label": "Writing"
+  },
+  {
+    "key": "X",
+    "label": "X"
+  },
+  {
+    "key": "XCircle",
+    "label": "XCircle"
+  },
+  {
+    "key": "XCircleCrossedClose",
+    "label": "XCircle Crossed Close"
+  },
+  {
+    "key": "XCircleFilled",
+    "label": "XCircle Filled"
+  },
+  {
+    "key": "XCircleFilledCrossedClose",
+    "label": "XCircle Filled Crossed Close"
+  },
+  {
+    "key": "XCrossed",
+    "label": "XCrossed"
+  },
+  {
+    "key": "XSquareCrossed",
+    "label": "XSquare Crossed"
+  },
+  {
+    "key": "XSquareFilledCrossed",
+    "label": "XSquare Filled Crossed"
+  },
+  {
+    "key": "XXs",
+    "label": "XXs"
+  },
+  {
+    "key": "XXsCrossed",
+    "label": "XXs Crossed"
+  }
+]

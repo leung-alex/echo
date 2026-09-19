@@ -1,6 +1,6 @@
 import { EchoTheme, EchoButton } from "theme.slint";
 import { DesignTokens as T } from "echo-tokens.slint";
-import { FavoriteIconImages } from "favorite-icon-images.slint";
+import { LucideIconImages } from "lucide-icon-images.slint";
 import { SearchText, MatchRange } from "search-text.slint";
 export { MatchRange }
 export struct EntryRow {
@@ -39,7 +39,7 @@ export component EntryView inherits Rectangle {
     pure callback drag-data(string) -> data-transfer;
     callback can-drop-data(data-transfer) -> bool;
     callback drop-data(data-transfer,string) -> bool;
-    private property <image> favorite-icon: FavoriteIconImages.image-for(entry.icon-key);
+    private property <image> favorite-icon: LucideIconImages.image-for(entry.icon-key);
     private property <bool> active: entry.selected || entry.batch-selected;
     private property <int> focused-actions: 0;
     in property <bool> control-focus-mode;
