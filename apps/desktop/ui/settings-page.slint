@@ -34,9 +34,19 @@ component SettingsNavButton inherits Rectangle {
     }
     content := HorizontalLayout {
         x: 10px; y: (parent.height - self.height) / 2;
-        width: parent.width - 20px; height: 20px; spacing: 8px; alignment: start;
-        Image { source: root.icon; width: 18px; height: 18px; image-fit: contain; colorize: EchoTheme.text; }
+        width: parent.width - 20px; height: 20px; spacing: 10px; alignment: start;
+        // Keep the navigation icon and the page title on one shared 26px grid.
+        // The icon itself stays 18px, while the slot reserves the title's full
+        // 26px leading column so labels begin at the same x-coordinate.
+        icon-slot := Rectangle {
+            width: 26px; height: 20px; background: transparent;
+            Image { x: 0px; y: 1px; source: root.icon; width: 18px; height: 18px; image-fit: contain; colorize: EchoTheme.text; }
+        }
         Text { text: root.text; width: self.preferred-width; height: parent.height; color: EchoTheme.text; font-size: 17px; font-weight: root.checked ? T.font-weight-medium : T.font-weight-normal; vertical-alignment: center; horizontal-alignment: left; accessible-role: none; }
+    }
+    if (root.checked): Rectangle {
+        x: 0px; y: 7px; width: 3px; height: 22px; border-radius: 2px;
+        background: EchoTheme.amber; accessible-role: none;
     }
     touch := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { focus.focus(); root.clicked(); } }
 }
@@ -131,11 +141,14 @@ export component SettingsPage inherits Rectangle {
         model: root.categories; selected-index: root.section; selection-changed(index) => { root.section = index; } accessible-label: @tr("Settings category");
     }
     if (!root.narrow): VerticalLayout {
-        x: 64px; y: 75px; width: 184px; spacing: 4px;
+        // The title uses x=28px for its icon column and x=64px for its label.
+        // Give each navigation row symmetric hit-area insets and use the same
+        // 26px icon slot so the title and menu labels share one vertical line.
+        x: 18px; y: 75px; width: T.settings-nav-width + 10px; spacing: 4px;
         for label[index] in root.categories: SettingsNavButton {
-            icon: index == 0 ? @image-url("favorite-icons/SettingsCog.svg") : index == 1 ? @image-url("favorite-icons/ColorTheme.svg") : index == 2 ? @image-url("favorite-icons/BuildingWorkspace.svg") : @image-url("favorite-icons/KeyboardShortcut.svg");
+            icon: index == 0 ? @image-url("favorite-icons/SettingsSlider.svg") : index == 1 ? @image-url("favorite-icons/ColorTheme.svg") : index == 2 ? @image-url("favorite-icons/BuildingWorkspace.svg") : @image-url("favorite-icons/KeyboardShortcut.svg");
             text: label; checked: root.section == index;
-            width: 168px; height: 36px;
+            width: parent.width; height: 36px;
             clicked => { root.section = index; }
         }
     }

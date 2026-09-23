@@ -449,6 +449,33 @@ fn settings_render_in_both_languages_themes_and_narrow_widths() {
                         renderer.render(&mut pixels, physical_width as usize);
                     });
                     assert!(pixels.windows(2).any(|p| p[0] != p[1]));
+                    if language == "zh-CN" && !dark && width == 960 && scale == 1. {
+                        let pixel = |x: usize, y: usize| {
+                            let p = &pixels[y * physical_width as usize + x];
+                            [p.r, p.g, p.b]
+                        };
+                        let label_left = |y_start: usize, y_end: usize| {
+                            (y_start..y_end)
+                                .flat_map(|y| (80..210).map(move |x| (x, y)))
+                                .find(|&(x, y)| {
+                                    let p = &pixels[y * physical_width as usize + x];
+                                    p.r < 120 && p.g < 120 && p.b < 120
+                                })
+                                .map(|(x, _)| x)
+                                .expect("settings label pixels")
+                        };
+                        let title_label_left = label_left(35, 76);
+                        let navigation_label_left = label_left(99, 136);
+                        assert!(
+                            (title_label_left as isize - navigation_label_left as isize).abs() <= 1,
+                            "settings title and first navigation label must share a column: title={title_label_left}, navigation={navigation_label_left}"
+                        );
+                        assert_eq!(pixel(41, 117), [247, 247, 246]);
+                        assert_eq!(pixel(42, 117), [32, 32, 32]);
+                        assert_eq!(pixel(45, 117), [255, 255, 255]);
+                        assert_eq!(pixel(255, 117), [255, 255, 255]);
+                        assert_eq!(pixel(256, 117), [247, 247, 246]);
+                    }
                     let row_y = if width == 320 { 251. } else { 211. };
                     ui.set_global_hotkey("Ctrl+Alt+J".into());
                     ui.set_global_hotkey_enabled(false);
