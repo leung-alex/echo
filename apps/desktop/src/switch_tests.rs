@@ -343,6 +343,7 @@ fn settings_render_in_both_languages_themes_and_narrow_widths() {
     ui.set_route("settings".into());
     ui.set_global_hotkey("Ctrl+Alt+J".into());
     ui.set_global_hotkey_enabled(true);
+    ui.set_launch_at_startup(true);
     ui.set_settings_valid(true);
     crate::style::apply_style!(
         ui.global::<crate::DesignTokens>(),
@@ -351,8 +352,8 @@ fn settings_render_in_both_languages_themes_and_narrow_widths() {
     );
     ui.show().unwrap();
     window.set_size(slint::PhysicalSize::new(960, 720));
-    // The compact desktop navigation places Quick Input at this center point.
-    let position = LogicalPosition::new(110., 197.);
+    // Select General in the desktop settings navigation.
+    let position = LogicalPosition::new(110., 93.);
     ui.window().dispatch_event(WindowEvent::PointerPressed {
         position,
         button: PointerEventButton::Left,
@@ -380,6 +381,13 @@ fn settings_render_in_both_languages_themes_and_narrow_widths() {
     assert_eq!(ui.get_global_hotkey(), "Alt+V");
     assert!(ui.get_global_hotkey_enabled());
     assert_eq!(saves.get(), 0, "Reset must edit the draft without saving");
+    click(840., 263.);
+    assert!(!ui.get_launch_at_startup());
+    assert_eq!(
+        saves.get(),
+        0,
+        "Startup toggle must edit the draft without saving"
+    );
     ui.set_global_hotkey("Ctrl+Alt+J".into());
     ui.set_busy(true);
     click(840., 211.);

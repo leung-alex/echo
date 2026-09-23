@@ -3,12 +3,11 @@ import { I18n } from "i18n.slint";
 import { EchoTheme } from "theme.slint";
 import { FavoriteIconImages } from "favorite-icon-images.slint";
 import { LucideIconImages } from "lucide-icon-images.slint";
-import { EntryRow } from "entry-row.slint";
+import { EntryRow, EntryView } from "entry-row.slint";
 import { SpaceVm } from "space-models.slint";
 import { CardShadow } from "card-shadow.slint";
 
-export struct SidePreviewRow { title: string, body: string, image: image }
-export struct SidePreview { rows: [SidePreviewRow], loading: bool, message: string }
+export struct SidePreview { rows: [EntryRow], favorites: bool, loading: bool, message: string }
 
 // UI-thread model references, never a bitmap or another data/clipboard owner.
 export struct OutgoingPanel {
@@ -61,20 +60,11 @@ export component SpaceSideCard inherits Rectangle {
         x: 16px; y: 96px; width: parent.width - 32px; height: max(0px,parent.height - 116px); clip: true;
         VerticalLayout {
             width: parent.width; alignment: start; spacing: 10px;
-            for row in root.preview.rows: Rectangle {
-                height: row.image.width > 0 ? 142px : 108px;
-                background: EchoTheme.elevated; border-radius: T.row-radius; border-width: 1px; border-color: EchoTheme.line;
-                accessible-role: text; accessible-label: row.title + " " + row.body;
-                Text { x: 12px; y: 10px; width: parent.width - 24px; height: row.title == "" ? 0px : 20px;
-                    text: row.title; color: EchoTheme.row-text; font-size: T.font-secondary; overflow: elide; }
-                if (row.image.width > 0): Image {
-                    x: 12px; y: row.title == "" ? 12px : 36px; width: parent.width - 24px; height: row.title == "" ? 118px : 94px;
-                    source: row.image; image-fit: contain; accessible-role: none;
-                }
-                if (row.image.width == 0): Text {
-                    x: 12px; y: row.title == "" ? 12px : 36px; width: parent.width - 24px; height: row.title == "" ? 80px : 60px;
-                    text: row.body; color: EchoTheme.row-text; font-size: T.font-body; wrap: word-wrap; overflow: elide;
-                }
+            for row in root.preview.rows: EntryView {
+                width: parent.width;
+                entry: row; favorites: root.preview.favorites; capture-only: true;
+                thumbnail-active: false; batch: false; busy: false; input-blocked: false;
+                inline-mode: false; quick-insert: false; copy-only: false; reorder-enabled: false;
             }
             if (root.preview.loading || root.preview.rows.length == 0): Text {
                 text: root.preview.loading ? @tr("Filtering…") : I18n.message(root.preview.message);

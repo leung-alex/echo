@@ -1,7 +1,7 @@
 # Input method indicator
 
 The passive badge observes the current writable input independently of Quick Insert.
-Quick Input settings contains **Input method indicator**, enabled by default. The
+General settings contains **Input method indicator**, enabled by default. The
 switch edits the settings draft; Save persists the choice and starts/stops observation.
 Cancel keeps the saved choice. No schema migration is required for the new defaulted
 `UiSettings.input_method_indicator` field.

@@ -1,6 +1,7 @@
 //! Two small, read-only neighbor projections share the central query generation.
 //! Searches use complete documents; only their first four display rows are retained.
 use super::*;
+use echo_engine::FuzzyMatcher;
 use std::hash::{Hash, Hasher};
 
 #[derive(Hash)]
@@ -32,9 +33,12 @@ impl App {
     }
     pub(super) fn prepare_software_neighbors(&mut self) {
         if !self.surface.visible
-            || !self.surface.ready
-            || self.surface.loading
-            || self.surface.dirty
+            // A fresh query marks the main surface dirty before its load starts.
+            // Start the neighbor requests in that window so side cards follow the
+            // same query instead of waiting for the main result and showing stale
+            // content in the meantime. Other prewarm callers still wait for a
+            // settled surface.
+            || ((!self.surface.ready || self.surface.loading) && !self.surface.dirty)
             || self.software.slide.moving()
             || self.window.get_route().as_str() != "history"
             || self.window.get_modal()
@@ -129,18 +133,7 @@ impl App {
                     },
                 );
                 for asset in hashes {
-                    let hash = asset.source_hash.clone();
-                    if !self.images.cache.contains_key(&hash)
-                        && self.images.pending.insert(hash.clone())
-                    {
-                        if !self.send(Work::Thumbnail(
-                            self.images.epoch,
-                            asset,
-                            Default::default(),
-                        )) {
-                            self.images.pending.remove(&hash);
-                        }
-                    }
+                    self.queue_thumbnail(asset, Default::default(), true);
                 }
             }
             Err(_) => {
@@ -155,40 +148,32 @@ impl App {
     pub(super) fn make_side_preview(
         &self,
         items: &[QuickInsertItem],
+        query: &str,
+        favorites: bool,
         loading: bool,
         message: &str,
     ) -> (crate::SidePreview, usize) {
         echo_windows::allocation::measure_owned(|| {
+            let mut matcher = FuzzyMatcher::new(query);
+            let highlight_color = self.highlight_color();
             let rows: Vec<_> = items
                 .iter()
                 .take(4)
-                .map(|item| crate::SidePreviewRow {
-                    title: item
-                        .name
-                        .as_deref()
-                        .unwrap_or("")
-                        .chars()
-                        .take(160)
-                        .collect::<String>()
-                        .into(),
-                    body: item
-                        .preview_text
-                        .as_deref()
-                        .unwrap_or(&item.content_type)
-                        .chars()
-                        .take(384)
-                        .collect::<String>()
-                        .into(),
-                    image: item
+                .map(|item| {
+                    let mut row = crate::formatting::preview_row_content(item);
+                    row.thumbnail = item
                         .thumbnail
                         .as_ref()
                         .and_then(|t| self.images.cache.get(&t.source_hash))
                         .map(|(image, _)| image.clone())
-                        .unwrap_or_default(),
+                        .unwrap_or_default();
+                    crate::match_highlight::apply(&mut row, &mut matcher, &highlight_color);
+                    row
                 })
                 .collect();
             crate::SidePreview {
                 rows: ModelRc::new(VecModel::from(rows)),
+                favorites,
                 loading,
                 message: message.into(),
             }
@@ -207,9 +192,10 @@ impl App {
                 .iter()
                 .find(|s| s.id.to_string() == side.key.as_str())
                 .map(|s| s.id);
-            let preview = id
-                .filter(|id| self.has_current_preview(*id))
-                .and_then(|id| self.previews.get(&id));
+            // Keep the previous rows painted while the new query is filtering.
+            // They are marked loading and rebuilt with the current query highlights,
+            // which avoids a blank-frame flash on every typed character.
+            let preview = id.and_then(|id| self.previews.get(&id));
             let error = id.and_then(|id| self.software.side_errors.get(&id));
             let loading = id.is_some_and(|id| !self.has_current_preview(id)) && error.is_none();
             if error.is_some() {
@@ -247,8 +233,13 @@ impl App {
             } else {
                 "No matches in this space"
             };
-            let (view, bytes) =
-                self.make_side_preview(preview.map_or(&[], |p| &p.items), loading, message);
+            let (view, bytes) = self.make_side_preview(
+                preview.map_or(&[], |p| &p.items),
+                &self.surface.query,
+                id.is_some_and(|id| id != SpaceId::HISTORY),
+                loading,
+                message,
+            );
             if index == 0 {
                 self.window.set_left_space(side);
                 self.window.set_left_preview(view);

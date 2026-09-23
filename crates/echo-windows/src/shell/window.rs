@@ -13,7 +13,7 @@ use std::{
 use windows_sys::Win32::{
     Foundation::*,
     Graphics::{Dwm::*, Gdi::*},
-    System::{Registry::*, Threading::*},
+    System::{LibraryLoader::GetModuleHandleW, Registry::*, Threading::*},
     UI::{
         Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW},
         Controls::MARGINS,
@@ -253,6 +253,90 @@ fn caption_hit(bounds: Option<[i32; 4]>, point: [i32; 2]) -> bool {
         .is_some_and(|[l, t, r, b]| point[0] >= l && point[0] < r && point[1] >= t && point[1] < b)
 }
 
+/// Native presentation modes for the one resident Echo window.
+///
+/// The content surfaces are tool windows so Windows does not create a taskbar
+/// button for them. Settings/About deliberately retain the normal app-window
+/// style because they are ordinary interactive windows.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SurfaceMode {
+    Hidden,
+    TemporaryManager,
+    QuickInsert,
+    InteractiveSettings,
+}
+impl SurfaceMode {
+    fn temporary(self) -> bool {
+        matches!(self, Self::TemporaryManager | Self::QuickInsert)
+    }
+}
+
+const SURFACE_TASK_STYLE_MASK: isize = (WS_EX_APPWINDOW | WS_EX_TOOLWINDOW) as isize;
+const POPUP_OUTSIDE_CLICK_MESSAGE: u32 = WM_APP + 114;
+static POPUP_MOUSE_TARGET: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+static POPUP_MOUSE_GENERATION: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+fn task_style_for_mode(base: isize, current: isize, mode: SurfaceMode) -> isize {
+    let mut desired = current & !SURFACE_TASK_STYLE_MASK;
+    desired |= match mode {
+        SurfaceMode::TemporaryManager | SurfaceMode::QuickInsert => WS_EX_TOOLWINDOW as isize,
+        SurfaceMode::Hidden | SurfaceMode::InteractiveSettings => base & SURFACE_TASK_STYLE_MASK,
+    };
+    desired
+}
+
+fn style_for_mode(base: isize, current: isize, mode: SurfaceMode, no_activate: bool) -> isize {
+    let mut desired = task_style_for_mode(base, current, mode);
+    let input_mask = (WS_EX_NOACTIVATE | WS_EX_TOPMOST) as isize;
+    desired &= !input_mask;
+    if mode == SurfaceMode::QuickInsert && no_activate {
+        desired |= input_mask;
+    }
+    desired
+}
+
+fn is_mouse_button_down(message: u32) -> bool {
+    matches!(
+        message,
+        WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN
+    )
+}
+
+unsafe fn point_belongs_to_echo(point: POINT) -> bool {
+    let child = WindowFromPoint(point);
+    if child.is_null() {
+        return false;
+    }
+    let root = match GetAncestor(child, GA_ROOT) {
+        root if root.is_null() => child,
+        root => root,
+    };
+    let mut pid = 0;
+    GetWindowThreadProcessId(root, &mut pid);
+    pid != 0 && pid == GetCurrentProcessId()
+}
+
+unsafe extern "system" fn popup_mouse_hook(code: i32, w: WPARAM, l: LPARAM) -> LRESULT {
+    if code >= 0 && is_mouse_button_down(w as u32) {
+        let target = POPUP_MOUSE_TARGET.load(Ordering::Acquire);
+        if target != 0 && l != 0 {
+            let mouse = &*(l as *const MSLLHOOKSTRUCT);
+            if !point_belongs_to_echo(mouse.pt) {
+                let generation = POPUP_MOUSE_GENERATION.load(Ordering::Acquire);
+                // This is deliberately a posted notification. Returning the
+                // CallNextHookEx result leaves the original click untouched.
+                PostMessageW(
+                    target as HWND,
+                    POPUP_OUTSIDE_CLICK_MESSAGE,
+                    generation as WPARAM,
+                    0,
+                );
+            }
+        }
+    }
+    CallNextHookEx(null_mut(), code, w, l)
+}
+
 struct HookData {
     ime_mode: super::ime_mode::ImeMode,
     handler: EventHandler,
@@ -262,6 +346,10 @@ struct HookData {
     caption_bounds: std::cell::Cell<Option<[i32; 4]>>,
     inline: std::cell::Cell<bool>,
     prior_popup_style: std::cell::Cell<Option<isize>>,
+    base_extended_style: isize,
+    surface_mode: std::cell::Cell<SurfaceMode>,
+    mouse_hook: std::cell::Cell<Option<HHOOK>>,
+    mouse_generation: std::cell::Cell<u32>,
 }
 pub struct WindowHook {
     hwnd: isize,
@@ -269,6 +357,115 @@ pub struct WindowHook {
     _main_thread: Rc<()>,
 }
 impl WindowHook {
+    fn set_mouse_observer(&self, enabled: bool) -> Result<(), String> {
+        unsafe {
+            if enabled {
+                if self.data.mouse_hook.get().is_some() {
+                    let generation = POPUP_MOUSE_GENERATION
+                        .fetch_add(1, Ordering::AcqRel)
+                        .wrapping_add(1);
+                    self.data.mouse_generation.set(generation);
+                    POPUP_MOUSE_TARGET.store(self.hwnd, Ordering::Release);
+                    return Ok(());
+                }
+                let hook = SetWindowsHookExW(
+                    WH_MOUSE_LL,
+                    Some(popup_mouse_hook),
+                    GetModuleHandleW(std::ptr::null()),
+                    0,
+                );
+                if hook.is_null() {
+                    return Err(format!(
+                        "Windows refused the Echo popup mouse observer ({})",
+                        GetLastError()
+                    ));
+                }
+                self.data.mouse_hook.set(Some(hook));
+                let generation = POPUP_MOUSE_GENERATION
+                    .fetch_add(1, Ordering::AcqRel)
+                    .wrapping_add(1);
+                self.data.mouse_generation.set(generation);
+                POPUP_MOUSE_TARGET.store(self.hwnd, Ordering::Release);
+            } else {
+                POPUP_MOUSE_TARGET.store(0, Ordering::Release);
+                let generation = POPUP_MOUSE_GENERATION
+                    .fetch_add(1, Ordering::AcqRel)
+                    .wrapping_add(1);
+                self.data.mouse_generation.set(generation);
+                if let Some(hook) = self.data.mouse_hook.take() {
+                    if UnhookWindowsHookEx(hook) == 0 {
+                        self.data.mouse_hook.set(Some(hook));
+                        POPUP_MOUSE_TARGET.store(self.hwnd, Ordering::Release);
+                        return Err(error());
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Apply the native taskbar/focus contract for the visible surface.
+    /// Winit can rewrite extended styles when it shows or resizes a window;
+    /// the subclass below applies the same contract to those later writes.
+    pub fn set_surface_mode(&self, mode: SurfaceMode) -> Result<(), String> {
+        let hwnd = owned(self.hwnd)?;
+        unsafe {
+            let previous_mode = self.data.surface_mode.replace(mode);
+            let current = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+            let desired = style_for_mode(
+                self.data.base_extended_style,
+                current,
+                mode,
+                mode == SurfaceMode::QuickInsert || self.data.inline.get(),
+            );
+            SetLastError(0);
+            if SetWindowLongPtrW(hwnd, GWL_EXSTYLE, desired) == 0 && GetLastError() != 0 {
+                self.data.surface_mode.set(previous_mode);
+                return Err(error());
+            }
+            let topmost = desired & WS_EX_TOPMOST as isize != 0;
+            if SetWindowPos(
+                hwnd,
+                if topmost {
+                    HWND_TOPMOST
+                } else {
+                    HWND_NOTOPMOST
+                },
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            ) == 0
+            {
+                self.data.surface_mode.set(previous_mode);
+                SetWindowLongPtrW(hwnd, GWL_EXSTYLE, current);
+                return Err(error());
+            }
+            let observer_enabled = mode.temporary() && IsWindowVisible(hwnd) != 0;
+            if let Err(observer_error) = self.set_mouse_observer(observer_enabled) {
+                self.data.surface_mode.set(previous_mode);
+                SetWindowLongPtrW(hwnd, GWL_EXSTYLE, current);
+                let old_topmost = current & WS_EX_TOPMOST as isize != 0;
+                let _ = SetWindowPos(
+                    hwnd,
+                    if old_topmost {
+                        HWND_TOPMOST
+                    } else {
+                        HWND_NOTOPMOST
+                    },
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+                );
+                return Err(observer_error);
+            }
+        }
+        Ok(())
+    }
+
     /// Inline suggestions are interactive with the pointer, but never own the
     /// external text input's activation/IME. Normal manager behavior is restored.
     pub fn set_inline_popup(&self, enabled: bool) -> Result<(), String> {
@@ -281,6 +478,7 @@ impl WindowHook {
             let current = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
             let mask = (WS_EX_NOACTIVATE | WS_EX_TOPMOST) as isize;
             let previous_popup_style = self.data.prior_popup_style.get();
+            let previous_inline = self.data.inline.replace(enabled);
             let desired = if enabled {
                 if changed {
                     self.data.prior_popup_style.set(Some(current & mask));
@@ -289,7 +487,11 @@ impl WindowHook {
             } else {
                 (current & !mask) | self.data.prior_popup_style.take().unwrap_or(0)
             };
-            let previous_inline = self.data.inline.replace(enabled);
+            let desired = task_style_for_mode(
+                self.data.base_extended_style,
+                desired,
+                self.data.surface_mode.get(),
+            );
             SetLastError(0);
             if SetWindowLongPtrW(hwnd, GWL_EXSTYLE, desired) == 0 && GetLastError() != 0 {
                 self.data.inline.set(previous_inline);
@@ -354,6 +556,10 @@ impl WindowHook {
 impl Drop for WindowHook {
     fn drop(&mut self) {
         unsafe {
+            POPUP_MOUSE_TARGET.store(0, Ordering::Release);
+            if let Some(hook) = self.data.mouse_hook.take() {
+                UnhookWindowsHookEx(hook);
+            }
             if IsWindow(self.hwnd as HWND) != 0 {
                 RemoveWindowSubclass(self.hwnd as HWND, Some(subclass), 1);
             }
@@ -386,6 +592,7 @@ pub fn attach_window(
             0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
         );
+        let base_extended_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
         let mut data = Box::new(HookData {
             handler,
             main: is_main,
@@ -394,6 +601,10 @@ pub fn attach_window(
             caption_bounds: std::cell::Cell::new(None),
             inline: std::cell::Cell::new(false),
             prior_popup_style: std::cell::Cell::new(None),
+            base_extended_style,
+            surface_mode: std::cell::Cell::new(SurfaceMode::Hidden),
+            mouse_hook: std::cell::Cell::new(None),
+            mouse_generation: std::cell::Cell::new(0),
             ime_mode: Default::default(),
         });
         if SetWindowSubclass(
@@ -439,9 +650,15 @@ unsafe extern "system" fn subclass(
                 .context_changed(hwnd, w != 0, || DefSubclassProc(hwnd, msg, w, l));
         }
         // Winit reapplies its cached extended style on visibility/flag changes.
-        // Preserve the native inline contract across those framework updates.
-        WM_STYLECHANGING if state.inline.get() && w as i32 == GWL_EXSTYLE && l != 0 => {
-            (*(l as *mut STYLESTRUCT)).styleNew |= WS_EX_NOACTIVATE;
+        // Preserve the taskbar and inline contracts across those framework updates.
+        WM_STYLECHANGING if w as i32 == GWL_EXSTYLE && l != 0 => {
+            let style = &mut *(l as *mut STYLESTRUCT);
+            style.styleNew = style_for_mode(
+                state.base_extended_style,
+                style.styleNew as isize,
+                state.surface_mode.get(),
+                state.inline.get(),
+            ) as u32;
         }
         WM_WINDOWPOSCHANGING if state.inline.get() && l != 0 => {
             // Framework visibility/flag updates must not demote an active inline
@@ -452,6 +669,14 @@ unsafe extern "system" fn subclass(
         }
         WM_MOUSEACTIVATE if state.inline.get() => return MA_NOACTIVATE as LRESULT,
         WM_NCHITTEST if state.inline.get() => return HTCLIENT as LRESULT,
+        POPUP_OUTSIDE_CLICK_MESSAGE
+            if state.main
+                && state.surface_mode.get().temporary()
+                && w as u32 == state.mouse_generation.get() =>
+        {
+            (state.handler)(ShellEvent::PopupOutsideClick);
+            return 0;
+        }
         WM_SYSKEYDOWN if w == 0x73 => {
             PostMessageW(hwnd, WM_CLOSE, 0, 0);
             return 0;
@@ -565,6 +790,49 @@ mod tests {
         };
         let (x, y) = adjacent_position(a, (310, 575), w, 8, 93);
         assert_eq!((x, y), (-1068, 193));
+    }
+    #[test]
+    fn temporary_modes_replace_taskbar_style() {
+        let base = (WS_EX_APPWINDOW | WS_EX_NOACTIVATE) as isize;
+        let current = base | WS_EX_TOPMOST as isize;
+        let manager = style_for_mode(base, current, SurfaceMode::TemporaryManager, false);
+        assert_ne!(manager & WS_EX_TOOLWINDOW as isize, 0);
+        assert_eq!(manager & WS_EX_APPWINDOW as isize, 0);
+        assert_eq!(manager & WS_EX_NOACTIVATE as isize, 0);
+        assert_eq!(manager & WS_EX_TOPMOST as isize, 0);
+    }
+    #[test]
+    fn quick_insert_keeps_nonactivating_topmost_style() {
+        let base = WS_EX_APPWINDOW as isize;
+        let quick = style_for_mode(base, base, SurfaceMode::QuickInsert, true);
+        assert_ne!(quick & WS_EX_TOOLWINDOW as isize, 0);
+        assert_eq!(quick & WS_EX_APPWINDOW as isize, 0);
+        assert_ne!(quick & WS_EX_NOACTIVATE as isize, 0);
+        assert_ne!(quick & WS_EX_TOPMOST as isize, 0);
+    }
+    #[test]
+    fn interactive_settings_restore_original_app_window_style() {
+        let base = (WS_EX_APPWINDOW | WS_EX_CONTEXTHELP) as isize;
+        let temporary = style_for_mode(base, base, SurfaceMode::TemporaryManager, false);
+        let restored = style_for_mode(base, temporary, SurfaceMode::InteractiveSettings, false);
+        assert_eq!(
+            restored & SURFACE_TASK_STYLE_MASK,
+            base & SURFACE_TASK_STYLE_MASK
+        );
+        assert_eq!(
+            restored & WS_EX_CONTEXTHELP as isize,
+            base & WS_EX_CONTEXTHELP as isize
+        );
+    }
+    #[test]
+    fn quick_insert_editor_focus_can_release_noactivate_without_taskbar_button() {
+        let base = WS_EX_APPWINDOW as isize;
+        let quick = style_for_mode(base, base, SurfaceMode::QuickInsert, true);
+        let editor = style_for_mode(base, quick, SurfaceMode::QuickInsert, false);
+        assert_ne!(editor & WS_EX_TOOLWINDOW as isize, 0);
+        assert_eq!(editor & WS_EX_APPWINDOW as isize, 0);
+        assert_eq!(editor & WS_EX_NOACTIVATE as isize, 0);
+        assert_eq!(editor & WS_EX_TOPMOST as isize, 0);
     }
     #[test]
     fn invalid_window_is_rejected() {

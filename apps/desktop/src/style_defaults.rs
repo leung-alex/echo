@@ -25,6 +25,8 @@ pub(super) const SCHEMA: &[(&str, &str, bool)] = &[
     ("color.search-background", "color", true),
     ("color.search-text", "color", true),
     ("color.selection", "color", true),
+    ("color.settings-divider", "color", true),
+    ("color.settings-nav", "color", true),
     ("color.shadow", "color", true),
     ("color.stage-edge", "color", true),
     ("color.success", "color", true),
@@ -123,6 +125,8 @@ pub(super) fn defaults() -> StyleSnapshot {
         ("color.search-background".into(), StyleValue::Color(0xffe59aff, 0x69501cff)),
         ("color.search-text".into(), StyleValue::Color(0x493600ff, 0xfff0bdff)),
         ("color.selection".into(), StyleValue::Color(0xeeeeeeff, 0x383838ff)),
+        ("color.settings-divider".into(), StyleValue::Color(0xd8dfdcff, 0x2b3740ff)),
+        ("color.settings-nav".into(), StyleValue::Color(0xeef2f0ff, 0x12191fff)),
         ("color.shadow".into(), StyleValue::Color(0x00000020, 0x00000066)),
         ("color.stage-edge".into(), StyleValue::Color(0xdfe5e2ff, 0x080d10ff)),
         ("color.success".into(), StyleValue::Color(0x246442ff, 0x83cea4ff)),
@@ -198,6 +202,8 @@ macro_rules! apply_style {
         g.set_color_search_background(s.color("color.search-background", dark));
         g.set_color_search_text(s.color("color.search-text", dark));
         g.set_color_selection(s.color("color.selection", dark));
+        g.set_color_settings_divider(s.color("color.settings-divider", dark));
+        g.set_color_settings_nav(s.color("color.settings-nav", dark));
         g.set_color_shadow(s.color("color.shadow", dark));
         g.set_color_stage_edge(s.color("color.stage-edge", dark));
         g.set_color_success(s.color("color.success", dark));

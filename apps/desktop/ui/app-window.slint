@@ -16,9 +16,9 @@ export { EntryRow, MatchRange, EchoTheme, FavoriteIconChoice, FavoriteIconImages
 
 import { DesignTokens as T } from "echo-tokens.slint";
 import { SpacePanel } from "space-panel.slint";
-import { SpaceSideCard, OutgoingPanel, CarouselCard, SidePreview, SidePreviewRow } from "software-cards.slint";
+import { SpaceSideCard, OutgoingPanel, CarouselCard, SidePreview } from "software-cards.slint";
 import { CardShadow } from "card-shadow.slint";
-export { OutgoingPanel, SidePreview, SidePreviewRow }
+export { OutgoingPanel, SidePreview }
 import { SpaceVm, ActionVm } from "space-models.slint";
 import { SettingsPage } from "settings-page.slint";
 export component AppWindow inherits Window {
@@ -128,6 +128,7 @@ export component AppWindow inherits Window {
     in-out property <bool> loop-spaces;
     in-out property <bool> remember-position;
     in-out property <bool> input-method-indicator;
+    in-out property <bool> launch-at-startup;
     in-out property <bool> reflections;
     in-out property <bool> trim-when-hidden;
     in-out property <bool> reduce-on-battery;
@@ -345,6 +346,10 @@ export component AppWindow inherits Window {
                 empty-state-text: root.outgoing.empty-state-text;
             }
             }
+            if (root.route != "history"): CardShadow {
+                x: root.settings-card-left - 16px; y: 12px;
+                width: root.settings-card-width + 32px; height: parent.height - 16px;
+            }
             Rectangle {
                 visible: root.route != "history";
                 x:root.settings-card-left;y:24px;width:root.settings-card-width;height:parent.height - 48px;
@@ -373,6 +378,7 @@ export component AppWindow inherits Window {
                 loop-spaces <=> root.loop-spaces;
                 remember-position <=> root.remember-position;
                 input-method-indicator <=> root.input-method-indicator;
+                launch-at-startup <=> root.launch-at-startup;
                 reflections <=> root.reflections;
                 trim-when-hidden <=> root.trim-when-hidden;
                 reduce-on-battery <=> root.reduce-on-battery;

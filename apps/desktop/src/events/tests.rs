@@ -143,6 +143,7 @@ fn display_result_backpressure_keeps_control_and_shutdown_live() {
         Event::Thumbnail(
             1,
             "synthetic".into(),
+            Default::default(),
             Ok(super::PixelData {
                 requested: Default::default(),
                 width: 1536,

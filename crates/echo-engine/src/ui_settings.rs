@@ -84,6 +84,7 @@ pub struct UiSettings {
     pub startup_space: StartupSpace,
     pub remember_position: bool,
     pub input_method_indicator: bool,
+    pub launch_at_startup: bool,
     pub query_on_switch: QueryOnSwitch,
     pub reflections: bool,
     pub side_content: SideContent,
@@ -104,6 +105,7 @@ impl Default for UiSettings {
             startup_space: Default::default(),
             remember_position: true,
             input_method_indicator: true,
+            launch_at_startup: true,
             query_on_switch: Default::default(),
             reflections: false,
             side_content: Default::default(),
@@ -127,6 +129,17 @@ mod input_indicator_tests {
         let decoded: UiSettings =
             serde_json::from_str(&serde_json::to_string(&value).unwrap()).unwrap();
         assert!(!decoded.input_method_indicator);
+        assert_eq!(decoded, value);
+    }
+
+    #[test]
+    fn launch_at_startup_defaults_on_and_serializes_the_saved_choice() {
+        let mut value = UiSettings::default();
+        assert!(value.launch_at_startup);
+        value.launch_at_startup = false;
+        let decoded: UiSettings =
+            serde_json::from_str(&serde_json::to_string(&value).unwrap()).unwrap();
+        assert!(!decoded.launch_at_startup);
         assert_eq!(decoded, value);
     }
 }
@@ -235,6 +248,7 @@ mod tests {
     fn old_settings_get_complete_defaults() {
         let settings: UiSettings = serde_json::from_str(r#"{"version":1}"#).unwrap();
         assert_eq!(settings, UiSettings::default());
+        assert!(settings.launch_at_startup);
         settings.validate().unwrap();
     }
     #[test]

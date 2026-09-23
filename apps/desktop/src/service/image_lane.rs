@@ -24,7 +24,7 @@ impl Lane {
                     if stop.load(Ordering::Acquire) {
                         break;
                     }
-                    let event = Event::Thumbnail(generation, asset.source_hash, result);
+                    let event = Event::Thumbnail(generation, asset.source_hash, size, result);
                     #[cfg(feature = "native-test")]
                     native_faults::publish_thumbnail(&hub, event);
                     #[cfg(not(feature = "native-test"))]
@@ -75,7 +75,15 @@ fn thumbnail(
             if let Ok(pixels) = crate::image_preview::decode(&source.bytes, size) {
                 crate::memory_trace::record(
                     "image_preview_decoded",
-                    serde_json::json!({"elapsed_us":started.elapsed().as_micros(),"source_bytes":source.bytes.len(),"width":pixels.width,"height":pixels.height}),
+                    serde_json::json!({
+                        "elapsed_us":started.elapsed().as_micros(),
+                        "source_bytes":source.bytes.len(),
+                        "width":pixels.width,
+                        "height":pixels.height,
+                        "requested_width":size.width,
+                        "requested_height":size.height,
+                        "source_kind":"original",
+                    }),
                 );
                 return Ok(pixels);
             }
@@ -85,7 +93,8 @@ fn thumbnail(
         .read_thumbnail(hash)
         .map_err(|e| e.to_string())?
         .ok_or("Thumbnail is unavailable")?;
-    if asset.bytes.len() > 8 * 1024 * 1024 {
+    let source_bytes = asset.bytes.len();
+    if source_bytes > 8 * 1024 * 1024 {
         return Err("Thumbnail exceeds the decode budget".into());
     }
     let mut reader =
@@ -96,10 +105,30 @@ fn thumbnail(
     limits.max_alloc = Some(16 * 1024 * 1024);
     reader.limits(limits);
     let rgba = reader.decode().map_err(|e| e.to_string())?.into_rgba8();
-    Ok(PixelData {
-        requested: size,
+    // A persisted thumbnail is bounded to the storage thumbnail size. Keep
+    // that effective quality separate from the display size that triggered
+    // this request so the UI does not treat a low-resolution fallback as a
+    // full-size cache hit.
+    let pixels = PixelData {
+        requested: crate::image_preview::PreviewSize {
+            width: rgba.width(),
+            height: rgba.height(),
+        },
         width: rgba.width(),
         height: rgba.height(),
         rgba: rgba.into_raw(),
-    })
+    };
+    crate::memory_trace::record(
+        "image_preview_decoded",
+        serde_json::json!({
+            "elapsed_us":started.elapsed().as_micros(),
+            "source_bytes":source_bytes,
+            "width":pixels.width,
+            "height":pixels.height,
+            "requested_width":size.width,
+            "requested_height":size.height,
+            "source_kind":"thumbnail",
+        }),
+    );
+    Ok(pixels)
 }

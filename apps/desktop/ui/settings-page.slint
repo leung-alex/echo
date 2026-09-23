@@ -21,7 +21,7 @@ component SettingsNavButton inherits Rectangle {
     accessible-enabled: root.enabled;
     accessible-action-default => { if (root.enabled) { root.clicked(); } }
     border-radius: 8px;
-    background: root.checked ? EchoTheme.selection : (touch.has-hover ? EchoTheme.surface : transparent);
+    background: root.checked ? EchoTheme.elevated : (touch.has-hover ? EchoTheme.surface : transparent);
     opacity: root.enabled ? 1 : 0.45;
     forward-focus: focus;
     focus := FocusScope {
@@ -34,9 +34,9 @@ component SettingsNavButton inherits Rectangle {
     }
     content := HorizontalLayout {
         x: 10px; y: (parent.height - self.height) / 2;
-        width: parent.width - 20px; height: 16px; spacing: 8px; alignment: start;
-        Image { source: root.icon; width: 16px; height: 16px; image-fit: contain; colorize: EchoTheme.text; }
-        Text { text: root.text; width: self.preferred-width; height: parent.height; color: EchoTheme.text; font-size: 15px; font-weight: root.checked ? T.font-weight-medium : T.font-weight-normal; vertical-alignment: center; horizontal-alignment: left; accessible-role: none; }
+        width: parent.width - 20px; height: 20px; spacing: 8px; alignment: start;
+        Image { source: root.icon; width: 18px; height: 18px; image-fit: contain; colorize: EchoTheme.text; }
+        Text { text: root.text; width: self.preferred-width; height: parent.height; color: EchoTheme.text; font-size: 17px; font-weight: root.checked ? T.font-weight-medium : T.font-weight-normal; vertical-alignment: center; horizontal-alignment: left; accessible-role: none; }
     }
     touch := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { focus.focus(); root.clicked(); } }
 }
@@ -59,6 +59,7 @@ export component SettingsPage inherits Rectangle {
     in-out property <bool> loop-spaces;
     in-out property <bool> remember-position;
     in-out property <bool> input-method-indicator;
+    in-out property <bool> launch-at-startup;
     in-out property <bool> reflections;
     in-out property <bool> trim-when-hidden;
     in-out property <bool> reduce-on-battery;
@@ -82,6 +83,7 @@ export component SettingsPage inherits Rectangle {
     changed loop-spaces => { root.edited(); }
     changed remember-position => { root.edited(); }
     changed input-method-indicator => { root.edited(); }
+    changed launch-at-startup => { root.edited(); }
     changed reflections => { root.edited(); }
     changed trim-when-hidden => { root.edited(); }
     changed reduce-on-battery => { root.edited(); }
@@ -99,8 +101,23 @@ export component SettingsPage inherits Rectangle {
     private property <int> section;
     changed section => {settings-scroll.viewport-y=0px;}
     private property <bool> narrow: root.width < 850px;
-    private property <[string]> categories: [@tr("Appearance"), @tr("Spaces"), @tr("Quick Input")];
-    background: transparent;
+    private property <[string]> categories: [@tr("General"), @tr("Appearance"), @tr("Spaces"), @tr("Shortcuts")];
+    background: EchoTheme.elevated;
+    border-radius: T.panel-radius;
+    clip: true;
+    if (!root.narrow): Rectangle {
+        x: 0px; y: 0px; width: T.settings-nav-width + 46px; height: parent.height;
+        background: EchoTheme.surface; border-radius: T.panel-radius;
+        // Fill the seam-side corners square while retaining the outer left
+        // corners, so the sidebar follows the main card silhouette.
+        Rectangle {
+            x: T.panel-radius; y: 0px;
+            width: parent.width - T.panel-radius; height: parent.height;
+            background: EchoTheme.surface;
+        }
+
+
+    }
     Image { x: 28px; y: settings-title.y + (settings-title.height - self.height) / 2; width: 26px; height: 26px; source: @image-url("favorite-icons/SettingsCog.svg"); colorize: EchoTheme.text; image-fit: contain; }
     settings-title := Text { x: 64px; y: 15px; text: @tr("Settings"); color: EchoTheme.text; font-size: T.font-setting-title; font-weight: 600; }
     EchoButton {
@@ -116,31 +133,31 @@ export component SettingsPage inherits Rectangle {
     if (!root.narrow): VerticalLayout {
         x: 64px; y: 75px; width: 184px; spacing: 4px;
         for label[index] in root.categories: SettingsNavButton {
-            icon: index == 0 ? @image-url("favorite-icons/ColorTheme.svg") : index == 1 ? @image-url("favorite-icons/BuildingWorkspace.svg") : @image-url("favorite-icons/KeyboardShortcut.svg");
+            icon: index == 0 ? @image-url("favorite-icons/SettingsCog.svg") : index == 1 ? @image-url("favorite-icons/ColorTheme.svg") : index == 2 ? @image-url("favorite-icons/BuildingWorkspace.svg") : @image-url("favorite-icons/KeyboardShortcut.svg");
             text: label; checked: root.section == index;
-            width: parent.width; height: 36px;
+            width: 168px; height: 36px;
             clicked => { root.section = index; }
         }
     }
     settings-scroll := ScrollView {
         vertical-scrollbar-policy: always-off;
         horizontal-scrollbar-policy: always-off;
-        x: root.narrow ? 28px : T.settings-nav-width + 46px;
+        x: root.narrow ? 28px : T.settings-nav-width + 70px;
         y: root.narrow ? 113px : 73px;
         width: min(T.settings-max-form-width,parent.width - self.x - 28px);
         height: max(80px,parent.height - self.y - 95px);
         VerticalLayout {
             padding: 2px; spacing: 16px; alignment: start;
             Rectangle {
-                height: max(section-title.preferred-height, root.section == 1 ? 32px : 0px);
+                height: max(section-title.preferred-height, root.section == 2 ? 32px : 0px);
                 section-title := Text {
                     x: 0px;
-                    width: max(0px, parent.width - (root.section == 1 ? 40px : 0px));
+                    width: max(0px, parent.width - (root.section == 2 ? 40px : 0px));
                     height: parent.height; vertical-alignment: center;
                     text: root.categories[root.section]; color: EchoTheme.text;
                     font-size: 20px; font-weight: 600;
                 }
-                if (root.section == 1): EchoButton {
+                if (root.section == 2): EchoButton {
                     x: parent.width - self.width; y: (parent.height - self.height) / 2;
                     width: 32px; height: 32px; row-action: true; flat: true;
                     icon: @image-url("icons/plus.svg"); label: @tr("New space");
@@ -148,13 +165,27 @@ export component SettingsPage inherits Rectangle {
                 }
             }
             if (root.section == 0): VerticalLayout {
+                spacing: 16px; alignment: start;
+                EchoSwitch { enabled: !root.busy; text: @tr("Input method indicator"); checked <=> root.input-method-indicator; }
+                HorizontalLayout { spacing: 8px;
+                    Text { text: @tr("Global quick insert shortcut"); color: EchoTheme.text; font-size: 14px; min-width: 0px; horizontal-stretch: 1; overflow: elide; vertical-alignment: center; }
+                    LineEdit { width: max(72px,min(180px,settings-scroll.width * 0.32)); horizontal-stretch: 0; text <=> root.global-hotkey; accessible-label: @tr("Global quick insert shortcut"); enabled: !root.busy && root.global-hotkey-enabled; }
+                    EchoButton { icon: @image-url("icons/apps-sdk/ArrowRotateCcw.svg"); label: @tr("Reset"); row-action: true; flat: true; tooltip-enabled: true; width: 36px; height: 36px; enabled: !root.busy; clicked => { root.global-hotkey = "Alt+V"; root.global-hotkey-enabled = true; } }
+                    EchoSwitch { width: 40px; horizontal-stretch: 0; label: @tr("Enable global quick insert shortcut"); checked <=> root.global-hotkey-enabled; enabled: !root.busy; }
+                }
+                if (root.hotkey-registration-failed): HorizontalLayout { spacing: 8px; alignment: start;
+                    EchoButton { text: @tr("Retry saved shortcut"); enabled: !root.busy && !root.dirty; clicked => { root.action("retry-hotkey"); } }
+                }
+                EchoSwitch { enabled: !root.busy; text: @tr("Launch at startup"); checked <=> root.launch-at-startup; }
+            }
+            if (root.section == 1): VerticalLayout {
                 spacing: 12px; alignment: start;
                 Text { text: @tr("Theme"); color: EchoTheme.text; }
                 EnumChoice { enabled: !root.busy; model: [@tr("Light"), @tr("Dark")]; selected-index: root.theme-mode == "dark" ? 1 : 0; selected(value) => { root.theme-mode = self.current-index == 1 ? "dark" : "light"; } accessible-label: @tr("Theme"); }
                 Text { text: @tr("Language"); color: EchoTheme.text; }
                 EnumChoice { enabled: !root.busy; model: ["简体中文", "English"]; selected-index: root.language == "en" ? 1 : 0; selected(value) => { root.language = self.current-index == 1 ? "en" : "zh-CN"; } accessible-label: @tr("Language"); }
             }
-            if (root.section == 1): VerticalLayout {
+            if (root.section == 2): VerticalLayout {
                 spacing: 12px; alignment: start;
                 for space in root.spaces: Rectangle {
                     accessible-role:groupbox;accessible-label:@tr("Space ") + space.title;
@@ -185,18 +216,8 @@ export component SettingsPage inherits Rectangle {
                     accessible-label: @tr("Home screen");
                 }
             }
-            if (root.section == 2): VerticalLayout {
+            if (root.section == 3): VerticalLayout {
                 spacing: 16px; alignment: start;
-                EchoSwitch { enabled: !root.busy; text: @tr("Input method indicator"); checked <=> root.input-method-indicator; }
-                HorizontalLayout { spacing: 8px;
-                    Text { text: @tr("Global quick insert shortcut"); color: EchoTheme.text; font-size: 14px; min-width: 0px; horizontal-stretch: 1; overflow: elide; vertical-alignment: center; }
-                    LineEdit { width: max(72px,min(180px,settings-scroll.width * 0.32)); horizontal-stretch: 0; text <=> root.global-hotkey; accessible-label: @tr("Global quick insert shortcut"); enabled: !root.busy && root.global-hotkey-enabled; }
-                    EchoButton { icon: @image-url("icons/apps-sdk/ArrowRotateCcw.svg"); label: @tr("Reset"); row-action: true; flat: true; tooltip-enabled: true; width: 36px; height: 36px; enabled: !root.busy; clicked => { root.global-hotkey = "Alt+V"; root.global-hotkey-enabled = true; } }
-                    EchoSwitch { width: 40px; horizontal-stretch: 0; label: @tr("Enable global quick insert shortcut"); checked <=> root.global-hotkey-enabled; enabled: !root.busy; }
-                }
-                if (root.hotkey-registration-failed): HorizontalLayout { spacing: 8px; alignment: start;
-                    EchoButton { text: @tr("Retry saved shortcut"); enabled: !root.busy && !root.dirty; clicked => { root.action("retry-hotkey"); } }
-                }
                 VerticalLayout {
                     spacing: 6px; padding-top: 10px; alignment: start;
                     Text { text: @tr("Navigation"); color: EchoTheme.muted; font-size: 13px; font-weight: 600; }

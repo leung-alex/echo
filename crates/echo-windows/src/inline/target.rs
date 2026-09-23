@@ -1311,11 +1311,18 @@ unsafe fn focused_in_editor(target: &AutomationTarget) -> Option<bool> {
         if current.CurrentProcessId().ok()? != pid {
             return Some(false);
         }
-        // Another editable control is not a replacement paragraph/provider.
+        // ChatGPT/Chromium can transiently report the page root or its hidden
+        // prompt textarea while the visible contenteditable is being rebuilt.
+        // Those are provider-state transitions, not proof that the user chose
+        // another editor. Keep the target suspended until the same logical
+        // editor can be observed again. A visible, focused editable remains a
+        // definitive identity change and is rejected fail-closed.
         let role = current.CurrentControlType().ok()?;
+        if role == UIA_WindowControlTypeId || hidden_focus_proxy(&current) {
+            return None;
+        }
         if role == UIA_EditControlTypeId
             || role == UIA_ComboBoxControlTypeId
-            || role == UIA_WindowControlTypeId
             || ((role == UIA_DocumentControlTypeId || role == UIA_GroupControlTypeId)
                 && writable(&current)
                 && current.CurrentIsKeyboardFocusable().ok()?.as_bool())
@@ -1326,6 +1333,20 @@ unsafe fn focused_in_editor(target: &AutomationTarget) -> Option<bool> {
     }
     None
 }
+unsafe fn hidden_focus_proxy(element: &IUIAutomationElement) -> bool {
+    if element
+        .CurrentIsOffscreen()
+        .ok()
+        .is_some_and(|value| value.as_bool())
+    {
+        return true;
+    }
+    element
+        .CurrentBoundingRectangle()
+        .ok()
+        .is_some_and(|rect| rect.right <= rect.left || rect.bottom <= rect.top)
+}
+
 unsafe fn automation_snapshot(target: &AutomationTarget) -> Result<ComposerSnapshot, String> {
     let (pattern, doc) = live_document(target)?;
     let selected = single_selection(&pattern)?;
@@ -1393,6 +1414,7 @@ unsafe fn automation_snapshot(target: &AutomationTarget) -> Result<ComposerSnaps
         text: all,
         selection: start..end,
     };
+    let snapshot = project_chatgpt_accessible_label(&target.element, snapshot);
     Ok(super::text_scope::empty_editor_kit_snapshot(
         &target.uia,
         &target.element,
@@ -1403,7 +1425,71 @@ unsafe fn automation_snapshot(target: &AutomationTarget) -> Result<ComposerSnaps
     )
     .unwrap_or(snapshot))
 }
+
+/// Chromium's UIA bridge can expose a contenteditable's aria-label as a
+/// leading document span. ChatGPT's project composer reports the caret after
+/// that span even though it is not editable content. Project only this exact
+/// shape out of the verified snapshot; literal user text and other providers
+/// remain untouched.
+unsafe fn project_chatgpt_accessible_label(
+    element: &IUIAutomationElement,
+    snapshot: ComposerSnapshot,
+) -> ComposerSnapshot {
+    let is_chatgpt = element
+        .CurrentFrameworkId()
+        .ok()
+        .is_some_and(|framework| framework.to_string() == "Chrome")
+        && element
+            .CurrentAriaRole()
+            .ok()
+            .is_some_and(|role| role.to_string() == "textbox")
+        && element
+            .CurrentName()
+            .ok()
+            .is_some_and(|name| name.to_string().starts_with("New chat in "));
+    if !is_chatgpt {
+        return snapshot;
+    }
+    let Ok(name) = element.CurrentName() else {
+        return snapshot;
+    };
+    project_chatgpt_label_units(snapshot, &name.to_vec())
+}
+
+fn project_chatgpt_label_units(mut snapshot: ComposerSnapshot, label: &[u16]) -> ComposerSnapshot {
+    if label.is_empty()
+        || snapshot.text.len() < label.len()
+        || snapshot.text[..label.len()] != *label
+    {
+        return snapshot;
+    }
+    // An empty ChatGPT editor is reported as exactly its accessible label. In
+    // that state Chromium may put the caret at either edge of the synthetic
+    // span, so normalize both the exact-label and label-plus-user-text forms.
+    if snapshot.text.len() == label.len() {
+        if snapshot.selection.start <= label.len() && snapshot.selection.end <= label.len() {
+            snapshot.text.clear();
+            snapshot.selection = 0..0;
+        }
+        return snapshot;
+    }
+    if snapshot.selection.start < label.len() || snapshot.selection.end < label.len() {
+        return snapshot;
+    }
+    snapshot.text.drain(..label.len());
+    snapshot.selection =
+        (snapshot.selection.start - label.len())..(snapshot.selection.end - label.len());
+    snapshot
+}
 unsafe fn inline_editable(element: &IUIAutomationElement) -> bool {
+    // Chromium contenteditables are not consistent about their UIA control
+    // type. ChatGPT exposes the visible editor as a textbox while retaining a
+    // zero-sized textarea implementation detail. Prefer the visible textbox
+    // when it owns focus and exposes a writable TextPattern; never select the
+    // hidden implementation control as the target.
+    if visible_textbox_editor(element) {
+        return true;
+    }
     if element.CurrentControlType().ok() == Some(UIA_GroupControlTypeId) {
         // Rich chat composers may report Group. This only admits inspection;
         // scoped ranges, exact selection and composition are verified below.
@@ -1411,6 +1497,18 @@ unsafe fn inline_editable(element: &IUIAutomationElement) -> bool {
     } else {
         native::automation_element_is_editable(element) && writable(element)
     }
+}
+unsafe fn visible_textbox_editor(element: &IUIAutomationElement) -> bool {
+    element
+        .CurrentAriaRole()
+        .ok()
+        .is_some_and(|role| role.to_string().eq_ignore_ascii_case("textbox"))
+        && !element
+            .CurrentIsOffscreen()
+            .ok()
+            .is_some_and(|value| value.as_bool())
+        && native::automation_element_has_input_focus(element)
+        && writable_text(element)
 }
 unsafe fn writable(element: &IUIAutomationElement) -> bool {
     if let Ok(value) = element.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
@@ -1434,6 +1532,39 @@ unsafe fn writable_text(element: &IUIAutomationElement) -> bool {
         && value.Anonymous.Anonymous.Anonymous.boolVal.0 == 0;
     let _ = VariantClear(&mut value);
     result
+}
+
+#[cfg(test)]
+mod chatgpt_snapshot_tests {
+    use super::project_chatgpt_label_units;
+    use echo_engine::ComposerSnapshot;
+
+    #[test]
+    fn strips_only_verified_accessible_label_prefix() {
+        let snapshot = project_chatgpt_label_units(
+            ComposerSnapshot {
+                text: "New chat in dev tool ec prf".encode_utf16().collect(),
+                selection: 26..26,
+            },
+            &"New chat in dev tool".encode_utf16().collect::<Vec<_>>(),
+        );
+        assert_eq!(String::from_utf16(&snapshot.text).unwrap(), " ec prf");
+        assert_eq!(snapshot.selection, 6..6);
+    }
+
+    #[test]
+    fn does_not_strip_unrelated_literal_user_text() {
+        let original = ComposerSnapshot {
+            text: "literal user text".encode_utf16().collect(),
+            selection: 0..0,
+        };
+        let projected = project_chatgpt_label_units(
+            original.clone(),
+            &"New chat in dev tool".encode_utf16().collect::<Vec<_>>(),
+        );
+        assert_eq!(projected.text, original.text);
+        assert_eq!(projected.selection, original.selection);
+    }
 }
 
 #[cfg(test)]

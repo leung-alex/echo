@@ -11,6 +11,7 @@ pub(super) fn reconcile(
     let mut ui = saved.ui.clone();
     ui.global_hotkey = previous.ui.global_hotkey.clone();
     ui.global_hotkey_enabled = previous.ui.global_hotkey_enabled;
+    ui.launch_at_startup = previous.ui.launch_at_startup;
     let rollback = SettingsPatch {
         expected_revision: saved.revision,
         clipboard: saved.clipboard.clone(),
@@ -24,6 +25,39 @@ pub(super) fn reconcile(
         }
     }
 }
+
+pub(super) fn reconcile_startup(
+    previous: &SettingsSnapshot,
+    saved: SettingsSnapshot,
+    error: &str,
+    save: impl FnOnce(SettingsPatch) -> Result<SettingsSnapshot, String>,
+    reload: impl FnOnce() -> Result<SettingsSnapshot, String>,
+) -> (SettingsSnapshot, String) {
+    let mut ui = saved.ui.clone();
+    ui.launch_at_startup = previous.ui.launch_at_startup;
+    let rollback = SettingsPatch {
+        expected_revision: saved.revision,
+        clipboard: saved.clipboard.clone(),
+        ui,
+    };
+    match save(rollback) {
+        Ok(snapshot) => (
+            snapshot,
+            format!(
+                "Other settings saved. Startup launch could not be applied; its previous preference was restored. {error}"
+            ),
+        ),
+        Err(rollback_error) => {
+            let snapshot = reload().unwrap_or(saved);
+            (
+                snapshot,
+                format!(
+                    "Settings are stored, but startup launch is not synchronized with Windows. Commit: {error}; preference rollback: {rollback_error}"
+                ),
+            )
+        }
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -34,6 +68,7 @@ mod tests {
         saved.revision = 7;
         saved.ui.global_hotkey = "Ctrl+Alt+J".into();
         saved.ui.global_hotkey_enabled = false;
+        saved.ui.launch_at_startup = false;
         saved.ui.remember_position = false;
         let (result, warning) = reconcile(
             &previous,
@@ -43,6 +78,7 @@ mod tests {
                 assert_eq!(patch.expected_revision, 7);
                 assert_eq!(patch.ui.global_hotkey, "Alt+V");
                 assert!(patch.ui.global_hotkey_enabled);
+                assert!(patch.ui.launch_at_startup);
                 assert!(!patch.ui.remember_position);
                 Ok(SettingsSnapshot {
                     revision: 8,
@@ -54,6 +90,34 @@ mod tests {
         );
         assert_eq!(result.revision, 8);
         assert!(warning.contains("previous preference was restored"));
+    }
+
+    #[test]
+    fn failed_startup_commit_rolls_back_only_startup_preference() {
+        let previous = SettingsSnapshot::default();
+        let mut saved = previous.clone();
+        saved.revision = 7;
+        saved.ui.launch_at_startup = false;
+        saved.ui.remember_position = false;
+        let (result, warning) = reconcile_startup(
+            &previous,
+            saved,
+            "fixture failure",
+            |patch| {
+                assert_eq!(patch.expected_revision, 7);
+                assert!(patch.ui.launch_at_startup);
+                assert!(!patch.ui.remember_position);
+                Ok(SettingsSnapshot {
+                    revision: 8,
+                    clipboard: patch.clipboard,
+                    ui: patch.ui,
+                })
+            },
+            || panic!("No reload after successful rollback"),
+        );
+        assert_eq!(result.revision, 8);
+        assert!(result.ui.launch_at_startup);
+        assert!(warning.contains("Startup launch could not be applied"));
     }
     #[test]
     fn rollback_conflict_keeps_newer_revision_and_reports_unsynchronized_runtime() {

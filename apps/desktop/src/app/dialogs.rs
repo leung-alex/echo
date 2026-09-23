@@ -187,6 +187,13 @@ impl App {
         self.finish_motion();
         self.close_picker();
         self.window.set_route(route.into());
+        if let Err(error) = self.sync_surface_mode() {
+            self.report(
+                format!("Could not switch the Echo window mode: {error}"),
+                true,
+            );
+            return;
+        }
         if route == "settings" {
             self.cancel_prewarm();
             self.render_settings();

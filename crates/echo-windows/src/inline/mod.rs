@@ -872,7 +872,13 @@ fn begin(
         });
         return Ok(None);
     }
-    let backend = target::Target::open(&snapshot, uia)?;
+    let backend = match target::Target::open(&snapshot, uia) {
+        Ok(backend) => backend,
+        Err(error) => {
+            shared.record("target-open-failed", target_failure_code(&error));
+            return Err(error);
+        }
+    };
     shared.record("target-open", 0);
     shared
         .native_identity
@@ -927,6 +933,24 @@ fn begin(
         anchor,
     }))
 }
+fn target_failure_code(error: &str) -> u32 {
+    // Stable, content-free buckets for local diagnostics. Do not persist the
+    // provider's name, window title, query, or any text from the editor.
+    if error.contains("focused text element") || error.contains("verified text editor") {
+        1
+    } else if error.contains("offscreen proxy") || error.contains("offscreen") {
+        2
+    } else if error.contains("exact query range") || error.contains("selection") {
+        3
+    } else if error.contains("stable accessibility identity") {
+        4
+    } else if error.contains("Input owner") || error.contains("input focus") {
+        5
+    } else {
+        255
+    }
+}
+
 /// Returns true when input raced the provider read and needs one more deferred sample.
 fn observe(session: &mut Session, shared: &Shared) -> bool {
     if shared.editor_session.load(Ordering::Acquire) == session.id {

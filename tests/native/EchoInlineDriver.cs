@@ -220,7 +220,8 @@ public static class EchoInlineDriver {
         uint pid;var thread=GetWindowThreadProcessId(hwnd,out pid);var gui=new Gui{Size=(uint)Marshal.SizeOf(typeof(Gui))};int[] caret=null;
         if(GetGUIThreadInfo(thread,ref gui)&&gui.Caret!=IntPtr.Zero){var a=new Point{X=gui.CaretRect.Left,Y=gui.CaretRect.Top};var b=new Point{X=gui.CaretRect.Right,Y=gui.CaretRect.Bottom};var old=SetThreadDpiAwarenessContext(GetWindowDpiAwarenessContext(gui.Caret));try{if(ClientToScreen(gui.Caret,ref a)&&ClientToScreen(gui.Caret,ref b)&&LogicalToPhysicalPointForPerMonitorDPI(gui.Caret,ref a)&&LogicalToPhysicalPointForPerMonitorDPI(gui.Caret,ref b))caret=new[]{a.X,a.Y,b.X,b.Y};}finally{SetThreadDpiAwarenessContext(old);}}
         uint dx,dy;GetDpiForMonitor(MonitorFromWindow(hwnd,2),0,out dx,out dy);
-        return new{monitor_dpi=dx,window=new[]{rect.Left,rect.Top,rect.Right,rect.Bottom},work=new[]{monitor.Work.Left,monitor.Work.Top,monitor.Work.Right,monitor.Work.Bottom},dpi=GetDpiForWindow(hwnd),caret=caret,foreground=GetForegroundWindow()==hwnd};
+        long extendedStyle=GetWindowLongPtr(hwnd,-20).ToInt64();
+        return new{hwnd=hwnd.ToInt64(),process_id=pid,monitor_dpi=dx,window=new[]{rect.Left,rect.Top,rect.Right,rect.Bottom},work=new[]{monitor.Work.Left,monitor.Work.Top,monitor.Work.Right,monitor.Work.Bottom},dpi=GetDpiForWindow(hwnd),caret=caret,extended_style=extendedStyle,visible=IsWindowVisible(hwnd),foreground=GetForegroundWindow()==hwnd};
     }
     static object Probe(string chord) {
         var c=Chord(chord);bool registered=RegisterHotKey(IntPtr.Zero,201,c[0]|0x4000,c[1]);int error=registered?0:Marshal.GetLastWin32Error();

@@ -52,26 +52,26 @@ fn styled(text: &str, matcher: &mut FuzzyMatcher, color: &str) -> (StyledText, V
         .unwrap_or_else(|_| StyledText::from_plain_text(text));
     (value, ranges)
 }
+fn ranges(matches: Vec<Range<usize>>) -> slint::ModelRc<crate::MatchRange> {
+    if matches.is_empty() {
+        return Default::default();
+    }
+    std::rc::Rc::new(slint::VecModel::from(
+        matches
+            .into_iter()
+            .map(|r| crate::MatchRange {
+                start: r.start as i32,
+                end: r.end as i32,
+            })
+            .collect::<Vec<_>>(),
+    ))
+    .into()
+}
 pub fn apply(row: &mut crate::EntryRow, matcher: &mut FuzzyMatcher, color: &str) {
     let (title, a) = styled(row.title.as_str(), matcher, color);
     let (body, b) = styled(row.body.as_str(), matcher, color);
     let (tags, c) = styled(row.tags.as_str(), matcher, color);
     row.match_count = (a.len() + b.len() + c.len()) as i32;
-    fn ranges(matches: Vec<Range<usize>>) -> slint::ModelRc<crate::MatchRange> {
-        if matches.is_empty() {
-            return Default::default();
-        }
-        std::rc::Rc::new(slint::VecModel::from(
-            matches
-                .into_iter()
-                .map(|r| crate::MatchRange {
-                    start: r.start as i32,
-                    end: r.end as i32,
-                })
-                .collect::<Vec<_>>(),
-        ))
-        .into()
-    }
     row.title_matches = ranges(a);
     row.body_matches = ranges(b);
     row.tags_matches = ranges(c);

@@ -23,6 +23,8 @@
   --echo-color-search-background: #ffe59a;
   --echo-color-search-text: #493600;
   --echo-color-selection: #eeeeee;
+  --echo-color-settings-divider: #d8dfdc;
+  --echo-color-settings-nav: #eef2f0;
   --echo-color-shadow: #00000020;
   --echo-color-stage-edge: #dfe5e2;
   --echo-color-success: #246442;
@@ -120,6 +122,8 @@
   --echo-color-search-background: #69501c;
   --echo-color-search-text: #fff0bd;
   --echo-color-selection: #383838;
+  --echo-color-settings-divider: #2b3740;
+  --echo-color-settings-nav: #12191f;
   --echo-color-shadow: #00000066;
   --echo-color-stage-edge: #080d10;
   --echo-color-success: #83cea4;

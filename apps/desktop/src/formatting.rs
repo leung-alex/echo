@@ -43,21 +43,39 @@ pub fn row_section(item: &QuickInsertItem, previous_section: &mut String) -> Str
 }
 /// Build a fresh row using borrowed inputs, so its owned allocations can be charged.
 pub fn row_content(item: &QuickInsertItem, section_label: &str) -> EntryRow {
+    row_content_with_limits(item, section_label, None)
+}
+
+/// Build the bounded projection used by the read-only neighbor cards.
+///
+/// The side cards keep the same row data and visual semantics as the main list,
+/// while limiting owned display text to the existing preview budget.
+pub fn preview_row_content(item: &QuickInsertItem) -> EntryRow {
+    row_content_with_limits(item, "", Some((160, 384, 160)))
+}
+
+fn row_content_with_limits(
+    item: &QuickInsertItem,
+    section_label: &str,
+    limits: Option<(usize, usize, usize)>,
+) -> EntryRow {
     let time = Local.timestamp_millis_opt(item.updated_at).single();
+    let (title_limit, body_limit, tags_limit) = limits
+        .map(|(title, body, tags)| (Some(title), Some(body), Some(tags)))
+        .unwrap_or((None, None, None));
+    let title_source = match item.name.as_deref() {
+        Some(value) => value,
+        None if item.source == echo_engine::QuickInsertSource::Favorite => "Untitled favorite",
+        None => "",
+    };
+    let body_source = item.preview_text.as_deref().unwrap_or("");
+    let title = limit_text(title_source, title_limit);
+    let body = limit_text(body_source, body_limit);
+    let tags = limit_text(&item.tags.join(" · "), tags_limit);
     EntryRow {
         key: RowKey::of(item).to_string().into(),
-        title: item
-            .name
-            .clone()
-            .unwrap_or_else(|| {
-                if item.source == echo_engine::QuickInsertSource::Favorite {
-                    "Untitled favorite".into()
-                } else {
-                    String::new()
-                }
-            })
-            .into(),
-        body: item.preview_text.clone().unwrap_or_default().into(),
+        title: title.clone().into(),
+        body: body.clone().into(),
         kind: item.content_type.clone().into(),
         time_label: time
             .map(|t| t.format("%H:%M").to_string())
@@ -70,15 +88,22 @@ pub fn row_content(item: &QuickInsertItem, section_label: &str) -> EntryRow {
         selected: false,
         batch_selected: false,
         icon_key: item.icon_key.clone().unwrap_or_default().into(),
-        tags: item.tags.join(" · ").into(),
-        body_rich: slint::StyledText::from_plain_text(item.preview_text.as_deref().unwrap_or("")),
-        title_rich: slint::StyledText::from_plain_text(item.name.as_deref().unwrap_or("")),
-        tags_rich: slint::StyledText::from_plain_text(&item.tags.join(" · ")),
+        tags: tags.clone().into(),
+        body_rich: slint::StyledText::from_plain_text(&body),
+        title_rich: slint::StyledText::from_plain_text(&title),
+        tags_rich: slint::StyledText::from_plain_text(&tags),
         match_count: 0,
         title_matches: Default::default(),
         body_matches: Default::default(),
         tags_matches: Default::default(),
     }
+}
+
+fn limit_text(value: &str, limit: Option<usize>) -> String {
+    limit.map_or_else(
+        || value.to_owned(),
+        |limit| value.chars().take(limit).collect(),
+    )
 }
 pub fn optional(value: &str) -> Option<String> {
     let v = value.trim();
@@ -94,6 +119,7 @@ pub fn settings(theme: &str) -> Result<ClipboardSettings, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use slint::Model;
     #[test]
     fn source_identity_is_not_projected_or_counted_as_a_visible_match() {
         let item: QuickInsertItem = serde_json::from_value(serde_json::json!({
@@ -118,6 +144,31 @@ mod tests {
             "#285f80",
         );
         assert!(row.match_count > 0);
+    }
+    #[test]
+    fn preview_rows_keep_main_metadata_with_bounded_display_text() {
+        let item: QuickInsertItem = serde_json::from_value(serde_json::json!({
+            "id": 7, "source": "favorite", "name": "标题".repeat(200),
+            "preview_text": "正文".repeat(300), "content_type": "text/plain",
+            "tags": ["标签".repeat(100)], "source_app": "ignored", "updated_at": 0,
+            "pinned_at": 1, "icon_key": "lucide-star", "favorite_order": 0,
+            "thumbnail": null
+        }))
+        .unwrap();
+        let mut row = preview_row_content(&item);
+        assert_eq!(row.title.chars().count(), 160);
+        assert_eq!(row.body.chars().count(), 384);
+        assert_eq!(row.tags.chars().count(), 160);
+        assert_eq!(row.icon_key.as_str(), "lucide-star");
+        assert!(row.pinned);
+        assert!(!row.time_label.is_empty());
+        crate::match_highlight::apply(
+            &mut row,
+            &mut echo_engine::FuzzyMatcher::new("标题"),
+            "#285f80",
+        );
+        assert!(row.match_count > 0);
+        assert!(row.title_matches.row_count() > 0);
     }
     #[test]
     fn settings_preserve_all_fields() {

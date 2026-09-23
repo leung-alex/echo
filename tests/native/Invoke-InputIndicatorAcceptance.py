@@ -317,10 +317,10 @@ $roots = [System.Windows.Automation.AutomationElement]::RootElement.FindAll(
     [System.Windows.Automation.TreeScope]::Children,
     [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ProcessIdProperty,$targetProcessId))
 foreach ($ownedRoot in $roots) {
-    $quickInput = $ownedRoot.FindFirst([System.Windows.Automation.TreeScope]::Descendants,
-        [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::NameProperty,'快捷输入'))
-    if ($null -ne $quickInput) {
-        $invoke = $quickInput.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+    $general = $ownedRoot.FindFirst([System.Windows.Automation.TreeScope]::Descendants,
+        [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::NameProperty,'通用'))
+    if ($null -ne $general) {
+        $invoke = $general.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
         $invoke.Invoke()
         Start-Sleep -Milliseconds 200
         break
@@ -338,8 +338,8 @@ foreach ($ownedRoot in $roots) {
                                         creationflags=subprocess.CREATE_NO_WINDOW, timeout=15).decode().strip()
         assert int(names) > 0, 'Chinese settings must expose the translated indicator name'
         check('settings-indicator-chinese-accessible-name', lambda: '输入法提示')
-        call(verb='capture', file='settings-quick-input.png')
-        check('settings-quick-input-rendered', lambda: 'settings-quick-input.png')
+        call(verb='capture', file='settings-general.png')
+        check('settings-general-rendered', lambda: 'settings-general.png')
         checks.append(dict(name='physical-microsoft-doubao-codex-browser-mixed-dpi', status='NOT_RUN',
                            evidence='Synthetic fixture and IMM commands do not certify physical input or other applications.'))
     except Exception as error:

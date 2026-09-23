@@ -156,8 +156,8 @@ function F([string]$Operation,[string[]]$Arguments=@()) {
 }
 function Open-KeyboardSettings {
     Start-ScopedProcess @('--settings');Wait-Text 'Settings'
-    if((D dump).Contains('ControlType.Button | Keyboard shortcuts |')){Click 'Keyboard shortcuts'}
-    else{D combo $mainTitle @('Settings category','2')|Out-Null}
+    if((D dump).Contains('ControlType.Button | Shortcuts |')){Click 'Shortcuts'}
+    else{D combo $mainTitle @('Settings category','3')|Out-Null}
     Wait-Text 'Global quick insert shortcut'
 }
 function Assert-Binding([string]$Chord,[bool]$Available) {

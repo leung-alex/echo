@@ -199,6 +199,7 @@ struct Services {
     clipboard: Arc<ClipboardService>,
     platform: Arc<echo_windows::WindowsPlatform>,
     hotkeys: echo_windows::shell::HotkeyController,
+    autostart: echo_windows::shell::AutoStartController,
 }
 impl Services {
     fn open(
@@ -226,6 +227,7 @@ impl Services {
             clipboard,
             platform,
             hotkeys,
+            autostart: echo_windows::shell::AutoStartController::new(),
         })
     }
 }
@@ -258,6 +260,11 @@ fn run(
     if let Err(error) = services.hotkeys.apply(&settings.ui) {
         hub.post(Event::Shell(echo_windows::shell::ShellEvent::HotkeyStatus(
             error,
+        )));
+    }
+    if let Err(error) = services.autostart.apply(settings.ui.launch_at_startup) {
+        hub.post(Event::Shell(echo_windows::shell::ShellEvent::Error(
+            format!("Could not update startup registration: {error}"),
         )));
     }
     echo_windows::focus::warm_accessibility();
@@ -429,7 +436,12 @@ fn run(
                     .map_err(Clone::clone)
                     .and_then(|lane| lane.submit(generation, asset.clone(), size))
                 {
-                    hub.post(Event::Thumbnail(generation, asset.source_hash, Err(error)));
+                    hub.post(Event::Thumbnail(
+                        generation,
+                        asset.source_hash,
+                        size,
+                        Err(error),
+                    ));
                 }
             }
         }
@@ -480,6 +492,28 @@ fn mutate(services: &Services, mutation: Mutation) -> Result<MutationResult, Str
                 .map_err(|e| e.to_string())?;
             if let Err(error) = reservation.commit() {
                 let (reconciled, warning) = settings_commit::reconcile(
+                    &previous,
+                    value,
+                    &error,
+                    |patch| {
+                        services
+                            .library
+                            .store()
+                            .save_settings_patch(patch)
+                            .map_err(|e| e.to_string())
+                    },
+                    || {
+                        services
+                            .library
+                            .store()
+                            .settings_snapshot()
+                            .map_err(|e| e.to_string())
+                    },
+                );
+                value = reconciled;
+                settings_warning = Some(warning);
+            } else if let Err(error) = services.autostart.apply(value.ui.launch_at_startup) {
+                let (reconciled, warning) = settings_commit::reconcile_startup(
                     &previous,
                     value,
                     &error,
@@ -586,18 +620,34 @@ fn reorder(ids: &mut Vec<i64>, id: i64, before: Option<i64>, delta: i32) -> Resu
     Ok(())
 }
 // Matching has already scanned the complete document. This read-only projection
-// must not retain its original capacity, editor payload, tags or application data.
-fn side_summary(item: QuickInsertItem) -> QuickInsertItem {
-    QuickInsertItem {
-        name: item.name.map(|s| s.chars().take(160).collect()),
-        preview_text: item.preview_text.map(|s| s.chars().take(384).collect()),
-        content_type: item.content_type.chars().take(80).collect(),
-        editable_text: None,
-        tags: Vec::new(),
-        source_app: None,
-        icon_key: None,
-        ..item
-    }
+// must not retain its original capacity, editor payload, unbounded tags or application data.
+fn side_summary(mut item: QuickInsertItem) -> QuickInsertItem {
+    let mut tag_budget = 160usize;
+    let mut tag_count = 0usize;
+    let tags = item
+        .tags
+        .into_iter()
+        .filter_map(|tag| {
+            if tag_budget == 0 || tag_count >= 16 {
+                return None;
+            }
+            let value = tag.chars().take(tag_budget).collect::<String>();
+            if value.is_empty() {
+                return None;
+            }
+            tag_budget = tag_budget.saturating_sub(value.chars().count());
+            tag_count += 1;
+            Some(value)
+        })
+        .collect();
+    item.name = item.name.map(|s| s.chars().take(160).collect());
+    item.preview_text = item.preview_text.map(|s| s.chars().take(384).collect());
+    item.content_type = item.content_type.chars().take(80).collect();
+    item.editable_text = None;
+    item.tags = tags;
+    item.source_app = None;
+    item.icon_key = item.icon_key.map(|s| s.chars().take(80).collect());
+    item
 }
 #[cfg(test)]
 mod tests {
@@ -609,7 +659,7 @@ mod tests {
             "preview_text": "文".repeat(1_000_000), "content_type": "text/plain",
             "editable_text": "original".repeat(10000), "tags": ["tag".repeat(10000)],
             "source_app": "app".repeat(10000), "updated_at": 0, "pinned_at": null,
-            "icon_key": null, "favorite_order": null, "thumbnail": null
+            "icon_key": "lucide-star", "favorite_order": null, "thumbnail": null
         }))
         .unwrap();
         let summary = side_summary(item);
@@ -618,7 +668,8 @@ mod tests {
         assert_eq!(summary.preview_text.as_ref().unwrap().chars().count(), 384);
         assert!(summary.held_bytes() < 4096);
         assert!(summary.editable_text.is_none());
-        assert!(summary.tags.is_empty());
+        assert_eq!(summary.tags.iter().map(String::len).sum::<usize>(), 160);
+        assert_eq!(summary.icon_key.as_deref(), Some("lucide-star"));
         assert!(summary.source_app.is_none());
     }
     #[test]

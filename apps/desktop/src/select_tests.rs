@@ -363,6 +363,10 @@ fn actual_settings_selects_update_drafts_and_survive_category_change() {
         draw();
     };
     draw();
+    // The new General page is the default section; switch to Appearance before
+    // exercising its enum controls.
+    click(120., 157.);
+    tick(210);
     click(400., 185.);
     tick(2);
     tick(360);
@@ -382,8 +386,7 @@ fn actual_settings_selects_update_drafts_and_survive_category_change() {
     click(120., 104.);
     tick(2);
     tick(360);
-    key(slint::platform::Key::DownArrow);
-    key(slint::platform::Key::DownArrow);
+    key(slint::platform::Key::UpArrow);
     key(slint::platform::Key::Return);
     tick(210);
     click(200., 251.);

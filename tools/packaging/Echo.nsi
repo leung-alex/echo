@@ -143,6 +143,7 @@ Section "Uninstall"
     !insertmacro EchoDeleteOwnedShortcut "un." "$DESKTOP\Echo.lnk" $desktopOwned
     ReadRegStr $0 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\EchoNative" "InstallLocation"
     ${If} $0 == "$INSTDIR"
+      DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Echo"
       DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\EchoNative"
     ${EndIf}
   ${EndIf}

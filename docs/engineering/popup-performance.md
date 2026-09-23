@@ -14,6 +14,18 @@ request those thumbnails immediately, overlapping storage reads with window
 preparation. Requests still use the normal image epoch, pending deduplication and
 memory budget; this does not preload images while the window is hidden.
 
+Visible History/Favorites navigation keeps valid decoded pixels in the same bounded
+cache. A navigation epoch still invalidates older results, but the first transition
+frame waits only for the destination rows, query/revision and visible neighbor
+geometry. Pending thumbnail decodes fill their fixed image slots asynchronously, so
+one slow image cannot hold the carousel at its outgoing card. The opt-in lifecycle
+trace records `navigation_requested`, `slide_loading`, `neighbors_ready`, image
+request/cache counters, `slide_first_frame_ready` and `slide_started` without storing
+clipboard content. `pending_bytes` is a bounded requested-output estimate for
+in-flight requests (zero-sized side requests use the persisted 256px thumbnail
+bound), not an allocator high-water mark. Initial popup presentation retains its
+existing frame safety gate.
+
 Current visible neighbors bypass speculative navigation's 120 ms prewarm timer.
 On Alt+V, already available side-card content can prepare at the expected popup
 size while the independent Windows input worker verifies the target. The HWND

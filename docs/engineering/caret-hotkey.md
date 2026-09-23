@@ -19,6 +19,14 @@ window only when it is still the same process/window and no unrelated app has
 already taken foreground. Window Close still hides; explicit Quit releases the
 registration and stops the resident.
 
+History, Favorites, custom spaces, and Quick Insert are temporary surfaces. They
+use a tool-window style, so they do not create an Echo taskbar button, and a
+mouse press on the taskbar, desktop, or another process posts an outside-click
+dismissal without consuming that press. Controls, rows, menus, and settings
+controls inside Echo are still ordinary client input. Settings/About restore the
+normal app-window style and remain visible when focus moves outside Echo. This
+surface behavior is fixed and has no persisted setting.
+
 Quick Insert always uses caret anchoring when a usable anchor is available and
 filters suggestions in the original input when supported. These behaviors are
 fixed, not user settings. The manager/settings retain their normal layout.
@@ -67,8 +75,9 @@ scaled. The desired 900-dip Quick Insert stage retains a 520-dip front card on a
 normal display, rather than anchoring the corner of a 1600-dip transparent stage.
 At horizontal edges the visible card is positioned first, then excess symmetrical
 transparent stage space is removed. The actual text-card width is preserved.
-A clean Quick Insert dismisses on external focus loss. Dirty dialogs retain their
-draft, but invalidate the old paste target; internal Echo menus do not dismiss.
+A clean temporary surface dismisses on external focus loss. Dirty dialogs retain
+their draft, but invalidate the old paste target; internal Echo menus do not
+dismiss. Settings/About keep their existing editing and focus behavior.
 
 ## Transactional hotkey updates
 

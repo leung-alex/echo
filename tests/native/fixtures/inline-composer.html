@@ -23,10 +23,15 @@
 <div id="ai-other" hidden contenteditable="true" role="textbox" aria-label="Inline rich AI composer">other editor untouched</div>
 <div class="facts">Sent: <output id="ai-count" aria-label="AI submit count">0</output><output id="token-count" aria-label="Mention preserved">1</output><output id="attachment" aria-label="Attachment preserved">synthetic.pdf</output></div>
 <textarea class="report" id="ai-report" readonly aria-label="AI actual text"></textarea></section>
+<section><h2>ChatGPT project new chat shape</h2><button id="reset-chatgpt" type="button">Reset ChatGPT project composer</button>
+<div id="chatgpt" class="ProseMirror" contenteditable="true" role="textbox" aria-multiline="true" aria-label="New chat in dev tool"></div>
+<textarea name="prompt-textarea" hidden aria-label="ChatGPT implementation textarea"></textarea>
+<div class="facts">Sent: <output id="chatgpt-count" aria-label="ChatGPT submit count">0</output></div>
+<textarea class="report" id="chatgpt-report" readonly aria-label="ChatGPT actual text"></textarea></section>
 <textarea class="report" id="state" readonly aria-label="Browser fixture state"></textarea>
 <script>
 const counts={search:0,textarea:0,ai:0};
-function report(id){const e=document.getElementById(id);document.getElementById(id+'-report').value=id==='ai'?e.textContent:e.value;document.getElementById(id+'-count').textContent=counts[id];document.getElementById('token-count').textContent=document.getElementById('ai-token')?'1':'0';const result={};for(const key of ['search','textarea','ai']){const input=document.getElementById(key);result[key]={text:key==='ai'?input.textContent:input.value,submitted:counts[key],focused:document.activeElement===input};}result.paragraphs=[...document.getElementById('ai').children].map(p=>({tag:p.tagName,text:p.textContent,html:p.innerHTML}));result.other={text:document.getElementById('ai-other').textContent,submitted:counts.other||0,focused:document.activeElement===document.getElementById('ai-other')};result.rebuilds=Number(document.getElementById('ai').dataset.rebuilds||0);result.mention=!!document.getElementById('ai-token');result.attachment=document.getElementById('attachment').textContent;document.getElementById('state').value=JSON.stringify(result);}
+function report(id){const e=document.getElementById(id);document.getElementById(id+'-report').value=id==='ai'?e.textContent:e.value;document.getElementById(id+'-count').textContent=counts[id];document.getElementById('token-count').textContent=document.getElementById('ai-token')?'1':'0';const result={};for(const key of ['search','textarea','ai']){const input=document.getElementById(key);result[key]={text:key==='ai'?input.textContent:input.value,submitted:counts[key],focused:document.activeElement===input};}result.chatgpt={text:document.getElementById('chatgpt')?.textContent||'',submitted:window.__chatgptCount||0,focused:document.activeElement===document.getElementById('chatgpt'),shadow:document.querySelector('textarea[name=prompt-textarea]')?.value||''};result.paragraphs=[...document.getElementById('ai').children].map(p=>({tag:p.tagName,text:p.textContent,html:p.innerHTML}));result.other={text:document.getElementById('ai-other').textContent,submitted:counts.other||0,focused:document.activeElement===document.getElementById('ai-other')};result.rebuilds=Number(document.getElementById('ai').dataset.rebuilds||0);result.mention=!!document.getElementById('ai-token');result.attachment=document.getElementById('attachment').textContent;document.getElementById('state').value=JSON.stringify(result);}
 function reset(id,selected=false){
  const e=document.getElementById(id);counts[id]=0;e.dataset.decorated='false';e.dataset.decoration='after';e.dataset.rebuild='false';e.dataset.rebuilds='0';document.getElementById('ai-other').hidden=true;counts.other=0;
  if(id==='ai'){
@@ -64,6 +69,12 @@ document.getElementById('rebuild-ai').onclick=()=>{document.getElementById('rese
 document.getElementById('focus-other-ai').onclick=()=>{const e=document.getElementById('ai-other');e.hidden=false;e.focus();report('ai');};
 document.getElementById('ai-other').addEventListener('keydown',event=>{if(event.key==='Enter'&&!event.isComposing){counts.other=(counts.other||0)+1;event.preventDefault();report('ai');}});
 document.getElementById('ai-other').addEventListener('input',()=>report('ai'));
+const chatgpt=document.getElementById('chatgpt'), promptTextarea=document.querySelector('textarea[name="prompt-textarea"]');
+window.__chatgptCount=0;
+function resetChatgpt(){chatgpt.innerHTML='pre| |post';window.__chatgptCount=0;promptTextarea.value=chatgpt.textContent;chatgpt.focus();const r=document.createRange();r.selectNodeContents(chatgpt);r.setStart(chatgpt.firstChild,4);r.collapse(true);getSelection().removeAllRanges();getSelection().addRange(r);document.getElementById('chatgpt-report').value=chatgpt.textContent;document.getElementById('chatgpt-count').textContent=window.__chatgptCount;}
+chatgpt.addEventListener('input',()=>{promptTextarea.value=chatgpt.textContent;document.getElementById('chatgpt-report').value=chatgpt.textContent;});
+chatgpt.addEventListener('keydown',event=>{if(event.key==='Enter'&&!event.isComposing){window.__chatgptCount++;event.preventDefault();document.getElementById('chatgpt-count').textContent=window.__chatgptCount;}});
+document.getElementById('reset-chatgpt').onclick=resetChatgpt;
 document.addEventListener('selectionchange',()=>report('ai'));
-reset('ai');reset('textarea');reset('search');
+reset('ai');reset('textarea');reset('search');resetChatgpt();
 </script></html>

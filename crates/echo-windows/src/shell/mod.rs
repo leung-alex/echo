@@ -5,6 +5,8 @@ use windows_sys::Win32::{Foundation::*, System::Threading::*, UI::WindowsAndMess
 mod card_window;
 mod software_frame;
 pub use software_frame::{AnimationClock, FrameOutcome, SoftwareFrame};
+mod autostart;
+pub use autostart::{AutoStartController, STARTUP_ARGUMENT};
 mod common;
 mod hotkey;
 mod ime_mode;
@@ -24,7 +26,7 @@ use common::{wide, Handle, Security};
 pub use environment::{fit_window, ui_environment, UiEnvironment};
 pub use window::{
     apply_theme, attach_window, center_composition, focus_window, reposition_favorites, set_owner,
-    start_drag, WindowHook,
+    start_drag, SurfaceMode, WindowHook,
 };
 
 #[derive(Debug, Clone)]
@@ -37,6 +39,7 @@ pub enum ShellEvent {
     Quit,
     Activation(Vec<String>),
     FocusLost,
+    PopupOutsideClick,
     ThemeChanged,
     GeometryChanged,
     Error(String),

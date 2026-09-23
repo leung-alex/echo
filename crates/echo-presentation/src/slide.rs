@@ -37,6 +37,26 @@ pub struct ContentFrame {
     pub space: SpaceId,
 }
 
+/// Admission policy for a prepared navigation frame. The presentation layer
+/// owns the transition contract; the desktop adapter supplies the count of
+/// pending display resources without moving Slint or decoder state here.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NavigationReadiness {
+    #[default]
+    RequireComplete,
+    AllowPendingImages,
+}
+
+impl NavigationReadiness {
+    pub fn permits_pending(self) -> bool {
+        matches!(self, Self::AllowPendingImages)
+    }
+
+    pub fn gate_open(self, pending_count: usize) -> bool {
+        self.permits_pending() || pending_count == 0
+    }
+}
+
 /// Matches the retained GPU version's visible side-card width, without perspective.
 pub const SIDE_WIDTH_RATIO: f32 = 0.7;
 pub fn side_width(main_width: f32) -> f32 {
@@ -177,6 +197,14 @@ impl Slide {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn navigation_readiness_allows_pending_images_only_for_transitions() {
+        assert!(NavigationReadiness::AllowPendingImages.gate_open(3));
+        assert!(NavigationReadiness::RequireComplete.gate_open(0));
+        assert!(!NavigationReadiness::RequireComplete.gate_open(1));
+    }
+
     #[test]
     fn loading_and_stale_results_never_start_motion() {
         let mut slide = Slide::default();

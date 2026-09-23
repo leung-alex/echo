@@ -425,12 +425,18 @@ fn execute(
                 "quick_insert":{"active":a.session.context == Context::QuickInsert,"has_target":a.session.has_target,"capture_pending":a.capture_pending,"anchor_source":a.popup_anchor.map(|anchor|anchor.source.label()),"hotkey_status":a.window.get_hotkey_status().to_string()},
                 "settings":{"dirty":a.window.get_settings_dirty(),"valid":a.window.get_settings_valid(),"error":a.window.get_settings_error().to_string(),"ui":a.ui},
                 "flow_timer":false,"preview_timer":false,
-                "thumbnails_bytes":a.images.bytes+a.software.outgoing_image_bytes,"native_region":a.window_shapes.as_ref().is_some_and(|s|s.is_some()),
+                "thumbnails_bytes":a.images.bytes+a.software.outgoing_image_bytes,
+                "image_requests":a.images.requests,
+                "image_cache_hits":a.images.cache_hits,
+                "image_cache_misses":a.images.cache_misses,
+                "image_pending":a.images.pending.len(),
+                "image_pending_bytes":a.images.pending_bytes(),
+                "native_region":a.window_shapes.as_ref().is_some_and(|s|s.is_some()),
                 "panel":[a.window.get_panel_left(),a.window.get_panel_top(),a.window.get_panel_width(),a.window.get_panel_height()],
                 "stage":[a.window.get_stage_width(),a.window.get_stage_height()],"scale_factor":a.window.window().scale_factor()});
             metrics["error"] = a.surface.error.into();
             metrics["display_bytes"] = serde_json::json!({"page":a.surface.held_item_bytes(),"model":a.model_bytes,"outgoing":a.software.outgoing_bytes,"sides":a.software_side_bytes(),"queued":a.hub.data_bytes(),"total":a.surface.held_item_bytes()+a.model_bytes+a.software_side_bytes()+a.software.outgoing_bytes+a.hub.data_bytes()});
-            metrics["software_slide"] = serde_json::json!({"outgoing":a.window.get_outgoing_present(),"outgoing_rows":a.window.get_outgoing().rows.row_count(),"moving":a.software.slide.moving(),"loading":a.software.slide.loading(),"pending_target":a.software.slide.intent().map(|id|id.0),"incoming_x":a.window.get_incoming_x(),"outgoing_x":a.window.get_outgoing_x(),"left_visible":a.window.get_left_side_visible(),"right_visible":a.window.get_right_side_visible(),"frame_bytes":crate::graphics::software_frame_bytes()});
+            metrics["software_slide"] = serde_json::json!({"outgoing":a.window.get_outgoing_present(),"outgoing_rows":a.window.get_outgoing().rows.row_count(),"moving":a.software.slide.moving(),"loading":a.software.slide.loading(),"pending_target":a.software.slide.intent().map(|id|id.0),"incoming_x":a.window.get_incoming_x(),"outgoing_x":a.window.get_outgoing_x(),"left_visible":a.window.get_left_side_visible(),"right_visible":a.window.get_right_side_visible(),"frame_bytes":crate::graphics::software_frame_bytes(),"image_pending":a.images.pending.len(),"image_pending_bytes":a.images.pending_bytes(),"image_cache_bytes":a.images.bytes,"image_gate":a.image_gate_name()});
             metrics["status"] = a.surface.status.clone().into();
             metrics["software_slide"]["side_width"] = a.window.get_side_width().into();
             metrics["software_slide"]["progress"] = a.window.get_carousel_progress().into();
@@ -485,6 +491,10 @@ fn trace_tick(app: &Rc<RefCell<App>>) {
         frame["stage_size"] = serde_json::json!([a.window.get_stage_width(),a.window.get_stage_height()]);
         frame["error"] = a.surface.error.into();
         frame["thumbnails_bytes"] = (a.images.bytes+a.software.outgoing_image_bytes).into();
+        frame["image_pending"] = a.images.pending.len().into();
+        frame["image_pending_bytes"] = a.images.pending_bytes().into();
+        frame["image_cache_hits"] = a.images.cache_hits.into();
+        frame["image_cache_misses"] = a.images.cache_misses.into();
         if i % 2 == 0 && a.surface.visible {
             match a.window.window().take_snapshot() {
                 Ok(image) => {

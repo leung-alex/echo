@@ -81,7 +81,15 @@ pub enum Event {
         Result<QuickInsertOutcome, echo_engine::QuickInsertError>,
     ),
     Mutated(u64, Result<MutationResult, String>),
-    Thumbnail(u64, String, Result<PixelData, String>),
+    // Keep the requested display size alongside failures. Successful results
+    // carry their effective quality in PixelData::requested, while an error
+    // has no PixelData from which the UI could identify the in-flight request.
+    Thumbnail(
+        u64,
+        String,
+        crate::image_preview::PreviewSize,
+        Result<PixelData, String>,
+    ),
     Invalidated,
     SearchCacheTrimmed(u64, u64),
 }
@@ -133,7 +141,7 @@ fn event_data_bytes(event: &Event) -> usize {
             |e| e.capacity(),
             |d| item_bytes(&d.item) + d.spaces.capacity() * std::mem::size_of::<SpaceId>(),
         ),
-        Event::Thumbnail(_, hash, result) => {
+        Event::Thumbnail(_, hash, _, result) => {
             hash.capacity()
                 + result
                     .as_ref()

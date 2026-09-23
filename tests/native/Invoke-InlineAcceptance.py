@@ -1545,6 +1545,7 @@ class Run:
         self.check("browser-real-paragraph-and-selected-newline-ranges", self.test_browser_newline_ranges)
         self.check("browser-nbsp-original-query-range", self.test_browser_nbsp)
         self.check("browser-subtree-rebuild-and-same-name-editor", self.test_browser_editor_identity)
+        self.check("browser-chatgpt-project-contenteditable-regression", self.test_chatgpt_project_composer_shape)
         self.check("browser-search-caret-query-exact-replacement", lambda: self.test_browser_control("search"))
         self.check("browser-textarea-composer-exact-replacement", lambda: self.test_browser_control("textarea"))
         self.check("browser-rich-ai-composer-preserves-mention-and-attachment", lambda: self.test_browser_control("ai"))
@@ -1692,6 +1693,22 @@ class Run:
         self.wait(lambda: self.inline_ready(actual), "raw Chromium NBSP query")
         return {"typed": query, "observed_query": actual,
                 "replacement": self.browser_enter("ai", expected="@Teammate pre|" + PAYLOAD + " |post")}
+
+    def test_chatgpt_project_composer_shape(self):
+        if not self.args.native_test:
+            raise NotRun("ChatGPT-shaped target regression requires native-test")
+        self.f("invoke-control", self.browser, self.browser_title, "Reset ChatGPT project composer")
+        self.wait(lambda: self.f("read-control", self.browser, self.browser_title, "New chat in dev tool") == "pre| |post",
+                  "ChatGPT-shaped visible editor reset")
+        self.browser_open()
+        self.f("text", self.browser, self.browser_title, QUERY)
+        self.wait(lambda: self.inline_ready(QUERY), "ChatGPT-shaped keyboard query")
+        self.f("key", self.browser, self.browser_title, 13)
+        self.wait(lambda: not self.d("exists"), "ChatGPT-shaped Enter hides popup")
+        value = self.f("read-control", self.browser, self.browser_title, "New chat in dev tool")
+        if value != "pre|" + PAYLOAD + " |post":
+            raise RuntimeError(f"ChatGPT-shaped replacement incorrect: {value!r}")
+        return {"editor": "visible-contenteditable", "hidden_implementation_control": "not_targeted", "value": value}
 
     def test_browser_editor_identity(self):
         if not self.args.native_test:

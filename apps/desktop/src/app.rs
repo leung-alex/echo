@@ -13,7 +13,7 @@ use echo_presentation::{
     space_state::SpacePositions,
     RowKey, Surface,
 };
-use echo_windows::shell::{self, ShellEvent, WindowHook};
+use echo_windows::shell::{self, ShellEvent, SurfaceMode, WindowHook};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use slint::{ComponentHandle, Model, ModelRc, Timer, TimerMode, VecModel};
 use std::{
@@ -117,9 +117,23 @@ struct Images {
     // Bounded request identities only; hidden reclamation still releases pixels.
     recent_main: VecDeque<String>,
     pending: HashSet<String>,
+    pending_sizes: HashMap<String, crate::image_preview::PreviewSize>,
     bytes: usize,
     epoch: u64,
+    requests: u64,
+    cache_hits: u64,
+    cache_misses: u64,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PendingReservation {
+    Coalesced,
+    Started,
+    Upgraded {
+        previous: crate::image_preview::PreviewSize,
+    },
+}
+
 impl Images {
     fn remember_main(&mut self, hash: &str) {
         self.recent_main.retain(|key| key != hash);
@@ -143,6 +157,73 @@ impl Images {
             }
         }
         changed
+    }
+
+    fn cache_covers(&mut self, hash: &str, requested: crate::image_preview::PreviewSize) -> bool {
+        let covered = self.cache.contains_key(hash)
+            && self
+                .quality
+                .get(hash)
+                .is_some_and(|quality| quality.covers(requested));
+        if covered {
+            self.cache_hits = self.cache_hits.saturating_add(1);
+        }
+        covered
+    }
+
+    fn reserve_pending(
+        &mut self,
+        hash: &str,
+        requested: crate::image_preview::PreviewSize,
+    ) -> PendingReservation {
+        if let Some(existing) = self.pending_sizes.get(hash).copied() {
+            if existing.covers(requested) {
+                return PendingReservation::Coalesced;
+            }
+            self.pending_sizes.insert(hash.to_owned(), requested);
+            self.requests = self.requests.saturating_add(1);
+            self.cache_misses = self.cache_misses.saturating_add(1);
+            return PendingReservation::Upgraded { previous: existing };
+        }
+        self.pending.insert(hash.to_owned());
+        self.pending_sizes.insert(hash.to_owned(), requested);
+        self.requests = self.requests.saturating_add(1);
+        self.cache_misses = self.cache_misses.saturating_add(1);
+        PendingReservation::Started
+    }
+
+    fn finish_pending(&mut self, hash: &str) {
+        self.pending.remove(hash);
+        self.pending_sizes.remove(hash);
+    }
+
+    fn clear_pending(&mut self) {
+        self.pending.clear();
+        self.pending_sizes.clear();
+    }
+
+    fn pending_bytes(&self) -> usize {
+        self.pending_sizes
+            .values()
+            .map(|size| {
+                // A zero-sized request is the intentional side-card path:
+                // it decodes the persisted 256px thumbnail without touching
+                // the original payload. Account for that bounded decode in
+                // diagnostics instead of reporting zero in-flight bytes.
+                let edge = echo_engine::DEFAULT_THUMBNAIL_MAX_EDGE as usize;
+                let width = if size.width == 0 {
+                    edge
+                } else {
+                    size.width as usize
+                };
+                let height = if size.height == 0 {
+                    edge
+                } else {
+                    size.height as usize
+                };
+                width.saturating_mul(height).saturating_mul(4)
+            })
+            .sum()
     }
 }
 
@@ -170,6 +251,97 @@ mod image_reclamation_tests {
         assert!(!images.recent_main.iter().any(|key| key == "5"));
         assert!(images.recent_main.iter().any(|key| key == "4"));
         assert_eq!(images.recent_main.back().map(String::as_str), Some("12"));
+    }
+
+    #[test]
+    fn pending_requests_are_deduplicated_and_report_output_bytes() {
+        let mut images = Images::default();
+        let size = crate::image_preview::PreviewSize {
+            width: 20,
+            height: 10,
+        };
+        assert_eq!(
+            images.reserve_pending("hash", size),
+            super::PendingReservation::Started
+        );
+        assert_eq!(
+            images.reserve_pending("hash", size),
+            super::PendingReservation::Coalesced
+        );
+        assert_eq!(images.pending.len(), 1);
+        assert_eq!(images.pending_bytes(), 800);
+        assert_eq!(images.requests, 1);
+        assert_eq!(images.cache_misses, 1);
+        images.finish_pending("hash");
+        assert!(images.pending.is_empty());
+        assert_eq!(images.pending_bytes(), 0);
+        images.clear_pending();
+        assert!(images.pending_sizes.is_empty());
+    }
+
+    #[test]
+    fn pending_request_upgrades_to_the_larger_display_size() {
+        let mut images = Images::default();
+        let side = crate::image_preview::PreviewSize {
+            width: 0,
+            height: 0,
+        };
+        let main = crate::image_preview::PreviewSize {
+            width: 320,
+            height: 180,
+        };
+        assert_eq!(
+            images.reserve_pending("hash", side),
+            super::PendingReservation::Started
+        );
+        assert_eq!(
+            images.reserve_pending("hash", main),
+            super::PendingReservation::Upgraded { previous: side }
+        );
+        assert_eq!(images.pending_sizes.get("hash"), Some(&main));
+        assert_eq!(images.requests, 2);
+        assert_eq!(images.pending_bytes(), 320 * 180 * 4);
+    }
+
+    #[test]
+    fn cached_thumbnail_quality_prevents_a_second_request() {
+        let mut images = Images::default();
+        let quality = crate::image_preview::PreviewSize {
+            width: 100,
+            height: 60,
+        };
+        images.cache.insert("hash".into(), (Default::default(), 4));
+        images.quality.insert("hash".into(), quality);
+        assert!(images.cache_covers(
+            "hash",
+            crate::image_preview::PreviewSize {
+                width: 80,
+                height: 40,
+            }
+        ));
+        assert_eq!(images.cache_hits, 1);
+        assert!(images.pending.is_empty());
+    }
+
+    #[test]
+    fn clearing_navigation_pending_keeps_the_bounded_cache() {
+        let mut images = Images::default();
+        let quality = crate::image_preview::PreviewSize {
+            width: 120,
+            height: 80,
+        };
+        images.cache.insert("hash".into(), (Default::default(), 4));
+        images.quality.insert("hash".into(), quality);
+        images.order.push_back("hash".into());
+        images.bytes = 4;
+        images.reserve_pending("other", quality);
+
+        images.clear_pending();
+
+        assert!(images.cache.contains_key("hash"));
+        assert_eq!(images.quality.get("hash"), Some(&quality));
+        assert_eq!(images.bytes, 4);
+        assert!(images.cache_covers("hash", quality));
     }
 }
 
@@ -541,7 +713,9 @@ impl App {
             }
             Event::Executed(operation, result) => self.executed(operation, result),
             Event::Mutated(serial, result) => self.mutated(serial, result),
-            Event::Thumbnail(epoch, hash, result) => self.thumbnail_finished(epoch, hash, result),
+            Event::Thumbnail(epoch, hash, requested, result) => {
+                self.thumbnail_finished(epoch, hash, requested, result)
+            }
             Event::Invalidated => self.history_invalidated(),
             Event::SearchCacheTrimmed(epoch, hidden_generation) => {
                 if self.pending_reclaim == Some((epoch, hidden_generation))
@@ -600,6 +774,12 @@ impl App {
                 self.window.set_hotkey_status(status.into());
             }
             ShellEvent::FocusLost => self.external_focus_lost(),
+            ShellEvent::PopupOutsideClick
+                if self.surface.visible && self.window.get_route().as_str() == "history" =>
+            {
+                self.request_hide()
+            }
+            ShellEvent::PopupOutsideClick => {}
             ShellEvent::Open => self.activate_args(Vec::new()),
             ShellEvent::Favorites => self.activate_args(vec!["--favorites".into()]),
             ShellEvent::Settings => self.activate_args(vec!["--settings".into()]),
@@ -645,7 +825,10 @@ impl App {
             self.pending_focus = Some(snapshot);
             return;
         }
-        if args.first().map(String::as_str) == Some("--background") {
+        if matches!(
+            args.first().map(String::as_str),
+            Some("--background" | "--startup")
+        ) {
             return;
         }
         if self.window.get_modal() || self.window.get_settings_dirty() {
@@ -710,6 +893,15 @@ impl App {
         self.remember_position();
         self.cancel_software_slide();
         self.surface.hide();
+        if let Some(hook) = &self.hook {
+            if let Err(error) = hook.set_surface_mode(SurfaceMode::Hidden) {
+                self.report(
+                    format!("Could not restore the hidden window style: {error}"),
+                    true,
+                );
+                return;
+            }
+        }
         self.surface.set_space(id);
         self.surface.set_query(query.clone());
         self.pending_scroll = if self.ui.remember_position {
@@ -774,13 +966,11 @@ impl App {
             self.card_region_generation.set(0);
         }
         let center = self.prepare_window_geometry();
-        if let Some(hook) = &self.hook {
-            hook.set_inline_popup(self.popup_preserves_input_focus())?;
-        }
         self.trim_timer.stop();
         self.hidden_generation = self.hidden_generation.wrapping_add(1);
         self.pending_reclaim = None;
         self.surface.visible = true;
+        self.sync_surface_mode()?;
         if load_content {
             // Let storage work overlap visible-side rendering and HWND setup.
             self.load(false);
@@ -811,6 +1001,7 @@ impl App {
                 Arc::new(move |e| hub.post(Event::Shell(e))),
             )?);
             self.hwnd = Some(hwnd);
+            self.sync_surface_mode()?;
             if self.popup_first_frame_pending {
                 shell::cloak_card_frame(hwnd, true)?;
             }
@@ -834,6 +1025,7 @@ impl App {
             if !self.quick_geometry_active {
                 shell::fit_window(hwnd, first || center, 16.0)?;
             }
+            self.sync_surface_mode()?;
             if let Some(hook) = &self.hook {
                 hook.set_inline_popup(self.popup_preserves_input_focus())?;
             }
@@ -900,9 +1092,17 @@ impl App {
         self.cancel_prewarm();
         self.deck.hide();
         self.surface.hide();
+        if let Some(hook) = &self.hook {
+            if let Err(error) = hook.set_surface_mode(SurfaceMode::Hidden) {
+                self.report(
+                    format!("Could not restore the hidden window style: {error}"),
+                    true,
+                );
+            }
+        }
         self.inspect_intent = None;
         self.images.epoch = self.images.epoch.wrapping_add(1);
-        self.images.pending.clear();
+        self.images.clear_pending();
         if self.images.trim_to(1024 * 1024) {
             for index in 0..self.model.row_count() {
                 if let Some(mut row) = self.model.row_data(index) {
@@ -1184,6 +1384,54 @@ impl App {
             self.thumbnail_request(key, size);
         }
     }
+    fn record_thumbnail_state(&self, event: &'static str) {
+        crate::memory_trace::record(
+            event,
+            serde_json::json!({
+                "pending_count": self.images.pending.len(),
+                "pending_bytes": self.images.pending_bytes(),
+                "cache_bytes": self.images.bytes,
+                "requests": self.images.requests,
+                "cache_hits": self.images.cache_hits,
+                "cache_misses": self.images.cache_misses,
+            }),
+        );
+    }
+
+    fn queue_thumbnail(
+        &mut self,
+        asset: echo_engine::Thumbnail,
+        size: crate::image_preview::PreviewSize,
+        allow_during_motion: bool,
+    ) -> bool {
+        if !allow_during_motion && self.software.slide.moving() {
+            return false;
+        }
+        let hash = asset.source_hash.clone();
+        if self.images.cache_covers(&hash, size) {
+            self.record_thumbnail_state("thumbnail_cache_hit");
+            return true;
+        }
+        let reservation = self.images.reserve_pending(&hash, size);
+        let previous = match reservation {
+            PendingReservation::Coalesced => return false,
+            PendingReservation::Started => None,
+            PendingReservation::Upgraded { previous } => Some(previous),
+        };
+        if !self.send(Work::Thumbnail(self.images.epoch, asset, size)) {
+            if let Some(previous) = previous {
+                // Keep the already queued lower-quality request alive when a
+                // larger upgrade cannot enter the worker queue.
+                self.images.pending_sizes.insert(hash, previous);
+            } else {
+                self.images.finish_pending(&hash);
+            }
+            return false;
+        }
+        self.record_thumbnail_state("thumbnail_requested");
+        true
+    }
+
     fn thumbnail_request(&mut self, key: String, size: crate::image_preview::PreviewSize) {
         if !self.surface.visible || self.window.get_route().as_str() != "history" {
             return;
@@ -1204,33 +1452,46 @@ impl App {
         let hash = asset.source_hash.clone();
         self.images.remember_main(&hash);
         self.images.main_sizes.insert(hash.clone(), size);
-        // Frame readiness drained prior reads. Defer newly visible requests until
-        // the slide settles, so no cache eviction can mutate its row models.
-        if self.software.slide.moving() {
-            return;
-        }
-        if (self.images.cache.contains_key(&hash)
-            && self
-                .images
-                .quality
-                .get(&hash)
-                .is_some_and(|q| q.covers(size)))
-            || !self.images.pending.insert(hash.clone())
-        {
-            return;
-        }
-        if !self.send(Work::Thumbnail(self.images.epoch, asset, size)) {
-            self.images.pending.remove(&hash);
-        } else {
+        // Loading-phase requests can populate the cache before the prepared
+        // frame. Defer newly visible requests after motion starts, so a cache
+        // eviction cannot mutate the live row model during the transition.
+        let request_count = self.images.requests;
+        self.queue_thumbnail(asset, size, false);
+        if self.images.requests != request_count {
             crate::popup_timing::mark("main_thumbnail_requested");
         }
     }
-    fn thumbnail_finished(&mut self, epoch: u64, hash: String, result: Result<PixelData, String>) {
+    fn thumbnail_finished(
+        &mut self,
+        epoch: u64,
+        hash: String,
+        requested: crate::image_preview::PreviewSize,
+        result: Result<PixelData, String>,
+    ) {
         if epoch != self.images.epoch || !self.surface.visible {
+            crate::memory_trace::record(
+                "thumbnail_stale",
+                serde_json::json!({"epoch":epoch,"current_epoch":self.images.epoch}),
+            );
             return;
         }
-        self.images.pending.remove(&hash);
+        if self
+            .images
+            .pending_sizes
+            .get(&hash)
+            .copied()
+            .is_some_and(|required| !requested.covers(required))
+        {
+            // A side-card request can finish while the main row has already
+            // upgraded the same hash to a larger viewport size. Keep the
+            // larger reservation until its own result arrives.
+            self.record_thumbnail_state("thumbnail_deferred");
+            self.software_content_ready();
+            return;
+        }
+        self.images.finish_pending(&hash);
         let Ok(pixels) = result else {
+            self.record_thumbnail_state("thumbnail_failed");
             {
                 self.software_content_ready();
             }
@@ -1238,15 +1499,23 @@ impl App {
         };
         let bytes = pixels.rgba.len();
         if bytes > crate::image_preview::CACHE_BYTES {
+            self.record_thumbnail_state("thumbnail_rejected");
+            self.software_content_ready();
             return;
         }
         if self
             .images
             .quality
             .get(&hash)
-            .is_some_and(|q| q.covers(pixels.requested))
+            // Compare against the request that produced this result. A
+            // persisted-thumbnail fallback reports its actual pixels in
+            // `pixels.requested`; an existing full-size cache must still win
+            // over a later zero-sized side-card decode.
+            .is_some_and(|q| q.covers(requested))
             && self.images.cache.contains_key(&hash)
         {
+            self.record_thumbnail_state("thumbnail_reused");
+            self.software_content_ready();
             return;
         }
         if let Some((_, old_bytes)) = self.images.cache.remove(&hash) {
@@ -1279,6 +1548,7 @@ impl App {
         if !self.software.slide.loading() {
             self.render_software_side_previews();
         }
+        self.record_thumbnail_state("thumbnail_ready");
         crate::popup_timing::mark("main_thumbnail_ready");
         if self.deck.phase != Phase::Animating {
             self.render();
@@ -1331,6 +1601,9 @@ impl App {
                 self.pending_scroll = Some(0.0);
                 self.deck.block_content();
                 self.cancel_prewarm();
+                // Start the same-query neighbor requests while the main result is
+                // still loading; otherwise side cards keep their old snapshot.
+                self.prepare_software_neighbors();
                 // Keep side-card content until the new query snapshot is ready.
                 self.render_software_side_previews();
                 self.window.set_stale_rows(!keep_rows);
@@ -1394,7 +1667,7 @@ impl App {
                     self.preview_epoch = self.preview_epoch.wrapping_add(1);
                     self.pending_previews.clear();
                     self.images.epoch = self.images.epoch.wrapping_add(1);
-                    self.images.pending.clear();
+                    self.images.clear_pending();
 
                     self.surface.reclaim_hidden();
                     self.model.clear();

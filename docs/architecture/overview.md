@@ -76,7 +76,8 @@ Echo permits one resident host per Windows user, logon session, and canonical da
 
 A secondary launch validates and forwards bounded arguments over a local named pipe. The pipe is restricted to the current user, rejects remote clients, validates the peer process SID, and uses bounded transfer deadlines. It is not a TCP or browser automation endpoint.
 
-The native tray can open Echo, Favorites, or Settings and can explicitly Quit. The tray icon is restored after Explorer recreates the taskbar. Closing or dismissing Echo hides its window while clipboard capture remains resident. Explicit Quit closes the event hub, exits the Slint loop, shuts down worker and storage activity, and then stops the pipe and tray hosts.
+The native tray can open Echo, Favorites, or Settings and can explicitly Quit. The tray icon is restored after Explorer recreates the taskbar. History, Favorites, custom spaces, and Quick Insert are temporary tool-window surfaces: they have no Echo taskbar button and an outside mouse press hides them while the original press continues to its target. Settings/About use the normal app-window style and remain interactive when focus moves outside Echo. Closing or dismissing Echo hides its window while clipboard capture remains resident. Explicit Quit closes the event hub, exits the Slint loop, shuts down worker and storage activity, and then stops the pipe and tray hosts.
+The General settings page controls a per-user logon registration. When enabled, Windows starts Echo with the hidden `--startup` mode so the resident tray and clipboard services are available without opening a content panel.
 
 ## Rendering and Windows Composition
 

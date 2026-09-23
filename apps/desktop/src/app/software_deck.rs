@@ -1,7 +1,7 @@
 //! Software cards move existing Slint components. Only the departing row model
 //! survives a navigation load, and it is released before another load is admitted.
 use super::*;
-use echo_presentation::slide::{ContentFrame, Request, Slide};
+use echo_presentation::slide::{ContentFrame, NavigationReadiness, Request, Slide};
 
 #[derive(Default)]
 pub(super) struct SoftwareDeck {
@@ -15,9 +15,20 @@ pub(super) struct SoftwareDeck {
     pub side_signatures: [Option<u64>; 2],
     pub side_model_bytes: [usize; 2],
     pub image_version: u64,
+    image_policy: NavigationReadiness,
+    neighbors_ready_recorded: bool,
 }
 
 impl App {
+    #[cfg(feature = "native-test")]
+    pub(crate) fn image_gate_name(&self) -> &'static str {
+        if self.software.image_policy.permits_pending() {
+            "navigation"
+        } else {
+            "complete"
+        }
+    }
+
     pub(super) fn navigate_software_to(&mut self, id: SpaceId) {
         let from = self.software.slide.source().unwrap_or(self.surface.space);
         let a = self.deck.index(from).unwrap_or(0) as i64;
@@ -31,6 +42,19 @@ impl App {
         let Request::Load { retain_outgoing } = request else {
             return;
         };
+        crate::memory_trace::record(
+            "navigation_requested",
+            serde_json::json!({
+                "from": from.0,
+                "to": id.0,
+                "pending_count": self.images.pending.len(),
+                "pending_bytes": self.images.pending_bytes(),
+                "cache_bytes": self.images.bytes,
+                "requests": self.images.requests,
+                "cache_hits": self.images.cache_hits,
+                "cache_misses": self.images.cache_misses,
+            }),
+        );
         self.remember_position();
         self.search_timer.stop();
         self.cancel_prewarm();
@@ -80,7 +104,13 @@ impl App {
                     empty_state_text: w.get_empty_state_text(),
                 });
                 w.set_outgoing_present(true);
-                let (preview, bytes) = self.make_side_preview(&self.surface.items, false, "");
+                let (preview, bytes) = self.make_side_preview(
+                    &self.surface.items,
+                    &self.surface.query,
+                    self.surface.space != SpaceId::HISTORY,
+                    false,
+                    "",
+                );
                 w.set_outgoing_preview(preview);
                 self.software.outgoing_bytes =
                     self.model_bytes + bytes + self.software.side_model_bytes.iter().sum::<usize>();
@@ -101,11 +131,12 @@ impl App {
                     w.get_departing_preview(),
                 ] {
                     for row in preview.rows.iter() {
-                        if row.image.size().width > 0 && !images.contains(&row.image) {
-                            self.software.outgoing_image_bytes += row.image.size().width as usize
-                                * row.image.size().height as usize
+                        if row.thumbnail.size().width > 0 && !images.contains(&row.thumbnail) {
+                            self.software.outgoing_image_bytes += row.thumbnail.size().width
+                                as usize
+                                * row.thumbnail.size().height as usize
                                 * 4;
-                            images.push(row.image);
+                            images.push(row.thumbnail);
                         }
                     }
                 }
@@ -120,13 +151,12 @@ impl App {
         self.window.set_slide_moving(false);
         self.window.set_carousel_progress(1.0);
         self.images.epoch = self.images.epoch.wrapping_add(1);
-        self.images.pending.clear();
-        // The outgoing model keeps its visible pixels; incoming cache gets a
-        // separate bounded share during the transition, with no adjacent preloading.
-        self.images.cache.clear();
-        self.images.quality.clear();
-        self.images.order.clear();
-        self.images.bytes = 0;
+        self.images.clear_pending();
+        // Keep the bounded cache across spaces. The outgoing model owns its
+        // already decoded pixels, while the incoming rows can reuse matching
+        // entries without waiting for a second decode.
+        self.software.image_policy = NavigationReadiness::AllowPendingImages;
+        self.software.neighbors_ready_recorded = false;
         self.deck.request(id);
         self.surface.hide();
         self.surface.set_space(id);
@@ -148,7 +178,16 @@ impl App {
         self.window.set_navigation_busy(true);
         crate::memory_trace::record(
             "slide_loading",
-            serde_json::json!({"space":id.0,"query_epoch":self.surface.query_epoch()}),
+            serde_json::json!({
+                "space":id.0,
+                "query_epoch":self.surface.query_epoch(),
+                "pending_count":self.images.pending.len(),
+                "pending_bytes":self.images.pending_bytes(),
+                "cache_bytes":self.images.bytes,
+                "requests":self.images.requests,
+                "cache_hits":self.images.cache_hits,
+                "cache_misses":self.images.cache_misses,
+            }),
         );
         self.load(false);
         self.render_navigation();
@@ -187,6 +226,19 @@ impl App {
                 .set_navigation_busy(self.software_navigation_busy());
             return;
         }
+        if !self.software.neighbors_ready_recorded {
+            self.software.neighbors_ready_recorded = true;
+            crate::memory_trace::record(
+                "neighbors_ready",
+                serde_json::json!({
+                    "space": self.surface.space.0,
+                    "query_epoch": self.surface.query_epoch(),
+                    "pending_count": self.images.pending.len(),
+                    "pending_bytes": self.images.pending_bytes(),
+                    "cache_bytes": self.images.bytes,
+                }),
+            );
+        }
         if self.software.slide.loading() {
             if self
                 .spaces
@@ -209,7 +261,12 @@ impl App {
             // The incoming live tree sits behind the outgoing card while loading.
             // Instantiate it at full size so viewport thumbnail requests are real,
             // then allow their typed events to finish before moving either card.
-            if self.software.preparing.is_none() && self.images.pending.is_empty() {
+            if self.software.preparing.is_none()
+                && self
+                    .software
+                    .image_policy
+                    .gate_open(self.images.pending.len())
+            {
                 slint::private_unstable_api::re_exports::WindowInner::from_pub(
                     self.window.window(),
                 )
@@ -255,16 +312,31 @@ impl App {
             || !self.surface.ready
             || self.surface.loading
             || self.surface.dirty
-            || !self.images.pending.is_empty()
+            || !self
+                .software
+                .image_policy
+                .gate_open(self.images.pending.len())
             || !self.software_neighbors_ready()
             || !self.software.slide.loading()
         {
             return;
         }
+        crate::memory_trace::record(
+            "slide_first_frame_ready",
+            serde_json::json!({
+                "space": self.surface.space.0,
+                "revision": self.surface.revision,
+                "query_epoch": stamp.query,
+                "pending_count": self.images.pending.len(),
+                "pending_bytes": self.images.pending_bytes(),
+                "cache_bytes": self.images.bytes,
+            }),
+        );
         let motion = self.window.get_outgoing_present();
         self.software
             .slide
             .ready(self.surface.space, self.now(), motion);
+        self.software.image_policy = NavigationReadiness::RequireComplete;
         self.deck.phase = Phase::Animating;
         self.deck.interaction = None;
         self.window.set_slide_moving(motion);
@@ -273,7 +345,13 @@ impl App {
         self.window
             .set_right_space(self.window.get_requested_right_space());
         self.render_software_side_previews();
-        let (preview, bytes) = self.make_side_preview(&self.surface.items, false, "");
+        let (preview, bytes) = self.make_side_preview(
+            &self.surface.items,
+            &self.surface.query,
+            self.surface.space != SpaceId::HISTORY,
+            false,
+            "",
+        );
         self.window.set_incoming_preview(preview);
         self.software.outgoing_bytes += bytes;
         self.window.set_incoming_space(
@@ -289,7 +367,19 @@ impl App {
         }
         crate::memory_trace::record(
             "slide_started",
-            serde_json::json!({"space":self.surface.space.0,"revision":self.surface.revision,"query_epoch":stamp.query,"prepared_frame":true,"duration_ms":if motion {echo_presentation::slide::DURATION_MS} else {0}}),
+            serde_json::json!({
+                "space":self.surface.space.0,
+                "revision":self.surface.revision,
+                "query_epoch":stamp.query,
+                "prepared_frame":true,
+                "duration_ms":if motion {echo_presentation::slide::DURATION_MS} else {0},
+                "pending_count":self.images.pending.len(),
+                "pending_bytes":self.images.pending_bytes(),
+                "cache_bytes":self.images.bytes,
+                "requests":self.images.requests,
+                "cache_hits":self.images.cache_hits,
+                "cache_misses":self.images.cache_misses,
+            }),
         );
         self.software_tick();
     }
@@ -348,6 +438,7 @@ impl App {
             self.software.clock = None;
             self.deck.snap();
             self.render();
+            self.render_software_side_previews();
             crate::memory_trace::record(
                 "slide_finished",
                 serde_json::json!({"space":self.surface.space.0,"revision":self.surface.revision,"outgoing_released":true}),
@@ -380,6 +471,8 @@ impl App {
         self.window.set_outgoing_preview(Default::default());
         self.window.set_departing_preview(Default::default());
         self.software.preparing = None;
+        self.software.image_policy = NavigationReadiness::RequireComplete;
+        self.software.neighbors_ready_recorded = false;
         crate::graphics::cancel_software_frame();
     }
 
@@ -388,5 +481,17 @@ impl App {
         self.software.clock = None;
         self.release_outgoing_panel();
         self.clear_software_side_models();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use echo_presentation::slide::NavigationReadiness;
+
+    #[test]
+    fn navigation_frame_can_start_with_pending_images() {
+        assert!(NavigationReadiness::AllowPendingImages.gate_open(3));
+        assert!(NavigationReadiness::RequireComplete.gate_open(0));
+        assert!(!NavigationReadiness::RequireComplete.gate_open(1));
     }
 }

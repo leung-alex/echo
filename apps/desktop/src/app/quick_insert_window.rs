@@ -3,11 +3,28 @@ use super::*;
 use echo_presentation::echo_tokens as t;
 use echo_windows::focus::{place_card, FocusSnapshot};
 impl App {
+    pub(super) fn sync_surface_mode(&self) -> Result<(), String> {
+        let Some(hook) = &self.hook else {
+            return Ok(());
+        };
+        let mode = if !self.surface.visible {
+            SurfaceMode::Hidden
+        } else if matches!(self.window.get_route().as_str(), "settings" | "about") {
+            SurfaceMode::InteractiveSettings
+        } else if self.popup_preserves_input_focus() {
+            SurfaceMode::QuickInsert
+        } else {
+            SurfaceMode::TemporaryManager
+        };
+        hook.set_surface_mode(mode)
+    }
+
     pub(super) fn external_focus_lost(&mut self) {
         if self.popup_preserves_input_focus() || self.inline_ui.pending {
             return;
         }
-        if self.session.context != Context::QuickInsert
+        let temporary_manager = self.window.get_route().as_str() == "history";
+        if (self.session.context != Context::QuickInsert && !temporary_manager)
             || !self.surface.visible
             || self.capture_pending
             || self.session.busy()
@@ -22,7 +39,7 @@ impl App {
         if self.window.get_modal()
             || self.unsaved()
             || self.mutation.is_some()
-            || self.window.get_route().as_str() != "history"
+            || !temporary_manager
         {
             self.activation_focus = None;
             self.session.dismiss();

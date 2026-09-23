@@ -52,6 +52,7 @@ impl App {
         value.loop_spaces = w.get_loop_spaces();
         value.remember_position = w.get_remember_position();
         value.input_method_indicator = w.get_input_method_indicator();
+        value.launch_at_startup = w.get_launch_at_startup();
         value.reflections = w.get_reflections();
         value.trim_when_hidden = w.get_trim_when_hidden();
         value.reduce_on_battery = w.get_reduce_on_battery();
@@ -85,6 +86,7 @@ impl App {
         w.set_loop_spaces(u.loop_spaces);
         w.set_remember_position(u.remember_position);
         w.set_input_method_indicator(u.input_method_indicator);
+        w.set_launch_at_startup(u.launch_at_startup);
         w.set_reflections(u.reflections);
         w.set_trim_when_hidden(u.trim_when_hidden);
         w.set_reduce_on_battery(u.reduce_on_battery);

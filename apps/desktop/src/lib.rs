@@ -39,7 +39,7 @@ pub fn run() -> Result<(), String> {
 }
 #[cfg(windows)]
 fn run_windows() -> Result<(), String> {
-    use echo_windows::shell::{Instance, NativeShell};
+    use echo_windows::shell::{Instance, NativeShell, STARTUP_ARGUMENT};
     use events::{Event, Hub};
     use std::sync::Arc;
     #[cfg(feature = "native-test")]
@@ -49,7 +49,7 @@ fn run_windows() -> Result<(), String> {
     }
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     if args == ["--help"] || args == ["-h"] {
-        println!("Echo native clipboard history\n--background  --history  --favorites  --settings  --quit\n--echo-activate <base64url-envelope>");
+        println!("Echo native clipboard history\n--background  --startup  --history  --favorites  --settings  --quit\n--echo-activate <base64url-envelope>");
         return Ok(());
     }
     if args == ["--version"] {
@@ -84,7 +84,7 @@ fn run_windows() -> Result<(), String> {
         .set_labels(i18n::tray_labels(worker.bootstrap.ui.language));
     memory_trace::record(
         "core_ready",
-        serde_json::json!({"background":args == ["--background"]}),
+        serde_json::json!({"background":args == ["--background"] || args == [STARTUP_ARGUMENT]}),
     );
     if args == ["--background"]
         && !worker.bootstrap.ui.input_method_indicator
@@ -135,7 +135,12 @@ fn validate_args(args: &[String]) -> Result<(), String> {
         [flag]
             if matches!(
                 flag.as_str(),
-                "--background" | "--history" | "--favorites" | "--settings" | "--quit"
+                "--background"
+                    | "--startup"
+                    | "--history"
+                    | "--favorites"
+                    | "--settings"
+                    | "--quit"
             ) =>
         {
             Ok(())
@@ -173,6 +178,18 @@ mod row_click_tests;
 mod select_tests;
 #[cfg(test)]
 mod switch_tests;
+
+#[cfg(all(test, windows))]
+mod argument_tests {
+    use super::validate_args;
+
+    #[test]
+    fn startup_argument_is_a_valid_hidden_activation() {
+        assert!(validate_args(&["--startup".into()]).is_ok());
+        assert!(validate_args(&["--background".into()]).is_ok());
+        assert!(validate_args(&["--startup".into(), "--history".into()]).is_err());
+    }
+}
 
 #[cfg(test)]
 mod search_text_tests;

@@ -31,6 +31,7 @@ mod tests {
             Event::Thumbnail(
                 1,
                 "synthetic".into(),
+                Default::default(),
                 Ok(crate::events::PixelData {
                     requested: Default::default(),
                     width: 1,

@@ -378,6 +378,18 @@
       "dark": "#35434e",
       "runtime": true
     },
+    "color.settings-nav": {
+      "type": "color",
+      "value": "#eef2f0",
+      "dark": "#12191f",
+      "runtime": true
+    },
+    "color.settings-divider": {
+      "type": "color",
+      "value": "#d8dfdc",
+      "dark": "#2b3740",
+      "runtime": true
+    },
     "color.accent": {
       "type": "color",
       "value": "#202020",

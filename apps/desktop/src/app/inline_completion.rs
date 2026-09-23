@@ -89,6 +89,16 @@ impl App {
                 );
                 return false;
             }
+            if let Some(hook) = &self.hook {
+                if let Err(error) = hook.set_surface_mode(echo_windows::shell::SurfaceMode::Hidden)
+                {
+                    self.report(
+                        &format!("Inline window mode could not be retired: {error}"),
+                        true,
+                    );
+                    return false;
+                }
+            }
         }
         self.inline_timer.stop();
         self.worker.inline.cancel(self.session.epoch);

@@ -25,7 +25,7 @@ fn validate_args(args: &[String]) -> bool {
         [] => true,
         [flag] => matches!(
             flag.as_str(),
-            "--background" | "--quit" | "--favorites" | "--settings" | "--history"
+            "--background" | "--startup" | "--quit" | "--favorites" | "--settings" | "--history"
         ),
         [flag, value] => flag == "--echo-activate" && !value.is_empty(),
         _ => false,
@@ -225,6 +225,7 @@ mod tests {
     fn activation_protocol_is_bounded_and_strict() {
         assert!(decode(b"[]").is_ok());
         assert!(decode(br#"["--favorites"]"#).is_ok());
+        assert!(decode(br#"["--startup"]"#).is_ok());
         for data in [
             b"null".as_slice(),
             b"{}",
