@@ -52,13 +52,19 @@ impl Indicator {
                         elapsed_ms,
                     } => (
                         format!(
-                            "{}:observed:{:?}:{}:{}:{}:{}",
+                            "{}:observed:{:?}:{}:{}:{}:{}:{:?}:{}:{}:{}:{}:{}",
                             update.generation,
                             sample.mode,
                             sample.window,
                             sample.focused_window,
                             sample.process,
-                            trigger.as_str()
+                            trigger.as_str(),
+                            sample.geometry_stamp.source,
+                            sample.geometry_stamp.context_epoch,
+                            sample.geometry.target.x,
+                            sample.geometry.target.y,
+                            sample.geometry.target.width,
+                            sample.geometry.target.height,
                         ),
                         serde_json::json!({
                             "generation": update.generation,
@@ -73,6 +79,14 @@ impl Indicator {
                                 "focused_window": sample.focused_window,
                                 "process": sample.process,
                                 "age_ms": sample.sampled_at.elapsed().as_millis()
+                                ,"geometry": {
+                                    "source": format!("{:?}", sample.geometry_stamp.source),
+                                    "confidence": format!("{:?}", sample.geometry_stamp.confidence),
+                                    "sequence": sample.geometry_stamp.sequence,
+                                    "context_epoch": sample.geometry_stamp.context_epoch,
+                                    "observed_age_ms": sample.geometry_stamp.observed_at.elapsed().as_millis(),
+                                    "rect": [sample.geometry.target.x, sample.geometry.target.y, sample.geometry.target.width, sample.geometry.target.height]
+                                }
                             }
                         }),
                     ),
@@ -346,6 +360,16 @@ impl Indicator {
                 rect.height as u32,
             ));
             self.position = Some(rect);
+            crate::indicator_trace::record(
+                "geometry-applied",
+                serde_json::json!({
+                    "generation": sample.generation,
+                    "source": format!("{:?}", sample.geometry_stamp.source),
+                    "sequence": sample.geometry_stamp.sequence,
+                    "context_epoch": sample.geometry_stamp.context_epoch,
+                    "badge_rect": [rect.x, rect.y, rect.width, rect.height]
+                }),
+            );
         }
         if !self.visible {
             if let Err(e) = self.show() {

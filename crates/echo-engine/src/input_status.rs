@@ -1,4 +1,8 @@
 //! Content-free input state shared by native observation and presentation.
+pub use crate::geometry::{
+    GeometryConfidence, GeometryIdentity, GeometryInvalidReason, GeometrySafety, GeometrySource,
+    GeometryStamp,
+};
 use crate::InputTargetGeometry;
 use std::time::Instant;
 
@@ -37,5 +41,7 @@ pub struct InputStatus {
     pub composition: CompositionState,
     pub anchor: InputAnchor,
     pub geometry: InputTargetGeometry,
+    /// Mode and geometry deliberately use independent observation clocks.
+    pub geometry_stamp: GeometryStamp,
     pub sampled_at: Instant,
 }

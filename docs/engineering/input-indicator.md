@@ -12,6 +12,15 @@ Cancel keeps the saved choice. No schema migration is required for the new defau
 - Windows owns one event/message worker, bounded focus/UIA queries and the shared
   target-thread observer. Status-only protocol requests never copy preedit text.
   The existing Quick Insert protocol remains separate from status-only replies.
+- Caret geometry has an independent `Echo.CaretObservation.v1` mailbox. In
+  `primary` mode a target-thread read-only TSF session selects a fresh collapsed
+  `GetTextExt` rectangle before validated NativeCaret/UIA/MSAA/adjacent candidates.
+  The observer uses the target's existing TSF manager and a fixed client CLSID;
+  it never activates TSF, reads text, changes selection, or changes input mode.
+  `shadow` collects the new provider while displaying the legacy choice, and
+  `legacy` disables the new geometry session. The process-start diagnostic
+  variable `ECHO_CARET_PROVIDER` defaults to `legacy` until the native, physical
+  and Release gates are complete; invalid values fail monitor startup.
 - Presentation decides freshness, suppression and 48-by-36-DIP badge placement.
   The label uses 18-DIP text, an 8-DIP radius and an 8-DIP caret gap.
 - The badge stays black with bold white text regardless of the Echo theme. Chinese
@@ -65,6 +74,17 @@ Read-only physical diagnostics are also available:
 ```powershell
 cargo run -p echo-windows --features native-test --example input_status_probe -- 30
 ```
+
+The content-free caret probe accepts `--seconds 1..300`,
+`--provider shadow|primary|legacy` and a new `--output <path>` file:
+
+```powershell
+cargo run -p echo-windows --features native-test --example caret_geometry_probe -- --seconds 30 --provider shadow --output <new-evidence>\geometry.jsonl
+```
+
+The output records source, confidence, sequence, context epoch and physical
+rectangle only. It refuses to overwrite an existing file and does not edit
+text, read the clipboard or move focus.
 
 This prints only target identity, mode and geometry changes. Verify physical Shift,
 Win+Space, candidate visibility, typing, scrolling, application transitions and
@@ -169,6 +189,12 @@ A bounded 128-entry queue is drained by the existing domain worker. Producers
 never wait for disk or create another thread. Queue overflow is counted in the
 next accepted record's `dropped` field; disk errors do not stop input. Idle samples
 and individual rendered frames are not logged.
+
+Geometry changes are part of the observation key even when the mode remains EN or
+中. The records carry the selected source, confidence, request sequence, context
+epoch, observed age and rectangle; a native move emits `geometry-applied` after
+the passive badge receives the new PhysicalPosition. Stable coordinates remain
+deduplicated, so polling does not create a per-frame idle log stream.
 
 
 A delivered mode change explicitly requests a redraw of the passive badge. Without

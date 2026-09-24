@@ -3,7 +3,10 @@ use crate::{
     focus::{AnchorSource, FocusSnapshot},
     ime_observer::Observer,
 };
-use echo_engine::{CompositionState, InputAnchor, InputMode, InputStatus};
+use echo_engine::{
+    arbitrate_geometry, CompositionState, GeometryCandidate, GeometryConfidence, GeometryIdentity,
+    GeometrySafety, GeometrySource, GeometryStamp, InputAnchor, InputMode, InputStatus,
+};
 use std::{
     cell::RefCell,
     ptr::null_mut,
@@ -24,10 +27,39 @@ use windows_sys::Win32::{
     },
 };
 
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn GetTickCount64() -> u64;
+}
+
 const WAKE: u32 = WM_APP + 113;
 const FOCUS: u32 = 1;
 const GEOMETRY: u32 = 2;
 const CANDIDATE: u32 = 4;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CaretProvider {
+    Shadow,
+    Primary,
+    Legacy,
+}
+
+impl CaretProvider {
+    fn from_environment() -> Result<Self, String> {
+        match std::env::var("ECHO_CARET_PROVIDER") {
+            Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
+                "shadow" => Ok(Self::Shadow),
+                "primary" => Ok(Self::Primary),
+                "legacy" => Ok(Self::Legacy),
+                _ => Err(format!("invalid ECHO_CARET_PROVIDER={value}")),
+            },
+            Err(std::env::VarError::NotPresent) => Ok(Self::Legacy),
+            Err(std::env::VarError::NotUnicode(_)) => {
+                Err("ECHO_CARET_PROVIDER is not valid UTF-8".into())
+            }
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InvalidationTrigger {
@@ -224,6 +256,7 @@ pub struct Monitor {
 }
 impl Monitor {
     pub fn start(enabled: bool, post: Arc<dyn Fn(Update) + Send + Sync>) -> Result<Self, String> {
+        let provider = CaretProvider::from_environment()?;
         let shared = Arc::new(Shared {
             enabled: AtomicBool::new(enabled),
             stopped: AtomicBool::new(false),
@@ -238,7 +271,7 @@ impl Monitor {
         let state = shared.clone();
         let worker = std::thread::Builder::new()
             .name("echo-input-indicator".into())
-            .spawn(move || unsafe { run(state) })
+            .spawn(move || unsafe { run(state, provider) })
             .map_err(|e| e.to_string())?;
         Ok(Self {
             shared,
@@ -277,7 +310,120 @@ impl Drop for Monitor {
     }
 }
 
-unsafe fn run(s: Arc<Shared>) {
+fn caret_endpoint(
+    snapshot: &FocusSnapshot,
+    endpoint: Option<crate::focus::InputStatusEndpoint>,
+    generation: u64,
+) -> Option<crate::caret::CaretEndpoint> {
+    let endpoint = endpoint.or_else(|| snapshot.input_endpoint())?;
+    if endpoint.input == 0 || endpoint.process == 0 || endpoint.started == 0 || endpoint.thread == 0
+    {
+        return None;
+    }
+    Some(crate::caret::CaretEndpoint {
+        root_window: snapshot.window_id,
+        root_process: snapshot.process_id,
+        root_started: snapshot.process_started_at,
+        input_window: endpoint.input,
+        input_process: endpoint.process,
+        input_started: endpoint.started,
+        input_thread: endpoint.thread,
+        focus_generation: generation,
+    })
+}
+
+fn geometry_identity(
+    generation: u64,
+    snapshot: &FocusSnapshot,
+    endpoint: Option<crate::focus::InputStatusEndpoint>,
+) -> Option<GeometryIdentity> {
+    let endpoint = endpoint.or_else(|| snapshot.input_endpoint())?;
+    Some(GeometryIdentity {
+        generation,
+        process: endpoint.process,
+        process_started: endpoint.started,
+        input_thread: endpoint.thread,
+        root_window: snapshot.window_id,
+        focused_window: snapshot.focused_handle,
+    })
+}
+
+fn candidate_from_anchor(
+    identity: GeometryIdentity,
+    anchor: crate::focus::PopupAnchor,
+    observed_at: Instant,
+    sequence: u64,
+) -> GeometryCandidate {
+    let source = match anchor.source {
+        AnchorSource::NativeCaret => GeometrySource::NativeCaret,
+        AnchorSource::AutomationCaret => GeometrySource::UiaCaret,
+        AnchorSource::AccessibleCaret => GeometrySource::MsaaCaret,
+        AnchorSource::AdjacentCharacter => GeometrySource::AdjacentCharacter,
+        AnchorSource::InputMethodCaret => GeometrySource::ImmExclusion,
+        AnchorSource::InputControl | AnchorSource::Window => GeometrySource::Control,
+        AnchorSource::Pointer => GeometrySource::Pointer,
+    };
+    let confidence = if source == GeometrySource::AdjacentCharacter {
+        GeometryConfidence::Estimated
+    } else if matches!(source, GeometrySource::Control | GeometrySource::Pointer) {
+        GeometryConfidence::Fallback
+    } else {
+        GeometryConfidence::Exact
+    };
+    GeometryCandidate {
+        identity,
+        source,
+        confidence,
+        geometry: anchor.geometry,
+        observed_at,
+        sequence,
+        context_epoch: 0,
+        safety: GeometrySafety::Allowed,
+        clipped: false,
+        interim_character: false,
+        noncollapsed_selection: false,
+        view_verified: !matches!(source, GeometrySource::Control | GeometrySource::Pointer),
+        control: None,
+    }
+}
+
+fn candidate_from_tsf(
+    reply: crate::caret::GeometryReply,
+    identity: GeometryIdentity,
+    fallback_geometry: echo_engine::InputTargetGeometry,
+    now_tick: u64,
+) -> Option<GeometryCandidate> {
+    if reply.status != crate::caret::ReplyStatus::Ready {
+        return None;
+    }
+    let words = reply.response_words;
+    let observed_tick = u64::from(words[6]) | (u64::from(words[7]) << 32);
+    if observed_tick > now_tick {
+        return None;
+    }
+    let observed_at =
+        Instant::now().checked_sub(Duration::from_millis(now_tick - observed_tick))?;
+    let rect = echo_engine::PhysicalRect {
+        x: words[2] as i32,
+        y: words[3] as i32,
+        width: (words[4] as i32).checked_sub(words[2] as i32)?,
+        height: (words[5] as i32).checked_sub(words[3] as i32)?,
+    };
+    (rect.width >= 0 && rect.height > 0).then_some(GeometryCandidate::exact(
+        identity,
+        GeometrySource::TsfCaret,
+        echo_engine::InputTargetGeometry {
+            target: rect,
+            work_area: fallback_geometry.work_area,
+            dpi: fallback_geometry.dpi,
+        },
+        observed_at,
+        u64::from(reply.request_sequence),
+        u64::from(words[10]) | (u64::from(words[11]) << 32),
+    ))
+}
+
+unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
     let mut msg: MSG = std::mem::zeroed();
     PeekMessageW(&mut msg, null_mut(), 0, 0, PM_NOREMOVE);
     s.thread.store(GetCurrentThreadId(), Ordering::Release);
@@ -292,6 +438,8 @@ unsafe fn run(s: Arc<Shared>) {
         crate::focus::PopupAnchor,
     )> = None;
     let mut observer = None;
+    let mut caret_observer: Option<crate::caret::CaretObserver> = None;
+    let mut tsf_candidate: Option<GeometryCandidate> = None;
     // Hosted XAML providers can block for a second between calls. Geometry
     // refresh must not block the independent, fresh IME mode samples.
     let mut pending: Option<(
@@ -313,6 +461,8 @@ unsafe fn run(s: Arc<Shared>) {
             s.console_root.store(0, Ordering::Release);
             cached = None;
             observer = None;
+            caret_observer = None;
+            tsf_candidate = None;
             pending = None;
             next = None;
         } else if hooks.is_none() {
@@ -324,6 +474,8 @@ unsafe fn run(s: Arc<Shared>) {
             s.console_root.store(0, Ordering::Release);
             cached = None;
             observer = None;
+            caret_observer = None;
+            tsf_candidate = None;
             pending = None;
             failures = 0;
             next = Some(Instant::now());
@@ -350,6 +502,8 @@ unsafe fn run(s: Arc<Shared>) {
             if !same {
                 cached = None;
                 observer = None;
+                caret_observer = None;
+                tsf_candidate = None;
             }
             if pending.as_ref().is_some_and(|(old, _)| {
                 !old.current()
@@ -418,6 +572,8 @@ unsafe fn run(s: Arc<Shared>) {
                 if let Some((target, anchor)) = observed {
                     if cached.as_ref().is_some_and(|(_, old, _)| old != &target) {
                         observer = None;
+                        caret_observer = None;
+                        tsf_candidate = None;
                         s.invalidate(InvalidationTrigger::TargetChanged);
                     }
                     s.console_root.store(
@@ -432,6 +588,8 @@ unsafe fn run(s: Arc<Shared>) {
                 } else {
                     cached = None;
                     observer = None;
+                    caret_observer = None;
+                    tsf_candidate = None;
                 }
             }
             if needs_probe || dirty & CANDIDATE != 0 {
@@ -446,6 +604,47 @@ unsafe fn run(s: Arc<Shared>) {
                     )
                     .is_some()
                 });
+            }
+            if provider != CaretProvider::Legacy {
+                if let Some((cached_snapshot, target, anchor)) = cached.as_ref() {
+                    let endpoint = caret_endpoint(cached_snapshot, target.1, generation);
+                    let endpoint_matches = endpoint
+                        .as_ref()
+                        .zip(caret_observer.as_ref())
+                        .is_some_and(|(expected, current)| {
+                            let actual = current.endpoint();
+                            actual.input_window == expected.input_window
+                                && actual.input_process == expected.input_process
+                                && actual.input_started == expected.input_started
+                                && actual.focus_generation == expected.focus_generation
+                        });
+                    if !endpoint_matches {
+                        caret_observer = endpoint
+                            .and_then(|value| crate::caret::CaretObserver::start(value).ok());
+                        tsf_candidate = None;
+                    }
+                    if let Some(caret) = caret_observer.as_mut() {
+                        let now_tick = GetTickCount64();
+                        caret.heartbeat(now_tick);
+                        if let Some(reply) = caret.try_read(now_tick) {
+                            tsf_candidate = if reply.status == crate::caret::ReplyStatus::Ready {
+                                geometry_identity(generation, cached_snapshot, target.1).and_then(
+                                    |identity| {
+                                        candidate_from_tsf(
+                                            reply,
+                                            identity,
+                                            anchor.geometry,
+                                            now_tick,
+                                        )
+                                    },
+                                )
+                            } else {
+                                None
+                            };
+                        }
+                        let _ = caret.try_request(now_tick, dirty);
+                    }
+                }
             }
             let probe_started = Instant::now();
             let process_name = process_basename(snapshot.process_id);
@@ -493,16 +692,80 @@ unsafe fn run(s: Arc<Shared>) {
                 if !snapshot.current() || s.generation.load(Ordering::Acquire) != generation {
                     return None;
                 }
-                let anchor = if anchor.source == AnchorSource::Pointer {
+                let legacy_anchor = if anchor.source == AnchorSource::Pointer {
                     let Some((_, anchor)) = snapshot.warp_pointer_indicator() else {
                         unavailable_reason = UnavailableReason::PointerAnchorUnavailable;
                         return None;
                     };
                     anchor
-                } else if snapshot.anchor.source == AnchorSource::NativeCaret {
-                    snapshot.anchor
                 } else {
                     *anchor
+                };
+                let now = Instant::now();
+                let sequence = s.samples.load(Ordering::Relaxed);
+                let (anchor, geometry_stamp) = if provider == CaretProvider::Primary {
+                    let Some(identity) = geometry_identity(generation, &snapshot, target.1) else {
+                        unavailable_reason = UnavailableReason::NoEditableTarget;
+                        return None;
+                    };
+                    let fallback = candidate_from_anchor(identity, legacy_anchor, now, sequence);
+                    let selected = if let Some(tsf) = tsf_candidate {
+                        arbitrate_geometry(identity, [fallback, tsf], now, tsf.context_epoch)
+                    } else {
+                        arbitrate_geometry(identity, [fallback], now, 0)
+                    };
+                    let Some(selected) = selected else {
+                        unavailable_reason = UnavailableReason::NoEditableTarget;
+                        return None;
+                    };
+                    let source = match selected.source {
+                        GeometrySource::Control => AnchorSource::InputControl,
+                        GeometrySource::Pointer => AnchorSource::Pointer,
+                        GeometrySource::NativeCaret => AnchorSource::NativeCaret,
+                        GeometrySource::UiaCaret => AnchorSource::AutomationCaret,
+                        GeometrySource::MsaaCaret => AnchorSource::AccessibleCaret,
+                        GeometrySource::AdjacentCharacter => AnchorSource::AdjacentCharacter,
+                        GeometrySource::ImmExclusion => AnchorSource::InputMethodCaret,
+                        GeometrySource::TsfCaret => AnchorSource::NativeCaret,
+                    };
+                    (
+                        crate::focus::PopupAnchor {
+                            geometry: selected.geometry,
+                            source,
+                        },
+                        GeometryStamp {
+                            source: selected.source,
+                            confidence: selected.confidence,
+                            observed_at: selected.observed_at,
+                            sequence: selected.sequence,
+                            context_epoch: selected.context_epoch,
+                        },
+                    )
+                } else {
+                    (
+                        legacy_anchor,
+                        GeometryStamp {
+                            source: match legacy_anchor.source {
+                                AnchorSource::NativeCaret => GeometrySource::NativeCaret,
+                                AnchorSource::AutomationCaret => GeometrySource::UiaCaret,
+                                AnchorSource::AccessibleCaret => GeometrySource::MsaaCaret,
+                                AnchorSource::AdjacentCharacter => GeometrySource::AdjacentCharacter,
+                                AnchorSource::InputMethodCaret => GeometrySource::ImmExclusion,
+                                AnchorSource::InputControl | AnchorSource::Window => GeometrySource::Control,
+                                AnchorSource::Pointer => GeometrySource::Pointer,
+                            },
+                            confidence: match legacy_anchor.source {
+                                AnchorSource::AdjacentCharacter => GeometryConfidence::Estimated,
+                                AnchorSource::InputControl
+                                | AnchorSource::Window
+                                | AnchorSource::Pointer => GeometryConfidence::Fallback,
+                                _ => GeometryConfidence::Exact,
+                            },
+                            observed_at: now,
+                            sequence,
+                            context_epoch: 0,
+                        },
+                    )
                 };
                 Some(InputStatus {
                     generation,
@@ -522,6 +785,7 @@ unsafe fn run(s: Arc<Shared>) {
                         _ => InputAnchor::Caret,
                     },
                     geometry: anchor.geometry,
+                    geometry_stamp,
                     sampled_at: Instant::now(),
                 })
             });

@@ -1,11 +1,12 @@
 //! Placement and validity policy for a passive input-mode badge.
-use echo_engine::{InputAnchor, InputMode, InputStatus, PhysicalRect};
+use echo_engine::{geometry_is_fresh, InputAnchor, InputMode, InputStatus, PhysicalRect};
 use std::time::{Duration, Instant};
 
 pub fn visible(sample: &InputStatus, generation: u64, suppressed: bool, now: Instant) -> bool {
     !suppressed
         && sample.generation == generation
         && now.saturating_duration_since(sample.sampled_at) <= Duration::from_millis(250)
+        && geometry_is_fresh(sample.geometry_stamp.observed_at, now)
         && sample.mode != InputMode::Unknown
 }
 
@@ -63,6 +64,7 @@ mod tests {
     use super::*;
     use echo_engine::CompositionState;
     fn sample() -> InputStatus {
+        let observed_at = Instant::now();
         InputStatus {
             generation: 2,
             window: 1,
@@ -87,7 +89,14 @@ mod tests {
                 },
                 dpi: 96,
             },
-            sampled_at: Instant::now(),
+            sampled_at: observed_at,
+            geometry_stamp: echo_engine::GeometryStamp {
+                source: echo_engine::GeometrySource::NativeCaret,
+                confidence: echo_engine::GeometryConfidence::Exact,
+                observed_at,
+                sequence: 1,
+                context_epoch: 1,
+            },
         }
     }
     #[test]

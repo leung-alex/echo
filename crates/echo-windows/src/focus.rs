@@ -278,6 +278,7 @@ impl FocusSnapshot {
                 input: self.focused_handle,
                 process,
                 started: native::process_started_at(process)?,
+                thread: GetWindowThreadProcessId(input, std::ptr::null_mut()),
             })
         }
     }

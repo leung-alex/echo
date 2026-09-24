@@ -65,7 +65,10 @@ Portable directory/ZIP and optional NSIS packaging are separate outputs. Success
 
 Mode sampling and observer protocol tests belong to `echo-windows`; freshness and
 placement belong to `echo-presentation`; settings defaults belong to `echo-engine`;
-Slint/theme/DPI rendering belongs to desktop tests. The isolated native runner and
+Slint/theme/DPI rendering belongs to desktop tests. The fixed TSF ABI, sensitivity
+policy, mailbox scheduler and target-thread read-only acquisition belong to the
+`echo-windows` caret modules. `caret_geometry_probe` and the owned fixture runner
+remain native-test evidence only. The isolated native runner and
 physical-acceptance boundaries are documented in [Input method indicator](engineering/input-indicator.md).
 
 ## Product Boundary

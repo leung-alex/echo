@@ -4,6 +4,12 @@ fn main() {
     println!("cargo:rerun-if-changed=src/inline/ime_observer/dll.rs");
     println!("cargo:rerun-if-changed=src/inline/ime_observer/tsf.rs");
     println!("cargo:rerun-if-changed=src/inline/ime_observer/protocol.rs");
+    println!("cargo:rerun-if-changed=src/caret/ffi.rs");
+    println!("cargo:rerun-if-changed=src/caret/protocol.rs");
+    println!("cargo:rerun-if-changed=src/caret/target_scheduler.rs");
+    println!("cargo:rerun-if-changed=src/caret/tsf_abi.rs");
+    println!("cargo:rerun-if-changed=src/caret/tsf_geometry.rs");
+    println!("cargo:rerun-if-changed=src/caret/sensitivity.rs");
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }

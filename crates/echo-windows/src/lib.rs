@@ -4,6 +4,8 @@
 pub mod allocation;
 
 #[cfg(windows)]
+mod caret;
+#[cfg(windows)]
 pub mod focus;
 #[cfg(windows)]
 #[path = "inline/ime_observer/mod.rs"]

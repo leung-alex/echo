@@ -79,6 +79,17 @@ fn module() -> Result<isize, String> {
         .map_err(Clone::clone)
 }
 
+/// Reuse the verified, content-hashed observer module for the independent
+/// geometry hook. The loader and its residency policy remain shared; geometry
+/// does not create a second DLL or a nested Cargo build.
+pub(crate) fn observer_module_handle() -> Result<isize, String> {
+    module()
+}
+
+pub(crate) fn observer_module_digest() -> [u8; 32] {
+    Sha256::digest(DLL).into()
+}
+
 pub(crate) struct Observer {
     hook: HHOOK,
     mapping: HANDLE,

@@ -67,6 +67,7 @@ pub(crate) struct InputStatusEndpoint {
     pub input: isize,
     pub process: u32,
     pub started: u64,
+    pub thread: u32,
 }
 impl FocusSnapshot {
     pub(crate) fn console_indicator(&self) -> Option<(InputStatusEndpoint, PopupAnchor)> {
@@ -117,6 +118,7 @@ impl FocusSnapshot {
                     input: self.window_id,
                     process,
                     started: native::process_started_at(process)?,
+                    thread: GetWindowThreadProcessId(self.window_id as HWND, std::ptr::null_mut()),
                 },
                 PopupAnchor {
                     geometry: geometry(caret),
@@ -170,6 +172,9 @@ impl FocusSnapshot {
                 input: self.focused_handle,
                 process: self.process_id,
                 started: self.process_started_at,
+                thread: unsafe {
+                    GetWindowThreadProcessId(self.focused_handle as HWND, std::ptr::null_mut())
+                },
             },
             PopupAnchor {
                 geometry: geometry(bounds),
@@ -213,6 +218,9 @@ impl FocusSnapshot {
                 input: self.focused_handle,
                 process: self.process_id,
                 started: self.process_started_at,
+                thread: unsafe {
+                    GetWindowThreadProcessId(self.focused_handle as HWND, std::ptr::null_mut())
+                },
             },
             PopupAnchor {
                 geometry: geometry(bounds),

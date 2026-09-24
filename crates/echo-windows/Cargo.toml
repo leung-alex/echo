@@ -14,6 +14,10 @@ path = "src/lib.rs"
 name = "input_status_probe"
 required-features = ["native-test"]
 
+[[example]]
+name = "caret_geometry_probe"
+required-features = ["native-test"]
+
 [dependencies]
 echo-engine.workspace = true
 windows.workspace = true

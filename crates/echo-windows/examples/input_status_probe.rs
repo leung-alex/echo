@@ -38,15 +38,23 @@ fn main() {
         let Ok(update) = receiver.recv_timeout(Duration::from_millis(250)) else {
             continue;
         };
-        let state = update
-            .sample
-            .map(|s| {
-                format!(
-                    "pid={} window={} mode={:?} composition={:?} anchor={:?} geometry={:?}",
-                    s.process, s.window, s.mode, s.composition, s.anchor, s.geometry
-                )
-            })
-            .unwrap_or_else(|| "hidden".into());
+        let state = match update.observation {
+            echo_windows::input_indicator::Observation::Observed { sample, .. } => format!(
+                "pid={} window={} mode={:?} composition={:?} anchor={:?} geometry={:?}",
+                sample.process,
+                sample.window,
+                sample.mode,
+                sample.composition,
+                sample.anchor,
+                sample.geometry
+            ),
+            echo_windows::input_indicator::Observation::Revalidating { .. } => {
+                "revalidating".into()
+            }
+            echo_windows::input_indicator::Observation::Unavailable { reason, .. } => {
+                format!("unavailable:{reason:?}")
+            }
+        };
         if state != previous {
             println!(
                 "{}ms generation={} {state}",

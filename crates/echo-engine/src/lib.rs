@@ -1,6 +1,13 @@
 mod domain;
+mod geometry;
 mod input_status;
-pub use input_status::{CompositionState, InputAnchor, InputMode, InputStatus};
+pub use geometry::{
+    arbitrate_geometry, geometry_is_fresh, invalid_reason, mode_is_fresh, GeometryCandidate,
+};
+pub use input_status::{
+    CompositionState, GeometryConfidence, GeometryIdentity, GeometryInvalidReason, GeometrySafety,
+    GeometrySource, GeometryStamp, InputAnchor, InputMode, InputStatus,
+};
 mod instrumentation;
 
 mod fuzzy_search;

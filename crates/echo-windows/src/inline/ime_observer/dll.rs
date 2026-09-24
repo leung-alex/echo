@@ -1,8 +1,20 @@
 //! Loaded only on an acknowledged editor thread. Handles one read-only request;
 //! never intercepts keys, subclasses windows, or changes text or IME state.
 #![allow(dead_code)]
+#[path = "../../caret/ffi.rs"]
+mod caret_ffi;
+#[path = "../../caret/protocol.rs"]
+mod caret_protocol;
+#[path = "../../caret/target_scheduler.rs"]
+mod caret_target_scheduler;
 mod protocol;
+#[path = "../../caret/sensitivity.rs"]
+mod sensitivity;
 mod tsf;
+#[path = "../../caret/tsf_abi.rs"]
+mod tsf_abi;
+#[path = "../../caret/tsf_geometry.rs"]
+mod tsf_geometry;
 use protocol::*;
 use std::{
     ffi::c_void,
@@ -192,6 +204,14 @@ pub unsafe extern "system" fn EchoCompositionObserver(
 ) -> isize {
     if code >= 0 && lparam != 0 {
         let message = &*(lparam as *const CallWindow);
+        if caret_target_scheduler::dispatch_hook(&caret_ffi::CallWindow {
+            lparam: message.lparam,
+            wparam: message.wparam,
+            message: message.message,
+            window: message.window,
+        }) {
+            return CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam);
+        }
         if message.wparam > 0
             && message.wparam <= u16::MAX as usize
             && message.message
