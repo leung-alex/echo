@@ -37,6 +37,20 @@ const FOCUS: u32 = 1;
 const GEOMETRY: u32 = 2;
 const CANDIDATE: u32 = 4;
 
+fn bootstrap_reason_code(error: &str) -> u32 {
+    if error.contains("target identity") {
+        32
+    } else if error.contains("module") || error.contains("entry point") {
+        33
+    } else if error.contains("bootstrap") || error.contains("scheduler") {
+        34
+    } else if error.contains("hook") {
+        35
+    } else {
+        31
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CaretProvider {
     Shadow,
@@ -136,6 +150,77 @@ pub enum Observation {
 pub struct Update {
     pub generation: u64,
     pub observation: Observation,
+    pub tsf: Option<TsfDiagnostic>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TsfDiagnosticState {
+    Pending,
+    Ready,
+    Unavailable,
+    BootstrapFailed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TsfDiagnostic {
+    pub state: TsfDiagnosticState,
+    pub api_hresult: Option<i32>,
+    pub session_hresult: Option<i32>,
+    pub reason_code: Option<u32>,
+    pub sequence: u32,
+    pub context_epoch: u64,
+    pub raw_rect: Option<[i32; 4]>,
+    pub normalized_rect: Option<[i32; 4]>,
+    pub age_ms: Option<u64>,
+    pub pending_callbacks: u32,
+    pub outstanding_callbacks: u32,
+    pub created_callbacks: u64,
+    pub released_callbacks: u64,
+    pub final_source: Option<GeometrySource>,
+    pub fallback_reason: Option<u32>,
+}
+
+impl TsfDiagnostic {
+    fn from_reply(reply: crate::caret::GeometryReply, now_tick: u64) -> Self {
+        let words = reply.response_words;
+        let epoch = u64::from(words[10]) | (u64::from(words[11]) << 32);
+        let tick = u64::from(words[8]) | (u64::from(words[9]) << 32);
+        let age_ms = (tick <= now_tick).then_some(now_tick - tick);
+        let raw = [
+            words[14] as i32,
+            words[15] as i32,
+            words[16] as i32,
+            words[17] as i32,
+        ];
+        let normalized = [
+            words[18] as i32,
+            words[19] as i32,
+            words[20] as i32,
+            words[21] as i32,
+        ];
+        Self {
+            state: match reply.status {
+                crate::caret::ReplyStatus::Ready => TsfDiagnosticState::Ready,
+                crate::caret::ReplyStatus::Unavailable => TsfDiagnosticState::Unavailable,
+                crate::caret::ReplyStatus::Pending => TsfDiagnosticState::Pending,
+                crate::caret::ReplyStatus::Closed => TsfDiagnosticState::Unavailable,
+            },
+            api_hresult: Some(words[5] as i32),
+            session_hresult: Some(words[6] as i32),
+            reason_code: (words[4] != 0).then_some(words[4]),
+            sequence: reply.request_sequence,
+            context_epoch: epoch,
+            raw_rect: (words[14..18] != [0; 4]).then_some(raw),
+            normalized_rect: (words[18..22] != [0; 4]).then_some(normalized),
+            age_ms,
+            pending_callbacks: words[29],
+            outstanding_callbacks: words[30],
+            created_callbacks: u64::from(words[32]) | (u64::from(words[33]) << 32),
+            released_callbacks: u64::from(words[34]) | (u64::from(words[35]) << 32),
+            final_source: None,
+            fallback_reason: (!reply.accepted).then_some(words[4]),
+        }
+    }
 }
 struct Shared {
     enabled: AtomicBool,
@@ -163,6 +248,7 @@ impl Shared {
             } else {
                 Observation::Revalidating { trigger }
             },
+            tsf: None,
         });
     }
     fn wake(&self) {
@@ -332,6 +418,45 @@ fn caret_endpoint(
     })
 }
 
+fn input_identity(
+    snapshot: &FocusSnapshot,
+    target: &(
+        Option<echo_engine::PasteControlIdentity>,
+        Option<crate::focus::InputStatusEndpoint>,
+    ),
+) -> Option<(isize, u32, u64, u32)> {
+    target
+        .1
+        .or_else(|| snapshot.input_endpoint())
+        .map(|endpoint| {
+            (
+                endpoint.input,
+                endpoint.process,
+                endpoint.started,
+                endpoint.thread,
+            )
+        })
+}
+
+fn target_identity_changed(
+    old_snapshot: &FocusSnapshot,
+    old_target: &(
+        Option<echo_engine::PasteControlIdentity>,
+        Option<crate::focus::InputStatusEndpoint>,
+    ),
+    snapshot: &FocusSnapshot,
+    target: &(
+        Option<echo_engine::PasteControlIdentity>,
+        Option<crate::focus::InputStatusEndpoint>,
+    ),
+) -> bool {
+    old_snapshot.window_id != snapshot.window_id
+        || old_snapshot.process_id != snapshot.process_id
+        || old_snapshot.process_started_at != snapshot.process_started_at
+        || old_snapshot.focused_handle != snapshot.focused_handle
+        || input_identity(old_snapshot, old_target) != input_identity(snapshot, target)
+}
+
 fn geometry_identity(
     generation: u64,
     snapshot: &FocusSnapshot,
@@ -393,21 +518,33 @@ fn candidate_from_tsf(
     fallback_geometry: echo_engine::InputTargetGeometry,
     now_tick: u64,
 ) -> Option<GeometryCandidate> {
-    if reply.status != crate::caret::ReplyStatus::Ready {
+    if reply.status != crate::caret::ReplyStatus::Ready || !reply.accepted {
         return None;
     }
     let words = reply.response_words;
-    let observed_tick = u64::from(words[6]) | (u64::from(words[7]) << 32);
+    if words[2] != 1 || words[3] != 1 || words[27] != 2 {
+        return None;
+    }
+    let observed_tick = u64::from(words[8]) | (u64::from(words[9]) << 32);
     if observed_tick > now_tick {
         return None;
     }
     let observed_at =
         Instant::now().checked_sub(Duration::from_millis(now_tick - observed_tick))?;
+    let left = words[18] as i32;
+    let top = words[19] as i32;
+    let right = words[20] as i32;
+    let bottom = words[21] as i32;
     let rect = echo_engine::PhysicalRect {
-        x: words[2] as i32,
-        y: words[3] as i32,
-        width: (words[4] as i32).checked_sub(words[2] as i32)?,
-        height: (words[5] as i32).checked_sub(words[3] as i32)?,
+        x: left,
+        y: top,
+        width: right.checked_sub(left)?,
+        height: bottom.checked_sub(top)?,
+    };
+    let dpi = if words[26] == 0 {
+        fallback_geometry.dpi
+    } else {
+        words[26].clamp(48, 768)
     };
     (rect.width >= 0 && rect.height > 0).then_some(GeometryCandidate::exact(
         identity,
@@ -415,7 +552,7 @@ fn candidate_from_tsf(
         echo_engine::InputTargetGeometry {
             target: rect,
             work_area: fallback_geometry.work_area,
-            dpi: fallback_geometry.dpi,
+            dpi,
         },
         observed_at,
         u64::from(reply.request_sequence),
@@ -440,6 +577,10 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
     let mut observer = None;
     let mut caret_observer: Option<crate::caret::CaretObserver> = None;
     let mut tsf_candidate: Option<GeometryCandidate> = None;
+    let mut tsf_diagnostic: Option<TsfDiagnostic> = None;
+    // The legacy/native/UIA geometry clock is updated only when that source
+    // actually returns a new rectangle. Mode ticks reuse this stamp verbatim.
+    let mut legacy_geometry: Option<(crate::focus::PopupAnchor, GeometryStamp)> = None;
     // Hosted XAML providers can block for a second between calls. Geometry
     // refresh must not block the independent, fresh IME mode samples.
     let mut pending: Option<(
@@ -463,6 +604,8 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
             observer = None;
             caret_observer = None;
             tsf_candidate = None;
+            tsf_diagnostic = None;
+            legacy_geometry = None;
             pending = None;
             next = None;
         } else if hooks.is_none() {
@@ -476,6 +619,8 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
             observer = None;
             caret_observer = None;
             tsf_candidate = None;
+            tsf_diagnostic = None;
+            legacy_geometry = None;
             pending = None;
             failures = 0;
             next = Some(Instant::now());
@@ -504,6 +649,8 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
                 observer = None;
                 caret_observer = None;
                 tsf_candidate = None;
+                tsf_diagnostic = None;
+                legacy_geometry = None;
             }
             if pending.as_ref().is_some_and(|(old, _)| {
                 !old.current()
@@ -570,7 +717,9 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
                 };
                 refreshed = Instant::now();
                 if let Some((target, anchor)) = observed {
-                    if cached.as_ref().is_some_and(|(_, old, _)| old != &target) {
+                    if cached.as_ref().is_some_and(|(old_snapshot, old, _)| {
+                        target_identity_changed(old_snapshot, old, &snapshot, &target)
+                    }) {
                         observer = None;
                         caret_observer = None;
                         tsf_candidate = None;
@@ -585,11 +734,42 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
                         Ordering::Release,
                     );
                     cached = Some((snapshot.clone(), target, anchor));
+                    let sequence = s.samples.load(Ordering::Relaxed);
+                    let source = match anchor.source {
+                        AnchorSource::NativeCaret => GeometrySource::NativeCaret,
+                        AnchorSource::AutomationCaret => GeometrySource::UiaCaret,
+                        AnchorSource::AccessibleCaret => GeometrySource::MsaaCaret,
+                        AnchorSource::AdjacentCharacter => GeometrySource::AdjacentCharacter,
+                        AnchorSource::InputMethodCaret => GeometrySource::ImmExclusion,
+                        AnchorSource::InputControl | AnchorSource::Window => {
+                            GeometrySource::Control
+                        }
+                        AnchorSource::Pointer => GeometrySource::Pointer,
+                    };
+                    let confidence = match source {
+                        GeometrySource::AdjacentCharacter => GeometryConfidence::Estimated,
+                        GeometrySource::Control | GeometrySource::Pointer => {
+                            GeometryConfidence::Fallback
+                        }
+                        _ => GeometryConfidence::Exact,
+                    };
+                    legacy_geometry = Some((
+                        anchor,
+                        GeometryStamp {
+                            source,
+                            confidence,
+                            observed_at: Instant::now(),
+                            sequence,
+                            context_epoch: 0,
+                        },
+                    ));
                 } else {
                     cached = None;
                     observer = None;
                     caret_observer = None;
                     tsf_candidate = None;
+                    tsf_diagnostic = None;
+                    legacy_geometry = None;
                 }
             }
             if needs_probe || dirty & CANDIDATE != 0 {
@@ -606,43 +786,114 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
                 });
             }
             if provider != CaretProvider::Legacy {
-                if let Some((cached_snapshot, target, anchor)) = cached.as_ref() {
-                    let endpoint = caret_endpoint(cached_snapshot, target.1, generation);
-                    let endpoint_matches = endpoint
-                        .as_ref()
-                        .zip(caret_observer.as_ref())
-                        .is_some_and(|(expected, current)| {
-                            let actual = current.endpoint();
-                            actual.input_window == expected.input_window
-                                && actual.input_process == expected.input_process
-                                && actual.input_started == expected.input_started
-                                && actual.focus_generation == expected.focus_generation
-                        });
+                // Passive target admission is independent of a successful
+                // legacy/UIA rectangle. This lets the new TSF source prove a
+                // caret even when the old geometry provider is unavailable.
+                let admission_snapshot = cached
+                    .as_ref()
+                    .map(|(cached_snapshot, _, _)| cached_snapshot)
+                    .unwrap_or(&snapshot);
+                let admission_endpoint = cached
+                    .as_ref()
+                    .and_then(|(_, target, _)| target.1)
+                    .or_else(|| snapshot.input_endpoint());
+                if let Some(endpoint) =
+                    caret_endpoint(admission_snapshot, admission_endpoint, generation)
+                {
+                    let endpoint_matches = caret_observer.as_ref().is_some_and(|current| {
+                        let actual = current.endpoint();
+                        actual.input_window == endpoint.input_window
+                            && actual.input_process == endpoint.input_process
+                            && actual.input_started == endpoint.input_started
+                    });
                     if !endpoint_matches {
-                        caret_observer = endpoint
-                            .and_then(|value| crate::caret::CaretObserver::start(value).ok());
+                        caret_observer = match crate::caret::CaretObserver::start(endpoint) {
+                            Ok(observer) => {
+                                tsf_diagnostic = None;
+                                Some(observer)
+                            }
+                            Err(error) => {
+                                tsf_diagnostic = Some(TsfDiagnostic {
+                                    state: TsfDiagnosticState::BootstrapFailed,
+                                    api_hresult: None,
+                                    session_hresult: None,
+                                    reason_code: Some(bootstrap_reason_code(&error)),
+                                    sequence: 0,
+                                    context_epoch: 0,
+                                    raw_rect: None,
+                                    normalized_rect: None,
+                                    age_ms: None,
+                                    pending_callbacks: 0,
+                                    outstanding_callbacks: 0,
+                                    created_callbacks: 0,
+                                    released_callbacks: 0,
+                                    final_source: None,
+                                    fallback_reason: Some(bootstrap_reason_code(&error)),
+                                });
+                                None
+                            }
+                        };
                         tsf_candidate = None;
+                    } else if let Some(caret) = caret_observer.as_mut() {
+                        caret.rebind_focus_generation(endpoint.focus_generation);
                     }
                     if let Some(caret) = caret_observer.as_mut() {
                         let now_tick = GetTickCount64();
                         caret.heartbeat(now_tick);
                         if let Some(reply) = caret.try_read(now_tick) {
-                            tsf_candidate = if reply.status == crate::caret::ReplyStatus::Ready {
-                                geometry_identity(generation, cached_snapshot, target.1).and_then(
-                                    |identity| {
-                                        candidate_from_tsf(
-                                            reply,
-                                            identity,
-                                            anchor.geometry,
-                                            now_tick,
-                                        )
-                                    },
+                            tsf_diagnostic = Some(TsfDiagnostic::from_reply(reply, now_tick));
+                            if reply.status == crate::caret::ReplyStatus::Ready {
+                                let candidate_geometry = cached
+                                    .as_ref()
+                                    .map(|(_, _, anchor)| anchor.geometry)
+                                    .unwrap_or(snapshot.anchor.geometry);
+                                tsf_candidate = geometry_identity(
+                                    generation,
+                                    admission_snapshot,
+                                    admission_endpoint,
                                 )
-                            } else {
-                                None
-                            };
+                                .and_then(|identity| {
+                                    candidate_from_tsf(
+                                        reply,
+                                        identity,
+                                        candidate_geometry,
+                                        now_tick,
+                                    )
+                                });
+                            } else if reply.status == crate::caret::ReplyStatus::Unavailable
+                                && reply.response_words[4] == 26
+                            {
+                                // The target's canonical document/context
+                                // changed. Retaining the old TSF candidate
+                                // would let it win after the replacement.
+                                tsf_candidate = None;
+                            }
                         }
-                        let _ = caret.try_request(now_tick, dirty);
+                        let request = caret.try_request(now_tick, dirty);
+                        if matches!(
+                            request,
+                            crate::caret::scheduler::RequestDecision::Sent(_)
+                                | crate::caret::scheduler::RequestDecision::Pending
+                        ) && tsf_diagnostic.is_none()
+                        {
+                            tsf_diagnostic = Some(TsfDiagnostic {
+                                state: TsfDiagnosticState::Pending,
+                                api_hresult: None,
+                                session_hresult: None,
+                                reason_code: None,
+                                sequence: 0,
+                                context_epoch: 0,
+                                raw_rect: None,
+                                normalized_rect: None,
+                                age_ms: None,
+                                pending_callbacks: 0,
+                                outstanding_callbacks: 0,
+                                created_callbacks: 0,
+                                released_callbacks: 0,
+                                final_source: None,
+                                fallback_reason: None,
+                            });
+                        }
                     }
                 }
             }
@@ -667,7 +918,11 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
                                 .input_endpoint()
                                 .ok_or_else(|| "Input owner unavailable".to_string())
                                 .and_then(|input| {
-                                    Observer::status_only(input.window, input.process, input.started)
+                                    Observer::status_only(
+                                        input.window,
+                                        input.process,
+                                        input.started,
+                                    )
                                 })
                         }
                         .ok();
@@ -682,33 +937,35 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
                     unavailable_reason = UnavailableReason::ModeUnavailable;
                     return None;
                 }
-                #[cfg(feature = "native-test")]
-                if std::env::var_os("ECHO_INPUT_STATUS_TRACE").is_some() {
-                    eprintln!(
-                        "input-state pid={} mode={mode:?} raw={composition:?} candidate={candidate_visible}",
-                        snapshot.process_id
-                    );
-                }
                 if !snapshot.current() || s.generation.load(Ordering::Acquire) != generation {
                     return None;
                 }
-                let legacy_anchor = if anchor.source == AnchorSource::Pointer {
-                    let Some((_, anchor)) = snapshot.warp_pointer_indicator() else {
-                        unavailable_reason = UnavailableReason::PointerAnchorUnavailable;
-                        return None;
-                    };
-                    anchor
-                } else {
-                    *anchor
-                };
                 let now = Instant::now();
-                let sequence = s.samples.load(Ordering::Relaxed);
+                let (legacy_anchor, legacy_stamp) = legacy_geometry.as_ref().map_or_else(
+                    || {
+                        let sequence = s.samples.load(Ordering::Relaxed);
+                        let stamp = GeometryStamp {
+                            source: GeometrySource::Control,
+                            confidence: GeometryConfidence::Fallback,
+                            observed_at: now,
+                            sequence,
+                            context_epoch: 0,
+                        };
+                        (*anchor, stamp)
+                    },
+                    |(anchor, stamp)| (*anchor, *stamp),
+                );
                 let (anchor, geometry_stamp) = if provider == CaretProvider::Primary {
                     let Some(identity) = geometry_identity(generation, &snapshot, target.1) else {
                         unavailable_reason = UnavailableReason::NoEditableTarget;
                         return None;
                     };
-                    let fallback = candidate_from_anchor(identity, legacy_anchor, now, sequence);
+                    let fallback = candidate_from_anchor(
+                        identity,
+                        legacy_anchor,
+                        legacy_stamp.observed_at,
+                        legacy_stamp.sequence,
+                    );
                     let selected = if let Some(tsf) = tsf_candidate {
                         arbitrate_geometry(identity, [fallback, tsf], now, tsf.context_epoch)
                     } else {
@@ -742,30 +999,7 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
                         },
                     )
                 } else {
-                    (
-                        legacy_anchor,
-                        GeometryStamp {
-                            source: match legacy_anchor.source {
-                                AnchorSource::NativeCaret => GeometrySource::NativeCaret,
-                                AnchorSource::AutomationCaret => GeometrySource::UiaCaret,
-                                AnchorSource::AccessibleCaret => GeometrySource::MsaaCaret,
-                                AnchorSource::AdjacentCharacter => GeometrySource::AdjacentCharacter,
-                                AnchorSource::InputMethodCaret => GeometrySource::ImmExclusion,
-                                AnchorSource::InputControl | AnchorSource::Window => GeometrySource::Control,
-                                AnchorSource::Pointer => GeometrySource::Pointer,
-                            },
-                            confidence: match legacy_anchor.source {
-                                AnchorSource::AdjacentCharacter => GeometryConfidence::Estimated,
-                                AnchorSource::InputControl
-                                | AnchorSource::Window
-                                | AnchorSource::Pointer => GeometryConfidence::Fallback,
-                                _ => GeometryConfidence::Exact,
-                            },
-                            observed_at: now,
-                            sequence,
-                            context_epoch: 0,
-                        },
-                    )
+                    (legacy_anchor, legacy_stamp)
                 };
                 Some(InputStatus {
                     generation,
@@ -792,6 +1026,15 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
             let current_generation = s.generation.load(Ordering::Acquire);
             let valid = sample.is_some();
             if current_generation == generation {
+                if let Some(diagnostic) = tsf_diagnostic.as_mut() {
+                    diagnostic.final_source =
+                        sample.as_ref().map(|value| value.geometry_stamp.source);
+                    if diagnostic.final_source != Some(GeometrySource::TsfCaret)
+                        && diagnostic.state == TsfDiagnosticState::Ready
+                    {
+                        diagnostic.fallback_reason = diagnostic.reason_code.or(Some(0));
+                    }
+                }
                 let elapsed_ms = probe_started.elapsed().as_millis().min(u64::MAX as u128) as u64;
                 let observation = if let Some(sample) = sample {
                     Observation::Observed {
@@ -823,11 +1066,19 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
                 (s.post)(Update {
                     generation,
                     observation,
+                    tsf: tsf_diagnostic,
                 });
             }
             if valid || pending.is_some() || hosted && cached.is_some() {
                 failures = 0;
-                next = Some(Instant::now() + Duration::from_millis(100));
+                next = Some(
+                    Instant::now()
+                        + Duration::from_millis(if provider == CaretProvider::Legacy {
+                            100
+                        } else {
+                            50
+                        }),
+                );
             } else {
                 failures = failures.saturating_add(1);
                 // Hosted XAML may still be connecting on the bounded UIA broker

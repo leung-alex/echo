@@ -20,6 +20,7 @@ echo-storage.workspace = true
 echo-windows.workspace = true
 echo-activation.workspace = true
 echo-presentation.workspace = true
+windows.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 image.workspace = true

@@ -63,7 +63,26 @@ fn main() {
         let Ok(update) = receiver.recv_timeout(Duration::from_millis(250)) else {
             continue;
         };
-        let line = match update.observation {
+        let tsf = update.tsf.map(|diagnostic| {
+            serde_json::json!({
+                "state":format!("{:?}", diagnostic.state),
+                "api_hresult":diagnostic.api_hresult,
+                "session_hresult":diagnostic.session_hresult,
+                "reason_code":diagnostic.reason_code,
+                "sequence":diagnostic.sequence,
+                "context_epoch":diagnostic.context_epoch,
+                "raw_rect":diagnostic.raw_rect,
+                "normalized_rect":diagnostic.normalized_rect,
+                "age_ms":diagnostic.age_ms,
+                "pending_callbacks":diagnostic.pending_callbacks,
+                "outstanding_callbacks":diagnostic.outstanding_callbacks,
+                "created_callbacks":diagnostic.created_callbacks,
+                "released_callbacks":diagnostic.released_callbacks,
+                "final_source":diagnostic.final_source.map(|source| format!("{:?}", source)),
+                "fallback_reason":diagnostic.fallback_reason,
+            })
+        });
+        let line = match &update.observation {
             echo_windows::input_indicator::Observation::Observed { sample, .. } => {
                 serde_json::json!({
                     "event":"observed",
@@ -74,16 +93,17 @@ fn main() {
                     "confidence":format!("{:?}", sample.geometry_stamp.confidence),
                     "geometry_sequence":sample.geometry_stamp.sequence,
                     "context_epoch":sample.geometry_stamp.context_epoch,
-                    "rect":[sample.geometry.target.x,sample.geometry.target.y,sample.geometry.target.width,sample.geometry.target.height]
+                    "rect":[sample.geometry.target.x,sample.geometry.target.y,sample.geometry.target.width,sample.geometry.target.height],
+                    "tsf":tsf
                 })
             }
             echo_windows::input_indicator::Observation::Revalidating { trigger } => {
-                serde_json::json!({"event":"revalidating","elapsed_ms":started.elapsed().as_millis(),"generation":update.generation,"trigger":trigger.as_str()})
+                serde_json::json!({"event":"revalidating","elapsed_ms":started.elapsed().as_millis(),"generation":update.generation,"trigger":trigger.as_str(),"tsf":tsf})
             }
             echo_windows::input_indicator::Observation::Unavailable {
                 reason, trigger, ..
             } => {
-                serde_json::json!({"event":"unavailable","elapsed_ms":started.elapsed().as_millis(),"generation":update.generation,"reason":reason.as_str(),"trigger":trigger.as_str()})
+                serde_json::json!({"event":"unavailable","elapsed_ms":started.elapsed().as_millis(),"generation":update.generation,"reason":reason.as_str(),"trigger":trigger.as_str(),"tsf":tsf})
             }
         };
         let _ = writeln!(file, "{line}");

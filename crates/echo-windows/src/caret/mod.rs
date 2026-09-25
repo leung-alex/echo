@@ -52,6 +52,10 @@ pub struct GeometryReply {
     pub status: ReplyStatus,
     pub request_sequence: u32,
     pub response_words: [u32; 64],
+    /// Whether the response completed the host's current request identity.
+    /// Unavailable responses remain observable for diagnostics even when an
+    /// epoch change intentionally invalidated the request.
+    pub accepted: bool,
 }
 
 pub struct CaretObserver {
@@ -181,8 +185,15 @@ impl CaretObserver {
             host_ffi::u64_as_hwnd((*observer.mailbox).scheduler_hwnd.load(Ordering::Acquire))
         };
         if observer.scheduler_window.is_null() {
+            let detail = unsafe {
+                (*observer.mailbox)
+                    .response
+                    .snapshot()
+                    .map(|words| format!("status={} reason={}", words[0], words[4]))
+                    .unwrap_or_else(|| "response=unavailable".into())
+            };
             observer.close();
-            return Err("caret scheduler was not acknowledged".into());
+            return Err(format!("caret scheduler was not acknowledged ({detail})"));
         }
         Ok(observer)
     }
@@ -205,6 +216,8 @@ impl CaretObserver {
         words[3] = (now_tick_ms.saturating_add(SessionState::DEADLINE_MS) >> 32) as u32;
         words[4] = reason;
         words[5] = 1; // sensitivity is admitted by the host before scheduling.
+        words[12] = self.session.context_epoch as u32;
+        words[13] = (self.session.context_epoch >> 32) as u32;
         if unsafe { (*self.mailbox).request.publish(&words) }.is_err() {
             self.session.close();
             return RequestDecision::Unavailable;
@@ -238,14 +251,21 @@ impl CaretObserver {
             return None;
         }
         let epoch = u64::from(words[10]) | (u64::from(words[11]) << 32);
+        let epoch_changed = epoch != 0 && epoch != self.session.context_epoch;
+        if epoch_changed {
+            let _ = self.session.observe_context_epoch(epoch);
+        }
         let accepted =
             self.session
                 .complete(sequence, self.endpoint.focus_generation, epoch, now_tick_ms);
-        let _ = self.session.callback_released();
-        accepted.then_some(GeometryReply {
+        // word 30 is written by the target's actual EditSession Release path;
+        // the reader must not infer a COM Release from response arrival.
+        self.session.sync_outstanding_callbacks(words[30]);
+        (accepted || status == ReplyStatus::Unavailable).then_some(GeometryReply {
             status,
             request_sequence: sequence,
             response_words: words,
+            accepted: accepted && !epoch_changed,
         })
     }
 
@@ -275,6 +295,11 @@ impl CaretObserver {
 
     pub fn endpoint(&self) -> CaretEndpoint {
         self.endpoint
+    }
+
+    pub fn rebind_focus_generation(&mut self, generation: u64) {
+        self.endpoint.focus_generation = generation;
+        self.session.rebind_generation(generation);
     }
 }
 

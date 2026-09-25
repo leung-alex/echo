@@ -183,8 +183,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
         let history: i64 =
             conn.query_row("SELECT COUNT(*) FROM clipboard_entries", [], |r| r.get(0))?;
-        let favorites: i64 =
-            conn.query_row("SELECT COUNT(*) FROM saved_items", [], |r| r.get(0))?;
+        // The software-deck contract counts the Favorites system-space items.
+        // The fixture also creates ten independent copies in the Work notes
+        // space so the carousel has real side-card metadata; those copies are
+        // saved_items rows but are not Favorites entries.
+        let favorites: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM space_memberships WHERE space_id = 2",
+            [],
+            |r| r.get(0),
+        )?;
         let images: i64 = conn.query_row(
             "SELECT COUNT(*) FROM clipboard_entries WHERE content_type = 'image'",
             [],

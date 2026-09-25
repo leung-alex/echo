@@ -97,6 +97,36 @@ impl SessionState {
         true
     }
 
+    /// Adopt an epoch reported by the target runtime.  Epoch changes are
+    /// invalidations, never evidence that a ready result is current.  The
+    /// next request carries the adopted value and the target revalidates it
+    /// against its canonical TSF identities.
+    pub fn observe_context_epoch(&mut self, epoch: u64) -> bool {
+        if epoch == 0 || epoch == self.context_epoch {
+            return false;
+        }
+        self.context_epoch = epoch;
+        self.cancelled = true;
+        true
+    }
+
+    /// Synchronize the host-side diagnostic count with the count published by
+    /// the target callback runtime.  The reader must not infer a COM Release
+    /// merely because a response arrived.
+    pub fn sync_outstanding_callbacks(&mut self, count: u32) {
+        self.outstanding_callbacks = count.min(Self::MAX_CALLBACKS);
+    }
+
+    /// A host focus generation can advance while the same HWND, process and
+    /// TSF document remain active. Rebind the host-side acceptance guard
+    /// without tearing down the target scheduler or its COM context.
+    pub fn rebind_generation(&mut self, generation: u64) {
+        if generation != 0 && generation != self.generation {
+            self.generation = generation;
+            self.cancelled = true;
+        }
+    }
+
     pub fn replace_context(&mut self) {
         self.context_epoch = self.context_epoch.wrapping_add(1).max(1);
         self.cancelled = true;

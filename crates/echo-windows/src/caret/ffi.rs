@@ -42,6 +42,10 @@ pub const PAGE_READWRITE: u32 = 0x04;
 pub const ERROR_ALREADY_EXISTS: u32 = 183;
 pub const ERROR_CLASS_ALREADY_EXISTS: u32 = 1410;
 pub const INVALID_HANDLE_VALUE: Handle = (-1isize) as Handle;
+pub const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+pub const DPI_AWARENESS_UNAWARE: i32 = 0;
+pub const DPI_AWARENESS_SYSTEM: i32 = 1;
+pub const DPI_AWARENESS_PER_MONITOR: i32 = 2;
 
 #[repr(C)]
 pub struct CallWindow {
@@ -143,6 +147,8 @@ extern "system" {
     pub fn LogicalToPhysicalPointForPerMonitorDPI(window: Hwnd, point: *mut Point) -> i32;
     pub fn GetWindowDpiAwarenessContext(window: Hwnd) -> Handle;
     pub fn GetThreadDpiAwarenessContext() -> Handle;
+    pub fn AreDpiAwarenessContextsEqual(first: Handle, second: Handle) -> i32;
+    pub fn GetAwarenessFromDpiAwarenessContext(context: Handle) -> i32;
 }
 
 #[link(name = "kernel32")]
@@ -150,7 +156,9 @@ extern "system" {
     pub fn GetCurrentProcessId() -> u32;
     pub fn GetCurrentThreadId() -> u32;
     pub fn GetLastError() -> u32;
+    pub fn SetLastError(error: u32);
     pub fn GetCurrentProcess() -> Handle;
+    pub fn OpenProcess(access: u32, inherit: i32, pid: u32) -> Handle;
     pub fn GetProcessTimes(
         process: Handle,
         created: *mut u64,

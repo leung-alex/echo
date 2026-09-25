@@ -1,11 +1,38 @@
 use super::*;
-use echo_windows::input_indicator::{Monitor, Observation, Update};
+use echo_windows::input_indicator::{Monitor, Observation, TsfDiagnostic, Update};
+#[cfg(feature = "native-test")]
+use windows::Win32::{
+    Foundation::{HWND, RECT},
+    UI::WindowsAndMessaging::GetWindowRect,
+};
 
 const RETENTION_MS: u64 = 250;
 
 #[derive(Clone, Copy)]
 struct Retention {
     started_at: Instant,
+}
+
+fn tsf_json(value: Option<TsfDiagnostic>) -> serde_json::Value {
+    value.map_or(serde_json::Value::Null, |trace| {
+        serde_json::json!({
+            "state": format!("{:?}", trace.state),
+            "api_hresult": trace.api_hresult,
+            "session_hresult": trace.session_hresult,
+            "reason_code": trace.reason_code,
+            "sequence": trace.sequence,
+            "context_epoch": trace.context_epoch,
+            "raw_rect": trace.raw_rect,
+            "normalized_rect": trace.normalized_rect,
+            "age_ms": trace.age_ms,
+            "pending_callbacks": trace.pending_callbacks,
+            "outstanding_callbacks": trace.outstanding_callbacks,
+            "created_callbacks": trace.created_callbacks,
+            "released_callbacks": trace.released_callbacks,
+            "final_source": trace.final_source.map(|source| format!("{:?}", source)),
+            "fallback_reason": trace.fallback_reason
+        })
+    })
 }
 
 fn retention_active(retention: Option<Retention>, now: Instant, target_matches: bool) -> bool {
@@ -23,6 +50,7 @@ pub(super) struct Indicator {
     process_name: Option<String>,
     retention: Option<Retention>,
     pending_hide_reason: Option<&'static str>,
+    last_tsf: Option<TsfDiagnostic>,
     visible: bool,
     hwnd: Option<isize>,
     position: Option<PhysicalRect>,
@@ -42,7 +70,8 @@ impl Indicator {
                         serde_json::json!({
                             "generation": update.generation,
                             "state": "revalidating",
-                            "trigger": trigger.as_str()
+                            "trigger": trigger.as_str(),
+                            "tsf": tsf_json(update.tsf)
                         }),
                     ),
                     Observation::Observed {
@@ -86,7 +115,8 @@ impl Indicator {
                                     "context_epoch": sample.geometry_stamp.context_epoch,
                                     "observed_age_ms": sample.geometry_stamp.observed_at.elapsed().as_millis(),
                                     "rect": [sample.geometry.target.x, sample.geometry.target.y, sample.geometry.target.width, sample.geometry.target.height]
-                                }
+                                },
+                                "tsf": tsf_json(update.tsf)
                             }
                         }),
                     ),
@@ -109,7 +139,8 @@ impl Indicator {
                             "process_name": process_name,
                             "trigger": trigger.as_str(),
                             "probe_stage": "input-state",
-                            "elapsed_ms": elapsed_ms
+                            "elapsed_ms": elapsed_ms,
+                            "tsf": tsf_json(update.tsf)
                         }),
                     ),
                 };
@@ -137,6 +168,7 @@ impl Indicator {
             process_name: None,
             retention: None,
             pending_hide_reason: None,
+            last_tsf: None,
             visible: false,
             hwnd: None,
             position: None,
@@ -157,6 +189,7 @@ impl Indicator {
             return;
         }
         self.timer.stop();
+        self.last_tsf = update.tsf;
         match update.observation {
             Observation::Revalidating { trigger } => {
                 let target_matches = self.sample.is_some_and(|sample| {
@@ -424,14 +457,43 @@ impl Indicator {
     }
     #[cfg(feature = "native-test")]
     pub fn diagnostics(&self) -> serde_json::Value {
+        let native_rect = self.hwnd.and_then(|hwnd| unsafe {
+            let mut rect: RECT = std::mem::zeroed();
+            (GetWindowRect(HWND(hwnd as _), &mut rect).is_ok()).then_some([
+                rect.left,
+                rect.top,
+                rect.right - rect.left,
+                rect.bottom - rect.top,
+            ])
+        });
         serde_json::json!({"visible":self.visible,"hwnd":self.hwnd,"label":self.window.get_mode().to_string(),
             "generation":self.monitor.as_ref().map(Monitor::generation),
             "counts":self.monitor.as_ref().map(Monitor::observation_counts),
             "process_name":self.process_name,
             "retaining":self.retention.is_some(),
-            "sample":self.sample.map(|s| serde_json::json!({"mode":format!("{:?}",s.mode),"composition":format!("{:?}",s.composition),
-                "pid":s.process,"window":s.window,"age_ms":s.sampled_at.elapsed().as_millis(),"generation":s.generation})),
-            "rect":self.position.map(|p|[p.x,p.y,p.width,p.height])})
+            "tsf":tsf_json(self.last_tsf),
+            "sample":self.sample.map(|s| serde_json::json!({
+                "mode":format!("{:?}",s.mode),
+                "composition":format!("{:?}",s.composition),
+                "pid":s.process,
+                "window":s.window,
+                "focused_window":s.focused_window,
+                "age_ms":s.sampled_at.elapsed().as_millis(),
+                "generation":s.generation,
+                "anchor":format!("{:?}",s.anchor),
+                "geometry": {
+                    "source":format!("{:?}",s.geometry_stamp.source),
+                    "confidence":format!("{:?}",s.geometry_stamp.confidence),
+                    "sequence":s.geometry_stamp.sequence,
+                    "context_epoch":s.geometry_stamp.context_epoch,
+                    "observed_age_ms":s.geometry_stamp.observed_at.elapsed().as_millis(),
+                    "rect":[s.geometry.target.x,s.geometry.target.y,s.geometry.target.width,s.geometry.target.height],
+                    "work_area":[s.geometry.work_area.x,s.geometry.work_area.y,s.geometry.work_area.width,s.geometry.work_area.height],
+                    "dpi":s.geometry.dpi
+                }
+            })),
+            "rect":self.position.map(|p|[p.x,p.y,p.width,p.height]),
+            "actual_hwnd_rect":native_rect})
     }
 }
 

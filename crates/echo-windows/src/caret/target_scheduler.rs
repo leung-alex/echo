@@ -1,15 +1,19 @@
 //! Target-thread message-only scheduler for the standalone observer DLL.
 //!
-//! Bootstrap is deliberately limited to validation, mailbox ownership and
-//! scheduler creation. Provider/TSF work runs only from posted scheduler
-//! messages, never from the synchronous hook/SendMessage stack.
+//! The scheduler owns the target-side mapping and the closeable runtime.  A
+//! TSF edit session keeps only a `Weak<Runtime>`; mapping/context lifetime is
+//! therefore extended by an in-flight callback and cannot be invalidated by a
+//! host close or a late COM delivery.
 
 use super::{caret_ffi as ffi, caret_protocol as protocol};
-use protocol::{Mailbox, RESPONSE_CLOSED};
+use protocol::{Header, Mailbox, RESPONSE_CLOSED, RESPONSE_PENDING, RESPONSE_UNAVAILABLE};
 use std::cell::Cell;
 use std::ffi::c_void;
 use std::ptr::{null, null_mut};
-use std::sync::OnceLock;
+use std::sync::{
+    atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering},
+    Arc, OnceLock, Weak,
+};
 
 pub const MESSAGE: &str = "Echo.CaretObservation.v1";
 pub const PREFIX: &str = "Local\\Echo.CaretObservation.";
@@ -23,20 +27,239 @@ const GET_MODULE_HANDLE_EX_FLAG_PIN: u32 = 0x00000001;
 const GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS: u32 = 0x00000004;
 const GA_ROOT: u32 = 2;
 const WS_OVERLAPPED: u32 = 0;
+pub const MAX_CALLBACKS: u32 = 8;
+
+// This count deliberately lives at DLL process scope, rather than in one
+// replaceable scheduler host. A new mailbox/session cannot evade the cap.
+static CALLBACKS: AtomicU32 = AtomicU32::new(0);
+static CALLBACKS_CREATED: AtomicU64 = AtomicU64::new(0);
+static CALLBACKS_RELEASED: AtomicU64 = AtomicU64::new(0);
+
+pub fn callback_count() -> u32 {
+    CALLBACKS.load(Ordering::Acquire)
+}
+
+pub fn callback_created_count() -> u64 {
+    CALLBACKS_CREATED.load(Ordering::Acquire)
+}
+
+pub fn callback_released_count() -> u64 {
+    CALLBACKS_RELEASED.load(Ordering::Acquire)
+}
+
+pub fn reserve_callback() -> bool {
+    let mut current = CALLBACKS.load(Ordering::Acquire);
+    loop {
+        if current >= MAX_CALLBACKS {
+            return false;
+        }
+        match CALLBACKS.compare_exchange_weak(
+            current,
+            current + 1,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => {
+                CALLBACKS_CREATED.fetch_add(1, Ordering::AcqRel);
+                return true;
+            }
+            Err(next) => current = next,
+        }
+    }
+}
+
+pub fn release_callback() -> u32 {
+    let mut current = CALLBACKS.load(Ordering::Acquire);
+    loop {
+        if current == 0 {
+            return 0;
+        }
+        match CALLBACKS.compare_exchange_weak(
+            current,
+            current - 1,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => {
+                CALLBACKS_RELEASED.fetch_add(1, Ordering::AcqRel);
+                return current - 1;
+            }
+            Err(next) => current = next,
+        }
+    }
+}
 
 thread_local! {
     static SCHEDULER: Cell<*mut SchedulerState> = const { Cell::new(null_mut()) };
 }
 
-struct SchedulerState {
+/// Target-thread owned resources. `Drop` runs only after the scheduler and
+/// every callback-held `Arc` have gone away.
+pub struct Runtime {
     mapping: ffi::Handle,
     view: *mut Mailbox,
+    pub header: Header,
+    closed: AtomicBool,
+    context: AtomicPtr<c_void>,
+    document_identity: AtomicUsize,
+    context_identity: AtomicUsize,
+    context_epoch: AtomicU64,
+    pending: AtomicU32,
+}
+
+unsafe impl Send for Runtime {}
+unsafe impl Sync for Runtime {}
+
+impl Runtime {
+    fn new(mapping: ffi::Handle, view: *mut Mailbox, header: Header) -> Self {
+        Self {
+            mapping,
+            view,
+            header,
+            closed: AtomicBool::new(false),
+            context: AtomicPtr::new(null_mut()),
+            document_identity: AtomicUsize::new(0),
+            context_identity: AtomicUsize::new(0),
+            context_epoch: AtomicU64::new(1),
+            pending: AtomicU32::new(0),
+        }
+    }
+
+    pub fn weak(self: &Arc<Self>) -> Weak<Self> {
+        Arc::downgrade(self)
+    }
+
+    pub fn view(&self) -> *mut Mailbox {
+        self.view
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
+    }
+
+    pub fn context_epoch(&self) -> u64 {
+        self.context_epoch.load(Ordering::Acquire)
+    }
+
+    pub fn context_identity(&self) -> usize {
+        self.context_identity.load(Ordering::Acquire)
+    }
+
+    pub fn document_identity(&self) -> usize {
+        self.document_identity.load(Ordering::Acquire)
+    }
+
+    pub fn context(&self) -> *mut c_void {
+        self.context.load(Ordering::Acquire)
+    }
+
+    pub fn mark_pending(&self, pending: bool) {
+        self.pending.store(u32::from(pending), Ordering::Release);
+    }
+
+    /// Install the current document/context identity and transfer ownership of
+    /// the returned context reference into the runtime. A repeated identity
+    /// releases the newly returned duplicate and keeps the existing owner.
+    pub unsafe fn install_context(
+        &self,
+        document_identity: usize,
+        context: *mut c_void,
+        context_identity: usize,
+    ) -> Option<(*mut c_void, u64)> {
+        if self.is_closed() || context.is_null() || context_identity == 0 {
+            super::tsf_abi::release(context);
+            return None;
+        }
+        let old_document = self.document_identity.load(Ordering::Acquire);
+        let old_context = self.context_identity.load(Ordering::Acquire);
+        if old_document == document_identity && old_context == context_identity {
+            super::tsf_abi::release(context);
+            return Some((self.context(), self.context_epoch()));
+        }
+        let old = self.context.swap(context, Ordering::AcqRel);
+        self.document_identity
+            .store(document_identity, Ordering::Release);
+        self.context_identity
+            .store(context_identity, Ordering::Release);
+        let epoch = if old_document == 0 || old_context == 0 {
+            self.context_epoch.load(Ordering::Acquire)
+        } else {
+            self.context_epoch.fetch_add(1, Ordering::AcqRel) + 1
+        };
+        if !old.is_null() {
+            super::tsf_abi::release(old);
+        }
+        Some((context, epoch))
+    }
+
+    pub unsafe fn mark_closed(&self) {
+        if self.closed.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        if !self.view.is_null() {
+            (*self.view).closed.store(1, Ordering::Release);
+            let mut response = [0_u32; 64];
+            response[0] = RESPONSE_CLOSED;
+            response[30] = callback_count();
+            let created = callback_created_count();
+            let released = callback_released_count();
+            response[32] = created as u32;
+            response[33] = (created >> 32) as u32;
+            response[34] = released as u32;
+            response[35] = (released >> 32) as u32;
+            let _ = (*self.view).response.publish(&response);
+        }
+    }
+
+    /// Publish the actual callback count after the final COM Release. This is
+    /// intentionally independent from geometry/result completion.
+    pub unsafe fn publish_callback_count(&self, sequence: u32, count: u32) {
+        if self.view.is_null() {
+            return;
+        }
+        let Some(mut response) = (*self.view).response.snapshot() else {
+            return;
+        };
+        if response[1] != sequence {
+            return;
+        }
+        response[29] = self.pending.load(Ordering::Acquire);
+        response[30] = count;
+        let created = callback_created_count();
+        let released = callback_released_count();
+        response[32] = created as u32;
+        response[33] = (created >> 32) as u32;
+        response[34] = released as u32;
+        response[35] = (released >> 32) as u32;
+        let _ = (*self.view).response.publish(&response);
+    }
+}
+
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        unsafe {
+            let context = self.context.swap(null_mut(), Ordering::AcqRel);
+            if !context.is_null() {
+                super::tsf_abi::release(context);
+            }
+            if !self.view.is_null() {
+                ffi::UnmapViewOfFile(self.view.cast());
+            }
+            if !self.mapping.is_null() {
+                ffi::CloseHandle(self.mapping);
+            }
+        }
+    }
+}
+
+struct SchedulerState {
+    runtime: Arc<Runtime>,
     window: ffi::Hwnd,
     input_window: ffi::Hwnd,
-    target_pid: u32,
-    target_thread: u32,
-    target_started: u64,
+    root_window: ffi::Hwnd,
     closed: bool,
+    last_request_sequence: u32,
+    pending_sequence: Option<u32>,
 }
 
 unsafe impl Send for SchedulerState {}
@@ -52,16 +275,14 @@ unsafe extern "system" fn window_proc(
     window: ffi::Hwnd,
     message: u32,
     wparam: ffi::Wparam,
-    _lparam: ffi::Lparam,
+    lparam: ffi::Lparam,
 ) -> ffi::Lresult {
     let state = ffi::GetWindowLongPtrW(window, ffi::GWLP_USERDATA) as *mut SchedulerState;
     if message == ffi::WM_NCCREATE {
-        // The state is installed immediately after CreateWindowExW returns;
-        // accepting NCCREATE through DefWindowProc keeps the callback inert.
-        return ffi::DefWindowProcW(window, message, wparam, 0);
+        return ffi::DefWindowProcW(window, message, wparam, lparam);
     }
     if state.is_null() {
-        return ffi::DefWindowProcW(window, message, wparam, 0);
+        return ffi::DefWindowProcW(window, message, wparam, lparam);
     }
     let state_ref = &mut *state;
     match message {
@@ -75,17 +296,18 @@ unsafe extern "system" fn window_proc(
         }
         ffi::WM_TIMER if wparam == WATCHDOG_TIMER => {
             let now = ffi::GetTickCount64();
-            let heartbeat = (*state_ref.view)
-                .heartbeat_tick
-                .load(std::sync::atomic::Ordering::Acquire);
-            if (*state_ref.view)
-                .closed
-                .load(std::sync::atomic::Ordering::Acquire)
-                != 0
+            let view = state_ref.runtime.view();
+            let heartbeat = (*view).heartbeat_tick.load(Ordering::Acquire);
+            let should_close = state_ref.runtime.is_closed()
+                || (*view).closed.load(Ordering::Acquire) != 0
                 || heartbeat == 0
                 || now.saturating_sub(heartbeat) > HEARTBEAT_TIMEOUT_MS
-                || ffi::GetForegroundWindow() != state_ref.input_window
-            {
+                || !live_identity(
+                    &state_ref.runtime.header,
+                    state_ref.input_window,
+                    state_ref.root_window,
+                );
+            if should_close {
                 close_scheduler(state_ref);
             }
             0
@@ -99,28 +321,22 @@ unsafe extern "system" fn window_proc(
 }
 
 unsafe fn ensure_class() -> bool {
+    let instance = ffi::GetModuleHandleW(null());
     let class = ffi::WndClassW {
         style: 0,
         wnd_proc: Some(window_proc),
         cls_extra: 0,
         wnd_extra: 0,
-        instance: ffi::GetModuleHandleW(null()),
+        instance,
         icon: null_mut(),
         cursor: null_mut(),
         background: null_mut(),
         menu_name: null(),
         class_name: class_name().as_ptr(),
     };
-    ffi::RegisterClassW(&class) != 0 || ffi::GetLastError() == ffi::ERROR_CLASS_ALREADY_EXISTS
-}
-
-unsafe fn close_mapping(mapping: ffi::Handle, view: *mut Mailbox) {
-    if !view.is_null() {
-        ffi::UnmapViewOfFile(view.cast());
-    }
-    if !mapping.is_null() {
-        ffi::CloseHandle(mapping);
-    }
+    let atom = ffi::RegisterClassW(&class);
+    let error = ffi::GetLastError();
+    atom != 0 || error == ffi::ERROR_CLASS_ALREADY_EXISTS
 }
 
 unsafe fn close_scheduler(state: &mut SchedulerState) {
@@ -128,91 +344,170 @@ unsafe fn close_scheduler(state: &mut SchedulerState) {
         return;
     }
     state.closed = true;
-    (*state.view)
-        .closed
-        .store(1, std::sync::atomic::Ordering::Release);
-    let mut response = [0_u32; 64];
-    response[0] = RESPONSE_CLOSED;
-    let _ = (*state.view).response.publish(&response);
+    state.runtime.mark_closed();
     let window = state.window;
-    let mapping = state.mapping;
-    let view = state.view;
     SCHEDULER.with(|slot| slot.set(null_mut()));
     let _ = ffi::KillTimer(window, WATCHDOG_TIMER);
     let _ = ffi::SetWindowLongPtrW(window, ffi::GWLP_USERDATA, 0);
     let _ = ffi::DestroyWindow(window);
-    close_mapping(mapping, view);
+    // Dropping the host state releases only its Arc. An edit-session callback
+    // that already upgraded its Weak keeps the runtime/mapping alive.
     drop(Box::from_raw(state));
 }
 
-unsafe fn handle_request(state: &mut SchedulerState) {
-    if state.closed
-        || (*state.view)
-            .closed
-            .load(std::sync::atomic::Ordering::Acquire)
-            != 0
-    {
+unsafe fn publish_bootstrap_unavailable(view: *mut Mailbox, reason: u32) {
+    if view.is_null() {
         return;
     }
-    let Some(request) = (*state.view).request.snapshot() else {
+    let mut response = [0_u32; 64];
+    response[0] = RESPONSE_UNAVAILABLE;
+    response[4] = reason;
+    response[30] = callback_count();
+    let created = callback_created_count();
+    let released = callback_released_count();
+    response[32] = created as u32;
+    response[33] = (created >> 32) as u32;
+    response[34] = released as u32;
+    response[35] = (released >> 32) as u32;
+    let _ = (*view).response.publish(&response);
+}
+
+unsafe fn handle_request(state: &mut SchedulerState) {
+    if state.closed || state.runtime.is_closed() || state.runtime.view().is_null() {
+        return;
+    }
+    let view = state.runtime.view();
+    if (*view).closed.load(Ordering::Acquire) != 0 {
+        return;
+    }
+    // A duplicate/reentrant post while Pending cannot create another session.
+    if let Some(pending) = state.pending_sequence {
+        let finished = (*view)
+            .response
+            .snapshot()
+            .is_some_and(|response| response[1] == pending && response[0] != RESPONSE_PENDING);
+        if finished {
+            state.pending_sequence = None;
+            state.runtime.mark_pending(false);
+        } else {
+            return;
+        }
+    }
+    let Some(request) = (*view).request.snapshot() else {
         return;
     };
-    if request[0] != protocol::REQUEST_PROBE {
-        if request[0] == protocol::REQUEST_CLOSE {
-            close_scheduler(state);
+    if request[0] == protocol::REQUEST_CLOSE {
+        close_scheduler(state);
+        return;
+    }
+    if request[0] != protocol::REQUEST_PROBE || request[1] == 0 {
+        return;
+    }
+    let sequence = request[1];
+    if sequence <= state.last_request_sequence {
+        if sequence < state.last_request_sequence {
+            publish_bootstrap_unavailable(view, 34); // sequence-rollover/replay
         }
         return;
     }
+    state.last_request_sequence = sequence;
     let deadline = u64::from(request[2]) | (u64::from(request[3]) << 32);
     let now = ffi::GetTickCount64();
-    let _ = (*state.view).response.publish(&{
-        let mut pending = [0_u32; 64];
-        pending[0] = protocol::RESPONSE_PENDING;
-        pending[1] = request[1];
-        pending[8] = deadline as u32;
-        pending[9] = (deadline >> 32) as u32;
-        pending[10] = 1;
-        pending
-    });
-    let _ =
-        super::tsf_geometry::request(state.view, &(*state.view).header, request[1], deadline, now);
+    let request_epoch = u64::from(request[12]) | (u64::from(request[13]) << 32);
+    let mut pending = [0_u32; 64];
+    pending[0] = RESPONSE_PENDING;
+    pending[1] = sequence;
+    pending[8] = deadline as u32;
+    pending[9] = (deadline >> 32) as u32;
+    pending[10] = request_epoch as u32;
+    pending[11] = (request_epoch >> 32) as u32;
+    pending[29] = 1;
+    pending[30] = callback_count();
+    let created = callback_created_count();
+    let released = callback_released_count();
+    pending[32] = created as u32;
+    pending[33] = (created >> 32) as u32;
+    pending[34] = released as u32;
+    pending[35] = (released >> 32) as u32;
+    let _ = (*view).response.publish(&pending);
+    state.pending_sequence = Some(sequence);
+    state.runtime.mark_pending(true);
+    let accepted =
+        super::tsf_geometry::request(&state.runtime, sequence, deadline, now, request_epoch);
+    if !accepted {
+        state.pending_sequence = None;
+        state.runtime.mark_pending(false);
+        state
+            .runtime
+            .publish_callback_count(sequence, callback_count());
+    }
 }
 
-unsafe fn pin_module() {
+unsafe fn pin_module() -> bool {
     let mut module = null_mut();
     let address = pin_module as *const c_void;
-    let _ = ffi::GetModuleHandleExW(
+    ffi::GetModuleHandleExW(
         GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
         address,
         &mut module,
-    );
+    ) != 0
 }
 
-unsafe fn live_identity(header: &protocol::Header, input: ffi::Hwnd) -> bool {
-    let pid = ffi::GetCurrentProcessId();
-    let thread = ffi::GetCurrentThreadId();
-    let mut created = 0;
-    let mut exit = 0;
-    let mut kernel = 0;
-    let mut user = 0;
-    let root = ffi::GetAncestor(input, GA_ROOT);
-    let mut root_pid = 0;
-    pid == header.target_pid
-        && thread == header.input_thread
-        && input as usize as u64 == header.input_hwnd
-        && ffi::GetFocus() == input
-        && root as usize as u64 == header.root_hwnd
-        && root == ffi::GetForegroundWindow()
-        && ffi::GetWindowThreadProcessId(root, &mut root_pid) != 0
-        && root_pid == header.root_pid
-        && ffi::GetProcessTimes(
+unsafe fn process_started(pid: u32) -> Option<u64> {
+    if pid == 0 {
+        return None;
+    }
+    if pid == ffi::GetCurrentProcessId() {
+        let mut created = 0_u64;
+        let mut exit = 0_u64;
+        let mut kernel = 0_u64;
+        let mut user = 0_u64;
+        return (ffi::GetProcessTimes(
             ffi::GetCurrentProcess(),
             &mut created,
             &mut exit,
             &mut kernel,
             &mut user,
-        ) != 0
-        && created == header.target_started
+        ) != 0)
+            .then_some(created);
+    }
+    let process = ffi::OpenProcess(ffi::PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+    if process.is_null() {
+        return None;
+    }
+    let mut created = 0_u64;
+    let mut exit = 0_u64;
+    let mut kernel = 0_u64;
+    let mut user = 0_u64;
+    let ok = ffi::GetProcessTimes(process, &mut created, &mut exit, &mut kernel, &mut user) != 0;
+    ffi::CloseHandle(process);
+    ok.then_some(created)
+}
+
+unsafe fn live_identity(header: &Header, input: ffi::Hwnd, root: ffi::Hwnd) -> bool {
+    if input.is_null()
+        || root.is_null()
+        || ffi::GetCurrentProcessId() != header.target_pid
+        || ffi::GetCurrentThreadId() != header.input_thread
+        || input as usize as u64 != header.input_hwnd
+        || root as usize as u64 != header.root_hwnd
+        || ffi::GetFocus() != input
+        || ffi::GetAncestor(input, GA_ROOT) != root
+        || ffi::GetForegroundWindow() != root
+    {
+        return false;
+    }
+    let mut input_pid = 0_u32;
+    let input_thread = ffi::GetWindowThreadProcessId(input, &mut input_pid);
+    if input_thread != header.input_thread || input_pid != header.target_pid {
+        return false;
+    }
+    let mut root_pid = 0_u32;
+    if ffi::GetWindowThreadProcessId(root, &mut root_pid) == 0 || root_pid != header.root_pid {
+        return false;
+    }
+    process_started(header.target_pid) == Some(header.target_started)
+        && process_started(header.root_pid) == Some(header.root_started)
 }
 
 unsafe fn bootstrap(message: &ffi::CallWindow) -> bool {
@@ -251,36 +546,59 @@ unsafe fn bootstrap(message: &ffi::CallWindow) -> bool {
         ffi::CloseHandle(mapping);
         return true;
     }
-    if !protocol::header_shape_valid(&(*view).header)
-        || !live_identity(&(*view).header, message.window)
+    let header = (*view).header;
+    if !protocol::header_shape_valid(&header)
+        || !live_identity(
+            &header,
+            message.window,
+            ffi::GetAncestor(message.window, GA_ROOT),
+        )
     {
-        close_mapping(mapping, view);
+        publish_bootstrap_unavailable(view, 32); // bad-header/identity
+        ffi::UnmapViewOfFile(view.cast());
+        ffi::CloseHandle(mapping);
         return true;
     }
-    pin_module();
+
     let existing = SCHEDULER.with(|slot| slot.get());
     if !existing.is_null() {
-        (*view).scheduler_hwnd.store(
-            (*existing).window as usize as u64,
-            std::sync::atomic::Ordering::Release,
-        );
-        close_mapping(mapping, view);
+        let existing_header = (*(*existing).runtime.view()).header;
+        if protocol::header_identity_matches(&existing_header, &header) {
+            (*view)
+                .scheduler_hwnd
+                .store((*existing).window as usize as u64, Ordering::Release);
+            ffi::UnmapViewOfFile(view.cast());
+            ffi::CloseHandle(mapping);
+            return true;
+        }
+        // A different nonce/generation must not reuse the old scheduler. Its
+        // runtime remains alive only while late callbacks still hold an Arc.
+        close_scheduler(&mut *existing);
+    }
+
+    if !pin_module() {
+        publish_bootstrap_unavailable(view, 33); // explicit pin/build failure
+        ffi::UnmapViewOfFile(view.cast());
+        ffi::CloseHandle(mapping);
         return true;
     }
     if !ensure_class() {
-        close_mapping(mapping, view);
+        publish_bootstrap_unavailable(view, 36); // scheduler-class-registration
+        ffi::UnmapViewOfFile(view.cast());
+        ffi::CloseHandle(mapping);
         return true;
     }
+    let runtime = Arc::new(Runtime::new(mapping, view, header));
     let mut state = Box::new(SchedulerState {
-        mapping,
-        view,
+        runtime: runtime.clone(),
         window: null_mut(),
         input_window: message.window,
-        target_pid: (*view).header.target_pid,
-        target_thread: (*view).header.input_thread,
-        target_started: (*view).header.target_started,
+        root_window: ffi::GetAncestor(message.window, GA_ROOT),
         closed: false,
+        last_request_sequence: 0,
+        pending_sequence: None,
     });
+    ffi::SetLastError(0);
     let window = ffi::CreateWindowExW(
         0,
         class_name().as_ptr(),
@@ -296,7 +614,12 @@ unsafe fn bootstrap(message: &ffi::CallWindow) -> bool {
         state.as_mut() as *mut SchedulerState as *mut c_void,
     );
     if window.is_null() {
-        close_mapping(mapping, view);
+        // `state` still owns the sole strong runtime reference here. Mark the
+        // mailbox closed before dropping it so a host cannot wait forever for
+        // a scheduler acknowledgement, then let `Runtime::Drop` unmap the
+        // view and close the mapping handle.
+        state.runtime.mark_closed();
+        drop(state);
         return true;
     }
     state.window = window;
@@ -305,7 +628,7 @@ unsafe fn bootstrap(message: &ffi::CallWindow) -> bool {
     SCHEDULER.with(|slot| slot.set(state_ptr));
     (*view)
         .scheduler_hwnd
-        .store(window as usize as u64, std::sync::atomic::Ordering::Release);
+        .store(window as usize as u64, Ordering::Release);
     let _ = ffi::PostMessageW(window, INIT_MESSAGE, 0, 0);
     true
 }
