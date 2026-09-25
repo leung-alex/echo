@@ -92,6 +92,22 @@ pub struct WndClassW {
 }
 
 #[repr(C)]
+pub struct CreateStructW {
+    pub create_params: *mut c_void,
+    pub instance: Hmodule,
+    pub menu: Handle,
+    pub parent: Hwnd,
+    pub cy: i32,
+    pub cx: i32,
+    pub y: i32,
+    pub x: i32,
+    pub style: isize,
+    pub name: *const u16,
+    pub class_name: *const u16,
+    pub ex_style: u32,
+}
+
+#[repr(C)]
 pub struct Msg {
     pub hwnd: Hwnd,
     pub message: u32,
@@ -128,6 +144,7 @@ extern "system" {
         param: *mut c_void,
     ) -> Hwnd;
     pub fn DestroyWindow(window: Hwnd) -> i32;
+    pub fn SendMessageW(window: Hwnd, message: u32, wparam: Wparam, lparam: Lparam) -> Lresult;
     pub fn PostMessageW(window: Hwnd, message: u32, wparam: Wparam, lparam: Lparam) -> i32;
     pub fn SetTimer(window: Hwnd, id: usize, timeout_ms: u32, callback: Handle) -> usize;
     pub fn KillTimer(window: Hwnd, id: usize) -> i32;

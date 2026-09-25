@@ -1,8 +1,9 @@
 """Run the owned WPF/TSF caret fixture through the real Echo observer DLL.
 
-RealTSF cases and the explicit MockCOM fault adapter are recorded separately.
-The fault adapter still runs through the real injected DLL, scheduler window,
-mailbox, target HWND and diagnostics; it does not replace the RealTSF oracle.
+RealTSF cases, fixture-only MockProviderLifecycle callbacks, and the legacy
+DiagnosticTransport error-code adapter are recorded separately. The diagnostic
+adapter still runs through the real injected DLL, scheduler window, mailbox,
+target HWND and diagnostics; it does not replace lifecycle or RealTSF evidence.
 """
 import argparse
 import ctypes
@@ -40,6 +41,55 @@ def sha256(path):
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def loaded_modules(pid):
+    """Enumerate modules actually loaded in one target process."""
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    snapshot = kernel32.CreateToolhelp32Snapshot
+    snapshot.argtypes = [ctypes.c_uint32, ctypes.c_uint32]
+    snapshot.restype = ctypes.c_void_p
+    first = kernel32.Module32FirstW
+    next_module = kernel32.Module32NextW
+    close = kernel32.CloseHandle
+    first.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    first.restype = ctypes.c_int
+    next_module.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    next_module.restype = ctypes.c_int
+    close.argtypes = [ctypes.c_void_p]
+    close.restype = ctypes.c_int
+
+    class MODULEENTRY32W(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", ctypes.c_uint32),
+            ("th32ModuleID", ctypes.c_uint32),
+            ("th32ProcessID", ctypes.c_uint32),
+            ("GlblcntUsage", ctypes.c_uint32),
+            ("ProccntUsage", ctypes.c_uint32),
+            ("modBaseAddr", ctypes.c_void_p),
+            ("modBaseSize", ctypes.c_uint32),
+            ("hModule", ctypes.c_void_p),
+            ("szModule", ctypes.c_wchar * 256),
+            ("szExePath", ctypes.c_wchar * 260),
+        ]
+
+    INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+    handle = snapshot(0x00000018, pid)  # TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32
+    if not handle or handle == INVALID_HANDLE_VALUE:
+        raise ctypes.WinError(ctypes.get_last_error())
+    result = []
+    try:
+        entry = MODULEENTRY32W()
+        entry.dwSize = ctypes.sizeof(entry)
+        if not first(handle, ctypes.byref(entry)):
+            return result
+        while True:
+            result.append({"name": entry.szModule, "path": entry.szExePath})
+            if not next_module(handle, ctypes.byref(entry)):
+                break
+        return result
+    finally:
+        close(handle)
 
 
 def compare_rect(actual, expected, tolerance=2):
@@ -143,6 +193,10 @@ def main():
     user32.SetForegroundWindow.argtypes = [ctypes.c_void_p]
     user32.SetForegroundWindow.restype = ctypes.c_int
     user32.GetForegroundWindow.restype = ctypes.c_void_p
+    user32.GetAncestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+    user32.GetAncestor.restype = ctypes.c_void_p
+    user32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+    user32.GetWindowThreadProcessId.restype = ctypes.c_uint32
     user32.keybd_event.argtypes = [ctypes.c_ubyte, ctypes.c_ubyte, ctypes.c_ulong, ctypes.c_void_p]
 
     def fixture_command(command):
@@ -234,8 +288,16 @@ def main():
             raise AssertionError(f"oracle missing fields: {value}")
         if value["pid"] != fixture_process.pid or int(value["hwnd"]) != int(ready["hwnd"]):
             raise AssertionError(f"oracle ownership mismatch: {value}")
-        if not value["visible"] or int(value["input_hwnd"]) != int(value["hwnd"]):
+        input_hwnd = int(value["input_hwnd"])
+        root_hwnd = int(value["hwnd"])
+        if not value["visible"] or not input_hwnd:
             raise AssertionError(f"oracle HWND is not a visible owned target: {value}")
+        if input_hwnd != root_hwnd:
+            if int(user32.GetAncestor(ctypes.c_void_p(input_hwnd), 2)) != root_hwnd:
+                raise AssertionError(f"oracle child HWND is outside root: {value}")
+            owner = ctypes.c_uint32()
+            if user32.GetWindowThreadProcessId(ctypes.c_void_p(input_hwnd), ctypes.byref(owner)) == 0 or owner.value != fixture_process.pid:
+                raise AssertionError(f"oracle child HWND owner mismatch: {value}")
         if len(value["caret"]) != 4 or value["caret"][2] <= value["caret"][0] or value["caret"][3] <= value["caret"][1]:
             raise AssertionError(f"oracle caret is invalid: {value}")
 
@@ -292,7 +354,7 @@ def main():
                 raise AssertionError(f"native HWND placement mismatch: {value.get('actual_hwnd_rect')} vs {expected}")
             if previous is not None and tsf.get("context_epoch") == previous:
                 raise AssertionError(f"context epoch did not change: {value}")
-            check(name, "PASS", oracle=oracle_value, indicator=value, expected_badge=expected)
+            check(name, "PASS", kind="RealTSF", oracle=oracle_value, indicator=value, expected_badge=expected)
             return value
 
         initial = wait_indicator(lambda value: (value.get("sample") or {}).get("geometry", {}).get("source") == "TsfCaret", "initial TSF caret")
@@ -302,7 +364,7 @@ def main():
             ("N02-empty-context", "CreateScenario|empty", True),
             ("N05-readonly", "CreateScenario|readonly", False),
             ("N11-context-replaced", "CreateScenario|context-replaced", True),
-            ("N20-mixed-dpi", "CreateScenario|mixed-dpi", True),
+            ("N20-current-dpi-smoke", "CreateScenario|mixed-dpi", True),
             ("N23-mode-only", "SetSyntheticModeForFixture|normal", True),
             ("N24-geometry-only", "MoveCaret|0", True),
         ]
@@ -400,30 +462,42 @@ def main():
         else:
             check("fixture-multiline-real-tsf", "UNSUPPORTED", reason=result.get("reason", result))
 
-        # G3 stress: exercise the real bridge repeatedly against the same
-        # owned HWND and keep the target-side callback count bounded. The
-        # fixture remains foreground and no text or clipboard operation is
-        # performed.
+        # G3 stress: sample the bridge until the target-owned production
+        # acquisition counter advances by 1000. RPC reads are only observers;
+        # they are not counted as TSF requests.
         stress_count = 1000
         stress_started = time.monotonic()
         stress_before = echo_call({"verb": "input_indicator"})
+        stress_before_tsf = stress_before.get("tsf") or {}
+        acquisition_start = int(stress_before_tsf.get("api_requests") or 0)
         max_pending = 0
         max_outstanding = 0
+        max_high_water = 0
         callback_created = 0
         callback_released = 0
         stress_latest = stress_before
         stress_error = None
+        reads = 0
         try:
-            for _ in range(stress_count):
+            while True:
                 stress_latest = echo_call({"verb": "input_indicator"})
+                reads += 1
                 trace = stress_latest.get("tsf") or {}
                 max_pending = max(max_pending, int(trace.get("pending_callbacks") or 0))
                 max_outstanding = max(max_outstanding, int(trace.get("outstanding_callbacks") or 0))
+                max_high_water = max(max_high_water, int(trace.get("callback_high_water") or 0))
                 callback_created = max(callback_created, int(trace.get("created_callbacks") or 0))
                 callback_released = max(callback_released, int(trace.get("released_callbacks") or 0))
-                if max_pending > 8 or max_outstanding > 8:
+                if max_pending > 8 or max_outstanding > 8 or max_high_water > 8:
                     raise AssertionError(
-                        f"callback cap exceeded pending={max_pending} outstanding={max_outstanding}"
+                        f"callback cap exceeded pending={max_pending} outstanding={max_outstanding} high_water={max_high_water}"
+                    )
+                acquisition_delta = int(trace.get("api_requests") or 0) - acquisition_start
+                if acquisition_delta >= stress_count:
+                    break
+                if time.monotonic() - stress_started > 120:
+                    raise AssertionError(
+                        f"target acquisition timeout delta={acquisition_delta} reads={reads}"
                     )
             if callback_created != callback_released:
                 raise AssertionError(
@@ -432,12 +506,15 @@ def main():
         except (AssertionError, RuntimeError, ValueError) as error:
             stress_error = str(error)
         stress_summary = {
-            "requests": stress_count,
+            "requested_acquisitions": stress_count,
+            "observed_acquisitions": int((stress_latest.get("tsf") or {}).get("api_requests") or 0) - acquisition_start,
+            "observation_reads": reads,
             "elapsed_ms": round((time.monotonic() - stress_started) * 1000),
             "before_counts": stress_before.get("counts"),
             "after_counts": stress_latest.get("counts"),
             "max_pending_callbacks": max_pending,
             "max_outstanding_callbacks": max_outstanding,
+            "max_callback_high_water": max_high_water,
             "callback_created": callback_created,
             "callback_released": callback_released,
             "error": stress_error,
@@ -446,6 +523,7 @@ def main():
         check(
             "G3-lifecycle-1000-requests",
             "PASS" if stress_error is None else "FAIL",
+            kind="RealTSF",
             stress=stress_summary,
             indicator=stress_latest,
         )
@@ -464,31 +542,35 @@ def main():
         )
         fixture_command("FocusEditor")
 
-        # The fault matrix uses an explicit MockCOM adapter selected through a
-        # nonce-bound fixture command. Each case still drives the real target
-        # DLL and target HWND; only the TSF COM outcome is controlled. RealTSF
-        # checks above remain the source of OS scheduling/geometry evidence.
+        # The fault matrix uses an explicit fixture command. Lifecycle cases
+        # retain and release the real production edit-session callback; the
+        # older direct reason cases stay DiagnosticTransport and are not
+        # counted as MockProviderLifecycle acceptance.
         mock_faults = {
-            "N03-missing-uia": ("missing-uia", 8),
-            "N06-password": ("password", 11),
-            "N07-unknown-sensitivity": ("unknown-sensitivity", 10),
-            "N08-no-layout": ("no-layout", 18),
-            "N09-invalid-rect": ("invalid-rect", 20),
-            "N10-different-view": ("different-view", 9),
-            "N12-focus-race": ("focus-race", 21),
-            "N13-request-error": ("request-error", 24),
-            "N14-149-151ms": ("late-result", 21),
-            "N15-never-delivered": ("never-delivered", 30),
-            "N16-late-close": ("late-close", 21),
-            "N19-selection": ("selection", 16),
-            "N21-reentrancy": ("reentrancy", 29),
-            "N22-source-conflict": ("source-conflict", 26),
-            "N25-protocol": ("protocol", 24),
-            "N26-rollover": ("rollover", 24),
-            "N27-reuse": ("reuse", 26),
-            "N28-release-cap": ("release-cap", 28),
+            "D03-missing-uia": ("missing-uia", 8, "DiagnosticTransport"),
+            "D06-password": ("password", 11, "DiagnosticTransport"),
+            "D07-unknown-sensitivity": ("unknown-sensitivity", 10, "DiagnosticTransport"),
+            "D08-no-layout": ("no-layout", 18, "DiagnosticTransport"),
+            "D09-invalid-rect": ("invalid-rect", 20, "DiagnosticTransport"),
+            "D10-different-view": ("different-view", 9, "DiagnosticTransport"),
+            "D12-focus-race": ("focus-race", 21, "DiagnosticTransport"),
+            "D13-request-error": ("request-error", 24, "DiagnosticTransport"),
+            "D14-149-151ms": ("late-result", 21, "DiagnosticTransport"),
+            "D15-never-delivered": ("never-delivered", 30, "DiagnosticTransport"),
+            "D16-late-close": ("late-close", 21, "DiagnosticTransport"),
+            "D19-selection": ("selection", 16, "DiagnosticTransport"),
+            "D21-reentrancy": ("reentrancy", 29, "DiagnosticTransport"),
+            "D22-source-conflict": ("source-conflict", 26, "DiagnosticTransport"),
+            "D25-protocol": ("protocol", 24, "DiagnosticTransport"),
+            "D26-rollover": ("rollover", 24, "DiagnosticTransport"),
+            "D27-reuse": ("reuse", 26, "DiagnosticTransport"),
+            "D28-release-cap": ("release-cap", 28, "DiagnosticTransport"),
+            "N15-lifecycle-never-delivered": ("lifecycle-never-delivered", None, "MockProviderLifecycle"),
+            "N16-lifecycle-late-close": ("lifecycle-late-close", None, "MockProviderLifecycle"),
+            "N21-lifecycle-reentrancy-close": ("lifecycle-reentrancy-close", None, "MockProviderLifecycle"),
+            "N28-lifecycle-release-cap": ("lifecycle-release-cap", 28, "MockProviderLifecycle"),
         }
-        for name, (fault, expected_reason) in mock_faults.items():
+        for name, (fault, expected_reason, kind) in mock_faults.items():
             try:
                 result = fixture_command("Fault|" + fault)
                 if result.get("status") != "PASS":
@@ -500,24 +582,32 @@ def main():
                 value = wait_indicator(
                     lambda candidate: (
                         (candidate.get("tsf") or {}).get("state") == "Unavailable"
-                        and (candidate.get("tsf") or {}).get("reason_code") == expected_reason
+                        and (
+                            expected_reason is None
+                            or (candidate.get("tsf") or {}).get("reason_code") == expected_reason
+                        )
                     ),
                     name + " MockCOM diagnostic",
                 )
                 trace = value.get("tsf") or {}
                 if trace.get("sequence", 0) == 0 or value.get("generation") is None:
                     raise AssertionError(f"fault diagnostic lost target identity: {value}")
+                if kind == "MockProviderLifecycle":
+                    if int(trace.get("final_released") or 0) < 1:
+                        raise AssertionError(f"lifecycle callback was not finally released: {trace}")
+                    if int(trace.get("callback_entered") or 0) != int(trace.get("callback_completed") or 0):
+                        raise AssertionError(f"lifecycle callback entry/completion mismatch: {trace}")
                 check(
                     name,
                     "PASS",
-                    kind="MockCOM",
+                    kind=kind,
                     fault=fault,
                     expected_reason=expected_reason,
                     oracle=fault_oracle,
                     indicator=value,
                 )
             except (AssertionError, RuntimeError, ValueError) as error:
-                check(name, "FAIL", kind="MockCOM", fault=fault, error=str(error))
+                check(name, "FAIL", kind=kind, fault=fault, error=str(error))
             finally:
                 try:
                     fixture_command("Fault|clear")
@@ -525,23 +615,48 @@ def main():
                 except (RuntimeError, OSError):
                     pass
 
-        loaded = []
-        local_appdata = os.environ.get("LOCALAPPDATA")
-        if local_appdata:
-            base = Path(local_appdata) / "Echo" / "ime-observer"
-            if base.exists():
-                loaded = [p for p in base.glob("*/echo_ime_observer.dll") if p.is_file()]
         if observer_info:
-            observer_info["loaded_paths"] = [str(path) for path in loaded if sha256(path) == observer_info["sha256"]]
-            observer_info["loaded"] = bool(observer_info["loaded_paths"])
+            try:
+                modules = loaded_modules(fixture_process.pid)
+                matching = [
+                    module
+                    for module in modules
+                    if module.get("path")
+                    and Path(module["path"]).exists()
+                    and sha256(Path(module["path"])) == observer_info["sha256"]
+                ]
+                observer_info["target_pid"] = fixture_process.pid
+                observer_info["modules_enumerated"] = True
+                observer_info["loaded_modules"] = matching
+                observer_info["loaded"] = bool(matching)
+            except OSError as error:
+                observer_info["modules_enumerated"] = False
+                observer_info["loaded"] = "UNAVAILABLE"
+                observer_info["load_error"] = str(error)
         statuses = [entry["status"] for entry in checks]
-        overall = "PASS" if statuses and all(status == "PASS" for status in statuses) else "PARTIAL"
+        has_diagnostic_transport = any(
+            entry.get("kind") == "DiagnosticTransport" for entry in checks
+        )
+        overall = (
+            "PASS"
+            if statuses and all(status == "PASS" for status in statuses) and not has_diagnostic_transport
+            else "PARTIAL"
+        )
         results = {
             "provider": args.provider,
             "overall": overall,
             "fixture": {"path": str(fixture), "pid": fixture_process.pid, "hwnd": ready["hwnd"]},
             "echo": {"path": str(root / "echo-acceptance.exe"), "sha256": sha256(root / "echo-acceptance.exe")},
             "observer_dll": observer_info,
+            "evidence_summary": {
+                "real_tsf": sum(1 for entry in checks if entry.get("kind") == "RealTSF"),
+                "mock_provider_lifecycle": sum(
+                    1 for entry in checks if entry.get("kind") == "MockProviderLifecycle"
+                ),
+                "diagnostic_transport": sum(
+                    1 for entry in checks if entry.get("kind") == "DiagnosticTransport"
+                ),
+            },
             "checks": checks,
         }
         (root / "results.json").write_text(json.dumps(results, indent=2), encoding="utf-8")

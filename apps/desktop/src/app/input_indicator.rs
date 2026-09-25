@@ -29,6 +29,14 @@ fn tsf_json(value: Option<TsfDiagnostic>) -> serde_json::Value {
             "outstanding_callbacks": trace.outstanding_callbacks,
             "created_callbacks": trace.created_callbacks,
             "released_callbacks": trace.released_callbacks,
+            "callback_high_water": trace.callback_high_water,
+            "api_requests": trace.api_requests,
+            "accepted_sessions": trace.accepted_sessions,
+            "callback_entered": trace.callback_entered,
+            "callback_completed": trace.callback_completed,
+            "final_released": trace.final_released,
+            "cancelled": trace.cancelled,
+            "timed_out": trace.timed_out,
             "final_source": trace.final_source.map(|source| format!("{:?}", source)),
             "fallback_reason": trace.fallback_reason
         })

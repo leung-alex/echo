@@ -34,6 +34,14 @@ pub const MAX_CALLBACKS: u32 = 8;
 static CALLBACKS: AtomicU32 = AtomicU32::new(0);
 static CALLBACKS_CREATED: AtomicU64 = AtomicU64::new(0);
 static CALLBACKS_RELEASED: AtomicU64 = AtomicU64::new(0);
+static CALLBACKS_HIGH_WATER: AtomicU32 = AtomicU32::new(0);
+pub(crate) static API_REQUESTS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static ACCEPTED_SESSIONS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static CALLBACK_ENTERED: AtomicU64 = AtomicU64::new(0);
+pub(crate) static CALLBACK_COMPLETED: AtomicU64 = AtomicU64::new(0);
+pub(crate) static FINAL_RELEASED: AtomicU64 = AtomicU64::new(0);
+pub(crate) static CANCELLED: AtomicU64 = AtomicU64::new(0);
+pub(crate) static TIMED_OUT: AtomicU64 = AtomicU64::new(0);
 
 pub fn callback_count() -> u32 {
     CALLBACKS.load(Ordering::Acquire)
@@ -45,6 +53,59 @@ pub fn callback_created_count() -> u64 {
 
 pub fn callback_released_count() -> u64 {
     CALLBACKS_RELEASED.load(Ordering::Acquire)
+}
+
+pub fn callback_high_water() -> u32 {
+    CALLBACKS_HIGH_WATER.load(Ordering::Acquire)
+}
+
+pub fn api_request_count() -> u64 {
+    API_REQUESTS.load(Ordering::Acquire)
+}
+
+pub fn accepted_session_count() -> u64 {
+    ACCEPTED_SESSIONS.load(Ordering::Acquire)
+}
+
+pub fn callback_entered_count() -> u64 {
+    CALLBACK_ENTERED.load(Ordering::Acquire)
+}
+
+pub fn callback_completed_count() -> u64 {
+    CALLBACK_COMPLETED.load(Ordering::Acquire)
+}
+
+pub fn callback_final_released_count() -> u64 {
+    FINAL_RELEASED.load(Ordering::Acquire)
+}
+
+pub fn cancelled_count() -> u64 {
+    CANCELLED.load(Ordering::Acquire)
+}
+
+pub fn timed_out_count() -> u64 {
+    TIMED_OUT.load(Ordering::Acquire)
+}
+
+/// Append target-owned lifecycle counters to the content-free mailbox. These
+/// fields are diagnostics only; the host must not infer a callback lifecycle
+/// transition from response arrival.
+pub fn write_metrics(words: &mut [u32; 64]) {
+    let values = [
+        api_request_count(),
+        accepted_session_count(),
+        callback_entered_count(),
+        callback_completed_count(),
+        callback_final_released_count(),
+        cancelled_count(),
+        timed_out_count(),
+    ];
+    for (index, value) in values.into_iter().enumerate() {
+        let offset = 36 + index * 2;
+        words[offset] = value as u32;
+        words[offset + 1] = (value >> 32) as u32;
+    }
+    words[50] = callback_high_water();
 }
 
 pub fn reserve_callback() -> bool {
@@ -61,9 +122,25 @@ pub fn reserve_callback() -> bool {
         ) {
             Ok(_) => {
                 CALLBACKS_CREATED.fetch_add(1, Ordering::AcqRel);
+                update_high_water(current + 1);
                 return true;
             }
             Err(next) => current = next,
+        }
+    }
+}
+
+fn update_high_water(value: u32) {
+    let mut observed = CALLBACKS_HIGH_WATER.load(Ordering::Acquire);
+    while value > observed {
+        match CALLBACKS_HIGH_WATER.compare_exchange_weak(
+            observed,
+            value,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => break,
+            Err(next) => observed = next,
         }
     }
 }
@@ -196,6 +273,9 @@ impl Runtime {
         if self.closed.swap(true, Ordering::AcqRel) {
             return;
         }
+        if self.pending.swap(0, Ordering::AcqRel) != 0 {
+            CANCELLED.fetch_add(1, Ordering::AcqRel);
+        }
         if !self.view.is_null() {
             (*self.view).closed.store(1, Ordering::Release);
             let mut response = [0_u32; 64];
@@ -207,6 +287,7 @@ impl Runtime {
             response[33] = (created >> 32) as u32;
             response[34] = released as u32;
             response[35] = (released >> 32) as u32;
+            write_metrics(&mut response);
             let _ = (*self.view).response.publish(&response);
         }
     }
@@ -231,6 +312,7 @@ impl Runtime {
         response[33] = (created >> 32) as u32;
         response[34] = released as u32;
         response[35] = (released >> 32) as u32;
+        write_metrics(&mut response);
         let _ = (*self.view).response.publish(&response);
     }
 }
@@ -277,43 +359,58 @@ unsafe extern "system" fn window_proc(
     wparam: ffi::Wparam,
     lparam: ffi::Lparam,
 ) -> ffi::Lresult {
-    let state = ffi::GetWindowLongPtrW(window, ffi::GWLP_USERDATA) as *mut SchedulerState;
     if message == ffi::WM_NCCREATE {
+        // Install the state pointer before Windows sends any subsequent create
+        // messages.  The pointer is only a lookup token here; every handler
+        // below takes a short borrow and never keeps it across COM/Win32 work.
+        let create = lparam as *const ffi::CreateStructW;
+        if !create.is_null() {
+            let state = (*create).create_params as *mut SchedulerState;
+            let _ = ffi::SetWindowLongPtrW(window, ffi::GWLP_USERDATA, state as isize);
+        }
         return ffi::DefWindowProcW(window, message, wparam, lparam);
     }
+    let state = ffi::GetWindowLongPtrW(window, ffi::GWLP_USERDATA) as *mut SchedulerState;
     if state.is_null() {
         return ffi::DefWindowProcW(window, message, wparam, lparam);
     }
-    let state_ref = &mut *state;
     match message {
         INIT_MESSAGE => {
             let _ = ffi::SetTimer(window, WATCHDOG_TIMER, WATCHDOG_MS, null_mut());
             0
         }
         REQUEST_MESSAGE => {
-            handle_request(state_ref);
+            handle_request(state);
             0
         }
         ffi::WM_TIMER if wparam == WATCHDOG_TIMER => {
             let now = ffi::GetTickCount64();
-            let view = state_ref.runtime.view();
-            let heartbeat = (*view).heartbeat_tick.load(Ordering::Acquire);
-            let should_close = state_ref.runtime.is_closed()
-                || (*view).closed.load(Ordering::Acquire) != 0
-                || heartbeat == 0
-                || now.saturating_sub(heartbeat) > HEARTBEAT_TIMEOUT_MS
-                || !live_identity(
-                    &state_ref.runtime.header,
-                    state_ref.input_window,
-                    state_ref.root_window,
-                );
+            let should_close = {
+                let state_ref = &*state;
+                let view = state_ref.runtime.view();
+                let heartbeat = if view.is_null() {
+                    0
+                } else {
+                    (*view).heartbeat_tick.load(Ordering::Acquire)
+                };
+                state_ref.runtime.is_closed()
+                    || view.is_null()
+                    || (*view).closed.load(Ordering::Acquire) != 0
+                    || heartbeat == 0
+                    || now.saturating_sub(heartbeat) > HEARTBEAT_TIMEOUT_MS
+                    || !live_identity(
+                        &state_ref.runtime.header,
+                        state_ref.input_window,
+                        state_ref.root_window,
+                    )
+            };
             if should_close {
-                close_scheduler(state_ref);
+                close_scheduler(state);
             }
             0
         }
         CLOSE_MESSAGE | ffi::WM_CLOSE => {
-            close_scheduler(state_ref);
+            close_scheduler(state);
             0
         }
         _ => ffi::DefWindowProcW(window, message, wparam, 0),
@@ -339,17 +436,32 @@ unsafe fn ensure_class() -> bool {
     atom != 0 || error == ffi::ERROR_CLASS_ALREADY_EXISTS
 }
 
-unsafe fn close_scheduler(state: &mut SchedulerState) {
-    if state.closed {
+unsafe fn close_scheduler(state: *mut SchedulerState) {
+    if state.is_null() {
         return;
     }
-    state.closed = true;
-    state.runtime.mark_closed();
-    let window = state.window;
-    SCHEDULER.with(|slot| slot.set(null_mut()));
+    let (window, runtime) = {
+        let state_ref = &mut *state;
+        if state_ref.closed {
+            return;
+        }
+        state_ref.closed = true;
+        (state_ref.window, state_ref.runtime.clone())
+    };
+    // Clear both lookup paths before DestroyWindow.  DestroyWindow can send
+    // synchronous messages back to this window; those messages must observe a
+    // closed scheduler and must never reach a freed Box.
+    SCHEDULER.with(|slot| {
+        if slot.get() == state {
+            slot.set(null_mut());
+        }
+    });
+    runtime.mark_closed();
     let _ = ffi::KillTimer(window, WATCHDOG_TIMER);
-    let _ = ffi::SetWindowLongPtrW(window, ffi::GWLP_USERDATA, 0);
-    let _ = ffi::DestroyWindow(window);
+    if !window.is_null() {
+        let _ = ffi::SetWindowLongPtrW(window, ffi::GWLP_USERDATA, 0);
+        let _ = ffi::DestroyWindow(window);
+    }
     // Dropping the host state releases only its Arc. An edit-session callback
     // that already upgraded its Weak keeps the runtime/mapping alive.
     drop(Box::from_raw(state));
@@ -369,48 +481,67 @@ unsafe fn publish_bootstrap_unavailable(view: *mut Mailbox, reason: u32) {
     response[33] = (created >> 32) as u32;
     response[34] = released as u32;
     response[35] = (released >> 32) as u32;
+    write_metrics(&mut response);
     let _ = (*view).response.publish(&response);
 }
 
-unsafe fn handle_request(state: &mut SchedulerState) {
-    if state.closed || state.runtime.is_closed() || state.runtime.view().is_null() {
-        return;
+struct PreparedRequest {
+    state: *mut SchedulerState,
+    runtime: Arc<Runtime>,
+    sequence: u32,
+    deadline: u64,
+    entry_tick: u64,
+    request_epoch: u64,
+}
+
+/// Prepare a request while holding a short scheduler-state borrow.  The
+/// returned Arc is the only runtime handle used during the external TSF call.
+/// No `&mut SchedulerState` escapes this function.
+unsafe fn prepare_request(state: *mut SchedulerState) -> Option<PreparedRequest> {
+    if state.is_null() {
+        return None;
     }
-    let view = state.runtime.view();
+    let state_ref = &mut *state;
+    if state_ref.closed || state_ref.runtime.is_closed() || state_ref.runtime.view().is_null() {
+        return None;
+    }
+    let runtime = state_ref.runtime.clone();
+    let view = runtime.view();
     if (*view).closed.load(Ordering::Acquire) != 0 {
-        return;
+        return None;
     }
     // A duplicate/reentrant post while Pending cannot create another session.
-    if let Some(pending) = state.pending_sequence {
+    if let Some(pending) = state_ref.pending_sequence {
         let finished = (*view)
             .response
             .snapshot()
             .is_some_and(|response| response[1] == pending && response[0] != RESPONSE_PENDING);
         if finished {
-            state.pending_sequence = None;
-            state.runtime.mark_pending(false);
+            state_ref.pending_sequence = None;
+            runtime.mark_pending(false);
         } else {
-            return;
+            return None;
         }
     }
     let Some(request) = (*view).request.snapshot() else {
-        return;
+        return None;
     };
     if request[0] == protocol::REQUEST_CLOSE {
+        drop(state_ref);
         close_scheduler(state);
-        return;
+        return None;
     }
     if request[0] != protocol::REQUEST_PROBE || request[1] == 0 {
-        return;
+        return None;
     }
     let sequence = request[1];
-    if sequence <= state.last_request_sequence {
-        if sequence < state.last_request_sequence {
+    if sequence <= state_ref.last_request_sequence {
+        if sequence < state_ref.last_request_sequence {
             publish_bootstrap_unavailable(view, 34); // sequence-rollover/replay
         }
-        return;
+        return None;
     }
-    state.last_request_sequence = sequence;
+    state_ref.last_request_sequence = sequence;
     let deadline = u64::from(request[2]) | (u64::from(request[3]) << 32);
     let now = ffi::GetTickCount64();
     let request_epoch = u64::from(request[12]) | (u64::from(request[13]) << 32);
@@ -429,18 +560,59 @@ unsafe fn handle_request(state: &mut SchedulerState) {
     pending[33] = (created >> 32) as u32;
     pending[34] = released as u32;
     pending[35] = (released >> 32) as u32;
+    write_metrics(&mut pending);
     let _ = (*view).response.publish(&pending);
-    state.pending_sequence = Some(sequence);
-    state.runtime.mark_pending(true);
-    let accepted =
-        super::tsf_geometry::request(&state.runtime, sequence, deadline, now, request_epoch);
-    if !accepted {
-        state.pending_sequence = None;
-        state.runtime.mark_pending(false);
-        state
-            .runtime
-            .publish_callback_count(sequence, callback_count());
+    state_ref.pending_sequence = Some(sequence);
+    runtime.mark_pending(true);
+    Some(PreparedRequest {
+        state,
+        runtime,
+        sequence,
+        deadline,
+        entry_tick: now,
+        request_epoch,
+    })
+}
+
+/// Reconcile after TSF/COM returns through a live scheduler lookup.  A
+/// synchronous close or replacement clears the TLS slot and frees the state;
+/// in that case this function only drops the local Arc and does not dereference
+/// the stale state pointer.
+unsafe fn reconcile_request(prepared: PreparedRequest, accepted: bool) {
+    let live = SCHEDULER.with(|slot| slot.get());
+    if live.is_null() || live != prepared.state {
+        return;
     }
+    let state_ref = &mut *live;
+    if state_ref.closed || !Arc::ptr_eq(&state_ref.runtime, &prepared.runtime) {
+        return;
+    }
+    if state_ref.pending_sequence != Some(prepared.sequence) {
+        return;
+    }
+    if !accepted {
+        state_ref.pending_sequence = None;
+        prepared.runtime.mark_pending(false);
+        prepared
+            .runtime
+            .publish_callback_count(prepared.sequence, callback_count());
+    }
+}
+
+unsafe fn handle_request(state: *mut SchedulerState) {
+    let Some(prepared) = prepare_request(state) else {
+        return;
+    };
+    // The scheduler state borrow ended before this call.  A provider can call
+    // CLOSE_MESSAGE synchronously and destroy the scheduler here.
+    let accepted = super::tsf_geometry::request(
+        &prepared.runtime,
+        prepared.sequence,
+        prepared.deadline,
+        prepared.entry_tick,
+        prepared.request_epoch,
+    );
+    reconcile_request(prepared, accepted);
 }
 
 unsafe fn pin_module() -> bool {
@@ -573,7 +745,7 @@ unsafe fn bootstrap(message: &ffi::CallWindow) -> bool {
         }
         // A different nonce/generation must not reuse the old scheduler. Its
         // runtime remains alive only while late callbacks still hold an Arc.
-        close_scheduler(&mut *existing);
+        close_scheduler(existing);
     }
 
     if !pin_module() {

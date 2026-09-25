@@ -165,6 +165,8 @@ public static class CaretTsfFixture {
             case "late-result": case "never-delivered": case "late-close":
             case "selection": case "reentrancy": case "source-conflict":
             case "protocol": case "rollover": case "reuse": case "release-cap":
+            case "lifecycle-never-delivered": case "lifecycle-late-close":
+            case "lifecycle-reentrancy-close": case "lifecycle-release-cap":
                 return true;
             default: return false;
         }
@@ -237,7 +239,9 @@ public static class CaretTsfFixture {
                     else if (value == "multiline") ReplaceEditor("line one\r\nline two\r\nline three");
                     else if (value == "context-replaced") ReplaceEditor("replacement TSF context");
                     else if (value == "readonly") { Editor.IsReadOnly = true; Editor.Focus(); }
-                    else if (value == "mixed-dpi") { Editor.Focus(); }
+                    else if (value == "mixed-dpi") {
+                        result = Unsupported("mixed-dpi requires an explicit multi-monitor DPI layout");
+                    }
                     else result = Unsupported("scenario requires a real COM fault adapter");
                 } else if (command == "FocusEditor") {
                     Editor.Focus();

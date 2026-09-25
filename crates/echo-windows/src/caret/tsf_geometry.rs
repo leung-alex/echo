@@ -10,12 +10,14 @@ use super::{
     tsf_abi as abi,
 };
 use std::ffi::c_void;
-use std::path::PathBuf;
 use std::ptr::null_mut;
 use std::sync::{
     atomic::{AtomicU32, Ordering},
-    Arc, OnceLock, Weak,
+    Arc, Weak,
 };
+
+#[cfg(feature = "native-test")]
+use std::{path::PathBuf, sync::OnceLock};
 
 const RESPONSE_READY: u32 = protocol::RESPONSE_READY;
 const RESPONSE_UNAVAILABLE: u32 = protocol::RESPONSE_UNAVAILABLE;
@@ -62,8 +64,10 @@ pub const REASON_EDIT_CALLBACK_MISSING: u32 = 30;
 // a fixture file. This adapter runs inside the real injected DLL and target
 // scheduler; its results remain labelled as MockCOM by the runner and never
 // replace the RealTSF evidence.
+#[cfg(feature = "native-test")]
 static MOCK_FAULT_FILE: OnceLock<Option<PathBuf>> = OnceLock::new();
 
+#[cfg(feature = "native-test")]
 fn mock_fault() -> Option<String> {
     if std::env::var("ECHO_WINDOWS_ACCEPTANCE").as_deref() != Ok("1") {
         return None;
@@ -167,6 +171,7 @@ unsafe fn publish_unavailable_at(
 /// `Some(false)` tells the scheduler that no TSF edit session was accepted;
 /// this keeps the fault path bounded and makes API/session HRESULT handling
 /// observable without manufacturing a callback that never existed.
+#[cfg(feature = "native-test")]
 unsafe fn mock_fault_response(
     runtime: &Arc<target::Runtime>,
     sequence: u32,
@@ -178,6 +183,57 @@ unsafe fn mock_fault_response(
         false
     };
     match fault {
+        "lifecycle-late-close" | "lifecycle-reentrancy-close" | "lifecycle-never-delivered" => {
+            let Some(session) = test_session(runtime, sequence, epoch) else {
+                return Some(unavailable(
+                    REASON_CALLBACK_CAP_REACHED,
+                    abi::S_OK,
+                    abi::S_OK,
+                ));
+            };
+            // The first reference is the caller-owned reference. Add one to
+            // model TSF retaining the callback across the asynchronous call.
+            edit_add_ref(session);
+            if fault != "lifecycle-never-delivered" {
+                // Both cases close before the retained callback is delivered.
+                // Send CLOSE_MESSAGE synchronously so the production window
+                // procedure performs the actual state teardown/re-entry path.
+                close_target_scheduler(runtime);
+                edit_do(session, 1);
+            } else {
+                // Keep the retained callback undelivered across close.
+                close_target_scheduler(runtime);
+            }
+            edit_release(session);
+            edit_release(session);
+            Some(false)
+        }
+        "lifecycle-release-cap" => {
+            let mut sessions = Vec::new();
+            for index in 0..target::MAX_CALLBACKS {
+                if let Some(session) = test_session(runtime, sequence + index, epoch) {
+                    edit_add_ref(session);
+                    sessions.push(session);
+                }
+            }
+            let rejected = !target::reserve_callback();
+            if !rejected {
+                target::release_callback();
+            }
+            for session in sessions {
+                edit_release(session);
+                edit_release(session);
+            }
+            Some(unavailable(
+                if rejected {
+                    REASON_CALLBACK_CAP_REACHED
+                } else {
+                    REASON_EDIT_REQUEST_FAILED
+                },
+                abi::S_OK,
+                abi::S_OK,
+            ))
+        }
         "missing-uia" => Some(unavailable(
             REASON_UNVERIFIED_VIEW,
             abi::E_NOINTERFACE,
@@ -253,6 +309,46 @@ unsafe fn mock_fault_response(
         }
         _ => None,
     }
+}
+
+#[cfg(feature = "native-test")]
+unsafe fn close_target_scheduler(runtime: &Arc<target::Runtime>) {
+    let window = runtime
+        .view()
+        .as_ref()
+        .map(|view| view.scheduler_hwnd.load(Ordering::Acquire) as usize as ffi::Hwnd)
+        .unwrap_or(null_mut());
+    if window.is_null() {
+        runtime.mark_closed();
+    } else {
+        let _ = ffi::SendMessageW(window, target::CLOSE_MESSAGE, 0, 0);
+    }
+}
+
+#[cfg(feature = "native-test")]
+unsafe fn test_session(
+    runtime: &Arc<target::Runtime>,
+    sequence: u32,
+    context_epoch: u64,
+) -> Option<*mut c_void> {
+    if !target::reserve_callback() {
+        return None;
+    }
+    Some(
+        Box::into_raw(Box::new(EditSessionObject {
+            vtable: &EDIT_SESSION_VTABLE,
+            refs: AtomicU32::new(1),
+            runtime: runtime.weak(),
+            header: runtime.header,
+            sequence,
+            deadline: 0,
+            context_epoch,
+            document_identity: runtime.document_identity(),
+            context_identity: runtime.context_identity(),
+            entry_tick: ffi::GetTickCount64(),
+        }))
+        .cast(),
+    )
 }
 
 unsafe fn target_is_live(header: &protocol::Header, view: ffi::Hwnd) -> bool {
@@ -379,6 +475,14 @@ struct EditSessionObject {
     entry_tick: u64,
 }
 
+struct ComRef(*mut c_void);
+
+impl Drop for ComRef {
+    fn drop(&mut self) {
+        unsafe { abi::release(self.0) };
+    }
+}
+
 unsafe impl Send for EditSessionObject {}
 
 static EDIT_SESSION_VTABLE: abi::EditSessionVtbl = abi::EditSessionVtbl {
@@ -437,6 +541,7 @@ unsafe extern "system" fn edit_release(object: *mut c_void) -> abi::Ulong {
     }
     if refs == 1 {
         let boxed = Box::from_raw(object.cast::<EditSessionObject>());
+        target::FINAL_RELEASED.fetch_add(1, Ordering::AcqRel);
         if let Some(runtime) = boxed.runtime.upgrade() {
             let count = target::release_callback();
             runtime.mark_pending(false);
@@ -457,11 +562,14 @@ unsafe extern "system" fn edit_do(
     if object.is_null() {
         return abi::E_INVALIDARG;
     }
+    target::CALLBACK_ENTERED.fetch_add(1, Ordering::AcqRel);
     let state = &*(object.cast::<EditSessionObject>());
     let Some(runtime) = state.runtime.upgrade() else {
+        target::CALLBACK_COMPLETED.fetch_add(1, Ordering::AcqRel);
         return abi::S_OK;
     };
     acquire_geometry(&runtime, state, edit_cookie);
+    target::CALLBACK_COMPLETED.fetch_add(1, Ordering::AcqRel);
     abi::S_OK
 }
 
@@ -472,21 +580,75 @@ unsafe fn same_context(runtime: &target::Runtime, state: &EditSessionObject) -> 
         && runtime.context_identity() == state.context_identity
 }
 
+/// Re-read the target thread's live TSF focus/document/top-context chain. A
+/// cached runtime identity is not sufficient while an edit session is queued:
+/// the host can replace the document/context without changing HWND, PID or
+/// thread. Failure is fail-closed and never authorizes a stale edit cookie.
+unsafe fn live_context_matches(
+    runtime: &target::Runtime,
+    state: &EditSessionObject,
+) -> Result<bool, u32> {
+    let manager = thread_manager().map_err(|_| REASON_NO_THREAD_MANAGER)?;
+    let _manager_guard = ComRef(manager);
+    let table = abi::vtable::<abi::ThreadMgrVtbl>(manager);
+    if table.is_null() {
+        return Err(REASON_NO_THREAD_MANAGER);
+    }
+    let mut focused = 0_i32;
+    if ((*table).is_thread_focus)(manager, &mut focused) < 0 || focused == 0 {
+        return Err(REASON_THREAD_NOT_FOCUSED);
+    }
+    let mut document = null_mut();
+    if ((*table).get_focus)(manager, &mut document) < 0 || document.is_null() {
+        abi::release(document);
+        return Err(REASON_NO_DOCUMENT);
+    }
+    let _document_guard = ComRef(document);
+    let document_identity = canonical_identity(document).ok_or(REASON_NO_DOCUMENT)?;
+    let document_table = abi::vtable::<abi::DocumentMgrVtbl>(document);
+    if document_table.is_null() {
+        return Err(REASON_NO_CONTEXT);
+    }
+    let mut context = null_mut();
+    if ((*document_table).get_top)(document, &mut context) < 0 || context.is_null() {
+        abi::release(context);
+        return Err(REASON_NO_CONTEXT);
+    }
+    let _context_guard = ComRef(context);
+    let context_identity = canonical_identity(context).ok_or(REASON_NO_CONTEXT)?;
+    Ok(!runtime.is_closed()
+        && runtime.document_identity() == document_identity
+        && runtime.context_identity() == context_identity
+        && state.document_identity == document_identity
+        && state.context_identity == context_identity)
+}
+
 unsafe fn acquire_geometry(
     runtime: &Arc<target::Runtime>,
     state: &EditSessionObject,
     edit_cookie: abi::TfEditCookie,
 ) {
-    if !same_context(runtime, state)
+    let same_cached = same_context(runtime, state);
+    let live_before = if runtime.is_closed() || !same_cached {
+        Err(REASON_CONTEXT_MISMATCH)
+    } else {
+        live_context_matches(runtime, state)
+    };
+    let elapsed_ms = ffi::GetTickCount64().saturating_sub(state.entry_tick);
+    if !same_cached
+        || live_before != Ok(true)
         || runtime.view().is_null()
         || (*runtime.view()).closed.load(Ordering::Acquire) != 0
-        || ffi::GetTickCount64().saturating_sub(state.entry_tick) > 150
+        || elapsed_ms > 150
     {
+        if elapsed_ms > 150 {
+            target::TIMED_OUT.fetch_add(1, Ordering::AcqRel);
+        }
         publish_unavailable(
             runtime,
             state.sequence,
             runtime.context_epoch(),
-            if same_context(runtime, state) {
+            if same_cached && live_before == Ok(true) {
                 REASON_LATE_RESULT
             } else {
                 REASON_CONTEXT_MISMATCH
@@ -497,6 +659,19 @@ unsafe fn acquire_geometry(
         return;
     }
     let context = runtime.context();
+    if context.is_null() {
+        publish_unavailable(
+            runtime,
+            state.sequence,
+            state.context_epoch,
+            REASON_DISCONNECTED_CONTEXT,
+            abi::E_FAIL,
+            abi::S_OK,
+        );
+        return;
+    }
+    abi::add_ref(context);
+    let _context_guard = ComRef(context);
     let context_table = abi::vtable::<abi::ContextVtbl>(context);
     if context_table.is_null() {
         publish_unavailable(
@@ -664,7 +839,8 @@ unsafe fn acquire_geometry(
     let text_ext_hr =
         ((*view_table).get_text_ext)(view, edit_cookie, selection.range, &mut raw, &mut clipped);
     let normalized = normalize_rect(view_window, &raw);
-    let epoch_still_current = same_context(runtime, state);
+    let epoch_still_current =
+        same_context(runtime, state) && live_context_matches(runtime, state) == Ok(true);
     let live_after = target_is_live(&state.header, view_window)
         && !runtime.view().is_null()
         && (*runtime.view()).closed.load(Ordering::Acquire) == 0;
@@ -781,6 +957,7 @@ pub unsafe fn request(
     entry_tick: u64,
     requested_epoch: u64,
 ) -> bool {
+    target::API_REQUESTS.fetch_add(1, Ordering::AcqRel);
     if runtime.is_closed() || runtime.context_epoch() != requested_epoch {
         publish_unavailable(
             runtime,
@@ -792,9 +969,13 @@ pub unsafe fn request(
         );
         return false;
     }
-    if let Some(fault) = mock_fault() {
-        if let Some(accepted) = mock_fault_response(runtime, sequence, requested_epoch, &fault) {
-            return accepted;
+    #[cfg(feature = "native-test")]
+    {
+        if let Some(fault) = mock_fault() {
+            if let Some(accepted) = mock_fault_response(runtime, sequence, requested_epoch, &fault)
+            {
+                return accepted;
+            }
         }
     }
     let manager = match thread_manager() {
@@ -946,6 +1127,8 @@ pub unsafe fn request(
         );
         return false;
     }
+    abi::add_ref(context);
+    let _request_context_guard = ComRef(context);
     let context_table = abi::vtable::<abi::ContextVtbl>(context);
     let mut status = abi::TfStatus::default();
     let status_hr = if context_table.is_null() {
@@ -1066,6 +1249,9 @@ pub unsafe fn request(
     edit_release(session.cast());
     abi::release(manager);
     let accepted = api_hr >= 0 && session_hr == abi::TF_S_ASYNC;
+    if accepted {
+        target::ACCEPTED_SESSIONS.fetch_add(1, Ordering::AcqRel);
+    }
     if !accepted {
         publish_unavailable(
             runtime,

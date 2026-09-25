@@ -14,24 +14,31 @@ fn main() {
         return;
     }
     let output = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo OUT_DIR"));
+    // The standalone DLL is compiled outside Cargo's crate graph. Forward
+    // only the explicit native-test feature so fixture-only fault adapters
+    // cannot enter ordinary Release/shadow/primary production binaries.
+    let mut args = vec![
+        "--crate-type".to_owned(),
+        "cdylib".to_owned(),
+        "--crate-name".to_owned(),
+        "echo_ime_observer".to_owned(),
+        "--edition".to_owned(),
+        "2021".to_owned(),
+        "--target".to_owned(),
+        env::var("TARGET").expect("Cargo TARGET"),
+        "-C".to_owned(),
+        "opt-level=s".to_owned(),
+        "-C".to_owned(),
+        "panic=abort".to_owned(),
+        "-C".to_owned(),
+        "debuginfo=0".to_owned(),
+    ];
+    if env::var_os("CARGO_FEATURE_NATIVE_TEST").is_some() {
+        args.push("--cfg".to_owned());
+        args.push(r#"feature="native-test""#.to_owned());
+    }
     let status = Command::new(env::var_os("RUSTC").expect("Cargo RUSTC"))
-        .args([
-            "--crate-type",
-            "cdylib",
-            "--crate-name",
-            "echo_ime_observer",
-            "--edition",
-            "2021",
-        ])
-        .args(["--target", &env::var("TARGET").expect("Cargo TARGET")])
-        .args([
-            "-C",
-            "opt-level=s",
-            "-C",
-            "panic=abort",
-            "-C",
-            "debuginfo=0",
-        ])
+        .args(args)
         .arg("src/inline/ime_observer/dll.rs")
         .arg("--out-dir")
         .arg(output)
