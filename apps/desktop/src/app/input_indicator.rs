@@ -58,6 +58,35 @@ fn retention_active(retention: Option<Retention>, now: Instant, target_matches: 
         })
 }
 
+fn transient_unavailable(reason: echo_windows::input_indicator::UnavailableReason) -> bool {
+    matches!(
+        reason,
+        echo_windows::input_indicator::UnavailableReason::NoEditableTarget
+            | echo_windows::input_indicator::UnavailableReason::ObserverUnavailable
+            | echo_windows::input_indicator::UnavailableReason::ModeUnavailable
+            | echo_windows::input_indicator::UnavailableReason::HostedProbeDisconnected
+    )
+}
+
+fn displayable_sample(
+    sample: &InputStatus,
+    generation: u64,
+    now: Instant,
+    target_matches: bool,
+    retaining: bool,
+) -> bool {
+    target_matches
+        && if retaining {
+            sample.mode != InputMode::Unknown
+        } else {
+            echo_presentation::input_indicator::visible(sample, generation, false, now)
+        }
+}
+
+fn expiry_is_current(event_serial: u64, current_serial: u64) -> bool {
+    event_serial == current_serial
+}
+
 pub(super) struct Indicator {
     monitor: Option<Monitor>,
     window: crate::InputIndicatorWindow,
@@ -70,6 +99,7 @@ pub(super) struct Indicator {
     hwnd: Option<isize>,
     position: Option<PhysicalRect>,
     timer: Timer,
+    expiry_serial: u64,
     hub: Arc<Hub>,
 }
 impl Indicator {
@@ -188,6 +218,7 @@ impl Indicator {
             hwnd: None,
             position: None,
             timer: Timer::default(),
+            expiry_serial: 0,
             hub,
         })
     }
@@ -203,7 +234,7 @@ impl Indicator {
             );
             return;
         }
-        self.timer.stop();
+        self.invalidate_expiry();
         self.last_tsf = update.tsf;
         match update.observation {
             Observation::Revalidating { trigger } => {
@@ -272,17 +303,68 @@ impl Indicator {
                 trigger: _,
                 elapsed_ms: _,
             } => {
-                self.retention = None;
-                self.sample = None;
                 self.process_name = process_name;
-                self.pending_hide_reason = Some(reason.as_str());
+                let target_matches = self.sample.is_some_and(|sample| {
+                    echo_windows::input_indicator::foreground_matches(&sample)
+                });
+                if transient_unavailable(reason) && target_matches {
+                    // A TSF/legacy read can briefly be unavailable while the
+                    // same foreground target is still valid. Keep the last
+                    // known mode through the bounded revalidation window so
+                    // EN/中 does not blink on every retry. A definitive target
+                    // change or settings disable still clears immediately.
+                    if self.retention.is_none() {
+                        self.retention = Some(Retention {
+                            started_at: Instant::now(),
+                        });
+                        crate::indicator_trace::record(
+                            "retention-start",
+                            serde_json::json!({
+                                "generation": update.generation,
+                                "trigger": "unavailable",
+                                "reason": reason.as_str(),
+                                "process_name": self.process_name
+                            }),
+                        );
+                    }
+                    self.pending_hide_reason = Some(reason.as_str());
+                    let elapsed = self
+                        .retention
+                        .map_or(Duration::ZERO, |retention| retention.started_at.elapsed());
+                    let remaining = Duration::from_millis(RETENTION_MS + 1).saturating_sub(elapsed);
+                    self.start_expiry_timer(remaining);
+                } else {
+                    self.retention = None;
+                    self.sample = None;
+                    self.pending_hide_reason = Some(reason.as_str());
+                }
             }
         }
     }
+    pub fn expire(&mut self, serial: u64) {
+        if !expiry_is_current(serial, self.expiry_serial) {
+            crate::indicator_trace::record(
+                "expiry-discarded",
+                serde_json::json!({
+                    "event_serial": serial,
+                    "current_serial": self.expiry_serial
+                }),
+            );
+            return;
+        }
+        self.invalidate_expiry();
+        self.pending_hide_reason = Some("sample-stale");
+    }
+    fn invalidate_expiry(&mut self) {
+        self.timer.stop();
+        self.expiry_serial = self.expiry_serial.wrapping_add(1);
+    }
     fn start_expiry_timer(&mut self, duration: Duration) {
+        self.expiry_serial = self.expiry_serial.wrapping_add(1);
+        let serial = self.expiry_serial;
         let hub = self.hub.clone();
         self.timer.start(TimerMode::SingleShot, duration, move || {
-            hub.post(Event::InputIndicatorExpired)
+            hub.post(Event::InputIndicatorExpired(serial))
         });
     }
     fn hide(&mut self, reason: &str) {
@@ -302,6 +384,7 @@ impl Indicator {
         };
         monitor.set_enabled(enabled && !suppressed);
         if !enabled || suppressed {
+            self.invalidate_expiry();
             self.retention = None;
             self.sample = None;
             self.process_name = None;
@@ -334,17 +417,7 @@ impl Indicator {
         }
 
         let sample = self.sample.filter(|sample| {
-            target_matches
-                && if retaining {
-                    sample.mode != InputMode::Unknown
-                } else {
-                    echo_presentation::input_indicator::visible(
-                        sample,
-                        monitor.generation(),
-                        false,
-                        now,
-                    )
-                }
+            displayable_sample(sample, monitor.generation(), now, target_matches, retaining)
         });
         let Some((sample, rect)) = sample.and_then(|sample| {
             echo_presentation::input_indicator::place(&sample).map(|p| (sample, p))
@@ -455,7 +528,7 @@ impl Indicator {
         Ok(())
     }
     pub fn stop(&mut self) {
-        self.timer.stop();
+        self.invalidate_expiry();
         self.retention = None;
         self.sample = None;
         self.pending_hide_reason = None;
@@ -546,5 +619,71 @@ mod tests {
             start + Duration::from_millis(251),
             true
         ));
+    }
+
+    #[test]
+    fn transient_unavailable_keeps_the_badge_candidate_bounded() {
+        assert!(transient_unavailable(
+            echo_windows::input_indicator::UnavailableReason::ObserverUnavailable
+        ));
+        assert!(transient_unavailable(
+            echo_windows::input_indicator::UnavailableReason::NoEditableTarget
+        ));
+        assert!(!transient_unavailable(
+            echo_windows::input_indicator::UnavailableReason::SettingsDisabled
+        ));
+        assert!(!transient_unavailable(
+            echo_windows::input_indicator::UnavailableReason::PointerAnchorUnavailable
+        ));
+    }
+
+    #[test]
+    fn expiry_serial_rejects_queued_old_events_and_freshness_still_expires() {
+        let sample = InputStatus {
+            generation: 2,
+            window: 1,
+            focused_window: 2,
+            process: 1,
+            process_started: 1,
+            mode: InputMode::Chinese,
+            composition: echo_engine::CompositionState::Idle,
+            anchor: echo_engine::InputAnchor::Caret,
+            geometry: echo_engine::InputTargetGeometry {
+                target: PhysicalRect {
+                    x: 10,
+                    y: 10,
+                    width: 1,
+                    height: 20,
+                },
+                work_area: PhysicalRect {
+                    x: 0,
+                    y: 0,
+                    width: 800,
+                    height: 600,
+                },
+                dpi: 96,
+            },
+            sampled_at: Instant::now(),
+            geometry_stamp: echo_engine::GeometryStamp {
+                source: echo_engine::GeometrySource::NativeCaret,
+                confidence: echo_engine::GeometryConfidence::Exact,
+                observed_at: Instant::now(),
+                sequence: 1,
+                context_epoch: 1,
+            },
+        };
+        let now = Instant::now();
+        assert!(displayable_sample(&sample, 2, now, true, false));
+        assert!(expiry_is_current(3, 3));
+        assert!(!expiry_is_current(2, 3));
+        let stale = InputStatus {
+            sampled_at: now - Duration::from_millis(500),
+            geometry_stamp: echo_engine::GeometryStamp {
+                observed_at: now - Duration::from_millis(500),
+                ..sample.geometry_stamp
+            },
+            ..sample
+        };
+        assert!(!displayable_sample(&stale, 2, now, true, false));
     }
 }

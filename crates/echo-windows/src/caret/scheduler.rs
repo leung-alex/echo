@@ -202,6 +202,19 @@ mod tests {
     }
 
     #[test]
+    fn closed_snapshot_can_report_late_callback_release() {
+        let mut state = SessionState::new(1);
+        state.outstanding_callbacks = 1;
+        state.mark_target_closed();
+        // A CLOSED response may be observed before the target's final
+        // Release.  A later CLOSED snapshot is allowed to publish zero.
+        state.sync_outstanding_callbacks(0);
+        assert_eq!(state.outstanding_callbacks, 0);
+        assert!(state.closed);
+        assert!(state.cancelled);
+    }
+
+    #[test]
     fn cap_and_rollover_close_without_allocating_more_callbacks() {
         let mut state = SessionState::new(1);
         state.outstanding_callbacks = SessionState::MAX_CALLBACKS;

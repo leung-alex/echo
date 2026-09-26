@@ -21,6 +21,14 @@ pub const RESPONSE_READY: u32 = 2;
 pub const RESPONSE_UNAVAILABLE: u32 = 3;
 pub const RESPONSE_CLOSED: u32 = 4;
 
+/// Response word 26 carries the badge DPI only when the producer can prove a
+/// monitor-effective value in the host coordinate space.  The TSF observer
+/// deliberately publishes zero: words 18..21 are physical screen pixels and
+/// Echo resolves the containing monitor/work-area/DPI on its own
+/// per-monitor-aware thread.  Zero is therefore an explicit "host resolved"
+/// marker, never a 96-DPI default.
+pub const GEOMETRY_DPI_HOST_RESOLVED: u32 = 0;
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Header {

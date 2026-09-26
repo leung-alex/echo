@@ -38,6 +38,14 @@ const GEOMETRY: u32 = 2;
 const CANDIDATE: u32 = 4;
 
 fn bootstrap_reason_code(error: &str) -> u32 {
+    if let Some(reason) = error
+        .split("reason=")
+        .nth(1)
+        .and_then(|value| value.split(|ch: char| !ch.is_ascii_digit()).next())
+        .and_then(|value| value.parse::<u32>().ok())
+    {
+        return reason;
+    }
     if error.contains("target identity") {
         32
     } else if error.contains("module") || error.contains("entry point") {
@@ -72,6 +80,27 @@ impl CaretProvider {
                 Err("ECHO_CARET_PROVIDER is not valid UTF-8".into())
             }
         }
+    }
+}
+
+/// Native acceptance supplies an exact fixture PID/root HWND so a transient
+/// focus loss cannot make the observer attach to an unrelated desktop app.
+/// Production processes do not set `ECHO_NATIVE_TEST_ROOT`, so this guard is
+/// inactive for ordinary use.
+fn native_test_target() -> Option<(u32, isize)> {
+    if std::env::var_os("ECHO_NATIVE_TEST_ROOT").is_none() {
+        return None;
+    }
+    let pid = std::env::var("ECHO_NATIVE_TEST_TARGET_PID")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok());
+    let hwnd = std::env::var("ECHO_NATIVE_TEST_TARGET_HWND")
+        .ok()
+        .and_then(|value| value.parse::<isize>().ok());
+    match (pid, hwnd) {
+        (Some(pid), Some(hwnd)) if pid != 0 && hwnd != 0 => Some((pid, hwnd)),
+        // A partially configured acceptance environment must fail closed.
+        _ => Some((u32::MAX, isize::MIN)),
     }
 }
 
@@ -566,10 +595,18 @@ fn candidate_from_anchor(
     }
 }
 
+/// Legacy geometry may keep explicit IME or pointer paths, but a generic
+/// control/window rectangle is the whole editor surface rather than the
+/// insertion caret.  Showing it would place the passive badge at an
+/// unrelated edge (for example, the far right of a WeChat composer).
+fn legacy_geometry_allowed(source: GeometrySource) -> bool {
+    !matches!(source, GeometrySource::Control)
+}
+
 fn candidate_from_tsf(
     reply: crate::caret::GeometryReply,
     identity: GeometryIdentity,
-    fallback_geometry: echo_engine::InputTargetGeometry,
+    _fallback_geometry: echo_engine::InputTargetGeometry,
     now_tick: u64,
 ) -> Option<GeometryCandidate> {
     if reply.status != crate::caret::ReplyStatus::Ready || !reply.accepted {
@@ -595,18 +632,21 @@ fn candidate_from_tsf(
         width: right.checked_sub(left)?,
         height: bottom.checked_sub(top)?,
     };
-    let dpi = if words[26] == 0 {
-        fallback_geometry.dpi
-    } else {
-        words[26].clamp(48, 768)
-    };
+    // The TSF observer publishes a physical screen rectangle.  Its request
+    // runs in the target thread's DPI context, so a target supplied DPI is
+    // not a reliable badge scale (system-aware and unaware targets are
+    // virtualized differently).  Resolve both the monitor work-area and the
+    // effective DPI on Echo's per-monitor-aware host from the new caret
+    // rectangle itself.  This also handles a caret crossing onto another
+    // monitor without retaining the legacy anchor's monitor metadata.
+    let host_geometry = crate::focus::geometry(rect);
     (rect.width >= 0 && rect.height > 0).then_some(GeometryCandidate::exact(
         identity,
         GeometrySource::TsfCaret,
         echo_engine::InputTargetGeometry {
             target: rect,
-            work_area: fallback_geometry.work_area,
-            dpi,
+            work_area: host_geometry.work_area,
+            dpi: host_geometry.dpi,
         },
         observed_at,
         u64::from(reply.request_sequence),
@@ -697,6 +737,7 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
     let mut next = Some(Instant::now());
     let mut failures = 0u32;
     let mut candidate_visible = false;
+    let owned_test_target = native_test_target();
     while !s.stopped.load(Ordering::Acquire) {
         while PeekMessageW(&mut msg, null_mut(), 0, 0, PM_REMOVE) != 0 {
             TranslateMessage(&msg);
@@ -709,12 +750,37 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
             cached = None;
             admitted_target = None;
             observer = None;
-            caret_observer = None;
             tsf_candidate = None;
-            tsf_diagnostic = None;
             legacy_geometry = None;
             pending = None;
             next = None;
+            // Keep a closed observer alive while its target-side callback
+            // leases drain.  `CLOSED` is published before the final COM
+            // Release, so dropping the mapping here would lose the only
+            // post-stop outstanding=0 evidence.
+            if let Some(caret) = caret_observer.as_mut() {
+                let now_tick = GetTickCount64();
+                caret.close();
+                if let Some(reply) = caret.try_read(now_tick) {
+                    let terminal = reply.status == crate::caret::ReplyStatus::Closed;
+                    let drained = reply.response_words[30] == 0;
+                    tsf_diagnostic = Some(TsfDiagnostic::from_reply(reply, now_tick));
+                    let generation = s.generation.load(Ordering::Acquire);
+                    (s.post)(Update {
+                        generation,
+                        observation: Observation::Unavailable {
+                            reason: UnavailableReason::SettingsDisabled,
+                            process_name: None,
+                            trigger: InvalidationTrigger::SettingsDisable,
+                            elapsed_ms: 0,
+                        },
+                        tsf: tsf_diagnostic,
+                    });
+                    if terminal && drained {
+                        caret_observer = None;
+                    }
+                }
+            }
         } else if hooks.is_none() {
             hooks = Some(Hooks::install());
             s.dirty.fetch_or(FOCUS, Ordering::Release);
@@ -747,6 +813,41 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
             };
             s.samples.fetch_add(1, Ordering::Relaxed);
             let snapshot = FocusSnapshot::capture_for_indicator();
+            if let Some((owned_pid, owned_hwnd)) = owned_test_target {
+                if snapshot.process_id != owned_pid || snapshot.window_id != owned_hwnd {
+                    // Never let the acceptance observer follow the foreground
+                    // into a browser/editor after the fixture loses focus.
+                    cached = None;
+                    admitted_target = None;
+                    observer = None;
+                    pending = None;
+                    tsf_candidate = None;
+                    legacy_geometry = None;
+                    if let Some(caret) = caret_observer.as_mut() {
+                        caret.close();
+                        if let Some(reply) = caret.try_read(GetTickCount64()) {
+                            if reply.status == crate::caret::ReplyStatus::Closed
+                                && reply.response_words[30] == 0
+                            {
+                                caret_observer = None;
+                            }
+                        }
+                    }
+                    let generation = s.generation.load(Ordering::Acquire);
+                    (s.post)(Update {
+                        generation,
+                        observation: Observation::Unavailable {
+                            reason: UnavailableReason::NoEditableTarget,
+                            process_name: None,
+                            trigger: InvalidationTrigger::Foreground,
+                            elapsed_ms: 0,
+                        },
+                        tsf: None,
+                    });
+                    next = Some(Instant::now() + Duration::from_millis(100));
+                    continue;
+                }
+            }
             let current_endpoint = (None, snapshot.input_endpoint());
             let same = admitted_target.as_ref().is_some_and(|admitted| {
                 admitted.snapshot.current()
@@ -989,6 +1090,7 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
                         caret.rebind_focus_generation(endpoint.focus_generation);
                     }
                     let mut observer_closed = false;
+                    let mut target_closed = false;
                     if let Some(caret) = caret_observer.as_mut() {
                         let now_tick = GetTickCount64();
                         caret.heartbeat(now_tick);
@@ -1013,10 +1115,13 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
                                     )
                                 });
                             } else if reply.status == crate::caret::ReplyStatus::Closed {
-                                // A lifecycle fault or target-side close retires
-                                // this observer instance. The next admitted
-                                // poll creates a fresh nonce-bound scheduler.
-                                observer_closed = true;
+                                // CLOSED is published before the target-side
+                                // callback leases are finally released. Keep
+                                // the mapping alive until the same snapshot
+                                // reports outstanding=0, but never acquire a
+                                // new request after the target has closed.
+                                target_closed = true;
+                                observer_closed = reply.response_words[30] == 0;
                                 tsf_candidate = None;
                             } else if reply.status == crate::caret::ReplyStatus::Unavailable
                                 && reply.response_words[4] == 26
@@ -1027,7 +1132,7 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
                                 tsf_candidate = None;
                             }
                         }
-                        if !observer_closed {
+                        if !observer_closed && !target_closed {
                             let request = caret.try_request(now_tick, dirty);
                             if matches!(
                                 request,
@@ -1170,6 +1275,10 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
                         unavailable_reason = UnavailableReason::NoEditableTarget;
                         return None;
                     };
+                    if !legacy_geometry_allowed(legacy_stamp.source) {
+                        unavailable_reason = UnavailableReason::NoEditableTarget;
+                        return None;
+                    }
                     (legacy_anchor, legacy_stamp)
                 };
                 Some(InputStatus {
@@ -1376,6 +1485,14 @@ mod tests {
         let selected = select_primary_geometry(identity, None, Some(candidate), now)
             .expect("TSF-only admission must remain selectable");
         assert_eq!(selected.source, GeometrySource::TsfCaret);
+    }
+
+    #[test]
+    fn legacy_rejects_whole_control_fallback_but_keeps_explicit_special_paths() {
+        assert!(!legacy_geometry_allowed(GeometrySource::Control));
+        assert!(legacy_geometry_allowed(GeometrySource::Pointer));
+        assert!(legacy_geometry_allowed(GeometrySource::ImmExclusion));
+        assert!(legacy_geometry_allowed(GeometrySource::UiaCaret));
     }
 
     #[test]

@@ -36,12 +36,22 @@ Foreground/focus events invalidate samples. Mode is refreshed every 100ms while
 an input is valid; geometry events refresh the anchor and periodic revalidation
 checks identity/writability. Failed reads back off. Disabled observation releases
 hooks and stops sampling. Stale, unknown-mode, hidden, password and readonly
-targets do not show a badge. Generic window-only anchors are rejected. Warp has an
-explicit pointer-status fallback: when precise geometry is unavailable, show the
+targets do not show a badge. Generic window-only anchors are rejected. In
+`legacy`, a `Control`/`Window` rectangle is also rejected as a caret surrogate;
+this keeps a whole WeChat composer from producing a badge at its unrelated
+right edge. Real WeChat caret following still requires the explicitly selected
+`primary` provider and its native G4 gate; the default provider remains
+`legacy`. Warp has an explicit pointer-status fallback: when precise geometry is unavailable, show the
 verified mode near the current mouse pointer while its window is foreground. This does
 not assert an editable control or caret location. Alt+V uses the pointer captured
 at activation, with the existing work-area clamping. Other applications keep
 their existing placement policy.
+
+The TSF response rectangle is already in physical screen coordinates. Response
+word 26 is a host-resolved marker (`0`), not a scale factor: the host resolves
+the monitor, work area and effective DPI from that fresh caret rectangle using
+`MonitorFromRect`. It does not apply a second DPI multiplication or revive a
+fallback rectangle when TSF has no caret.
 
 Chinese/native and alphanumeric conversion states are interpreted together with
 the input language. Missing or conflicting evidence is Unknown. A keyboard layout
@@ -93,6 +103,14 @@ text, read the clipboard or move focus.
 This prints only target identity, mode and geometry changes. Verify physical Shift,
 Win+Space, candidate visibility, typing, scrolling, application transitions and
 mixed-DPI monitors separately. Mark scenarios not performed as NOT_RUN.
+
+If an owned native fixture loses the foreground, acceptance must stop and fail
+closed. The runner must not reactivate the fixture after Echo starts, and the
+monitor must reject observations whose PID/root HWND do not match the explicit
+fixture identity. This rule was added after a prior fail-open run continued
+after foreground loss and exited the user's browser; a later rerun requires a
+new authorized evidence directory and must keep the affected native scenarios
+NOT_RUN until they are exercised safely.
 
 Candidate-window suppression is limited to windows near the verified caret.
 Persistent IME toolbars and candidate windows next to another editor must not
@@ -188,6 +206,14 @@ not proof that a compositor displayed each frame. `skip-hidden` and
 The observer logs changes before UI-event coalescing; this distinguishes a mode
 that never arrived from one merged before delivery. It cannot record unobserved
 changes between sampling intervals.
+
+An old `InputIndicatorExpired` event may remain queued after a newer observation
+has been produced. Each freshness timer carries a serial; a newer observation,
+target transition, disable, or stop invalidates older serials before they can
+hide the current badge. The current serial still expires the sample at the
+normal freshness boundary, while transient same-target unavailability uses the
+bounded retention window. This prevents a delayed timer from creating a
+hide/show blink without keeping a dead sample visible indefinitely.
 
 A bounded 128-entry queue is drained by the existing domain worker. Producers
 never wait for disk or create another thread. Queue overflow is counted in the

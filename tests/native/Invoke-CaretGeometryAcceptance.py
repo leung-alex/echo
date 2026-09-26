@@ -199,9 +199,20 @@ def main():
     user32.GetWindowThreadProcessId.restype = ctypes.c_uint32
     user32.keybd_event.argtypes = [ctypes.c_ubyte, ctypes.c_ubyte, ctypes.c_ulong, ctypes.c_void_p]
 
+    def assert_owned_fixture_foreground(label):
+        if ready is None:
+            raise RuntimeError(f"{label}: fixture is not ready")
+        foreground = int(user32.GetForegroundWindow())
+        if foreground != int(ready["hwnd"]):
+            raise RuntimeError(
+                f"{label}: owned fixture lost foreground; refusing cross-process observer "
+                f"(foreground={foreground}, fixture={ready['hwnd']})"
+            )
+
     def fixture_command(command):
         if ready is None:
             raise RuntimeError("fixture is not ready")
+        assert_owned_fixture_foreground(f"fixture command {command}")
         nonce = uuid.uuid4().hex
         command_path = root / ready.get("command", "fixture.command.json")
         response_path = root / ready.get("response", "fixture.response.json")
@@ -220,6 +231,7 @@ def main():
 
     def echo_call(command):
         nonlocal sequence
+        assert_owned_fixture_foreground(f"Echo command {command.get('verb', 'unknown')}")
         sequence += 1
         request = root / "native-control" / "request.json"
         response = root / "native-control" / "response.json"
@@ -286,6 +298,8 @@ def main():
             "callback_entered",
             "callback_completed",
             "final_released",
+            "created_callbacks",
+            "released_callbacks",
             "cancelled",
             "timed_out",
             "ready_results",
@@ -322,7 +336,10 @@ def main():
             raise RuntimeError(f"{error}; last_indicator={latest}") from error
 
     def assert_oracle(value):
-        required = ("pid", "hwnd", "input_hwnd", "visible", "dpi", "window_rect", "caret", "sequence")
+        required = (
+            "pid", "hwnd", "input_hwnd", "visible", "dpi", "window_rect",
+            "input_rect", "work_area", "caret", "sequence",
+        )
         if any(key not in value for key in required):
             raise AssertionError(f"oracle missing fields: {value}")
         if value["pid"] != fixture_process.pid or int(value["hwnd"]) != int(ready["hwnd"]):
@@ -331,14 +348,19 @@ def main():
         root_hwnd = int(value["hwnd"])
         if not value["visible"] or not input_hwnd:
             raise AssertionError(f"oracle HWND is not a visible owned target: {value}")
-        if input_hwnd != root_hwnd:
-            if int(user32.GetAncestor(ctypes.c_void_p(input_hwnd), 2)) != root_hwnd:
-                raise AssertionError(f"oracle child HWND is outside root: {value}")
-            owner = ctypes.c_uint32()
-            if user32.GetWindowThreadProcessId(ctypes.c_void_p(input_hwnd), ctypes.byref(owner)) == 0 or owner.value != fixture_process.pid:
-                raise AssertionError(f"oracle child HWND owner mismatch: {value}")
+        if input_hwnd == root_hwnd:
+            raise AssertionError(f"oracle input HWND must be an independent child: {value}")
+        if int(user32.GetAncestor(ctypes.c_void_p(input_hwnd), 2)) != root_hwnd:
+            raise AssertionError(f"oracle child HWND is outside root: {value}")
+        owner = ctypes.c_uint32()
+        if user32.GetWindowThreadProcessId(ctypes.c_void_p(input_hwnd), ctypes.byref(owner)) == 0 or owner.value != fixture_process.pid:
+            raise AssertionError(f"oracle child HWND owner mismatch: {value}")
         if len(value["caret"]) != 4 or value["caret"][2] <= value["caret"][0] or value["caret"][3] <= value["caret"][1]:
             raise AssertionError(f"oracle caret is invalid: {value}")
+        if len(value["work_area"]) != 4 or value["work_area"][2] <= 0 or value["work_area"][3] <= 0:
+            raise AssertionError(f"oracle work area is invalid: {value}")
+        if len(value["input_rect"]) != 4 or value["input_rect"][2] <= 0 or value["input_rect"][3] <= 0:
+            raise AssertionError(f"oracle child rect is invalid: {value}")
 
     try:
         fixture_log = (root / "fixture.log").open("w", encoding="utf-8")
@@ -350,6 +372,10 @@ def main():
         ready = read_json(root / "fixture.ready.json")
         if int(ready["pid"]) != fixture_process.pid:
             raise RuntimeError(f"fixture PID changed: {ready}")
+        # Bind the observer to this exact fixture before starting Echo. The
+        # native monitor fails closed if foreground moves to another process.
+        env["ECHO_NATIVE_TEST_TARGET_PID"] = str(fixture_process.pid)
+        env["ECHO_NATIVE_TEST_TARGET_HWND"] = str(ready["hwnd"])
         if int(user32.GetForegroundWindow()) != int(ready["hwnd"]):
             # Windows foreground-lock policy permits the owned fixture to be
             # activated after a bounded Alt tap. This does not send text.
@@ -366,6 +392,10 @@ def main():
                                 stdout=echo_log, stderr=echo_log, creationflags=subprocess.CREATE_NO_WINDOW)
         children.append(echo)
         wait_for(lambda: (root / "native-control").is_dir(), "Echo native bridge", timeout=12)
+
+        # Never steal focus after Echo starts. A lost target aborts the run so
+        # the observer cannot sample an unrelated browser or editor.
+        assert_owned_fixture_foreground("after Echo startup")
 
         normal = fixture_command("CreateScenario|normal")
         if normal.get("status") != "PASS":
@@ -386,6 +416,10 @@ def main():
                 raise AssertionError(f"sample target mismatch: {value}")
             if geometry.get("source") != "TsfCaret":
                 raise AssertionError(f"selected source is not TsfCaret: {value}")
+            if not compare_rect(geometry.get("work_area"), oracle_value["work_area"], tolerance=0):
+                raise AssertionError(f"host work-area does not match independent oracle: {geometry} vs {oracle_value}")
+            if int(geometry.get("dpi") or 0) != int(oracle_value["dpi"]):
+                raise AssertionError(f"host monitor DPI does not match independent oracle: {geometry} vs {oracle_value}")
             if tsf.get("state") != "Ready" or not tsf.get("raw_rect") or not tsf.get("normalized_rect"):
                 raise AssertionError(f"TSF diagnostics not ready: {value}")
             if not compare_rect(tsf["normalized_rect"], oracle_value["caret"], tolerance=4):
@@ -443,6 +477,8 @@ def main():
             ("N02-empty-context", "CreateScenario|empty", True),
             ("N05-readonly", "CreateScenario|readonly", False),
             ("N11-context-replaced", "CreateScenario|context-replaced", True),
+            ("N12-root-child-two", "CreateScenario|child-two", True),
+            ("N13-root-child-one", "CreateScenario|child-one", True),
             ("N20-current-dpi-smoke", "CreateScenario|mixed-dpi", True),
             ("N23-mode-only", "SetSyntheticModeForFixture|normal", True),
             ("N24-geometry-only", "MoveCaret|0", True),
@@ -450,6 +486,7 @@ def main():
         last_epoch = (initial.get("tsf") or {}).get("context_epoch")
         for name, command, require_ready in scenarios:
             before = int(current_oracle["sequence"])
+            previous_input_hwnd = int(current_oracle["input_hwnd"])
             result = fixture_command(command)
             if result.get("status") == "UNSUPPORTED":
                 check(name, "UNSUPPORTED", reason=result.get("reason"))
@@ -474,7 +511,14 @@ def main():
                         )
                     value = wait_indicator(current_ready, name + " TSF")
                     epoch = (value.get("tsf") or {}).get("context_epoch")
-                    validate_ready(name, current_oracle, value, last_epoch if name == "N11-context-replaced" else None)
+                    validate_ready(
+                        name,
+                        current_oracle,
+                        value,
+                        last_epoch if name in ("N11-context-replaced", "N12-root-child-two", "N13-root-child-one") else None,
+                    )
+                    if name in ("N12-root-child-two", "N13-root-child-one") and int(current_oracle["input_hwnd"]) == previous_input_hwnd:
+                        raise AssertionError(f"child switch did not change input HWND: {current_oracle}")
                     last_epoch = epoch or last_epoch
                 except (AssertionError, RuntimeError) as error:
                     check(name, "FAIL", error=str(error), oracle=current_oracle)
@@ -542,85 +586,212 @@ def main():
             check("fixture-multiline-real-tsf", "UNSUPPORTED", reason=result.get("reason", result))
 
         # G3 stress terminates on target-owned accepted sessions, not RPC read
-        # count or attempted API requests. Stop the monitor before comparing
-        # cumulative counters so no new request races the final snapshot.
+        # count or attempted API requests.  The monitor is then *actually*
+        # disabled and we wait for a fresh post-stop diagnostic snapshot.  A
+        # pre-stop snapshot is never reused as evidence that callbacks drained.
         stress_count = 1000
         stress_started = time.monotonic()
         stress_before = echo_call({"verb": "input_indicator"})
         stress_before_counters = trace_counters(stress_before)
-        stress_last_counters = dict(stress_before_counters)
+        stress_before_sample = stress_before.get("sample") or {}
+        if not isinstance(stress_before_sample, dict):
+            raise AssertionError(f"G3 target identity missing from starting sample: {stress_before}")
+        stress_target = {
+            "pid": int(stress_before_sample.get("pid") or 0),
+            "window": int(stress_before_sample.get("window") or 0),
+            "focused_window": int(stress_before_sample.get("focused_window") or 0),
+            "fixture_pid": int(fixture_process.pid),
+            "fixture_root_hwnd": int(ready["hwnd"]),
+        }
+        if stress_target["pid"] != fixture_process.pid or stress_target["window"] != int(ready["hwnd"]):
+            raise AssertionError(f"G3 target identity mismatch at start: {stress_target}")
+
+        def check_stress_sample(value, label):
+            sample = value.get("sample") or {}
+            if not sample:
+                return
+            if int(sample.get("pid") or 0) != stress_target["pid"]:
+                raise AssertionError(f"{label} changed target PID: {sample}")
+            if int(sample.get("window") or 0) != stress_target["window"]:
+                raise AssertionError(f"{label} changed target root HWND: {sample}")
+
+        def observe_stress(value, label, allow_hidden=True):
+            counters = trace_counters(value, allow_hidden=allow_hidden)
+            if counters is None:
+                return None
+            check_stress_sample(value, label)
+            if counters["pending_callbacks"] > 1:
+                raise AssertionError(f"{label} pending callback state exceeded 1: {counters}")
+            if counters["outstanding_callbacks"] > 8:
+                raise AssertionError(f"{label} outstanding callback cap exceeded: {counters}")
+            if counters["callback_high_water"] > 8:
+                raise AssertionError(f"{label} callback high-water cap exceeded: {counters}")
+            if counters["pending_high_water"] > 1:
+                raise AssertionError(f"{label} pending high-water cap exceeded: {counters}")
+            return counters
+
         stress_latest = stress_before
+        stress_terminal = None
         stress_error = None
         reads = 0
+        drain_reads = 0
         max_pending = stress_before_counters["pending_callbacks"]
         max_outstanding = stress_before_counters["outstanding_callbacks"]
         max_high_water = stress_before_counters["callback_high_water"]
         max_pending_high_water = stress_before_counters["pending_high_water"]
+        stop_requested_at = None
+        drain_finished_at = None
+
+        def set_indicator_enabled(enabled):
+            """Persist an isolated monitor toggle and wait for UI state to agree."""
+            paused = not enabled
+            result = echo_call(
+                {"verb": "input_indicator_setting", "paused": paused, "file": "save"}
+            )
+            expected = bool(enabled)
+            if bool(result.get("draft")) != expected:
+                raise AssertionError(f"indicator toggle did not apply: {result}")
+
+            def committed():
+                state = echo_call(
+                    {"verb": "input_indicator_setting", "paused": paused, "file": "cancel"}
+                )
+                return state if bool(state.get("saved")) == expected and bool(state.get("draft")) == expected else None
+
+            return wait_for(committed, "input indicator monitor setting", timeout=8, interval=0.08)
+
         try:
             while True:
                 stress_latest = echo_call({"verb": "input_indicator"})
                 reads += 1
-                counters = trace_counters(stress_latest, allow_hidden=True)
+                counters = observe_stress(stress_latest, "G3 stress", allow_hidden=True)
                 if counters is None:
-                    # A hide/re-show boundary can briefly release the
-                    # diagnostic object. Keep polling; the last valid
-                    # counters remain the comparison boundary.
-                    counters = stress_last_counters
-                else:
-                    stress_last_counters = dict(counters)
+                    # Hidden diagnostics contain no current TSF snapshot. Keep
+                    # polling, but never substitute a pre-stop counter value.
+                    if time.monotonic() - stress_started > 120:
+                        raise AssertionError("accepted-session loop lost its TSF diagnostic")
+                    continue
                 max_pending = max(max_pending, counters["pending_callbacks"])
                 max_outstanding = max(max_outstanding, counters["outstanding_callbacks"])
                 max_high_water = max(max_high_water, counters["callback_high_water"])
                 max_pending_high_water = max(max_pending_high_water, counters["pending_high_water"])
-                if max_pending > 8 or max_outstanding > 8 or max_high_water > 8:
-                    raise AssertionError(
-                        f"callback cap exceeded pending={max_pending} outstanding={max_outstanding} high_water={max_high_water}"
-                    )
                 accepted_delta = counters["accepted_sessions"] - stress_before_counters["accepted_sessions"]
+                if accepted_delta < 0:
+                    raise AssertionError(f"accepted-session counter regressed: {counters}")
                 if accepted_delta >= stress_count:
                     break
                 if time.monotonic() - stress_started > 120:
                     raise AssertionError(
                         f"accepted-session timeout delta={accepted_delta} reads={reads}"
                     )
-            stress_paused = echo_call({"verb": "input_indicator_setting", "paused": True})
-            stress_latest = echo_call({"verb": "input_indicator"})
-            terminal_counters = trace_counters(stress_latest, allow_hidden=True) or stress_last_counters
-            if terminal_counters["accepted_sessions"] - stress_before_counters["accepted_sessions"] < stress_count:
+
+            # `input_indicator_setting` normally edits a draft.  `file=save`
+            # commits the isolated synthetic setting so this stop really tears
+            # down the monitor and cannot race another acquisition.  Wait for
+            # the commit instead of assuming the command response is enough.
+            stop_requested_at = time.monotonic()
+            set_indicator_enabled(False)
+
+            # A final Release can arrive after the scheduler close.  Read only
+            # snapshots obtained after stop_requested_at and require the
+            # target-owned counters to settle; a cached stress snapshot is a
+            # hard failure rather than evidence of a drain.
+            drain_deadline = time.monotonic() + 10
+            while time.monotonic() < drain_deadline:
+                candidate = echo_call({"verb": "input_indicator"})
+                drain_reads += 1
+                counters = observe_stress(candidate, "G3 post-stop drain", allow_hidden=True)
+                if counters is None:
+                    time.sleep(0.08)
+                    continue
+                stress_terminal = candidate
+                max_pending = max(max_pending, counters["pending_callbacks"])
+                max_outstanding = max(max_outstanding, counters["outstanding_callbacks"])
+                max_high_water = max(max_high_water, counters["callback_high_water"])
+                max_pending_high_water = max(max_pending_high_water, counters["pending_high_water"])
+                created_delta = counters["created_callbacks"] - stress_before_counters["created_callbacks"]
+                released_delta = counters["released_callbacks"] - stress_before_counters["released_callbacks"]
+                final_delta = counters["final_released"] - stress_before_counters["final_released"]
+                if (
+                    counters["pending_callbacks"] == 0
+                    and counters["outstanding_callbacks"] == 0
+                    and created_delta == released_delta == final_delta
+                ):
+                    drain_finished_at = time.monotonic()
+                    break
+                time.sleep(0.08)
+            if stress_terminal is None:
+                raise AssertionError("G3 drain produced no post-stop TSF diagnostic")
+            terminal_counters = trace_counters(stress_terminal)
+            if drain_finished_at is None:
+                raise AssertionError(
+                    f"G3 drain timeout after stop: {terminal_counters} reads={drain_reads}"
+                )
+            accepted_delta = terminal_counters["accepted_sessions"] - stress_before_counters["accepted_sessions"]
+            created_delta = terminal_counters["created_callbacks"] - stress_before_counters["created_callbacks"]
+            released_delta = terminal_counters["released_callbacks"] - stress_before_counters["released_callbacks"]
+            final_delta = terminal_counters["final_released"] - stress_before_counters["final_released"]
+            ready_delta = terminal_counters["ready_results"] - stress_before_counters["ready_results"]
+            if accepted_delta < stress_count:
                 raise AssertionError(f"accepted-session drain lost: {terminal_counters}")
+            if created_delta != released_delta or created_delta != final_delta:
+                raise AssertionError(
+                    f"callback create/final-release mismatch created={created_delta} released={released_delta} final={final_delta}; counters={terminal_counters}"
+                )
+            if terminal_counters["outstanding_callbacks"] != 0:
+                raise AssertionError(f"G3 outstanding callbacks remained after drain: {terminal_counters}")
+            if terminal_counters["pending_callbacks"] != 0:
+                raise AssertionError(f"G3 pending callback remained after drain: {terminal_counters}")
             if terminal_counters["callback_entered"] - stress_before_counters["callback_entered"] != terminal_counters["callback_completed"] - stress_before_counters["callback_completed"]:
                 raise AssertionError(f"callback entry/completion mismatch: {terminal_counters}")
-            echo_call({"verb": "input_indicator_setting", "paused": False})
+            if ready_delta < stress_count:
+                raise AssertionError(
+                    f"1000 accepted sessions did not yield 1000 ready results: accepted={accepted_delta} ready={ready_delta}"
+                )
         except (AssertionError, RuntimeError, ValueError) as error:
             stress_error = str(error)
         finally:
             try:
-                echo_call({"verb": "input_indicator_setting", "paused": False})
+                # Restore the isolated setting for subsequent mock lifecycle
+                # cases. This is not evidence for G3 and is never used as its
+                # terminal counter snapshot.
+                set_indicator_enabled(True)
             except (RuntimeError, OSError):
                 pass
-        stress_after_counters = trace_counters(stress_latest, allow_hidden=True) or stress_last_counters
-        stress_delta = counter_delta(stress_before_counters, stress_after_counters)
+        stress_after = stress_terminal
+        stress_after_counters = trace_counters(stress_after) if stress_after is not None else None
+        stress_delta = counter_delta(stress_before_counters, stress_after_counters) if stress_after_counters else None
         stress_summary = {
             "requested_accepted_sessions": stress_count,
-            "attempted_requests": stress_delta["api_requests"],
-            "actual_request_edit_session_calls": stress_delta["request_edit_calls"],
-            "accepted_sessions": stress_delta["accepted_sessions"],
-            "callback_entered": stress_delta["callback_entered"],
-            "callback_completed": stress_delta["callback_completed"],
-            "final_released": stress_delta["final_released"],
-            "ready_results": stress_delta["ready_results"],
-            "cancelled": stress_delta["cancelled"],
-            "timed_out": stress_delta["timed_out"],
+            "attempted_requests": stress_delta["api_requests"] if stress_delta else None,
+            "actual_request_edit_session_calls": stress_delta["request_edit_calls"] if stress_delta else None,
+            "accepted_sessions": stress_delta["accepted_sessions"] if stress_delta else None,
+            "created_callbacks": stress_delta["created_callbacks"] if stress_delta else None,
+            "released_callbacks": stress_delta["released_callbacks"] if stress_delta else None,
+            "callback_entered": stress_delta["callback_entered"] if stress_delta else None,
+            "callback_completed": stress_delta["callback_completed"] if stress_delta else None,
+            "final_released": stress_delta["final_released"] if stress_delta else None,
+            "ready_results": stress_delta["ready_results"] if stress_delta else None,
+            "cancelled": stress_delta["cancelled"] if stress_delta else None,
+            "timed_out": stress_delta["timed_out"] if stress_delta else None,
+            "outstanding_callbacks_at_drain": stress_after_counters["outstanding_callbacks"] if stress_after_counters else None,
+            "pending_callbacks_at_drain": stress_after_counters["pending_callbacks"] if stress_after_counters else None,
             "observation_reads": reads,
+            "drain_reads": drain_reads,
+            "post_stop_snapshot": stress_terminal is not None,
+            "drain_completed": drain_finished_at is not None,
             "elapsed_ms": round((time.monotonic() - stress_started) * 1000),
+            "stop_wait_ms": round((drain_finished_at - stop_requested_at) * 1000) if drain_finished_at and stop_requested_at else None,
             "before_counts": stress_before.get("counts"),
-            "after_counts": stress_latest.get("counts"),
+            "after_counts": stress_after.get("counts") if stress_after else None,
+            "before_tsf_counters": stress_before_counters,
+            "after_tsf_counters": stress_after_counters,
+            "counter_delta": stress_delta,
+            "target_identity": stress_target,
             "max_pending_callbacks": max_pending,
             "max_outstanding_callbacks": max_outstanding,
             "max_callback_high_water": max_high_water,
             "max_pending_high_water": max_pending_high_water,
-            "source_pid": (stress_latest.get("sample") or {}).get("pid"),
-            "source_window": (stress_latest.get("sample") or {}).get("window"),
             "error": stress_error,
         }
         (root / "g3-stress.json").write_text(json.dumps(stress_summary, indent=2), encoding="utf-8")
@@ -632,18 +803,9 @@ def main():
             indicator=stress_latest,
         )
 
-        # The long stress loop can lose the foreground to an unrelated desktop
-        # window. Revalidate the owned HWND before starting MockCOM faults so a
-        # watchdog close is reported as a focus case rather than attributed to
-        # the adapter.
-        user32.keybd_event(0x12, 0, 0, None)
-        user32.keybd_event(0x12, 0, 2, None)
-        user32.SetForegroundWindow(ctypes.c_void_p(ready["hwnd"]))
-        wait_for(
-            lambda: int(user32.GetForegroundWindow()) == int(ready["hwnd"]),
-            "owned fixture foreground before MockCOM",
-            timeout=5,
-        )
+        # The long stress loop must not recover by stealing focus. If another
+        # application became foreground, stop before any MockCOM case.
+        assert_owned_fixture_foreground("before MockCOM")
         fixture_command("FocusEditor")
 
         # The fault matrix uses an explicit fixture command. Lifecycle cases
@@ -761,13 +923,9 @@ def main():
                 # Quiesce the observer before arming a lifecycle fault. The
                 # next request is then the explicit fault request rather than
                 # one ordinary TSF request racing the fault-file update.
-                paused = echo_call({"verb": "input_indicator_setting", "paused": True})
-                if paused.get("draft") is not False:
-                    raise AssertionError(f"failed to pause before lifecycle fault: {paused}")
+                set_indicator_enabled(False)
                 fixture_command("Fault|" + expected["fault"])
-                resumed = echo_call({"verb": "input_indicator_setting", "paused": False})
-                if resumed.get("draft") is not True:
-                    raise AssertionError(f"failed to resume lifecycle fault: {resumed}")
+                set_indicator_enabled(True)
                 fixture_command("FocusEditor")
                 fixture_command("MoveCaret|0")
                 initial = wait_indicator(
@@ -796,14 +954,10 @@ def main():
                     # state. Recreate the observer before issuing the delayed
                     # drain so the queue is drained by a later scheduler
                     # request even if the original runtime has closed.
-                    paused = echo_call({"verb": "input_indicator_setting", "paused": True})
-                    if paused.get("draft") is not False:
-                        raise AssertionError(f"failed to pause before release-cap drain: {paused}")
+                    set_indicator_enabled(False)
                     fixture_command("Fault|clear")
                     fixture_command("Fault|lifecycle-drain")
-                    resumed = echo_call({"verb": "input_indicator_setting", "paused": False})
-                    if resumed.get("draft") is not True:
-                        raise AssertionError(f"failed to resume release-cap drain: {resumed}")
+                    set_indicator_enabled(True)
                     fixture_command("FocusEditor")
                 else:
                     fixture_command("Fault|clear")
@@ -851,6 +1005,14 @@ def main():
                         raise AssertionError(
                             f"{field} initial_delta={initial_delta[field]} expected={expected_delta}; before={before_counters} initial={initial_counters} after={after_counters}"
                         )
+                if initial_delta["request_edit_calls"] < expected["request_edit_calls"]:
+                    raise AssertionError(
+                        f"request_edit_calls initial_delta={initial_delta['request_edit_calls']} expected_at_least={expected['request_edit_calls']}; before={before_counters} initial={initial_counters}"
+                    )
+                if initial_delta["accepted_sessions"] < expected["accepted"]:
+                    raise AssertionError(
+                        f"accepted_sessions initial_delta={initial_delta['accepted_sessions']} expected_at_least={expected['accepted']}; before={before_counters} initial={initial_counters}"
+                    )
                 for field, expected_delta in (
                     ("mock_callback_entered", expected["entered"]),
                     ("mock_callback_completed", expected["completed"]),
@@ -860,6 +1022,19 @@ def main():
                         raise AssertionError(
                             f"{field} drained_delta={drained_delta[field]} expected={expected_delta}; before={before_counters} drained={drained_counters} after={after_counters}"
                         )
+                created_delta = drained_delta["created_callbacks"]
+                released_delta = drained_delta["released_callbacks"]
+                final_delta = drained_delta["final_released"]
+                if created_delta != released_delta or created_delta != final_delta:
+                    raise AssertionError(
+                        f"{name} callback create/final-release mismatch created={created_delta} released={released_delta} final={final_delta}; before={before_counters} drained={drained_counters}"
+                    )
+                if drained_counters["outstanding_callbacks"] != 0:
+                    raise AssertionError(f"{name} outstanding callbacks remained after explicit drain: {drained_counters}")
+                if drained_counters["pending_callbacks"] != 0:
+                    raise AssertionError(f"{name} pending callback remained after explicit drain: {drained_counters}")
+                if drained_counters["callback_high_water"] > 8 or drained_counters["pending_high_water"] > 1:
+                    raise AssertionError(f"{name} callback high-water cap exceeded: {drained_counters}")
                 check(
                     name,
                     "PASS",
@@ -878,6 +1053,12 @@ def main():
                         "initial_delta": initial_delta,
                         "drained": drained_counters,
                         "drained_delta": drained_delta,
+                        "retained_before_drain": {
+                            "created_callbacks": initial_delta["created_callbacks"],
+                            "final_released": initial_delta["final_released"],
+                            "outstanding_callbacks": initial_counters["outstanding_callbacks"],
+                            "pending_callbacks": initial_counters["pending_callbacks"],
+                        },
                         "after": after_counters,
                         "delta": delta,
                         "oracle_sequence_before": before_sequence,
@@ -941,6 +1122,8 @@ def main():
             {"name": "N02-empty-context", "evidence_kind": "RealTSF", "required": True},
             {"name": "N05-readonly", "evidence_kind": "RealTSF", "required": True},
             {"name": "N11-context-replaced", "evidence_kind": "RealTSF", "required": True},
+            {"name": "N12-root-child-two", "evidence_kind": "RealTSF", "required": True},
+            {"name": "N13-root-child-one", "evidence_kind": "RealTSF", "required": True},
             {"name": "N20-current-dpi-smoke", "evidence_kind": "DPI", "required": False},
             {"name": "N23-mode-only", "evidence_kind": "RealTSF", "required": True},
             {"name": "N24-geometry-only", "evidence_kind": "RealTSF", "required": True},
@@ -1004,6 +1187,28 @@ def main():
         }
         (root / "results.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
         return 0 if overall == "PASS" else 2
+    except (AssertionError, RuntimeError, ValueError, OSError, subprocess.SubprocessError) as error:
+        # Preserve a machine-readable safety abort even when the run stops
+        # before the normal manifest can be assembled. In particular, a lost
+        # fixture foreground must never be recovered by activating another
+        # window or silently downgraded to a partial result.
+        try:
+            (root / "runner-error.json").write_text(
+                json.dumps(
+                    {
+                        "schema": "echo.caret.runner-error.v1",
+                        "overall": "FAIL",
+                        "error": str(error),
+                        "checks": checks,
+                        "foreground_policy": "fail-closed; no recovery activation after Echo start",
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+        raise
     finally:
         try:
             if ready is not None:

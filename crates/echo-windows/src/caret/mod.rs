@@ -287,6 +287,12 @@ impl CaretObserver {
             return None;
         }
         if status == ReplyStatus::Closed {
+            // CLOSED is a terminal session state, but the target may still
+            // own asynchronous COM callback references.  The target updates
+            // this same CLOSED snapshot after each final Release; synchronize
+            // the host-side count before retiring the observer so diagnostics
+            // can prove the real drain.
+            self.session.sync_outstanding_callbacks(words[30]);
             self.session.mark_target_closed();
             return Some(GeometryReply {
                 status,

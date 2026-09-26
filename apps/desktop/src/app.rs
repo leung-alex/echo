@@ -576,7 +576,7 @@ impl App {
             }
             Event::Inline(event) => self.inline_event(event),
             Event::InputIndicator(update) => self.input_indicator.update(update),
-            Event::InputIndicatorExpired => {}
+            Event::InputIndicatorExpired(serial) => self.input_indicator.expire(serial),
             Event::Command(command) => self.command(command),
             Event::Shell(event) => self.shell_event(event),
             Event::Ready(result) => match result {

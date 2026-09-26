@@ -87,3 +87,6 @@ The About view embeds Slint's `AboutSlint` component and identifies Echo as a Ru
 ### Native desktop acceptance
 
 Use a dedicated desktop/test data directory and set `ECHO_WINDOWS_ACCEPTANCE=1` before `echo.cmd acceptance ui`, `echo.cmd acceptance clipboard`, `echo.cmd acceptance quick-insert`, or `echo.cmd smoke`. These commands compile their own test drivers and synthetic fixtures, retain evidence, and never reuse the normal Echo database. Do not run clipboard mutation checks while relying on the current clipboard.
+# WeChat / Release evidence entry points
+
+The maintained G4/G5 operations are documented in [WeChat and Release evidence](engineering/wechat-release-evidence.md). They are intentionally separate from `echo.cmd acceptance`: G4 is a fail-closed, inventory-first WeChat operation and G5 is an ordinary Release preflight/report wrapper.

@@ -361,7 +361,12 @@ impl Runtime {
         let Some(mut response) = (*self.view).response.snapshot() else {
             return;
         };
-        if response[1] != sequence {
+        // A close publishes sequence zero.  A callback can release after the
+        // scheduler has published that terminal response; keep updating the
+        // same CLOSED snapshot so the host can observe the real final
+        // outstanding count instead of treating the close response as a
+        // lifetime boundary.
+        if response[1] != sequence && response[0] != RESPONSE_CLOSED {
             return;
         }
         response[29] = self.pending.load(Ordering::Acquire);

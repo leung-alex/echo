@@ -61,7 +61,7 @@ pub struct DragOrigin {
 }
 pub enum Event {
     InputIndicator(echo_windows::input_indicator::Update),
-    InputIndicatorExpired,
+    InputIndicatorExpired(u64),
     #[cfg(debug_assertions)]
     Styles(crate::style::StyleSnapshot),
     Inline(echo_windows::inline::InlineEvent),

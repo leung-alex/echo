@@ -1074,7 +1074,11 @@ unsafe fn acquire_geometry(
         response[19] = top as u32;
         response[20] = right as u32;
         response[21] = bottom as u32;
-        response[26] = 96;
+        // The rectangle below is already in physical screen pixels.  Do not
+        // attach the target thread's (possibly virtualized) 96-DPI default to
+        // it; the Echo host resolves the containing monitor's effective DPI
+        // and work-area from this fresh physical rectangle.
+        response[26] = protocol::GEOMETRY_DPI_HOST_RESOLVED;
         response[27] = 2; // physical-screen
         response[28] = 1; // Allowed
         response[29] = 1;
