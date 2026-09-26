@@ -162,6 +162,13 @@ impl Observer {
             if thread == 0 || owner != pid || started == 0 {
                 return Err("IME observer target identity unavailable".into());
             }
+            if let Some(process_name) = crate::windows_impl::process_path(pid)
+                .and_then(|path| crate::windows_impl::blocked_cross_process_process(&path))
+            {
+                return Err(format!(
+                    "IME observer target identity is not approved: {process_name}"
+                ));
+            }
             let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
             if process.is_null() {
                 return Err("IME observer process unavailable".into());

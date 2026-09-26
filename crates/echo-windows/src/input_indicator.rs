@@ -75,6 +75,29 @@ impl CaretProvider {
     }
 }
 
+fn next_poll_delay(
+    provider: CaretProvider,
+    valid: bool,
+    hosted_pending: bool,
+    hosted_admitted: bool,
+    tsf_active: bool,
+    admitted: bool,
+    failures: u32,
+    cross_process: bool,
+) -> Option<Duration> {
+    if valid || hosted_pending || hosted_admitted || tsf_active {
+        return Some(Duration::from_millis(
+            if provider == CaretProvider::Legacy {
+                100
+            } else {
+                50
+            },
+        ));
+    }
+    let attempts = if cross_process { 8 } else { 4 };
+    (admitted || failures < attempts).then(|| Duration::from_millis(250 * (1 << failures.min(3))))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InvalidationTrigger {
     Foreground,
@@ -158,6 +181,7 @@ pub enum TsfDiagnosticState {
     Pending,
     Ready,
     Unavailable,
+    Closed,
     BootstrapFailed,
 }
 
@@ -177,13 +201,20 @@ pub struct TsfDiagnostic {
     pub created_callbacks: u64,
     pub released_callbacks: u64,
     pub callback_high_water: u32,
+    pub pending_high_water: u32,
     pub api_requests: u64,
+    pub request_edit_calls: u64,
     pub accepted_sessions: u64,
     pub callback_entered: u64,
     pub callback_completed: u64,
     pub final_released: u64,
     pub cancelled: u64,
     pub timed_out: u64,
+    pub ready_results: u64,
+    pub mock_sessions: u64,
+    pub mock_callback_entered: u64,
+    pub mock_callback_completed: u64,
+    pub mock_final_released: u64,
     pub final_source: Option<GeometrySource>,
     pub fallback_reason: Option<u32>,
 }
@@ -211,7 +242,7 @@ impl TsfDiagnostic {
                 crate::caret::ReplyStatus::Ready => TsfDiagnosticState::Ready,
                 crate::caret::ReplyStatus::Unavailable => TsfDiagnosticState::Unavailable,
                 crate::caret::ReplyStatus::Pending => TsfDiagnosticState::Pending,
-                crate::caret::ReplyStatus::Closed => TsfDiagnosticState::Unavailable,
+                crate::caret::ReplyStatus::Closed => TsfDiagnosticState::Closed,
             },
             api_hresult: Some(words[5] as i32),
             session_hresult: Some(words[6] as i32),
@@ -226,13 +257,20 @@ impl TsfDiagnostic {
             created_callbacks: u64::from(words[32]) | (u64::from(words[33]) << 32),
             released_callbacks: u64::from(words[34]) | (u64::from(words[35]) << 32),
             callback_high_water: words[50],
+            pending_high_water: words[51],
             api_requests: u64::from(words[36]) | (u64::from(words[37]) << 32),
+            request_edit_calls: u64::from(words[54]) | (u64::from(words[55]) << 32),
             accepted_sessions: u64::from(words[38]) | (u64::from(words[39]) << 32),
             callback_entered: u64::from(words[40]) | (u64::from(words[41]) << 32),
             callback_completed: u64::from(words[42]) | (u64::from(words[43]) << 32),
             final_released: u64::from(words[44]) | (u64::from(words[45]) << 32),
             cancelled: u64::from(words[46]) | (u64::from(words[47]) << 32),
             timed_out: u64::from(words[48]) | (u64::from(words[49]) << 32),
+            ready_results: u64::from(words[52]) | (u64::from(words[53]) << 32),
+            mock_sessions: u64::from(words[56]) | (u64::from(words[57]) << 32),
+            mock_callback_entered: u64::from(words[58]) | (u64::from(words[59]) << 32),
+            mock_callback_completed: u64::from(words[60]) | (u64::from(words[61]) << 32),
+            mock_final_released: u64::from(words[62]) | (u64::from(words[63]) << 32),
             final_source: None,
             fallback_reason: (!reply.accepted).then_some(words[4]),
         }
@@ -926,13 +964,20 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
                                     created_callbacks: 0,
                                     released_callbacks: 0,
                                     callback_high_water: 0,
+                                    pending_high_water: 0,
                                     api_requests: 0,
+                                    request_edit_calls: 0,
                                     accepted_sessions: 0,
                                     callback_entered: 0,
                                     callback_completed: 0,
                                     final_released: 0,
                                     cancelled: 0,
                                     timed_out: 0,
+                                    ready_results: 0,
+                                    mock_sessions: 0,
+                                    mock_callback_entered: 0,
+                                    mock_callback_completed: 0,
+                                    mock_final_released: 0,
                                     final_source: None,
                                     fallback_reason: Some(bootstrap_reason_code(&error)),
                                 });
@@ -986,6 +1031,14 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
                             let request = caret.try_request(now_tick, dirty);
                             if matches!(
                                 request,
+                                crate::caret::scheduler::RequestDecision::Closed
+                                    | crate::caret::scheduler::RequestDecision::Unavailable
+                            ) {
+                                observer_closed = true;
+                                tsf_candidate = None;
+                            }
+                            if matches!(
+                                request,
                                 crate::caret::scheduler::RequestDecision::Sent(_)
                                     | crate::caret::scheduler::RequestDecision::Pending
                             ) && tsf_diagnostic.is_none()
@@ -1005,13 +1058,20 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
                                     created_callbacks: 0,
                                     released_callbacks: 0,
                                     callback_high_water: 0,
+                                    pending_high_water: 0,
                                     api_requests: 0,
+                                    request_edit_calls: 0,
                                     accepted_sessions: 0,
                                     callback_entered: 0,
                                     callback_completed: 0,
                                     final_released: 0,
                                     cancelled: 0,
                                     timed_out: 0,
+                                    ready_results: 0,
+                                    mock_sessions: 0,
+                                    mock_callback_entered: 0,
+                                    mock_callback_completed: 0,
+                                    mock_final_released: 0,
                                     final_source: None,
                                     fallback_reason: None,
                                 });
@@ -1180,31 +1240,31 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
                     tsf: tsf_diagnostic,
                 });
             }
-            if valid || pending.is_some() || hosted && admitted_target.is_some() {
+            let cross_process = snapshot
+                .input_endpoint()
+                .is_some_and(|input| input.process != snapshot.process_id);
+            let tsf_active = provider != CaretProvider::Legacy
+                && admitted_target.is_some()
+                && caret_observer.is_some();
+            let continuation =
+                valid || pending.is_some() || hosted && admitted_target.is_some() || tsf_active;
+            if continuation {
                 failures = 0;
-                next = Some(
-                    Instant::now()
-                        + Duration::from_millis(if provider == CaretProvider::Legacy {
-                            100
-                        } else {
-                            50
-                        }),
-                );
             } else {
                 failures = failures.saturating_add(1);
-                // Hosted XAML may still be connecting on the bounded UIA broker
-                // after the normal retry window. Keep a finite, slower warm-up
-                // budget; every attempt captures and validates fresh focus.
-                let attempts = if snapshot
-                    .input_endpoint()
-                    .is_some_and(|input| input.process != snapshot.process_id)
-                {
-                    8
-                } else {
-                    4
-                };
-                next = (admitted_target.is_some() || failures < attempts)
-                    .then(|| Instant::now() + Duration::from_millis(250 * (1 << failures.min(3))));
+            }
+            next = next_poll_delay(
+                provider,
+                valid,
+                pending.is_some(),
+                hosted && admitted_target.is_some(),
+                tsf_active,
+                admitted_target.is_some(),
+                failures,
+                cross_process,
+            )
+            .map(|delay| Instant::now() + delay);
+            if next.is_none() {
                 observer = None;
             }
         }
@@ -1316,5 +1376,22 @@ mod tests {
         let selected = select_primary_geometry(identity, None, Some(candidate), now)
             .expect("TSF-only admission must remain selectable");
         assert_eq!(selected.source, GeometrySource::TsfCaret);
+    }
+
+    #[test]
+    fn tsf_only_cold_start_polls_before_the_request_deadline() {
+        let delay = next_poll_delay(
+            CaretProvider::Primary,
+            false,
+            false,
+            false,
+            true,
+            true,
+            1,
+            false,
+        )
+        .expect("an admitted TSF observer must remain scheduled");
+        assert!(delay <= Duration::from_millis(50));
+        assert!(Duration::from_millis(20) + delay < Duration::from_millis(150));
     }
 }

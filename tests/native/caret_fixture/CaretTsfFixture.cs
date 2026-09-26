@@ -167,6 +167,7 @@ public static class CaretTsfFixture {
             case "protocol": case "rollover": case "reuse": case "release-cap":
             case "lifecycle-never-delivered": case "lifecycle-late-close":
             case "lifecycle-reentrancy-close": case "lifecycle-release-cap":
+            case "lifecycle-drain":
                 return true;
             default: return false;
         }

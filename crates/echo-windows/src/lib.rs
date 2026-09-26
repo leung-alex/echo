@@ -830,6 +830,14 @@ mod windows_impl {
         result
     }
 
+    pub(crate) fn blocked_cross_process_process(path: &str) -> Option<String> {
+        let name = Path::new(path)
+            .file_name()?
+            .to_string_lossy()
+            .to_ascii_lowercase();
+        matches!(name.as_str(), "chatgpt.exe" | "codex.exe").then_some(name)
+    }
+
     pub(crate) fn process_started_at(process_id: u32) -> Option<u64> {
         let process =
             unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id) }.ok()?;
@@ -1150,6 +1158,22 @@ mod windows_impl {
             assert_eq!(
                 validate_integrity_levels(Some(0x3000), None),
                 Err(PasteDeliveryFailure::ElevatedTarget)
+            );
+        }
+
+        #[test]
+        fn webview_hosts_are_blocked_from_cross_process_observers() {
+            assert_eq!(
+                blocked_cross_process_process(r"C:\Program Files\OpenAI\ChatGPT.exe"),
+                Some("chatgpt.exe".into())
+            );
+            assert_eq!(
+                blocked_cross_process_process(r"C:\Program Files\Codex\codex.exe"),
+                Some("codex.exe".into())
+            );
+            assert_eq!(
+                blocked_cross_process_process(r"C:\tests\CaretTsfFixture.exe"),
+                None
             );
         }
     }

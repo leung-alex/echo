@@ -20,6 +20,8 @@ pub const PREFIX: &str = "Local\\Echo.CaretObservation.";
 pub const REQUEST_MESSAGE: u32 = ffi::WM_APP + 0x5a1;
 pub const CLOSE_MESSAGE: u32 = ffi::WM_APP + 0x5a2;
 const INIT_MESSAGE: u32 = ffi::WM_APP + 0x5a3;
+#[cfg(feature = "native-test")]
+pub const LIFECYCLE_DRAIN_MESSAGE: u32 = ffi::WM_APP + 0x5a4;
 const WATCHDOG_TIMER: usize = 1;
 const WATCHDOG_MS: u32 = 250;
 const HEARTBEAT_TIMEOUT_MS: u64 = 1000;
@@ -35,13 +37,24 @@ static CALLBACKS: AtomicU32 = AtomicU32::new(0);
 static CALLBACKS_CREATED: AtomicU64 = AtomicU64::new(0);
 static CALLBACKS_RELEASED: AtomicU64 = AtomicU64::new(0);
 static CALLBACKS_HIGH_WATER: AtomicU32 = AtomicU32::new(0);
+static PENDING_HIGH_WATER: AtomicU32 = AtomicU32::new(0);
 pub(crate) static API_REQUESTS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static REQUEST_EDIT_CALLS: AtomicU64 = AtomicU64::new(0);
 pub(crate) static ACCEPTED_SESSIONS: AtomicU64 = AtomicU64::new(0);
 pub(crate) static CALLBACK_ENTERED: AtomicU64 = AtomicU64::new(0);
 pub(crate) static CALLBACK_COMPLETED: AtomicU64 = AtomicU64::new(0);
 pub(crate) static FINAL_RELEASED: AtomicU64 = AtomicU64::new(0);
 pub(crate) static CANCELLED: AtomicU64 = AtomicU64::new(0);
 pub(crate) static TIMED_OUT: AtomicU64 = AtomicU64::new(0);
+pub(crate) static READY_RESULTS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "native-test")]
+pub(crate) static MOCK_SESSIONS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "native-test")]
+pub(crate) static MOCK_CALLBACK_ENTERED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "native-test")]
+pub(crate) static MOCK_CALLBACK_COMPLETED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "native-test")]
+pub(crate) static MOCK_FINAL_RELEASED: AtomicU64 = AtomicU64::new(0);
 
 pub fn callback_count() -> u32 {
     CALLBACKS.load(Ordering::Acquire)
@@ -59,8 +72,16 @@ pub fn callback_high_water() -> u32 {
     CALLBACKS_HIGH_WATER.load(Ordering::Acquire)
 }
 
+pub fn pending_high_water() -> u32 {
+    PENDING_HIGH_WATER.load(Ordering::Acquire)
+}
+
 pub fn api_request_count() -> u64 {
     API_REQUESTS.load(Ordering::Acquire)
+}
+
+pub fn request_edit_call_count() -> u64 {
+    REQUEST_EDIT_CALLS.load(Ordering::Acquire)
 }
 
 pub fn accepted_session_count() -> u64 {
@@ -87,6 +108,10 @@ pub fn timed_out_count() -> u64 {
     TIMED_OUT.load(Ordering::Acquire)
 }
 
+pub fn ready_result_count() -> u64 {
+    READY_RESULTS.load(Ordering::Acquire)
+}
+
 /// Append target-owned lifecycle counters to the content-free mailbox. These
 /// fields are diagnostics only; the host must not infer a callback lifecycle
 /// transition from response arrival.
@@ -106,6 +131,27 @@ pub fn write_metrics(words: &mut [u32; 64]) {
         words[offset + 1] = (value >> 32) as u32;
     }
     words[50] = callback_high_water();
+    words[51] = pending_high_water();
+    let ready = ready_result_count();
+    words[52] = ready as u32;
+    words[53] = (ready >> 32) as u32;
+    let request_edit_calls = request_edit_call_count();
+    words[54] = request_edit_calls as u32;
+    words[55] = (request_edit_calls >> 32) as u32;
+    #[cfg(feature = "native-test")]
+    {
+        let values = [
+            MOCK_SESSIONS.load(Ordering::Acquire),
+            MOCK_CALLBACK_ENTERED.load(Ordering::Acquire),
+            MOCK_CALLBACK_COMPLETED.load(Ordering::Acquire),
+            MOCK_FINAL_RELEASED.load(Ordering::Acquire),
+        ];
+        for (index, value) in values.into_iter().enumerate() {
+            let offset = 56 + index * 2;
+            words[offset] = value as u32;
+            words[offset + 1] = (value >> 32) as u32;
+        }
+    }
 }
 
 pub fn reserve_callback() -> bool {
@@ -232,6 +278,20 @@ impl Runtime {
 
     pub fn mark_pending(&self, pending: bool) {
         self.pending.store(u32::from(pending), Ordering::Release);
+        if pending {
+            let mut observed = PENDING_HIGH_WATER.load(Ordering::Acquire);
+            while observed < 1 {
+                match PENDING_HIGH_WATER.compare_exchange_weak(
+                    observed,
+                    1,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
+                    Ok(_) => break,
+                    Err(next) => observed = next,
+                }
+            }
+        }
     }
 
     /// Install the current document/context identity and transfer ownership of
@@ -381,6 +441,11 @@ unsafe extern "system" fn window_proc(
         }
         REQUEST_MESSAGE => {
             handle_request(state);
+            0
+        }
+        #[cfg(feature = "native-test")]
+        LIFECYCLE_DRAIN_MESSAGE => {
+            super::tsf_geometry::drain_lifecycle_queue(&(*state).runtime);
             0
         }
         ffi::WM_TIMER if wparam == WATCHDOG_TIMER => {

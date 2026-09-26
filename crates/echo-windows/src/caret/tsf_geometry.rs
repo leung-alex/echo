@@ -17,7 +17,10 @@ use std::sync::{
 };
 
 #[cfg(feature = "native-test")]
-use std::{path::PathBuf, sync::OnceLock};
+use std::{
+    path::PathBuf,
+    sync::{Mutex, OnceLock},
+};
 
 const RESPONSE_READY: u32 = protocol::RESPONSE_READY;
 const RESPONSE_UNAVAILABLE: u32 = protocol::RESPONSE_UNAVAILABLE;
@@ -68,6 +71,70 @@ pub const REASON_EDIT_CALLBACK_MISSING: u32 = 30;
 static MOCK_FAULT_FILE: OnceLock<Option<PathBuf>> = OnceLock::new();
 
 #[cfg(feature = "native-test")]
+static LIFECYCLE_FAULT_CONSUMED: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+
+#[cfg(feature = "native-test")]
+#[derive(Clone, Copy)]
+struct QueuedLifecycle {
+    session: usize,
+    close_before_delivery: bool,
+    deliver: bool,
+}
+
+#[cfg(feature = "native-test")]
+static LIFECYCLE_QUEUE: OnceLock<Mutex<Vec<QueuedLifecycle>>> = OnceLock::new();
+
+#[cfg(feature = "native-test")]
+fn lifecycle_queue() -> &'static Mutex<Vec<QueuedLifecycle>> {
+    LIFECYCLE_QUEUE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+#[cfg(feature = "native-test")]
+fn lifecycle_fault_first(fault: &str) -> bool {
+    let mut current = LIFECYCLE_FAULT_CONSUMED
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .expect("lifecycle fault mutex");
+    if current.as_deref() == Some(fault) {
+        false
+    } else {
+        *current = Some(fault.to_owned());
+        true
+    }
+}
+
+#[cfg(feature = "native-test")]
+fn queue_lifecycle(action: QueuedLifecycle) {
+    lifecycle_queue()
+        .lock()
+        .expect("lifecycle queue mutex")
+        .push(action);
+}
+
+#[cfg(feature = "native-test")]
+pub(crate) unsafe fn drain_lifecycle_queue(runtime: &Arc<target::Runtime>) {
+    let actions = lifecycle_queue()
+        .lock()
+        .expect("lifecycle queue mutex")
+        .drain(..)
+        .collect::<Vec<_>>();
+    for action in actions {
+        if action.close_before_delivery {
+            // This runs from a later scheduler request, after the original
+            // prepare/invoke/reconcile call stack has returned.
+            close_target_scheduler(runtime);
+        }
+        if action.deliver {
+            edit_do(action.session as *mut c_void, 1);
+        }
+        // Caller-owned and retained TSF references are released independently
+        // after the delayed delivery decision has been made.
+        edit_release(action.session as *mut c_void);
+        edit_release(action.session as *mut c_void);
+    }
+}
+
+#[cfg(feature = "native-test")]
 fn mock_fault() -> Option<String> {
     if std::env::var("ECHO_WINDOWS_ACCEPTANCE").as_deref() != Ok("1") {
         return None;
@@ -78,6 +145,9 @@ fn mock_fault() -> Option<String> {
     let value = std::fs::read_to_string(path).ok()?;
     let value = value.trim();
     if value.is_empty() || value == "clear" {
+        if let Some(state) = LIFECYCLE_FAULT_CONSUMED.get() {
+            *state.lock().expect("lifecycle fault mutex") = None;
+        }
         None
     } else if value.len() <= 64
         && value
@@ -117,6 +187,7 @@ fn response_base(
     words[34] = released as u32;
     words[35] = (released >> 32) as u32;
     words[31] = 0b11;
+    target::write_metrics(&mut words);
     words
 }
 
@@ -183,7 +254,18 @@ unsafe fn mock_fault_response(
         false
     };
     match fault {
-        "lifecycle-late-close" | "lifecycle-reentrancy-close" | "lifecycle-never-delivered" => {
+        "lifecycle-late-close" | "lifecycle-never-delivered" => {
+            if !lifecycle_fault_first(fault) {
+                return Some(unavailable(
+                    if fault == "lifecycle-late-close" {
+                        REASON_LATE_RESULT
+                    } else {
+                        REASON_EDIT_CALLBACK_MISSING
+                    },
+                    abi::S_OK,
+                    abi::S_OK,
+                ));
+            }
             let Some(session) = test_session(runtime, sequence, epoch) else {
                 return Some(unavailable(
                     REASON_CALLBACK_CAP_REACHED,
@@ -194,26 +276,67 @@ unsafe fn mock_fault_response(
             // The first reference is the caller-owned reference. Add one to
             // model TSF retaining the callback across the asynchronous call.
             edit_add_ref(session);
-            if fault != "lifecycle-never-delivered" {
-                // Both cases close before the retained callback is delivered.
-                // Send CLOSE_MESSAGE synchronously so the production window
-                // procedure performs the actual state teardown/re-entry path.
-                close_target_scheduler(runtime);
-                edit_do(session, 1);
-            } else {
-                // Keep the retained callback undelivered across close.
-                close_target_scheduler(runtime);
+            queue_lifecycle(QueuedLifecycle {
+                session: session as usize,
+                close_before_delivery: true,
+                deliver: fault == "lifecycle-late-close",
+            });
+            Some(unavailable(
+                if fault == "lifecycle-late-close" {
+                    REASON_LATE_RESULT
+                } else {
+                    REASON_EDIT_CALLBACK_MISSING
+                },
+                abi::S_OK,
+                abi::S_OK,
+            ))
+        }
+        "lifecycle-reentrancy-close" => {
+            if !lifecycle_fault_first(fault) {
+                return Some(unavailable(
+                    REASON_EDIT_SESSION_MISMATCH,
+                    abi::E_FAIL,
+                    abi::S_OK,
+                ));
             }
+            let Some(session) = test_session(runtime, sequence, epoch) else {
+                return Some(unavailable(
+                    REASON_CALLBACK_CAP_REACHED,
+                    abi::S_OK,
+                    abi::S_OK,
+                ));
+            };
+            edit_add_ref(session);
+            // Keep this synchronous case as a direct regression for
+            // prepare/invoke/reconcile re-entry while the late-close case
+            // above covers a later message after the outer call returns.
+            close_target_scheduler(runtime);
+            edit_do(session, 1);
             edit_release(session);
             edit_release(session);
             Some(false)
         }
+        "lifecycle-drain" => {
+            drain_lifecycle_queue(runtime);
+            Some(unavailable(
+                REASON_EDIT_CALLBACK_MISSING,
+                abi::S_OK,
+                abi::S_OK,
+            ))
+        }
         "lifecycle-release-cap" => {
+            if !lifecycle_fault_first(fault) {
+                return Some(unavailable(
+                    REASON_CALLBACK_CAP_REACHED,
+                    abi::S_OK,
+                    abi::S_OK,
+                ));
+            }
             let mut sessions = Vec::new();
             for index in 0..target::MAX_CALLBACKS {
                 if let Some(session) = test_session(runtime, sequence + index, epoch) {
                     edit_add_ref(session);
-                    sessions.push(session);
+                    sessions.push(session as usize);
                 }
             }
             let rejected = !target::reserve_callback();
@@ -221,8 +344,19 @@ unsafe fn mock_fault_response(
                 target::release_callback();
             }
             for session in sessions {
-                edit_release(session);
-                edit_release(session);
+                queue_lifecycle(QueuedLifecycle {
+                    session,
+                    close_before_delivery: false,
+                    deliver: false,
+                });
+            }
+            let window = runtime
+                .view()
+                .as_ref()
+                .map(|view| view.scheduler_hwnd.load(Ordering::Acquire) as usize as ffi::Hwnd)
+                .unwrap_or(null_mut());
+            if !window.is_null() {
+                let _ = ffi::PostMessageW(window, target::LIFECYCLE_DRAIN_MESSAGE, 0, 0);
             }
             Some(unavailable(
                 if rejected {
@@ -334,6 +468,9 @@ unsafe fn test_session(
     if !target::reserve_callback() {
         return None;
     }
+    target::REQUEST_EDIT_CALLS.fetch_add(1, Ordering::AcqRel);
+    target::ACCEPTED_SESSIONS.fetch_add(1, Ordering::AcqRel);
+    target::MOCK_SESSIONS.fetch_add(1, Ordering::AcqRel);
     Some(
         Box::into_raw(Box::new(EditSessionObject {
             vtable: &EDIT_SESSION_VTABLE,
@@ -346,6 +483,7 @@ unsafe fn test_session(
             document_identity: runtime.document_identity(),
             context_identity: runtime.context_identity(),
             entry_tick: ffi::GetTickCount64(),
+            mock_lifecycle: true,
         }))
         .cast(),
     )
@@ -473,6 +611,8 @@ struct EditSessionObject {
     document_identity: usize,
     context_identity: usize,
     entry_tick: u64,
+    #[cfg(feature = "native-test")]
+    mock_lifecycle: bool,
 }
 
 struct ComRef(*mut c_void);
@@ -542,6 +682,10 @@ unsafe extern "system" fn edit_release(object: *mut c_void) -> abi::Ulong {
     if refs == 1 {
         let boxed = Box::from_raw(object.cast::<EditSessionObject>());
         target::FINAL_RELEASED.fetch_add(1, Ordering::AcqRel);
+        #[cfg(feature = "native-test")]
+        if boxed.mock_lifecycle {
+            target::MOCK_FINAL_RELEASED.fetch_add(1, Ordering::AcqRel);
+        }
         if let Some(runtime) = boxed.runtime.upgrade() {
             let count = target::release_callback();
             runtime.mark_pending(false);
@@ -564,12 +708,24 @@ unsafe extern "system" fn edit_do(
     }
     target::CALLBACK_ENTERED.fetch_add(1, Ordering::AcqRel);
     let state = &*(object.cast::<EditSessionObject>());
+    #[cfg(feature = "native-test")]
+    if state.mock_lifecycle {
+        target::MOCK_CALLBACK_ENTERED.fetch_add(1, Ordering::AcqRel);
+    }
     let Some(runtime) = state.runtime.upgrade() else {
         target::CALLBACK_COMPLETED.fetch_add(1, Ordering::AcqRel);
+        #[cfg(feature = "native-test")]
+        if state.mock_lifecycle {
+            target::MOCK_CALLBACK_COMPLETED.fetch_add(1, Ordering::AcqRel);
+        }
         return abi::S_OK;
     };
     acquire_geometry(&runtime, state, edit_cookie);
     target::CALLBACK_COMPLETED.fetch_add(1, Ordering::AcqRel);
+    #[cfg(feature = "native-test")]
+    if state.mock_lifecycle {
+        target::MOCK_CALLBACK_COMPLETED.fetch_add(1, Ordering::AcqRel);
+    }
     abi::S_OK
 }
 
@@ -924,6 +1080,8 @@ unsafe fn acquire_geometry(
         response[29] = 1;
         response[30] = target::callback_count();
         response[31] = 0b11;
+        target::READY_RESULTS.fetch_add(1, Ordering::AcqRel);
+        target::write_metrics(&mut response);
         let _ = (*runtime.view()).response.publish(&response);
     }
     abi::release(view);
@@ -1234,9 +1392,12 @@ pub unsafe fn request(
         document_identity,
         context_identity,
         entry_tick,
+        #[cfg(feature = "native-test")]
+        mock_lifecycle: false,
     });
     let session = Box::into_raw(object);
     let mut session_hr = abi::S_OK;
+    target::REQUEST_EDIT_CALLS.fetch_add(1, Ordering::AcqRel);
     let api_hr = ((*context_table).request_edit_session)(
         context,
         client_id,

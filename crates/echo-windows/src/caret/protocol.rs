@@ -238,6 +238,14 @@ mod tests {
     }
 
     #[test]
+    fn late_closed_from_an_old_nonce_cannot_match_the_current_session() {
+        let current = Mailbox::new(header());
+        let mut old = current.header;
+        old.nonce[0] ^= 1;
+        assert!(!header_identity_matches(&current.header, &old));
+    }
+
+    #[test]
     fn roundtrip_busy_and_bounded_reader() {
         let record = AtomicRecord::<4>::new();
         record.publish(&[1, 2, 3, 4]).unwrap();

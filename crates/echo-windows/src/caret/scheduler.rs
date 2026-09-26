@@ -136,6 +136,12 @@ impl SessionState {
         self.closed = true;
         self.cancelled = true;
     }
+
+    pub fn mark_target_closed(&mut self) {
+        self.closed = true;
+        self.cancelled = true;
+        self.pending_sequence = None;
+    }
 }
 
 #[cfg(test)]
@@ -182,6 +188,17 @@ mod tests {
         assert!(state.complete(1, 1, 1, 10));
         assert!(state.callback_released());
         assert!(!state.callback_released());
+    }
+
+    #[test]
+    fn target_closed_clears_pending_but_keeps_terminal_session_state() {
+        let mut state = SessionState::new(1);
+        assert_eq!(state.request(0), RequestDecision::Sent(1));
+        state.mark_target_closed();
+        assert!(state.closed);
+        assert!(state.cancelled);
+        assert_eq!(state.pending_sequence, None);
+        assert_eq!(state.request(20), RequestDecision::Closed);
     }
 
     #[test]

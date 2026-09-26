@@ -21,6 +21,10 @@ Cancel keeps the saved choice. No schema migration is required for the new defau
   `legacy` disables the new geometry session. The process-start diagnostic
   variable `ECHO_CARET_PROVIDER` defaults to `legacy` until the native, physical
   and Release gates are complete; invalid values fail monitor startup.
+  Cross-process observers are denied for the Windows Codex host (`ChatGPT.exe`)
+  and `codex.exe`. These WebView2/TSF processes can tear down their input stack
+  during Settings navigation while a third-party `WH_CALLWNDPROC` callback is
+  in flight; the indicator stays on its legacy geometry path for those targets.
 - Presentation decides freshness, suppression and 48-by-36-DIP badge placement.
   The label uses 18-DIP text, an 8-DIP radius and an 8-DIP caret gap.
 - The badge stays black with bold white text regardless of the Echo theme. Chinese

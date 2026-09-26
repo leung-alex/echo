@@ -231,6 +231,23 @@ impl Services {
         })
     }
 }
+
+/// Native acceptance binaries use an isolated data directory and must not
+/// replace the user's real logon startup command with a temporary test
+/// executable. Ordinary builds retain the normal per-user registration path.
+fn apply_autostart(
+    controller: &echo_windows::shell::AutoStartController,
+    enabled: bool,
+) -> Result<(), String> {
+    #[cfg(feature = "native-test")]
+    if std::env::var_os("ECHO_DATA_DIR").is_some()
+        && std::env::var("ECHO_ALLOW_NATIVE_TEST_AUTOSTART").as_deref() != Ok("1")
+    {
+        return Ok(());
+    }
+    controller.apply(enabled)
+}
+
 fn run(
     path: PathBuf,
     hub: Arc<Hub>,
@@ -262,7 +279,7 @@ fn run(
             error,
         )));
     }
-    if let Err(error) = services.autostart.apply(settings.ui.launch_at_startup) {
+    if let Err(error) = apply_autostart(&services.autostart, settings.ui.launch_at_startup) {
         hub.post(Event::Shell(echo_windows::shell::ShellEvent::Error(
             format!("Could not update startup registration: {error}"),
         )));
@@ -512,7 +529,9 @@ fn mutate(services: &Services, mutation: Mutation) -> Result<MutationResult, Str
                 );
                 value = reconciled;
                 settings_warning = Some(warning);
-            } else if let Err(error) = services.autostart.apply(value.ui.launch_at_startup) {
+            } else if let Err(error) =
+                apply_autostart(&services.autostart, value.ui.launch_at_startup)
+            {
                 let (reconciled, warning) = settings_commit::reconcile_startup(
                     &previous,
                     value,

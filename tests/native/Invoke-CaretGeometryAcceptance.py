@@ -262,12 +262,51 @@ def main():
         return value if after is None or int(value.get("sequence", 0)) > after else None
 
     def check(name, status, **details):
-        entry = {"name": name, "status": status}
+        entry = {"name": name, "status": status, "artifact": "checks.json"}
         entry.update(details)
         checks.append(entry)
         (root / "checks.json").write_text(json.dumps(checks, indent=2), encoding="utf-8")
         print(status, name, flush=True)
         return entry
+
+    def trace_counters(value, allow_hidden=False):
+        trace = value.get("tsf")
+        if not isinstance(trace, dict):
+            if allow_hidden and not value.get("visible", True):
+                # Deep hide releases the display-side diagnostic snapshot.
+                # The last valid TSF snapshot remains the authoritative
+                # counter boundary; a missing object here is not a missing
+                # field in an existing diagnostic record.
+                return None
+            raise AssertionError(f"TSF counters missing: {value}")
+        names = (
+            "api_requests",
+            "request_edit_calls",
+            "accepted_sessions",
+            "callback_entered",
+            "callback_completed",
+            "final_released",
+            "cancelled",
+            "timed_out",
+            "ready_results",
+            "mock_sessions",
+            "mock_callback_entered",
+            "mock_callback_completed",
+            "mock_final_released",
+        )
+        counters = {}
+        for name in names:
+            if name not in trace or trace[name] is None:
+                raise AssertionError(f"required TSF counter missing: {name} trace={trace}")
+            counters[name] = int(trace[name])
+        for name in ("callback_high_water", "pending_high_water", "pending_callbacks", "outstanding_callbacks"):
+            if name not in trace or trace[name] is None:
+                raise AssertionError(f"required TSF high-water field missing: {name} trace={trace}")
+            counters[name] = int(trace[name])
+        return counters
+
+    def counter_delta(before, after):
+        return {name: int(after[name]) - int(before[name]) for name in before}
 
     def wait_indicator(predicate, label, timeout=8):
         latest = None
@@ -302,11 +341,6 @@ def main():
             raise AssertionError(f"oracle caret is invalid: {value}")
 
     try:
-        echo_log = (root / "echo.log").open("w", encoding="utf-8")
-        echo = subprocess.Popen([str(root / "echo-acceptance.exe"), "--background"], env=env,
-                                stdout=echo_log, stderr=echo_log, creationflags=subprocess.CREATE_NO_WINDOW)
-        children.append(echo)
-        wait_for(lambda: (root / "native-control").is_dir(), "Echo native bridge", timeout=12)
         fixture_log = (root / "fixture.log").open("w", encoding="utf-8")
         fixture_process = subprocess.Popen([str(fixture), str(root)], env=env,
                                            stdout=fixture_log, stderr=fixture_log,
@@ -323,6 +357,15 @@ def main():
             user32.keybd_event(0x12, 0, 2, None)
             user32.SetForegroundWindow(ctypes.c_void_p(ready["hwnd"]))
         wait_for(lambda: int(user32.GetForegroundWindow()) == int(ready["hwnd"]), "owned fixture foreground", timeout=5)
+
+        # Start Echo only after the owned target is foreground. This prevents
+        # the first primary-provider poll from installing a hook in whatever
+        # desktop app happened to be active before the fixture launched.
+        echo_log = (root / "echo.log").open("w", encoding="utf-8")
+        echo = subprocess.Popen([str(root / "echo-acceptance.exe"), "--background"], env=env,
+                                stdout=echo_log, stderr=echo_log, creationflags=subprocess.CREATE_NO_WINDOW)
+        children.append(echo)
+        wait_for(lambda: (root / "native-control").is_dir(), "Echo native bridge", timeout=12)
 
         normal = fixture_command("CreateScenario|normal")
         if normal.get("status") != "PASS":
@@ -359,6 +402,42 @@ def main():
 
         initial = wait_indicator(lambda value: (value.get("sample") or {}).get("geometry", {}).get("source") == "TsfCaret", "initial TSF caret")
         validate_ready("G2-real-tsf-window-and-coordinate-chain", current_oracle, initial)
+
+        def capture_observer_identity():
+            """Capture the injected observer while the real TSF observer is live."""
+            if observer_info is None:
+                return None
+            try:
+                modules = loaded_modules(fixture_process.pid)
+                matching = [
+                    module
+                    for module in modules
+                    if module.get("path")
+                    and Path(module["path"]).exists()
+                    and sha256(Path(module["path"])) == observer_info["sha256"]
+                ]
+                observer_info["target_pid"] = fixture_process.pid
+                observer_info["modules_enumerated"] = True
+                observer_info["loaded_modules"] = matching
+                observer_info["loaded"] = bool(matching)
+                return observer_info if matching else None
+            except OSError as error:
+                observer_info["target_pid"] = fixture_process.pid
+                observer_info["modules_enumerated"] = False
+                observer_info["loaded"] = "UNAVAILABLE"
+                observer_info["load_error"] = str(error)
+                return None
+
+        # SetWindowsHookExW loads the observer into the target thread. Capture
+        # the module identity during the live TSF window; a later lifecycle
+        # close can unload it before the end-of-run report is written.
+        if observer_info is not None:
+            try:
+                wait_for(capture_observer_identity, "observer DLL module identity", timeout=5)
+            except RuntimeError:
+                # Preserve the last enumeration in the final diagnostic even
+                # when the target does not expose the module list to this run.
+                capture_observer_identity()
 
         scenarios = [
             ("N02-empty-context", "CreateScenario|empty", True),
@@ -462,52 +541,76 @@ def main():
         else:
             check("fixture-multiline-real-tsf", "UNSUPPORTED", reason=result.get("reason", result))
 
-        # G3 stress: sample the bridge until the target-owned production
-        # acquisition counter advances by 1000. RPC reads are only observers;
-        # they are not counted as TSF requests.
+        # G3 stress terminates on target-owned accepted sessions, not RPC read
+        # count or attempted API requests. Stop the monitor before comparing
+        # cumulative counters so no new request races the final snapshot.
         stress_count = 1000
         stress_started = time.monotonic()
         stress_before = echo_call({"verb": "input_indicator"})
-        stress_before_tsf = stress_before.get("tsf") or {}
-        acquisition_start = int(stress_before_tsf.get("api_requests") or 0)
-        max_pending = 0
-        max_outstanding = 0
-        max_high_water = 0
-        callback_created = 0
-        callback_released = 0
+        stress_before_counters = trace_counters(stress_before)
+        stress_last_counters = dict(stress_before_counters)
         stress_latest = stress_before
         stress_error = None
         reads = 0
+        max_pending = stress_before_counters["pending_callbacks"]
+        max_outstanding = stress_before_counters["outstanding_callbacks"]
+        max_high_water = stress_before_counters["callback_high_water"]
+        max_pending_high_water = stress_before_counters["pending_high_water"]
         try:
             while True:
                 stress_latest = echo_call({"verb": "input_indicator"})
                 reads += 1
-                trace = stress_latest.get("tsf") or {}
-                max_pending = max(max_pending, int(trace.get("pending_callbacks") or 0))
-                max_outstanding = max(max_outstanding, int(trace.get("outstanding_callbacks") or 0))
-                max_high_water = max(max_high_water, int(trace.get("callback_high_water") or 0))
-                callback_created = max(callback_created, int(trace.get("created_callbacks") or 0))
-                callback_released = max(callback_released, int(trace.get("released_callbacks") or 0))
+                counters = trace_counters(stress_latest, allow_hidden=True)
+                if counters is None:
+                    # A hide/re-show boundary can briefly release the
+                    # diagnostic object. Keep polling; the last valid
+                    # counters remain the comparison boundary.
+                    counters = stress_last_counters
+                else:
+                    stress_last_counters = dict(counters)
+                max_pending = max(max_pending, counters["pending_callbacks"])
+                max_outstanding = max(max_outstanding, counters["outstanding_callbacks"])
+                max_high_water = max(max_high_water, counters["callback_high_water"])
+                max_pending_high_water = max(max_pending_high_water, counters["pending_high_water"])
                 if max_pending > 8 or max_outstanding > 8 or max_high_water > 8:
                     raise AssertionError(
                         f"callback cap exceeded pending={max_pending} outstanding={max_outstanding} high_water={max_high_water}"
                     )
-                acquisition_delta = int(trace.get("api_requests") or 0) - acquisition_start
-                if acquisition_delta >= stress_count:
+                accepted_delta = counters["accepted_sessions"] - stress_before_counters["accepted_sessions"]
+                if accepted_delta >= stress_count:
                     break
                 if time.monotonic() - stress_started > 120:
                     raise AssertionError(
-                        f"target acquisition timeout delta={acquisition_delta} reads={reads}"
+                        f"accepted-session timeout delta={accepted_delta} reads={reads}"
                     )
-            if callback_created != callback_released:
-                raise AssertionError(
-                    f"callback create/release mismatch created={callback_created} released={callback_released}"
-                )
+            stress_paused = echo_call({"verb": "input_indicator_setting", "paused": True})
+            stress_latest = echo_call({"verb": "input_indicator"})
+            terminal_counters = trace_counters(stress_latest, allow_hidden=True) or stress_last_counters
+            if terminal_counters["accepted_sessions"] - stress_before_counters["accepted_sessions"] < stress_count:
+                raise AssertionError(f"accepted-session drain lost: {terminal_counters}")
+            if terminal_counters["callback_entered"] - stress_before_counters["callback_entered"] != terminal_counters["callback_completed"] - stress_before_counters["callback_completed"]:
+                raise AssertionError(f"callback entry/completion mismatch: {terminal_counters}")
+            echo_call({"verb": "input_indicator_setting", "paused": False})
         except (AssertionError, RuntimeError, ValueError) as error:
             stress_error = str(error)
+        finally:
+            try:
+                echo_call({"verb": "input_indicator_setting", "paused": False})
+            except (RuntimeError, OSError):
+                pass
+        stress_after_counters = trace_counters(stress_latest, allow_hidden=True) or stress_last_counters
+        stress_delta = counter_delta(stress_before_counters, stress_after_counters)
         stress_summary = {
-            "requested_acquisitions": stress_count,
-            "observed_acquisitions": int((stress_latest.get("tsf") or {}).get("api_requests") or 0) - acquisition_start,
+            "requested_accepted_sessions": stress_count,
+            "attempted_requests": stress_delta["api_requests"],
+            "actual_request_edit_session_calls": stress_delta["request_edit_calls"],
+            "accepted_sessions": stress_delta["accepted_sessions"],
+            "callback_entered": stress_delta["callback_entered"],
+            "callback_completed": stress_delta["callback_completed"],
+            "final_released": stress_delta["final_released"],
+            "ready_results": stress_delta["ready_results"],
+            "cancelled": stress_delta["cancelled"],
+            "timed_out": stress_delta["timed_out"],
             "observation_reads": reads,
             "elapsed_ms": round((time.monotonic() - stress_started) * 1000),
             "before_counts": stress_before.get("counts"),
@@ -515,8 +618,9 @@ def main():
             "max_pending_callbacks": max_pending,
             "max_outstanding_callbacks": max_outstanding,
             "max_callback_high_water": max_high_water,
-            "callback_created": callback_created,
-            "callback_released": callback_released,
+            "max_pending_high_water": max_pending_high_water,
+            "source_pid": (stress_latest.get("sample") or {}).get("pid"),
+            "source_window": (stress_latest.get("sample") or {}).get("window"),
             "error": stress_error,
         }
         (root / "g3-stress.json").write_text(json.dumps(stress_summary, indent=2), encoding="utf-8")
@@ -565,10 +669,6 @@ def main():
             "D26-rollover": ("rollover", 24, "DiagnosticTransport"),
             "D27-reuse": ("reuse", 26, "DiagnosticTransport"),
             "D28-release-cap": ("release-cap", 28, "DiagnosticTransport"),
-            "N15-lifecycle-never-delivered": ("lifecycle-never-delivered", None, "MockProviderLifecycle"),
-            "N16-lifecycle-late-close": ("lifecycle-late-close", None, "MockProviderLifecycle"),
-            "N21-lifecycle-reentrancy-close": ("lifecycle-reentrancy-close", None, "MockProviderLifecycle"),
-            "N28-lifecycle-release-cap": ("lifecycle-release-cap", 28, "MockProviderLifecycle"),
         }
         for name, (fault, expected_reason, kind) in mock_faults.items():
             try:
@@ -615,39 +715,282 @@ def main():
                 except (RuntimeError, OSError):
                     pass
 
-        if observer_info:
+        lifecycle_cases = {
+            "N15-lifecycle-never-delivered": {
+                "fault": "lifecycle-never-delivered",
+                "entered": 0,
+                "completed": 0,
+                "accepted": 1,
+                "request_edit_calls": 1,
+                "released": 1,
+                "close": True,
+            },
+            "N16-lifecycle-late-close": {
+                "fault": "lifecycle-late-close",
+                "entered": 1,
+                "completed": 1,
+                "accepted": 1,
+                "request_edit_calls": 1,
+                "released": 1,
+                "close": True,
+            },
+            "N21-lifecycle-reentrancy-close": {
+                "fault": "lifecycle-reentrancy-close",
+                "entered": 1,
+                "completed": 1,
+                "accepted": 1,
+                "request_edit_calls": 1,
+                "released": 1,
+                "close": True,
+            },
+            "N28-lifecycle-release-cap": {
+                "fault": "lifecycle-release-cap",
+                "entered": 0,
+                "completed": 0,
+                "accepted": 8,
+                "request_edit_calls": 8,
+                "released": 8,
+                "close": False,
+            },
+        }
+        for name, expected in lifecycle_cases.items():
             try:
-                modules = loaded_modules(fixture_process.pid)
-                matching = [
-                    module
-                    for module in modules
-                    if module.get("path")
-                    and Path(module["path"]).exists()
-                    and sha256(Path(module["path"])) == observer_info["sha256"]
-                ]
-                observer_info["target_pid"] = fixture_process.pid
-                observer_info["modules_enumerated"] = True
-                observer_info["loaded_modules"] = matching
-                observer_info["loaded"] = bool(matching)
-            except OSError as error:
-                observer_info["modules_enumerated"] = False
-                observer_info["loaded"] = "UNAVAILABLE"
-                observer_info["load_error"] = str(error)
-        statuses = [entry["status"] for entry in checks]
-        has_diagnostic_transport = any(
-            entry.get("kind") == "DiagnosticTransport" for entry in checks
-        )
-        overall = (
-            "PASS"
-            if statuses and all(status == "PASS" for status in statuses) and not has_diagnostic_transport
-            else "PARTIAL"
-        )
+                before_value = echo_call({"verb": "input_indicator"})
+                before_counters = trace_counters(before_value)
+                before_sequence = int(current_oracle["sequence"])
+                # Quiesce the observer before arming a lifecycle fault. The
+                # next request is then the explicit fault request rather than
+                # one ordinary TSF request racing the fault-file update.
+                paused = echo_call({"verb": "input_indicator_setting", "paused": True})
+                if paused.get("draft") is not False:
+                    raise AssertionError(f"failed to pause before lifecycle fault: {paused}")
+                fixture_command("Fault|" + expected["fault"])
+                resumed = echo_call({"verb": "input_indicator_setting", "paused": False})
+                if resumed.get("draft") is not True:
+                    raise AssertionError(f"failed to resume lifecycle fault: {resumed}")
+                fixture_command("FocusEditor")
+                fixture_command("MoveCaret|0")
+                initial = wait_indicator(
+                    lambda candidate: (
+                        (candidate.get("tsf") or {}).get("state") == "Closed"
+                        or (
+                            (candidate.get("tsf") or {}).get("state") == "Unavailable"
+                            and int((candidate.get("tsf") or {}).get("sequence") or 0) > 0
+                        )
+                    ),
+                    name + " initial terminal phase",
+                )
+                initial_counters = trace_counters(initial)
+                initial_delta = counter_delta(before_counters, initial_counters)
+                initial_phase = {
+                    "state": (initial.get("tsf") or {}).get("state"),
+                    "sequence": (initial.get("tsf") or {}).get("sequence"),
+                    "counters": initial_counters,
+                }
+
+                # The retained callback is closed/delivered from a later
+                # scheduler request. This guarantees the original
+                # prepare/invoke/reconcile stack has already returned.
+                if expected["fault"] == "lifecycle-release-cap":
+                    # Release-cap leaves the observer in an unavailable
+                    # state. Recreate the observer before issuing the delayed
+                    # drain so the queue is drained by a later scheduler
+                    # request even if the original runtime has closed.
+                    paused = echo_call({"verb": "input_indicator_setting", "paused": True})
+                    if paused.get("draft") is not False:
+                        raise AssertionError(f"failed to pause before release-cap drain: {paused}")
+                    fixture_command("Fault|clear")
+                    fixture_command("Fault|lifecycle-drain")
+                    resumed = echo_call({"verb": "input_indicator_setting", "paused": False})
+                    if resumed.get("draft") is not True:
+                        raise AssertionError(f"failed to resume release-cap drain: {resumed}")
+                    fixture_command("FocusEditor")
+                else:
+                    fixture_command("Fault|clear")
+                    fixture_command("Fault|lifecycle-drain")
+                fixture_command("MoveCaret|0")
+                drained = wait_indicator(
+                    lambda candidate: (
+                        trace_counters(candidate)["mock_final_released"]
+                        - before_counters["mock_final_released"]
+                        >= expected["released"]
+                        and trace_counters(candidate)["mock_callback_entered"]
+                        - before_counters["mock_callback_entered"]
+                        >= expected["entered"]
+                    ),
+                    name + " delayed drain",
+                )
+                drained_counters = trace_counters(drained)
+                drained_delta = counter_delta(before_counters, drained_counters)
+                fixture_command("Fault|clear")
+
+                recovered = drained
+                if expected["close"]:
+                    fixture_command("FocusEditor")
+                    recovered = wait_indicator(
+                        lambda candidate: (
+                            (candidate.get("sample") or {}).get("geometry", {}).get("source")
+                            == "TsfCaret"
+                            and trace_counters(candidate)["mock_final_released"]
+                            - before_counters["mock_final_released"]
+                            >= expected["released"]
+                        ),
+                        name + " recovered TSF",
+                    )
+                after_counters = trace_counters(recovered)
+                delta = counter_delta(before_counters, after_counters)
+                # The initial fault request is the lifecycle count boundary.
+                # Close recovery may legitimately create additional ordinary
+                # TSF sessions before the final snapshot, so accepted/request
+                # counts are asserted at the terminal boundary while callback
+                # entry/completion/release counts cover the full case.
+                for field, expected_delta in (
+                    ("mock_sessions", expected["accepted"]),
+                ):
+                    if initial_delta[field] != expected_delta:
+                        raise AssertionError(
+                            f"{field} initial_delta={initial_delta[field]} expected={expected_delta}; before={before_counters} initial={initial_counters} after={after_counters}"
+                        )
+                for field, expected_delta in (
+                    ("mock_callback_entered", expected["entered"]),
+                    ("mock_callback_completed", expected["completed"]),
+                    ("mock_final_released", expected["released"]),
+                ):
+                    if drained_delta[field] != expected_delta:
+                        raise AssertionError(
+                            f"{field} drained_delta={drained_delta[field]} expected={expected_delta}; before={before_counters} drained={drained_counters} after={after_counters}"
+                        )
+                check(
+                    name,
+                    "PASS",
+                    kind="MockProviderLifecycle",
+                    fault=expected["fault"],
+                    expected={
+                        "accepted_sessions": expected["accepted"],
+                        "request_edit_calls": expected["request_edit_calls"],
+                        "callback_entered": expected["entered"],
+                        "callback_completed": expected["completed"],
+                        "final_released": expected["released"],
+                    },
+                    timeline={
+                        "before": before_counters,
+                        "initial_terminal": initial_phase,
+                        "initial_delta": initial_delta,
+                        "drained": drained_counters,
+                        "drained_delta": drained_delta,
+                        "after": after_counters,
+                        "delta": delta,
+                        "oracle_sequence_before": before_sequence,
+                    },
+                    indicator=recovered,
+                )
+            except (AssertionError, RuntimeError, ValueError) as error:
+                check(
+                    name,
+                    "FAIL",
+                    kind="MockProviderLifecycle",
+                    fault=expected["fault"],
+                    error=str(error),
+                )
+            finally:
+                try:
+                    fixture_command("Fault|clear")
+                    fixture_command("FocusEditor")
+                except (RuntimeError, OSError):
+                    pass
+
+        if observer_info and not observer_info.get("loaded"):
+            capture_observer_identity()
+        if observer_info is None:
+            check(
+                "module-identity",
+                "FAIL",
+                kind="NativeHWND",
+                required=True,
+                error="--observer-dll is required for module identity acceptance",
+            )
+        elif not observer_info.get("modules_enumerated"):
+            check(
+                "module-identity",
+                "FAIL",
+                kind="NativeHWND",
+                required=True,
+                error=observer_info.get("load_error", "module enumeration unavailable"),
+            )
+        elif not observer_info.get("loaded"):
+            check(
+                "module-identity",
+                "FAIL",
+                kind="NativeHWND",
+                required=True,
+                error="observer DLL digest was not found in the target PID module list",
+                observer=observer_info,
+            )
+        else:
+            check(
+                "module-identity",
+                "PASS",
+                kind="NativeHWND",
+                required=True,
+                observer=observer_info,
+            )
+
+        required_manifest = [
+            {"name": "N01-owned-fixture-oracle", "evidence_kind": "RealTSF", "required": True},
+            {"name": "G2-real-tsf-window-and-coordinate-chain", "evidence_kind": "RealTSF", "required": True},
+            {"name": "N02-empty-context", "evidence_kind": "RealTSF", "required": True},
+            {"name": "N05-readonly", "evidence_kind": "RealTSF", "required": True},
+            {"name": "N11-context-replaced", "evidence_kind": "RealTSF", "required": True},
+            {"name": "N20-current-dpi-smoke", "evidence_kind": "DPI", "required": False},
+            {"name": "N23-mode-only", "evidence_kind": "RealTSF", "required": True},
+            {"name": "N24-geometry-only", "evidence_kind": "RealTSF", "required": True},
+            {"name": "N18-repeated-enable-disable", "evidence_kind": "RealTSF", "required": True},
+            {"name": "fixture-multiline-real-tsf", "evidence_kind": "RealTSF", "required": True},
+            {"name": "G3-lifecycle-1000-requests", "evidence_kind": "RealTSF", "required": True},
+            {"name": "N15-lifecycle-never-delivered", "evidence_kind": "MockProviderLifecycle", "required": True},
+            {"name": "N16-lifecycle-late-close", "evidence_kind": "MockProviderLifecycle", "required": True},
+            {"name": "N21-lifecycle-reentrancy-close", "evidence_kind": "MockProviderLifecycle", "required": True},
+            {"name": "N28-lifecycle-release-cap", "evidence_kind": "MockProviderLifecycle", "required": True},
+            {"name": "module-identity", "evidence_kind": "NativeHWND", "required": True},
+        ]
+        by_name = {entry["name"]: entry for entry in checks}
+        missing_required = [
+            item["name"] for item in required_manifest if item["required"] and item["name"] not in by_name
+        ]
+        failed_required = [
+            item["name"]
+            for item in required_manifest
+            if item["required"] and by_name.get(item["name"], {}).get("status") == "FAIL"
+        ]
+        unsupported_required = [
+            item["name"]
+            for item in required_manifest
+            if item["required"] and by_name.get(item["name"], {}).get("status") in ("UNSUPPORTED", "NOT_RUN")
+        ]
+        optional_unsupported = [
+            item["name"]
+            for item in required_manifest
+            if not item["required"] and by_name.get(item["name"], {}).get("status") in ("UNSUPPORTED", "NOT_RUN")
+        ]
+        if failed_required:
+            overall = "FAIL"
+        elif missing_required or unsupported_required:
+            overall = "PARTIAL"
+        else:
+            overall = "PASS"
         results = {
             "provider": args.provider,
             "overall": overall,
             "fixture": {"path": str(fixture), "pid": fixture_process.pid, "hwnd": ready["hwnd"]},
             "echo": {"path": str(root / "echo-acceptance.exe"), "sha256": sha256(root / "echo-acceptance.exe")},
             "observer_dll": observer_info,
+            "required_manifest": required_manifest,
+            "required_summary": {
+                "missing": missing_required,
+                "failed": failed_required,
+                "unsupported": unsupported_required,
+                "optional_unsupported": optional_unsupported,
+            },
             "evidence_summary": {
                 "real_tsf": sum(1 for entry in checks if entry.get("kind") == "RealTSF"),
                 "mock_provider_lifecycle": sum(

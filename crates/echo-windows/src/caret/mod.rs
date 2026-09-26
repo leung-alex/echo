@@ -60,6 +60,7 @@ pub struct GeometryReply {
 
 pub struct CaretObserver {
     endpoint: CaretEndpoint,
+    header: Header,
     mailbox: *mut Mailbox,
     mapping: host_ffi::Mapping,
     atom: u16,
@@ -68,9 +69,14 @@ pub struct CaretObserver {
     hook: HHOOK,
     session: SessionState,
     last_request_tick: Option<u64>,
+    retired: bool,
 }
 
 unsafe impl Send for CaretObserver {}
+
+fn response_matches_session(status: ReplyStatus, sequence: u32, pending: Option<u32>) -> bool {
+    status == ReplyStatus::Closed || pending == Some(sequence)
+}
 
 fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(std::iter::once(0)).collect()
@@ -99,6 +105,16 @@ fn callback() -> Result<unsafe extern "system" fn(i32, WPARAM, LPARAM) -> LRESUL
     Ok(unsafe { std::mem::transmute(address) })
 }
 
+fn blocked_cross_process_target(endpoint: CaretEndpoint) -> Option<String> {
+    let path = crate::windows_impl::process_path(endpoint.input_process)?;
+    // ChatGPT.exe is the Windows Codex desktop host. Its WebView2 and TSF
+    // threads are not a safe target for a third-party WH_CALLWNDPROC module:
+    // a settings navigation can tear down the input stack while the hook is
+    // still in flight. Keep the passive indicator on its legacy path for this
+    // host instead of injecting the observer DLL into it.
+    crate::windows_impl::blocked_cross_process_process(&path)
+}
+
 impl CaretObserver {
     pub fn start(endpoint: CaretEndpoint) -> Result<Self, String> {
         if endpoint.root_window == 0
@@ -109,6 +125,11 @@ impl CaretObserver {
             || endpoint.focus_generation == 0
         {
             return Err("caret endpoint identity unavailable".into());
+        }
+        if let Some(process_name) = blocked_cross_process_target(endpoint) {
+            return Err(format!(
+                "target identity is not approved for caret observer: {process_name}"
+            ));
         }
         let (nonce_words, nonce_text) = nonce();
         let mapping_name = wide(&format!("{PREFIX}{nonce_text}"));
@@ -137,6 +158,7 @@ impl CaretObserver {
         unsafe {
             std::ptr::write(mailbox, Mailbox::new(header));
         }
+        let expected_header = header.for_mailbox();
         let atom_name = wide(&format!("{PREFIX}{nonce_text}"));
         let atom = unsafe { host_ffi::add_atom(atom_name.as_ptr()) };
         if atom == 0 {
@@ -160,6 +182,7 @@ impl CaretObserver {
         };
         let mut observer = Self {
             endpoint,
+            header: expected_header,
             mailbox,
             mapping,
             atom,
@@ -168,6 +191,7 @@ impl CaretObserver {
             hook,
             session: SessionState::new(endpoint.focus_generation),
             last_request_tick: None,
+            retired: false,
         };
         let bootstrap = unsafe {
             host_ffi::bootstrap(
@@ -207,6 +231,12 @@ impl CaretObserver {
         }
         let decision = self.session.request(now_tick_ms);
         let RequestDecision::Sent(sequence) = decision else {
+            if matches!(
+                decision,
+                RequestDecision::Closed | RequestDecision::Unavailable
+            ) {
+                self.close();
+            }
             return decision;
         };
         let mut words = [0_u32; 16];
@@ -219,14 +249,14 @@ impl CaretObserver {
         words[12] = self.session.context_epoch as u32;
         words[13] = (self.session.context_epoch >> 32) as u32;
         if unsafe { (*self.mailbox).request.publish(&words) }.is_err() {
-            self.session.close();
+            self.close();
             return RequestDecision::Unavailable;
         }
         let posted = unsafe {
             host_ffi::post_scheduler(self.scheduler_window, REQUEST_MESSAGE, sequence as usize)
         };
         if !posted {
-            self.session.close();
+            self.close();
             return RequestDecision::Unavailable;
         }
         self.last_request_tick = Some(now_tick_ms);
@@ -235,6 +265,12 @@ impl CaretObserver {
 
     pub fn try_read(&mut self, now_tick_ms: u64) -> Option<GeometryReply> {
         self.session.expire(now_tick_ms);
+        let header = unsafe { (*self.mailbox).header };
+        if !protocol::header_shape_valid(&header)
+            || !protocol::header_identity_matches(&self.header, &header)
+        {
+            return None;
+        }
         let words = unsafe { (*self.mailbox).response.snapshot() }?;
         let status = match words[0] {
             RESPONSE_PENDING => ReplyStatus::Pending,
@@ -244,11 +280,20 @@ impl CaretObserver {
             _ => return None,
         };
         let sequence = words[1];
-        if self.session.pending_sequence != Some(sequence) {
+        if !response_matches_session(status, sequence, self.session.pending_sequence) {
             return None;
         }
         if status == ReplyStatus::Pending {
             return None;
+        }
+        if status == ReplyStatus::Closed {
+            self.session.mark_target_closed();
+            return Some(GeometryReply {
+                status,
+                request_sequence: sequence,
+                response_words: words,
+                accepted: false,
+            });
         }
         let epoch = u64::from(words[10]) | (u64::from(words[11]) << 32);
         let epoch_changed = epoch != 0 && epoch != self.session.context_epoch;
@@ -278,9 +323,10 @@ impl CaretObserver {
     }
 
     pub fn close(&mut self) {
-        if self.session.closed {
+        if self.retired {
             return;
         }
+        self.retired = true;
         self.session.close();
         unsafe {
             (*self.mailbox).closed.store(1, Ordering::Release);
@@ -310,5 +356,17 @@ impl Drop for CaretObserver {
             host_ffi::remove_hook(self.hook);
             host_ffi::delete_atom(self.atom);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn closed_response_is_terminal_without_matching_pending_sequence() {
+        assert!(response_matches_session(ReplyStatus::Closed, 0, Some(7)));
+        assert!(response_matches_session(ReplyStatus::Closed, 0, None));
+        assert!(!response_matches_session(ReplyStatus::Ready, 0, Some(7)));
     }
 }
