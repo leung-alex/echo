@@ -129,6 +129,32 @@ unsafe fn writable_text(element: &IUIAutomationElement) -> bool {
     let _ = VariantClear(&mut value);
     result
 }
+
+/// Read the current editor value only for the passive geometry estimate. A
+/// writable ValuePattern is preferred; TextPattern is accepted when it is the
+/// only provider and its document explicitly reports writable content. The
+/// returned text is never logged or used as an activation identity.
+pub(crate) unsafe fn editable_text_value(element: &IUIAutomationElement) -> Option<String> {
+    if let Ok(value) = element.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
+    {
+        let readonly = value.CurrentIsReadOnly().ok()?.as_bool();
+        return (!readonly)
+            .then(|| value.CurrentValue().ok().map(|value| value.to_string()))
+            .flatten();
+    }
+    if !writable_text(element) {
+        return None;
+    }
+    let pattern = element
+        .GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId)
+        .ok()?;
+    pattern
+        .DocumentRange()
+        .ok()?
+        .GetText(-1)
+        .ok()
+        .map(|value| value.to_string())
+}
 // Rich chat editors can expose Group instead of Edit/Document. Quick Insert
 // needs a verified writable input, not inline completion's range replacement
 // contract. Keep this extension local to both capture and delivery revalidation.
@@ -159,12 +185,76 @@ unsafe fn probe(
     {
         return console_caret(uia, snapshot);
     }
-    let retained = provider.as_ref().and_then(|(_, _, element)| {
-        native::automation_element_has_input_focus(element).then(|| (element.clone(), false))
-    });
-    let (element, legacy) = retained.or_else(|| focused_element(uia, snapshot))?;
+    // Passive indicators must re-read UIA focus on every hosted probe. A
+    // cached Chromium element can keep reporting keyboard focus after the
+    // WebView has switched to a different page (or lost its composer), which
+    // would otherwise publish the old editor edge in the new view. Quick
+    // Insert keeps its existing bounded provider cache; the indicator path
+    // fails closed until a live focused editor/container is returned again.
+    let retained = (!snapshot.indicator_only)
+        .then(|| {
+            provider.as_ref().and_then(|(_, _, element)| {
+                native::automation_element_has_input_focus(element)
+                    .then(|| (element.clone(), false))
+            })
+        })
+        .flatten();
+    if let Some((element, legacy)) = retained.or_else(|| focused_element(uia, snapshot)) {
+        *provider = Some((snapshot.window_id, snapshot.focused_handle, element.clone()));
+        if let Some(probe) = probe_element(uia, snapshot, geometry, &element, legacy) {
+            return Some(probe);
+        }
+    }
+    // Some WeChat builds report the foreground shell/window as UIA's focused
+    // element even though a focused Edit is present below its provider tree.
+    // Search only that bounded tree for a live focused child; do not use a
+    // generic descendant's control rectangle as geometry.
+    let (element, legacy) = focused_indicator_descendant(uia, snapshot)?;
     *provider = Some((snapshot.window_id, snapshot.focused_handle, element.clone()));
     probe_element(uia, snapshot, geometry, &element, legacy)
+}
+
+unsafe fn focused_indicator_descendant(
+    uia: &IUIAutomation,
+    snapshot: &FocusSnapshot,
+) -> Option<(IUIAutomationElement, bool)> {
+    if !snapshot.indicator_only || snapshot.indicator_endpoint().is_none() {
+        return None;
+    }
+    let root = uia.ElementFromHandle(HWND(snapshot.window_id as _)).ok()?;
+    let walker = uia.ControlViewWalker().ok()?;
+    let first = walker.GetFirstChildElement(&root).ok()?;
+    let mut pending = vec![first];
+    let mut visited = 0usize;
+    while let Some(mut element) = pending.pop() {
+        loop {
+            visited += 1;
+            if visited > 128 {
+                return None;
+            }
+            let focused = element
+                .CurrentHasKeyboardFocus()
+                .is_ok_and(|value| value.as_bool())
+                && element
+                    .CurrentIsEnabled()
+                    .is_ok_and(|value| value.as_bool())
+                && element
+                    .CurrentIsPassword()
+                    .is_ok_and(|value| !value.as_bool())
+                && snapshot.owns_indicator_automation_input(uia, &element);
+            if focused {
+                return Some((element, false));
+            }
+            if let Ok(child) = walker.GetFirstChildElement(&element) {
+                pending.push(child);
+            }
+            let Ok(next) = walker.GetNextSiblingElement(&element) else {
+                break;
+            };
+            element = next;
+        }
+    }
+    None
 }
 // Some embedded providers return their native host from GetFocusedElement and
 // misreport UIA IsKeyboardFocusable on the actual input. Follow MSAA's direct
@@ -175,6 +265,19 @@ unsafe fn focused_element(
     snapshot: &FocusSnapshot,
 ) -> Option<(IUIAutomationElement, bool)> {
     let element = uia.GetFocusedElement().ok()?;
+    // Chromium/WebView editors can expose a focused Document/Group that is
+    // not marked keyboard-focusable even though TextPattern2 still supplies a
+    // live collapsed caret.  The passive indicator may use that geometry, but
+    // Quick Insert must continue through the stricter editable path below.
+    if snapshot.indicator_only
+        && element.CurrentIsEnabled().is_ok_and(|v| v.as_bool())
+        && element.CurrentHasKeyboardFocus().is_ok_and(|v| v.as_bool())
+        && element.CurrentIsPassword().is_ok_and(|v| !v.as_bool())
+        && snapshot.owns_indicator_automation_input(uia, &element)
+        && super::precise_anchor_for_element_with_uia(snapshot, Some(uia), Some(&element)).is_some()
+    {
+        return Some((element, false));
+    }
     if native::automation_element_has_input_focus(&element) {
         return Some((element, false));
     }
@@ -328,7 +431,11 @@ unsafe fn probe_element(
     {
         return None;
     }
-    let belongs = snapshot.owns_automation_input(uia, element);
+    let belongs = if snapshot.indicator_only {
+        snapshot.owns_indicator_automation_input(uia, element)
+    } else {
+        snapshot.owns_automation_input(uia, element)
+    };
     let editable = quick_insert_editable(element)
         || (legacy
             && element.CurrentControlType().ok() == Some(UIA_EditControlTypeId)
@@ -336,15 +443,25 @@ unsafe fn probe_element(
             && element.CurrentHasKeyboardFocus().is_ok_and(|v| v.as_bool())
             && element.CurrentIsPassword().is_ok_and(|v| !v.as_bool())
             && writable(element));
-    if !belongs || !editable {
+    let precise_anchor = geometry
+        .then(|| super::precise_anchor_for_element_with_uia(snapshot, Some(uia), Some(element)))
+        .flatten();
+    let passive_geometry = snapshot.indicator_only && precise_anchor.is_some() && belongs;
+    if !belongs || !(editable || passive_geometry) {
         return None;
     }
     let identity =
         native::automation_runtime_id(&element).map(PasteControlIdentity::AutomationRuntimeId)?;
-    let anchor = geometry.then(|| {
-        let result = super::anchor_for_element(snapshot, Some(&element));
-        (result.geometry.target, result.source)
-    });
+    let anchor = geometry
+        .then(|| {
+            precise_anchor
+                .or_else(|| {
+                    (!snapshot.indicator_only)
+                        .then(|| super::anchor_for_element(snapshot, Some(element)))
+                })
+                .map(|result| (result.geometry.target, result.source))
+        })
+        .flatten();
     if !snapshot.current() {
         return None;
     }
@@ -376,33 +493,104 @@ mod capability_tests {
     }
 }
 pub(crate) unsafe fn caret(element: &IUIAutomationElement) -> Option<(PhysicalRect, AnchorSource)> {
-    // TextPattern2 may be advertised but fail for an empty/new control.
-    // In that case fall back to the single collapsed selection, not the host rect.
-    let range = element
-        .GetCurrentPatternAs::<IUIAutomationTextPattern2>(UIA_TextPattern2Id)
-        .ok()
-        .and_then(|pattern| {
-            let mut active = BOOL(0);
-            pattern
-                .GetCaretRange(&mut active)
-                .ok()
-                .filter(|_| active.as_bool())
-        })
+    // Chromium/WebView providers can advertise TextPattern2 while returning
+    // a stale caret range from the document host.  The live TextPattern
+    // selection belongs to the focused editor and is the stronger identity
+    // check for a passive badge.  Prefer that collapsed range; only fall back
+    // to TextPattern2 when the provider has no selection at all (for example,
+    // a newly-created or otherwise empty control).
+    let pattern = element
+        .GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId)
+        .ok();
+    let range = pattern
+        .as_ref()
+        .and_then(|pattern| unsafe { selection_range(pattern) })
         .or_else(|| {
-            let pattern = element
-                .GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId)
-                .ok()?;
-            let selection = pattern.GetSelection().ok()?;
-            if selection.Length().ok()? != 1 {
-                return None;
-            }
-            selection.GetElement(0).ok()
+            element
+                .GetCurrentPatternAs::<IUIAutomationTextPattern2>(UIA_TextPattern2Id)
+                .ok()
+                .and_then(|pattern| {
+                    let mut active = BOOL(0);
+                    pattern
+                        .GetCaretRange(&mut active)
+                        .ok()
+                        .filter(|_| active.as_bool())
+                })
         })?;
+    collapsed_range_caret(&range)
+}
+
+/// WeChat's WebView sometimes exposes the editor as a focused child while its
+/// TextPattern lives on an ancestor. Resolve that scoped provider before
+/// declaring the caret unavailable. The selection must be collapsed and wholly
+/// inside the focused editor; a page-level selection is rejected.
+pub(crate) unsafe fn caret_in_scope(
+    uia: &IUIAutomation,
+    element: &IUIAutomationElement,
+) -> Option<(PhysicalRect, AnchorSource)> {
+    if let Some(exact) = caret(element) {
+        return Some(exact);
+    }
+    let walker = uia.RawViewWalker().ok()?;
+    let mut child = element.clone();
+    for _ in 0..16 {
+        let parent = walker.GetParentElement(&child).ok()?;
+        if parent.CurrentProcessId().ok() != element.CurrentProcessId().ok() {
+            break;
+        }
+        if let Ok(pattern) =
+            parent.GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId)
+        {
+            if let Ok(scope) = pattern.RangeFromChild(element) {
+                if let Some(range) =
+                    selection_range(&pattern).filter(|range| range_within(range, &scope))
+                {
+                    if let Some(exact) = collapsed_range_caret(&range) {
+                        return Some(exact);
+                    }
+                }
+            }
+        }
+        child = parent.clone();
+        if parent.CurrentControlType().ok() == Some(UIA_WindowControlTypeId) {
+            break;
+        }
+    }
+    None
+}
+
+unsafe fn selection_range(pattern: &IUIAutomationTextPattern) -> Option<IUIAutomationTextRange> {
+    let selection = pattern.GetSelection().ok()?;
+    (selection.Length().ok()? == 1).then(|| selection.GetElement(0).ok())?
+}
+
+unsafe fn range_within(range: &IUIAutomationTextRange, scope: &IUIAutomationTextRange) -> bool {
+    range
+        .CompareEndpoints(
+            TextPatternRangeEndpoint_Start,
+            scope,
+            TextPatternRangeEndpoint_Start,
+        )
+        .ok()
+        .is_some_and(|value| value >= 0)
+        && range
+            .CompareEndpoints(
+                TextPatternRangeEndpoint_End,
+                scope,
+                TextPatternRangeEndpoint_End,
+            )
+            .ok()
+            .is_some_and(|value| value <= 0)
+}
+
+unsafe fn collapsed_range_caret(
+    range: &IUIAutomationTextRange,
+) -> Option<(PhysicalRect, AnchorSource)> {
     // Never infer an insertion endpoint from a non-empty selection.
     if range
         .CompareEndpoints(
             TextPatternRangeEndpoint_Start,
-            &range,
+            range,
             TextPatternRangeEndpoint_End,
         )
         .ok()?
@@ -410,7 +598,7 @@ pub(crate) unsafe fn caret(element: &IUIAutomationElement) -> Option<(PhysicalRe
     {
         return None;
     }
-    if let Some(r) = bounds(&range) {
+    if let Some(r) = bounds(range) {
         return Some((r, AnchorSource::AutomationCaret));
     }
     // Some providers expose no rectangle for a degenerate range. A cloned range

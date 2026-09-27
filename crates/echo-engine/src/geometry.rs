@@ -8,6 +8,10 @@ use crate::{InputTargetGeometry, PhysicalRect};
 use std::time::{Duration, Instant};
 
 pub const GEOMETRY_TTL: Duration = Duration::from_millis(150);
+/// Native geometry must be revalidated before the freshness window expires.
+/// Keep this below `GEOMETRY_TTL` so an unchanged caret still receives a new
+/// provider timestamp instead of being published stale by a mode heartbeat.
+pub const GEOMETRY_REVALIDATION_INTERVAL: Duration = Duration::from_millis(100);
 pub const MODE_TTL: Duration = Duration::from_millis(250);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -17,6 +21,10 @@ pub enum GeometrySource {
     UiaCaret,
     MsaaCaret,
     AdjacentCharacter,
+    /// A validated editor leading edge used only by a provider that exposes
+    /// a live focused editor but no caret range. It is an estimate, never a
+    /// whole control/window rectangle or pointer position.
+    EditorLeadingEdge,
     ImmExclusion,
     Control,
     Pointer,
@@ -31,6 +39,7 @@ impl GeometrySource {
             Self::UiaCaret => Some(2),
             Self::MsaaCaret => Some(3),
             Self::AdjacentCharacter => Some(4),
+            Self::EditorLeadingEdge => Some(5),
             Self::ImmExclusion | Self::Control | Self::Pointer => None,
         }
     }
@@ -65,6 +74,8 @@ pub struct GeometryIdentity {
     pub process: u32,
     pub process_started: u64,
     pub input_thread: u32,
+    pub root_process: u32,
+    pub root_started: u64,
     pub root_window: isize,
     pub focused_window: isize,
 }
@@ -133,7 +144,7 @@ impl GeometryCandidate {
     }
 }
 
-pub fn invalid_reason(
+fn common_invalid_reason(
     candidate: &GeometryCandidate,
     current: GeometryIdentity,
     now: Instant,
@@ -147,9 +158,6 @@ pub fn invalid_reason(
         GeometrySafety::Denied => return Some(GeometryInvalidReason::SensitivityDenied),
         GeometrySafety::Unknown => return Some(GeometryInvalidReason::SensitivityUnknown),
     }
-    if candidate.source.priority().is_none() {
-        return Some(GeometryInvalidReason::UnsupportedSource);
-    }
     if candidate.observed_at > now {
         return Some(GeometryInvalidReason::FutureTimestamp);
     }
@@ -162,7 +170,7 @@ pub fn invalid_reason(
     if candidate.source == GeometrySource::TsfCaret && candidate.context_epoch != context_epoch {
         return Some(GeometryInvalidReason::ContextMismatch);
     }
-    if !candidate.view_verified {
+    if !candidate.view_verified && candidate.source != GeometrySource::Pointer {
         return Some(GeometryInvalidReason::WrongViewOwner);
     }
     if candidate.clipped {
@@ -222,6 +230,34 @@ pub fn invalid_reason(
     None
 }
 
+/// Validate identity, freshness, safety, view ownership, DPI and rectangle
+/// invariants without requiring the source to participate in caret arbitration.
+/// Explicit pointer/IME exclusion fallbacks use this gate before they bypass
+/// source precedence.
+pub fn validate_geometry(
+    candidate: &GeometryCandidate,
+    current: GeometryIdentity,
+    now: Instant,
+    context_epoch: u64,
+) -> Option<GeometryInvalidReason> {
+    common_invalid_reason(candidate, current, now, context_epoch)
+}
+
+pub fn invalid_reason(
+    candidate: &GeometryCandidate,
+    current: GeometryIdentity,
+    now: Instant,
+    context_epoch: u64,
+) -> Option<GeometryInvalidReason> {
+    common_invalid_reason(candidate, current, now, context_epoch).or_else(|| {
+        candidate
+            .source
+            .priority()
+            .is_none()
+            .then_some(GeometryInvalidReason::UnsupportedSource)
+    })
+}
+
 /// Choose the highest-precedence fresh candidate. A zero-width caret is
 /// normalized only after all validation, preserving its insertion position.
 pub fn arbitrate_geometry(
@@ -263,6 +299,8 @@ mod tests {
         process: 10,
         process_started: 100,
         input_thread: 11,
+        root_process: 10,
+        root_started: 100,
         root_window: 20,
         focused_window: 21,
     };
@@ -353,6 +391,27 @@ mod tests {
     }
 
     #[test]
+    fn estimated_editor_leading_edge_is_valid_only_as_a_verified_live_anchor() {
+        let now = Instant::now();
+        let mut c = candidate(now);
+        c.source = GeometrySource::EditorLeadingEdge;
+        c.confidence = GeometryConfidence::Estimated;
+        c.geometry.target.width = 1;
+        c.view_verified = true;
+        assert_eq!(
+            arbitrate_geometry(ID, [c], now, 1)
+                .expect("live editor edge should be admissible")
+                .source,
+            GeometrySource::EditorLeadingEdge
+        );
+
+        c.geometry.target.width = 0;
+        assert!(arbitrate_geometry(ID, [c], now, 1).is_some());
+        c.view_verified = false;
+        assert!(arbitrate_geometry(ID, [c], now, 1).is_none());
+    }
+
+    #[test]
     fn selection_view_clip_dpi_and_rect_checks_fail_closed() {
         let now = Instant::now();
         let mut c = candidate(now);
@@ -419,5 +478,19 @@ mod tests {
         };
         assert!(mode_is_fresh(status.sampled_at, now));
         assert!(!geometry_is_fresh(status.geometry_stamp.observed_at, now));
+    }
+
+    #[test]
+    fn revalidation_interval_stays_inside_geometry_freshness_window() {
+        assert!(GEOMETRY_REVALIDATION_INTERVAL < GEOMETRY_TTL);
+        let observed = Instant::now();
+        assert!(geometry_is_fresh(
+            observed,
+            observed + GEOMETRY_REVALIDATION_INTERVAL
+        ));
+        assert!(!geometry_is_fresh(
+            observed,
+            observed + GEOMETRY_TTL + Duration::from_millis(1)
+        ));
     }
 }

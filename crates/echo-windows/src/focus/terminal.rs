@@ -1,6 +1,7 @@
 //! Explicit Alt+V compatibility for terminal hosts lacking editable UIA ranges.
-//! Plain-paste identities never authorize inline replacement. Warp has a separate,
-//! explicit pointer-status fallback when precise input geometry is unavailable.
+//! Plain-paste identities never authorize inline replacement. Warp may use a
+//! captured pointer only for that explicit paste placement; the passive badge
+//! never treats the pointer as a caret.
 use super::*;
 
 fn supported_host(class: &str, executable: &str) -> bool {
@@ -206,26 +207,5 @@ impl FocusSnapshot {
             geometry: geometry(self.pointer?),
             source: AnchorSource::Pointer,
         })
-    }
-    pub(crate) fn warp_pointer_indicator(&self) -> Option<(InputStatusEndpoint, PopupAnchor)> {
-        if !self.warp_root() {
-            return None;
-        }
-        let bounds = self.pointer?;
-        Some((
-            InputStatusEndpoint {
-                window: self.focused_handle,
-                input: self.focused_handle,
-                process: self.process_id,
-                started: self.process_started_at,
-                thread: unsafe {
-                    GetWindowThreadProcessId(self.focused_handle as HWND, std::ptr::null_mut())
-                },
-            },
-            PopupAnchor {
-                geometry: geometry(bounds),
-                source: AnchorSource::Pointer,
-            },
-        ))
     }
 }

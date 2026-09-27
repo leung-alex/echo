@@ -835,7 +835,15 @@ mod windows_impl {
             .file_name()?
             .to_string_lossy()
             .to_ascii_lowercase();
-        matches!(name.as_str(), "chatgpt.exe" | "codex.exe").then_some(name)
+        // These WebView/TSF hosts are not safe targets for an injected
+        // third-party WH_CALLWNDPROC observer.  A teardown while the hook is
+        // in flight can bring down the host process, so fail closed and keep
+        // the passive indicator on validated non-injected providers.
+        matches!(
+            name.as_str(),
+            "chatgpt.exe" | "codex.exe" | "wechat.exe" | "weixin.exe" | "wechatappex.exe"
+        )
+        .then_some(name)
     }
 
     pub(crate) fn process_started_at(process_id: u32) -> Option<u64> {
@@ -1174,6 +1182,20 @@ mod windows_impl {
             assert_eq!(
                 blocked_cross_process_process(r"C:\tests\CaretTsfFixture.exe"),
                 None
+            );
+            assert_eq!(
+                blocked_cross_process_process(r"C:\Program Files\Tencent\WeChat\WeChat.exe"),
+                Some("wechat.exe".into())
+            );
+            assert_eq!(
+                blocked_cross_process_process(r"C:\Program Files\Tencent\Weixin\Weixin.exe"),
+                Some("weixin.exe".into())
+            );
+            assert_eq!(
+                blocked_cross_process_process(
+                    r"C:\Users\user\AppData\Roaming\Tencent\WeChat\runtime\WeChatAppEx.exe"
+                ),
+                Some("wechatappex.exe".into())
             );
         }
     }

@@ -4,8 +4,9 @@ use crate::{
     ime_observer::Observer,
 };
 use echo_engine::{
-    arbitrate_geometry, CompositionState, GeometryCandidate, GeometryConfidence, GeometryIdentity,
-    GeometrySafety, GeometrySource, GeometryStamp, InputAnchor, InputMode, InputStatus,
+    arbitrate_geometry, geometry_is_fresh, validate_geometry, CompositionState, GeometryCandidate,
+    GeometryConfidence, GeometryIdentity, GeometrySafety, GeometrySource, GeometryStamp,
+    InputAnchor, InputMode, InputStatus, GEOMETRY_REVALIDATION_INTERVAL,
 };
 use std::{
     cell::RefCell,
@@ -110,6 +111,7 @@ fn next_poll_delay(
     hosted_pending: bool,
     hosted_admitted: bool,
     tsf_active: bool,
+    tsf_backoff: bool,
     admitted: bool,
     failures: u32,
     cross_process: bool,
@@ -117,6 +119,8 @@ fn next_poll_delay(
     if valid || hosted_pending || hosted_admitted || tsf_active {
         return Some(Duration::from_millis(
             if provider == CaretProvider::Legacy {
+                100
+            } else if tsf_backoff {
                 100
             } else {
                 50
@@ -164,6 +168,10 @@ pub enum UnavailableReason {
     HostedProbeDisconnected,
     ObserverUnavailable,
     ModeUnavailable,
+    /// A provider reported that the current editor is sensitive, read-only,
+    /// or otherwise unsafe for a passive caret badge.  This is terminal for
+    /// the current target until a fresh allowed geometry is proven.
+    UnsafeGeometry,
     PointerAnchorUnavailable,
 }
 impl UnavailableReason {
@@ -174,6 +182,7 @@ impl UnavailableReason {
             Self::HostedProbeDisconnected => "hosted-probe-disconnected",
             Self::ObserverUnavailable => "observer-unavailable",
             Self::ModeUnavailable => "mode-unavailable",
+            Self::UnsafeGeometry => "unsafe-geometry",
             Self::PointerAnchorUnavailable => "pointer-anchor-unavailable",
         }
     }
@@ -484,7 +493,9 @@ fn caret_endpoint(
     endpoint: Option<crate::focus::InputStatusEndpoint>,
     generation: u64,
 ) -> Option<crate::caret::CaretEndpoint> {
-    let endpoint = endpoint.or_else(|| snapshot.input_endpoint())?;
+    let endpoint = endpoint
+        .or_else(|| snapshot.indicator_endpoint())
+        .or_else(|| snapshot.input_endpoint())?;
     if endpoint.input == 0 || endpoint.process == 0 || endpoint.started == 0 || endpoint.thread == 0
     {
         return None;
@@ -510,6 +521,7 @@ fn input_identity(
 ) -> Option<(isize, u32, u64, u32)> {
     target
         .1
+        .or_else(|| snapshot.indicator_endpoint())
         .or_else(|| snapshot.input_endpoint())
         .map(|endpoint| {
             (
@@ -521,7 +533,7 @@ fn input_identity(
         })
 }
 
-fn target_identity_changed(
+fn target_endpoint_changed(
     old_snapshot: &FocusSnapshot,
     old_target: &(
         Option<echo_engine::PasteControlIdentity>,
@@ -540,17 +552,36 @@ fn target_identity_changed(
         || input_identity(old_snapshot, old_target) != input_identity(snapshot, target)
 }
 
+fn target_identity_changed(
+    old_snapshot: &FocusSnapshot,
+    old_target: &(
+        Option<echo_engine::PasteControlIdentity>,
+        Option<crate::focus::InputStatusEndpoint>,
+    ),
+    snapshot: &FocusSnapshot,
+    target: &(
+        Option<echo_engine::PasteControlIdentity>,
+        Option<crate::focus::InputStatusEndpoint>,
+    ),
+) -> bool {
+    target_endpoint_changed(old_snapshot, old_target, snapshot, target) || old_target.0 != target.0
+}
+
 fn geometry_identity(
     generation: u64,
     snapshot: &FocusSnapshot,
     endpoint: Option<crate::focus::InputStatusEndpoint>,
 ) -> Option<GeometryIdentity> {
-    let endpoint = endpoint.or_else(|| snapshot.input_endpoint())?;
+    let endpoint = endpoint
+        .or_else(|| snapshot.indicator_endpoint())
+        .or_else(|| snapshot.input_endpoint())?;
     Some(GeometryIdentity {
         generation,
         process: endpoint.process,
         process_started: endpoint.started,
         input_thread: endpoint.thread,
+        root_process: snapshot.process_id,
+        root_started: snapshot.process_started_at,
         root_window: snapshot.window_id,
         focused_window: snapshot.focused_handle,
     })
@@ -562,22 +593,8 @@ fn candidate_from_anchor(
     observed_at: Instant,
     sequence: u64,
 ) -> GeometryCandidate {
-    let source = match anchor.source {
-        AnchorSource::NativeCaret => GeometrySource::NativeCaret,
-        AnchorSource::AutomationCaret => GeometrySource::UiaCaret,
-        AnchorSource::AccessibleCaret => GeometrySource::MsaaCaret,
-        AnchorSource::AdjacentCharacter => GeometrySource::AdjacentCharacter,
-        AnchorSource::InputMethodCaret => GeometrySource::ImmExclusion,
-        AnchorSource::InputControl | AnchorSource::Window => GeometrySource::Control,
-        AnchorSource::Pointer => GeometrySource::Pointer,
-    };
-    let confidence = if source == GeometrySource::AdjacentCharacter {
-        GeometryConfidence::Estimated
-    } else if matches!(source, GeometrySource::Control | GeometrySource::Pointer) {
-        GeometryConfidence::Fallback
-    } else {
-        GeometryConfidence::Exact
-    };
+    let source = geometry_source(anchor.source);
+    let confidence = geometry_confidence(source);
     GeometryCandidate {
         identity,
         source,
@@ -595,12 +612,190 @@ fn candidate_from_anchor(
     }
 }
 
-/// Legacy geometry may keep explicit IME or pointer paths, but a generic
-/// control/window rectangle is the whole editor surface rather than the
-/// insertion caret.  Showing it would place the passive badge at an
-/// unrelated edge (for example, the far right of a WeChat composer).
+#[derive(Clone, Copy, Debug)]
+struct GeometryProbeState {
+    last_attempt: Option<Instant>,
+}
+
+impl GeometryProbeState {
+    const fn new() -> Self {
+        Self { last_attempt: None }
+    }
+
+    fn reset(&mut self) {
+        self.last_attempt = None;
+    }
+
+    fn due(&self, now: Instant, force: bool) -> bool {
+        force
+            || self.last_attempt.is_none_or(|last| {
+                now.saturating_duration_since(last) >= GEOMETRY_REVALIDATION_INTERVAL
+            })
+    }
+
+    fn mark_attempt(&mut self, now: Instant) {
+        self.last_attempt = Some(now);
+    }
+}
+
+/// Legacy geometry may keep the explicit IME caret path, but a generic
+/// control/window or pointer rectangle is not the insertion caret. Showing
+/// either would place the passive badge at an unrelated edge (for example,
+/// the far right of a WeChat composer or wherever the mouse happens to be).
 fn legacy_geometry_allowed(source: GeometrySource) -> bool {
-    !matches!(source, GeometrySource::Control)
+    !matches!(source, GeometrySource::Control | GeometrySource::Pointer)
+}
+
+fn anchor_source(source: GeometrySource) -> AnchorSource {
+    match source {
+        GeometrySource::Control => AnchorSource::InputControl,
+        GeometrySource::Pointer => AnchorSource::Pointer,
+        GeometrySource::NativeCaret | GeometrySource::TsfCaret => AnchorSource::NativeCaret,
+        GeometrySource::UiaCaret => AnchorSource::AutomationCaret,
+        GeometrySource::MsaaCaret => AnchorSource::AccessibleCaret,
+        GeometrySource::AdjacentCharacter => AnchorSource::AdjacentCharacter,
+        GeometrySource::EditorLeadingEdge => AnchorSource::EditorLeadingEdge,
+        GeometrySource::ImmExclusion => AnchorSource::InputMethodCaret,
+    }
+}
+
+fn geometry_source(source: AnchorSource) -> GeometrySource {
+    match source {
+        AnchorSource::NativeCaret => GeometrySource::NativeCaret,
+        AnchorSource::AutomationCaret => GeometrySource::UiaCaret,
+        AnchorSource::AccessibleCaret => GeometrySource::MsaaCaret,
+        AnchorSource::AdjacentCharacter => GeometrySource::AdjacentCharacter,
+        AnchorSource::EditorLeadingEdge => GeometrySource::EditorLeadingEdge,
+        AnchorSource::InputMethodCaret => GeometrySource::ImmExclusion,
+        AnchorSource::InputControl | AnchorSource::Window => GeometrySource::Control,
+        AnchorSource::Pointer => GeometrySource::Pointer,
+    }
+}
+
+fn geometry_confidence(source: GeometrySource) -> GeometryConfidence {
+    match source {
+        GeometrySource::AdjacentCharacter | GeometrySource::EditorLeadingEdge => {
+            GeometryConfidence::Estimated
+        }
+        GeometrySource::Control | GeometrySource::Pointer => GeometryConfidence::Fallback,
+        _ => GeometryConfidence::Exact,
+    }
+}
+
+fn geometry_stamp(
+    anchor: crate::focus::PopupAnchor,
+    observed_at: Instant,
+    sequence: u64,
+) -> GeometryStamp {
+    let source = geometry_source(anchor.source);
+    GeometryStamp {
+        source,
+        confidence: geometry_confidence(source),
+        observed_at,
+        sequence,
+        context_epoch: 0,
+    }
+}
+
+fn tsf_unavailable_invalidates_candidate(reason: u32) -> bool {
+    // Loading, late delivery, edit-lock and callback-capacity failures are
+    // transient. All other unavailable reasons prove that the previous caret
+    // is no longer safe to display for the current target/context.
+    !matches!(reason, 13 | 21 | 22 | 23 | 24 | 28)
+}
+
+fn tsf_reason_blocks_geometry(reason: u32) -> bool {
+    // TSF explicitly reports sensitivity and editability before it can
+    // expose a caret.  Legacy/UIA rectangles must not be used as a fallback
+    // after one of these safety decisions for the same target.
+    matches!(reason, 10 | 11 | 12)
+}
+
+fn tsf_view_is_live(identity: GeometryIdentity, view_window: u64) -> bool {
+    let view = view_window as usize as HWND;
+    if view.is_null() {
+        return false;
+    }
+    unsafe {
+        let mut process = 0_u32;
+        let thread = GetWindowThreadProcessId(view, &mut process);
+        if thread == 0
+            || process != identity.process
+            || thread != identity.input_thread
+            || crate::windows_impl::process_started_at(process) != Some(identity.process_started)
+            || GetAncestor(view, GA_ROOT) as isize != identity.root_window
+            || GetForegroundWindow() as isize != identity.root_window
+        {
+            return false;
+        }
+        let mut root_process = 0_u32;
+        if GetWindowThreadProcessId(identity.root_window as HWND, &mut root_process) == 0
+            || root_process == 0
+            || root_process != identity.root_process
+            || crate::windows_impl::process_started_at(root_process) != Some(identity.root_started)
+        {
+            return false;
+        }
+        let mut gui = std::mem::zeroed::<GUITHREADINFO>();
+        gui.cbSize = std::mem::size_of::<GUITHREADINFO>() as u32;
+        GetGUIThreadInfo(identity.input_thread, &mut gui) != 0 && gui.hwndFocus == view
+    }
+}
+
+fn select_legacy_geometry(
+    identity: GeometryIdentity,
+    legacy: Option<(crate::focus::PopupAnchor, GeometryStamp)>,
+    now: Instant,
+) -> Option<(crate::focus::PopupAnchor, GeometryStamp)> {
+    let (legacy_anchor, legacy_stamp) = legacy?;
+    if !legacy_geometry_allowed(legacy_stamp.source)
+        || !geometry_is_fresh(legacy_stamp.observed_at, now)
+        || geometry_source(legacy_anchor.source) != legacy_stamp.source
+    {
+        return None;
+    }
+
+    // Pointer and explicit IME exclusion anchors are intentionally outside
+    // the normal source arbitration order. They still share the same
+    // freshness/identity gate; all caret-like providers go through the full
+    // geometry validator so a whole Control rectangle cannot leak through.
+    if legacy_stamp.source == GeometrySource::ImmExclusion {
+        let candidate = candidate_from_anchor(
+            identity,
+            legacy_anchor,
+            legacy_stamp.observed_at,
+            legacy_stamp.sequence,
+        );
+        if validate_geometry(&candidate, identity, now, legacy_stamp.context_epoch).is_some() {
+            return None;
+        }
+        return Some((legacy_anchor, legacy_stamp));
+    }
+
+    let selected = arbitrate_geometry(
+        identity,
+        [candidate_from_anchor(
+            identity,
+            legacy_anchor,
+            legacy_stamp.observed_at,
+            legacy_stamp.sequence,
+        )],
+        now,
+        legacy_stamp.context_epoch,
+    )?;
+    Some((
+        crate::focus::PopupAnchor {
+            geometry: selected.geometry,
+            source: anchor_source(selected.source),
+        },
+        GeometryStamp {
+            source: selected.source,
+            confidence: selected.confidence,
+            observed_at: selected.observed_at,
+            sequence: selected.sequence,
+            context_epoch: selected.context_epoch,
+        },
+    ))
 }
 
 fn candidate_from_tsf(
@@ -614,6 +809,10 @@ fn candidate_from_tsf(
     }
     let words = reply.response_words;
     if words[2] != 1 || words[3] != 1 || words[27] != 2 {
+        return None;
+    }
+    let view_window = u64::from(words[12]) | (u64::from(words[13]) << 32);
+    if !tsf_view_is_live(identity, view_window) || words[28] != 1 {
         return None;
     }
     let observed_tick = u64::from(words[8]) | (u64::from(words[9]) << 32);
@@ -702,6 +901,70 @@ struct AdmittedTarget {
     ),
 }
 
+fn close_observer_until_drained(observer: &mut crate::caret::CaretObserver, now_tick: u64) -> bool {
+    observer.close();
+    observer.try_read(now_tick).is_some_and(|reply| {
+        reply.status == crate::caret::ReplyStatus::Closed && reply.response_words[30] == 0
+    }) || observer.target_exited()
+}
+
+fn retire_observer(
+    observer: &mut Option<crate::caret::CaretObserver>,
+    retired: &mut Vec<crate::caret::CaretObserver>,
+) {
+    if let Some(mut observer) = observer.take() {
+        observer.close();
+        retired.push(observer);
+    }
+}
+
+fn drain_retired_observers(retired: &mut Vec<crate::caret::CaretObserver>, now_tick: u64) {
+    retired.retain_mut(|observer| !close_observer_until_drained(observer, now_tick));
+}
+
+/// Close every remaining TSF observer before the worker thread releases its
+/// mailbox mappings.  A target publishes CLOSED before its final callback
+/// Release, so teardown must pump the scheduler messages until the same
+/// snapshot reports `outstanding_callbacks == 0`.
+unsafe fn shutdown_caret_observers(
+    current: &mut Option<crate::caret::CaretObserver>,
+    retired: &mut Vec<crate::caret::CaretObserver>,
+    msg: &mut MSG,
+) {
+    if let Some(observer) = current.as_mut() {
+        observer.close();
+    }
+    for observer in retired.iter_mut() {
+        observer.close();
+    }
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        while PeekMessageW(msg, null_mut(), 0, 0, PM_REMOVE) != 0 {
+            TranslateMessage(msg);
+            DispatchMessageW(msg);
+        }
+        let now_tick = GetTickCount64();
+        if current
+            .as_mut()
+            .is_some_and(|observer| close_observer_until_drained(observer, now_tick))
+        {
+            *current = None;
+        }
+        drain_retired_observers(retired, now_tick);
+        if current.is_none() && retired.is_empty() {
+            break;
+        }
+        if Instant::now() >= deadline {
+            // Do not hang Quit on an unresponsive target. Runtime owns a
+            // separate target-side mapping and the observer module is pinned;
+            // dropping the host mapping/hook cannot invalidate an in-flight
+            // callback's view. No successful drain is inferred on this path.
+            break;
+        }
+        MsgWaitForMultipleObjectsEx(0, null_mut(), 10, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+    }
+}
+
 unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
     let mut msg: MSG = std::mem::zeroed();
     PeekMessageW(&mut msg, null_mut(), 0, 0, PM_NOREMOVE);
@@ -722,8 +985,12 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
     let mut admitted_target: Option<AdmittedTarget> = None;
     let mut observer = None;
     let mut caret_observer: Option<crate::caret::CaretObserver> = None;
+    let mut retired_caret_observers = Vec::new();
     let mut tsf_candidate: Option<GeometryCandidate> = None;
+    let mut tsf_safety_blocked = false;
     let mut tsf_diagnostic: Option<TsfDiagnostic> = None;
+    let mut tsf_backoff = false;
+    let mut tsf_request_pending = false;
     // The legacy/native/UIA geometry clock is updated only when that source
     // actually returns a new rectangle. Mode ticks reuse this stamp verbatim.
     let mut legacy_geometry: Option<(crate::focus::PopupAnchor, GeometryStamp)> = None;
@@ -731,9 +998,10 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
     // refresh must not block the independent, fresh IME mode samples.
     let mut pending: Option<(
         FocusSnapshot,
+        Option<crate::focus::InputStatusEndpoint>,
         std::sync::mpsc::Receiver<Option<crate::focus::automation::Probe>>,
     )> = None;
-    let mut refreshed = Instant::now();
+    let mut geometry_probe = GeometryProbeState::new();
     let mut next = Some(Instant::now());
     let mut failures = 0u32;
     let mut candidate_visible = false;
@@ -743,6 +1011,7 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
+        drain_retired_observers(&mut retired_caret_observers, GetTickCount64());
         let enabled = s.enabled.load(Ordering::Acquire);
         if !enabled {
             hooks = None;
@@ -751,9 +1020,14 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
             admitted_target = None;
             observer = None;
             tsf_candidate = None;
+            tsf_safety_blocked = false;
             legacy_geometry = None;
+            tsf_backoff = false;
+            tsf_request_pending = false;
             pending = None;
-            next = None;
+            geometry_probe.reset();
+            next = (caret_observer.is_some() || !retired_caret_observers.is_empty())
+                .then(|| Instant::now() + Duration::from_millis(50));
             // Keep a closed observer alive while its target-side callback
             // leases drain.  `CLOSED` is published before the final COM
             // Release, so dropping the mapping here would lose the only
@@ -789,13 +1063,22 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
         if enabled && dirty & FOCUS != 0 {
             s.console_root.store(0, Ordering::Release);
             cached = None;
-            admitted_target = None;
+            // Keep the last verified target identity across a focus signal.
+            // The signal can be emitted while the same editor is processing
+            // its focus notification; clearing admission here makes the
+            // following sample look like an unrelated target and causes a
+            // needless hide/show cycle.  Geometry is still discarded and
+            // must be revalidated below before it is published again.
             observer = None;
-            caret_observer = None;
+            retire_observer(&mut caret_observer, &mut retired_caret_observers);
             tsf_candidate = None;
+            tsf_safety_blocked = false;
             tsf_diagnostic = None;
             legacy_geometry = None;
+            tsf_backoff = false;
+            tsf_request_pending = false;
             pending = None;
+            geometry_probe.reset();
             failures = 0;
             next = Some(Instant::now());
         }
@@ -822,7 +1105,11 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
                     observer = None;
                     pending = None;
                     tsf_candidate = None;
+                    tsf_safety_blocked = false;
                     legacy_geometry = None;
+                    tsf_backoff = false;
+                    tsf_request_pending = false;
+                    geometry_probe.reset();
                     if let Some(caret) = caret_observer.as_mut() {
                         caret.close();
                         if let Some(reply) = caret.try_read(GetTickCount64()) {
@@ -848,63 +1135,95 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
                     continue;
                 }
             }
-            let current_endpoint = (None, snapshot.input_endpoint());
-            let same = admitted_target.as_ref().is_some_and(|admitted| {
-                admitted.snapshot.current()
-                    && !target_identity_changed(
-                        &admitted.snapshot,
-                        &admitted.target,
-                        &snapshot,
-                        &current_endpoint,
-                    )
+            let current_endpoint = (
+                None,
+                snapshot
+                    .indicator_endpoint()
+                    .or_else(|| snapshot.input_endpoint()),
+            );
+            let mut target_changed_this_sample = false;
+            let had_target_identity =
+                admitted_target.is_some() || cached.is_some() || pending.is_some();
+            let same_admitted = admitted_target.as_ref().is_some_and(|admitted| {
+                // `current()` can be false for one GUI-thread sample while a
+                // native editor is processing the same focus notification.
+                // The new foreground snapshot and endpoint below are the
+                // authoritative identity check; requiring the old snapshot
+                // to revalidate first turns that transient into a hide/show
+                // cycle for every ordinary input box.
+                !target_endpoint_changed(
+                    &admitted.snapshot,
+                    &admitted.target,
+                    &snapshot,
+                    &current_endpoint,
+                )
             });
-            if !same {
+            // A hosted query can be pending before it has produced the first
+            // positive admission. Treat its frozen snapshot/endpoint as the
+            // current identity so the 50ms polling loop does not retire and
+            // recreate TSF observers while that one query is still in flight.
+            let same_pending = pending.as_ref().is_some_and(|(old, endpoint, _)| {
+                !target_endpoint_changed(old, &(None, *endpoint), &snapshot, &current_endpoint)
+            });
+            let same = same_admitted || (admitted_target.is_none() && same_pending);
+            if !same && had_target_identity {
+                target_changed_this_sample = true;
                 cached = None;
                 admitted_target = None;
                 observer = None;
-                caret_observer = None;
+                retire_observer(&mut caret_observer, &mut retired_caret_observers);
                 tsf_candidate = None;
+                tsf_safety_blocked = false;
                 tsf_diagnostic = None;
                 legacy_geometry = None;
+                tsf_backoff = false;
+                tsf_request_pending = false;
+                geometry_probe.reset();
             }
-            if pending.as_ref().is_some_and(|(old, _)| {
+            if pending.as_ref().is_some_and(|(old, endpoint, _)| {
                 !old.current()
-                    || old.focused_handle != snapshot.focused_handle
-                    || old.window_id != snapshot.window_id
+                    || target_endpoint_changed(
+                        old,
+                        &(None, *endpoint),
+                        &snapshot,
+                        &current_endpoint,
+                    )
             }) {
                 pending = None;
             }
             let mut hosted_disconnected = false;
-            let completed = pending
-                .as_ref()
-                .and_then(|(_, response)| match response.try_recv() {
-                    Ok(value) => Some(value),
-                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                        hosted_disconnected = true;
-                        Some(None)
-                    }
-                    Err(std::sync::mpsc::TryRecvError::Empty) => None,
-                });
+            let completed =
+                pending
+                    .as_ref()
+                    .and_then(|(_, _, response)| match response.try_recv() {
+                        Ok(value) => Some(value),
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            hosted_disconnected = true;
+                            Some(None)
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                    });
             let hosted = snapshot.is_hosted_input();
-            let needs_probe = cached.is_none()
-                || dirty & GEOMETRY != 0
-                || refreshed.elapsed() >= Duration::from_millis(500);
+            let needs_probe =
+                geometry_probe.due(Instant::now(), cached.is_none() || dirty & GEOMETRY != 0);
             if hosted && needs_probe && pending.is_none() && completed.is_none() {
                 s.probes.fetch_add(1, Ordering::Relaxed);
+                geometry_probe.mark_attempt(Instant::now());
                 pending = crate::focus::automation::begin_query(snapshot.clone(), true)
-                    .map(|response| (snapshot.clone(), response));
+                    .map(|response| (snapshot.clone(), current_endpoint.1, response));
             }
             if completed.is_some() || !hosted && needs_probe {
+                geometry_probe.mark_attempt(Instant::now());
                 if !hosted {
                     s.probes.fetch_add(1, Ordering::Relaxed);
                 }
                 let observed = if hosted {
-                    pending = None;
+                    let endpoint = pending.take().and_then(|(_, endpoint, _)| endpoint);
                     completed.flatten().and_then(|probe| {
                         let (rect, source) = probe.anchor?;
                         (source != AnchorSource::Window).then(|| {
                             (
-                                (Some(probe.identity), None),
+                                (Some(probe.identity), endpoint),
                                 crate::focus::PopupAnchor {
                                     geometry: crate::focus::geometry(rect),
                                     source,
@@ -924,20 +1243,25 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
                                 .filter(|_| found.anchor.source != AnchorSource::Window)
                                 .map(|target| ((target.focused_control, None), found.anchor))
                         })
-                        .or_else(|| {
-                            snapshot
-                                .warp_pointer_indicator()
-                                .map(|(endpoint, anchor)| ((None, Some(endpoint)), anchor))
-                        })
                 };
-                refreshed = Instant::now();
                 if let Some((target, anchor)) = observed {
-                    if cached.as_ref().is_some_and(|(old_snapshot, old, _)| {
+                    let target_changed = cached.as_ref().is_some_and(|(old_snapshot, old, _)| {
                         target_identity_changed(old_snapshot, old, &snapshot, &target)
-                    }) {
+                    }) || admitted_target.as_ref().is_some_and(|admitted| {
+                        target_identity_changed(
+                            &admitted.snapshot,
+                            &admitted.target,
+                            &snapshot,
+                            &target,
+                        )
+                    });
+                    if target_changed {
+                        target_changed_this_sample = true;
                         observer = None;
-                        caret_observer = None;
+                        retire_observer(&mut caret_observer, &mut retired_caret_observers);
                         tsf_candidate = None;
+                        tsf_safety_blocked = false;
+                        tsf_request_pending = false;
                         s.invalidate(InvalidationTrigger::TargetChanged);
                     }
                     s.console_root.store(
@@ -948,50 +1272,43 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
                         },
                         Ordering::Release,
                     );
-                    cached = Some((snapshot.clone(), target.clone(), anchor));
                     admitted_target = Some(AdmittedTarget {
                         snapshot: snapshot.clone(),
-                        target,
+                        target: target.clone(),
                     });
                     let sequence = s.samples.load(Ordering::Relaxed);
-                    let source = match anchor.source {
-                        AnchorSource::NativeCaret => GeometrySource::NativeCaret,
-                        AnchorSource::AutomationCaret => GeometrySource::UiaCaret,
-                        AnchorSource::AccessibleCaret => GeometrySource::MsaaCaret,
-                        AnchorSource::AdjacentCharacter => GeometrySource::AdjacentCharacter,
-                        AnchorSource::InputMethodCaret => GeometrySource::ImmExclusion,
-                        AnchorSource::InputControl | AnchorSource::Window => {
-                            GeometrySource::Control
-                        }
-                        AnchorSource::Pointer => GeometrySource::Pointer,
-                    };
-                    let confidence = match source {
-                        GeometrySource::AdjacentCharacter => GeometryConfidence::Estimated,
-                        GeometrySource::Control | GeometrySource::Pointer => {
-                            GeometryConfidence::Fallback
-                        }
-                        _ => GeometryConfidence::Exact,
-                    };
-                    legacy_geometry = Some((
-                        anchor,
-                        GeometryStamp {
-                            source,
-                            confidence,
-                            observed_at: Instant::now(),
-                            sequence,
-                            context_epoch: 0,
-                        },
-                    ));
+                    let observed_at = Instant::now();
+                    let stamp = geometry_stamp(anchor, observed_at, sequence);
+                    let validated =
+                        geometry_identity(generation, &snapshot, target.1).and_then(|identity| {
+                            select_legacy_geometry(identity, Some((anchor, stamp)), observed_at)
+                        });
+                    if let Some((validated_anchor, validated_stamp)) = validated {
+                        cached = Some((snapshot.clone(), target.clone(), validated_anchor));
+                        legacy_geometry = Some((validated_anchor, validated_stamp));
+                    } else {
+                        // A failed probe is a current safety result.  Keep
+                        // target admission for the independent TSF path, but
+                        // never fall back to the previous caret/control
+                        // rectangle for this same target.
+                        cached = None;
+                        legacy_geometry = None;
+                    }
                 } else {
                     cached = None;
                     legacy_geometry = None;
                     if provider == CaretProvider::Legacy {
                         admitted_target = None;
                         observer = None;
-                        caret_observer = None;
+                        retire_observer(&mut caret_observer, &mut retired_caret_observers);
                         tsf_candidate = None;
+                        tsf_safety_blocked = false;
                         tsf_diagnostic = None;
-                    } else if let Some(endpoint) = snapshot.input_endpoint() {
+                        tsf_request_pending = false;
+                    } else if let Some(endpoint) = snapshot
+                        .indicator_endpoint()
+                        .or_else(|| snapshot.input_endpoint())
+                    {
                         // A positive, current input endpoint is enough to keep
                         // passive TSF admission alive when legacy geometry is
                         // unavailable. Sensitivity and target ownership are
@@ -1003,9 +1320,11 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
                     } else {
                         admitted_target = None;
                         observer = None;
-                        caret_observer = None;
+                        retire_observer(&mut caret_observer, &mut retired_caret_observers);
                         tsf_candidate = None;
+                        tsf_safety_blocked = false;
                         tsf_diagnostic = None;
+                        tsf_request_pending = false;
                     }
                 }
             }
@@ -1022,6 +1341,7 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
                     .is_some()
                 });
             }
+            let mut tsf_candidate_refreshed = false;
             if provider != CaretProvider::Legacy {
                 // Passive target admission is independent of a successful
                 // legacy/UIA rectangle. This lets the new TSF source prove a
@@ -1033,6 +1353,7 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
                 let admission_endpoint = admitted_target
                     .as_ref()
                     .and_then(|admitted| admitted.target.1)
+                    .or_else(|| snapshot.indicator_endpoint())
                     .or_else(|| snapshot.input_endpoint());
                 if let Some(endpoint) =
                     caret_endpoint(admission_snapshot, admission_endpoint, generation)
@@ -1043,77 +1364,128 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
                             && actual.input_process == endpoint.input_process
                             && actual.input_started == endpoint.input_started
                     });
-                    if !endpoint_matches {
-                        caret_observer = match crate::caret::CaretObserver::start(endpoint) {
-                            Ok(observer) => {
-                                tsf_diagnostic = None;
-                                Some(observer)
-                            }
-                            Err(error) => {
-                                tsf_diagnostic = Some(TsfDiagnostic {
-                                    state: TsfDiagnosticState::BootstrapFailed,
-                                    api_hresult: None,
-                                    session_hresult: None,
-                                    reason_code: Some(bootstrap_reason_code(&error)),
-                                    sequence: 0,
-                                    context_epoch: 0,
-                                    raw_rect: None,
-                                    normalized_rect: None,
-                                    age_ms: None,
-                                    pending_callbacks: 0,
-                                    outstanding_callbacks: 0,
-                                    created_callbacks: 0,
-                                    released_callbacks: 0,
-                                    callback_high_water: 0,
-                                    pending_high_water: 0,
-                                    api_requests: 0,
-                                    request_edit_calls: 0,
-                                    accepted_sessions: 0,
-                                    callback_entered: 0,
-                                    callback_completed: 0,
-                                    final_released: 0,
-                                    cancelled: 0,
-                                    timed_out: 0,
-                                    ready_results: 0,
-                                    mock_sessions: 0,
-                                    mock_callback_entered: 0,
-                                    mock_callback_completed: 0,
-                                    mock_final_released: 0,
-                                    final_source: None,
-                                    fallback_reason: Some(bootstrap_reason_code(&error)),
-                                });
-                                None
-                            }
-                        };
+                    if crate::caret::CaretObserver::endpoint_is_blocked(endpoint) {
+                        // WeChat/Codex/ChatGPT can expose a safe passive
+                        // provider while their TSF threads remain unsafe for
+                        // an injected observer.  Keep the provider geometry
+                        // alive and do not repeatedly construct a blocked
+                        // mapping/hook attempt.
+                        if caret_observer.is_some() {
+                            retire_observer(&mut caret_observer, &mut retired_caret_observers);
+                        }
+                        tsf_backoff = true;
+                        tsf_request_pending = false;
+                    } else if !endpoint_matches {
+                        retire_observer(&mut caret_observer, &mut retired_caret_observers);
+                        // Keep at most one retired observer alive.  A new
+                        // target must wait for CLOSED+outstanding=0 before
+                        // another injected mapping/hook is created.
+                        if retired_caret_observers.is_empty() {
+                            caret_observer = match crate::caret::CaretObserver::start(endpoint) {
+                                Ok(observer) => {
+                                    tsf_diagnostic = None;
+                                    tsf_backoff = false;
+                                    Some(observer)
+                                }
+                                Err(error) => {
+                                    tsf_diagnostic = Some(TsfDiagnostic {
+                                        state: TsfDiagnosticState::BootstrapFailed,
+                                        api_hresult: None,
+                                        session_hresult: None,
+                                        reason_code: Some(bootstrap_reason_code(&error)),
+                                        sequence: 0,
+                                        context_epoch: 0,
+                                        raw_rect: None,
+                                        normalized_rect: None,
+                                        age_ms: None,
+                                        pending_callbacks: 0,
+                                        outstanding_callbacks: 0,
+                                        created_callbacks: 0,
+                                        released_callbacks: 0,
+                                        callback_high_water: 0,
+                                        pending_high_water: 0,
+                                        api_requests: 0,
+                                        request_edit_calls: 0,
+                                        accepted_sessions: 0,
+                                        callback_entered: 0,
+                                        callback_completed: 0,
+                                        final_released: 0,
+                                        cancelled: 0,
+                                        timed_out: 0,
+                                        ready_results: 0,
+                                        mock_sessions: 0,
+                                        mock_callback_entered: 0,
+                                        mock_callback_completed: 0,
+                                        mock_final_released: 0,
+                                        final_source: None,
+                                        fallback_reason: Some(bootstrap_reason_code(&error)),
+                                    });
+                                    None
+                                }
+                            };
+                        }
                         tsf_candidate = None;
+                        tsf_safety_blocked = false;
+                        tsf_request_pending = false;
                     } else if let Some(caret) = caret_observer.as_mut() {
                         caret.rebind_focus_generation(endpoint.focus_generation);
                     }
                     let mut observer_closed = false;
                     let mut target_closed = false;
+                    let mut observer_drained = false;
                     if let Some(caret) = caret_observer.as_mut() {
                         let now_tick = GetTickCount64();
                         caret.heartbeat(now_tick);
                         if let Some(reply) = caret.try_read(now_tick) {
                             tsf_diagnostic = Some(TsfDiagnostic::from_reply(reply, now_tick));
+                            tsf_request_pending = false;
+                            if reply.response_words[30]
+                                >= crate::caret::scheduler::SessionState::MAX_CALLBACKS
+                            {
+                                tsf_backoff = true;
+                            } else {
+                                tsf_backoff = false;
+                            }
                             if reply.status == crate::caret::ReplyStatus::Ready {
-                                let candidate_geometry = cached
-                                    .as_ref()
-                                    .map(|(_, _, anchor)| anchor.geometry)
-                                    .unwrap_or(snapshot.anchor.geometry);
-                                tsf_candidate = geometry_identity(
-                                    generation,
-                                    admission_snapshot,
-                                    admission_endpoint,
-                                )
-                                .and_then(|identity| {
-                                    candidate_from_tsf(
-                                        reply,
-                                        identity,
-                                        candidate_geometry,
-                                        now_tick,
+                                if !reply.accepted {
+                                    // A normal deadline/late response is not
+                                    // an identity change. Keep the candidate
+                                    // until its own geometry TTL expires;
+                                    // clear it only when the observer proves a
+                                    // target/context/session invalidation.
+                                    if reply.identity_invalidated {
+                                        tsf_candidate = None;
+                                    }
+                                } else {
+                                    let candidate_geometry = cached
+                                        .as_ref()
+                                        .map(|(_, _, anchor)| anchor.geometry)
+                                        .unwrap_or(snapshot.anchor.geometry);
+                                    let candidate = geometry_identity(
+                                        generation,
+                                        admission_snapshot,
+                                        admission_endpoint,
                                     )
-                                });
+                                    .and_then(|identity| {
+                                        candidate_from_tsf(
+                                            reply,
+                                            identity,
+                                            candidate_geometry,
+                                            now_tick,
+                                        )
+                                    });
+                                    // A malformed or stale Ready reply is not a
+                                    // target/context/session change. Keep the last
+                                    // valid candidate until its normal TTL expires
+                                    // instead of replacing it with invalid data.
+                                    if let Some(candidate) = candidate.filter(|candidate| {
+                                        geometry_is_fresh(candidate.observed_at, Instant::now())
+                                    }) {
+                                        tsf_candidate = Some(candidate);
+                                        tsf_safety_blocked = false;
+                                        tsf_candidate_refreshed = true;
+                                    }
+                                }
                             } else if reply.status == crate::caret::ReplyStatus::Closed {
                                 // CLOSED is published before the target-side
                                 // callback leases are finally released. Keep
@@ -1122,18 +1494,51 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
                                 // new request after the target has closed.
                                 target_closed = true;
                                 observer_closed = reply.response_words[30] == 0;
+                                observer_drained = observer_closed;
                                 tsf_candidate = None;
-                            } else if reply.status == crate::caret::ReplyStatus::Unavailable
-                                && reply.response_words[4] == 26
-                            {
-                                // The target's canonical document/context
-                                // changed. Retaining the old TSF candidate
-                                // would let it win after the replacement.
-                                tsf_candidate = None;
+                                tsf_request_pending = false;
+                            } else if reply.status == crate::caret::ReplyStatus::Unavailable {
+                                let reason = reply.response_words[4];
+                                if reply.identity_invalidated
+                                    || tsf_unavailable_invalidates_candidate(reason)
+                                {
+                                    // Safety, view, selection, DPI, context
+                                    // and session failures invalidate the old
+                                    // caret. Only explicitly transient
+                                    // reasons retain it for its own TTL.
+                                    tsf_candidate = None;
+                                }
+                                if tsf_reason_blocks_geometry(reason) {
+                                    tsf_safety_blocked = true;
+                                    tsf_candidate = None;
+                                }
                             }
                         }
                         if !observer_closed && !target_closed {
                             let request = caret.try_request(now_tick, dirty);
+                            if matches!(request, crate::caret::scheduler::RequestDecision::Backoff)
+                            {
+                                // A cap or request-rate backoff is a transient
+                                // scheduler condition. Keep the last ready
+                                // candidate and slow polling until the target
+                                // reports that callback capacity is available.
+                                tsf_backoff = true;
+                            }
+                            if matches!(
+                                request,
+                                crate::caret::scheduler::RequestDecision::Sent(_)
+                                    | crate::caret::scheduler::RequestDecision::Pending
+                                    | crate::caret::scheduler::RequestDecision::Coalesced
+                            ) {
+                                tsf_request_pending = true;
+                            } else if matches!(
+                                request,
+                                crate::caret::scheduler::RequestDecision::Backoff
+                                    | crate::caret::scheduler::RequestDecision::Closed
+                                    | crate::caret::scheduler::RequestDecision::Unavailable
+                            ) {
+                                tsf_request_pending = false;
+                            }
                             if matches!(
                                 request,
                                 crate::caret::scheduler::RequestDecision::Closed
@@ -1141,6 +1546,7 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
                             ) {
                                 observer_closed = true;
                                 tsf_candidate = None;
+                                tsf_request_pending = false;
                             }
                             if matches!(
                                 request,
@@ -1184,17 +1590,38 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
                         }
                     }
                     if observer_closed {
-                        caret_observer = None;
+                        if observer_drained {
+                            caret_observer = None;
+                        } else {
+                            retire_observer(&mut caret_observer, &mut retired_caret_observers);
+                        }
                     }
                 }
             }
             let probe_started = Instant::now();
             let process_name = process_basename(snapshot.process_id);
+            let update_trigger = if target_changed_this_sample {
+                InvalidationTrigger::TargetChanged
+            } else {
+                probe_trigger
+            };
             let mut unavailable_reason = UnavailableReason::NoEditableTarget;
             let sample = admitted_target.as_ref().and_then(|admitted| {
+                if tsf_safety_blocked {
+                    unavailable_reason = UnavailableReason::UnsafeGeometry;
+                    return None;
+                }
+                if pending.is_some() || (tsf_request_pending && !tsf_candidate_refreshed) {
+                    unavailable_reason = UnavailableReason::NoEditableTarget;
+                    return None;
+                }
                 let target = &admitted.target;
+                let status_endpoint = target
+                    .1
+                    .or_else(|| admitted.snapshot.indicator_endpoint())
+                    .or_else(|| admitted.snapshot.input_endpoint());
                 let thread = GetWindowThreadProcessId(
-                    target.1.map_or(snapshot.focused_handle, |t| t.window) as HWND,
+                    status_endpoint.map_or(snapshot.focused_handle, |t| t.window) as HWND,
                     null_mut(),
                 );
                 let layout = GetKeyboardLayout(thread);
@@ -1203,24 +1630,20 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
                     Some((InputMode::English, CompositionState::Idle))
                 } else {
                     if observer.is_none() {
-                        observer = if let Some(endpoint) = target.1 {
+                        observer = if let Some(endpoint) = status_endpoint {
                             Observer::status_at(endpoint)
                         } else {
-                            admitted
-                                .snapshot
-                                .input_endpoint()
-                                .ok_or_else(|| "Input owner unavailable".to_string())
-                                .and_then(|input| {
-                                    Observer::status_only(
-                                        input.window,
-                                        input.process,
-                                        input.started,
-                                    )
-                                })
+                            Err("Input owner unavailable".to_string())
                         }
                         .ok();
                     }
-                    observer.as_ref().and_then(Observer::input_state)
+                    observer
+                        .as_ref()
+                        .and_then(Observer::input_state)
+                        .or_else(|| {
+                            status_endpoint
+                                .and_then(crate::ime_observer::Observer::status_from_ime_window)
+                        })
                 };
                 let Some((mode, composition)) = state else {
                     unavailable_reason = UnavailableReason::ObserverUnavailable;
@@ -1247,16 +1670,7 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
                         unavailable_reason = UnavailableReason::NoEditableTarget;
                         return None;
                     };
-                    let source = match selected.source {
-                        GeometrySource::Control => AnchorSource::InputControl,
-                        GeometrySource::Pointer => AnchorSource::Pointer,
-                        GeometrySource::NativeCaret => AnchorSource::NativeCaret,
-                        GeometrySource::UiaCaret => AnchorSource::AutomationCaret,
-                        GeometrySource::MsaaCaret => AnchorSource::AccessibleCaret,
-                        GeometrySource::AdjacentCharacter => AnchorSource::AdjacentCharacter,
-                        GeometrySource::ImmExclusion => AnchorSource::InputMethodCaret,
-                        GeometrySource::TsfCaret => AnchorSource::NativeCaret,
-                    };
+                    let source = anchor_source(selected.source);
                     (
                         crate::focus::PopupAnchor {
                             geometry: selected.geometry,
@@ -1271,14 +1685,13 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
                         },
                     )
                 } else {
-                    let Some((legacy_anchor, legacy_stamp)) = legacy else {
+                    let Some((legacy_anchor, legacy_stamp)) =
+                        geometry_identity(generation, &snapshot, target.1)
+                            .and_then(|identity| select_legacy_geometry(identity, legacy, now))
+                    else {
                         unavailable_reason = UnavailableReason::NoEditableTarget;
                         return None;
                     };
-                    if !legacy_geometry_allowed(legacy_stamp.source) {
-                        unavailable_reason = UnavailableReason::NoEditableTarget;
-                        return None;
-                    }
                     (legacy_anchor, legacy_stamp)
                 };
                 Some(InputStatus {
@@ -1320,7 +1733,14 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
                     Observation::Observed {
                         sample,
                         process_name,
-                        trigger: probe_trigger,
+                        trigger: update_trigger,
+                        elapsed_ms,
+                    }
+                } else if tsf_safety_blocked {
+                    Observation::Unavailable {
+                        reason: UnavailableReason::UnsafeGeometry,
+                        process_name,
+                        trigger: update_trigger,
                         elapsed_ms,
                     }
                 } else if !snapshot.current() {
@@ -1329,7 +1749,15 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
                     }
                 } else if pending.is_some() {
                     Observation::Revalidating {
-                        trigger: InvalidationTrigger::HostedProbePending,
+                        trigger: if target_changed_this_sample {
+                            InvalidationTrigger::TargetChanged
+                        } else {
+                            InvalidationTrigger::HostedProbePending
+                        },
+                    }
+                } else if tsf_request_pending {
+                    Observation::Revalidating {
+                        trigger: update_trigger,
                     }
                 } else {
                     Observation::Unavailable {
@@ -1339,7 +1767,7 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
                             unavailable_reason
                         },
                         process_name,
-                        trigger: probe_trigger,
+                        trigger: update_trigger,
                         elapsed_ms,
                     }
                 };
@@ -1350,7 +1778,8 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
                 });
             }
             let cross_process = snapshot
-                .input_endpoint()
+                .indicator_endpoint()
+                .or_else(|| snapshot.input_endpoint())
                 .is_some_and(|input| input.process != snapshot.process_id);
             let tsf_active = provider != CaretProvider::Legacy
                 && admitted_target.is_some()
@@ -1368,11 +1797,15 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
                 pending.is_some(),
                 hosted && admitted_target.is_some(),
                 tsf_active,
+                tsf_backoff,
                 admitted_target.is_some(),
                 failures,
                 cross_process,
             )
             .map(|delay| Instant::now() + delay);
+            if !retired_caret_observers.is_empty() {
+                next = Some(Instant::now() + Duration::from_millis(50));
+            }
             if next.is_none() {
                 observer = None;
             }
@@ -1384,6 +1817,7 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
         });
         MsgWaitForMultipleObjectsEx(0, null_mut(), timeout, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
     }
+    shutdown_caret_observers(&mut caret_observer, &mut retired_caret_observers, &mut msg);
     drop(observer);
     drop(hooks);
     EVENTS.with(|slot| *slot.borrow_mut() = None);
@@ -1399,7 +1833,8 @@ pub fn process_basename(process_id: u32) -> Option<String> {
     })
 }
 
-/// Fast UI-thread guard; no COM or cross-process messages.
+/// Fast UI-thread guard; no COM or process-open calls. The worker validates
+/// the sample's process instance before publishing it.
 pub fn foreground_matches(sample: &InputStatus) -> bool {
     unsafe {
         let hwnd = GetForegroundWindow();
@@ -1462,6 +1897,8 @@ mod tests {
             process: 10,
             process_started: 20,
             input_thread: 30,
+            root_process: 10,
+            root_started: 20,
             root_window: 40,
             focused_window: 41,
         };
@@ -1490,9 +1927,171 @@ mod tests {
     #[test]
     fn legacy_rejects_whole_control_fallback_but_keeps_explicit_special_paths() {
         assert!(!legacy_geometry_allowed(GeometrySource::Control));
-        assert!(legacy_geometry_allowed(GeometrySource::Pointer));
+        assert!(!legacy_geometry_allowed(GeometrySource::Pointer));
         assert!(legacy_geometry_allowed(GeometrySource::ImmExclusion));
         assert!(legacy_geometry_allowed(GeometrySource::UiaCaret));
+    }
+
+    #[test]
+    fn wechat_editor_leading_edge_is_estimated_but_not_a_control_fallback() {
+        let now = Instant::now();
+        let identity = GeometryIdentity {
+            generation: 4,
+            process: 10,
+            process_started: 20,
+            input_thread: 30,
+            root_process: 10,
+            root_started: 20,
+            root_window: 40,
+            focused_window: 41,
+        };
+        let geometry = echo_engine::InputTargetGeometry {
+            target: echo_engine::PhysicalRect {
+                x: 100,
+                y: 200,
+                width: 1,
+                height: 24,
+            },
+            work_area: echo_engine::PhysicalRect {
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            },
+            dpi: 96,
+        };
+        let anchor = crate::focus::PopupAnchor {
+            geometry,
+            source: AnchorSource::EditorLeadingEdge,
+        };
+        let stamp = GeometryStamp {
+            source: GeometrySource::EditorLeadingEdge,
+            confidence: GeometryConfidence::Estimated,
+            observed_at: now,
+            sequence: 1,
+            context_epoch: 0,
+        };
+        assert!(select_legacy_geometry(identity, Some((anchor, stamp)), now).is_some());
+        assert_eq!(
+            geometry_source(anchor.source),
+            GeometrySource::EditorLeadingEdge
+        );
+        assert_eq!(
+            geometry_confidence(GeometrySource::EditorLeadingEdge),
+            GeometryConfidence::Estimated
+        );
+        assert!(legacy_geometry_allowed(GeometrySource::EditorLeadingEdge));
+        assert!(!legacy_geometry_allowed(GeometrySource::Control));
+    }
+
+    #[test]
+    fn safety_reasons_block_legacy_fallback_until_allowed_tsf_geometry() {
+        for reason in [10, 11, 12] {
+            assert!(tsf_reason_blocks_geometry(reason));
+        }
+        for reason in [13, 21, 22, 23, 24, 28] {
+            assert!(!tsf_reason_blocks_geometry(reason));
+        }
+    }
+
+    #[test]
+    fn geometry_probe_is_due_before_the_geometry_ttl_expires() {
+        let now = Instant::now();
+        let mut probe = GeometryProbeState::new();
+        assert!(probe.due(now, false));
+        probe.mark_attempt(now);
+        assert!(!probe.due(now + Duration::from_millis(99), false));
+        assert!(probe.due(now + GEOMETRY_REVALIDATION_INTERVAL, false));
+        assert!(probe.due(now, true));
+    }
+
+    #[test]
+    fn legacy_selection_rejects_stale_and_control_geometry() {
+        let now = Instant::now();
+        let identity = GeometryIdentity {
+            generation: 4,
+            process: 10,
+            process_started: 20,
+            input_thread: 30,
+            root_process: 10,
+            root_started: 20,
+            root_window: 40,
+            focused_window: 41,
+        };
+        let geometry = echo_engine::InputTargetGeometry {
+            target: echo_engine::PhysicalRect {
+                x: 100,
+                y: 200,
+                width: 1,
+                height: 20,
+            },
+            work_area: echo_engine::PhysicalRect {
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            },
+            dpi: 96,
+        };
+        let anchor = crate::focus::PopupAnchor {
+            geometry,
+            source: AnchorSource::AutomationCaret,
+        };
+        let fresh = GeometryStamp {
+            source: GeometrySource::UiaCaret,
+            confidence: GeometryConfidence::Exact,
+            observed_at: now,
+            sequence: 1,
+            context_epoch: 0,
+        };
+        assert!(select_legacy_geometry(identity, Some((anchor, fresh)), now).is_some());
+
+        let stale = GeometryStamp {
+            observed_at: now - echo_engine::GEOMETRY_TTL - Duration::from_millis(1),
+            ..fresh
+        };
+        assert!(select_legacy_geometry(identity, Some((anchor, stale)), now).is_none());
+
+        let control = GeometryStamp {
+            source: GeometrySource::Control,
+            ..fresh
+        };
+        assert!(select_legacy_geometry(identity, Some((anchor, control)), now).is_none());
+
+        let mut wrong_dpi = anchor;
+        wrong_dpi.geometry.dpi = 769;
+        assert!(select_legacy_geometry(identity, Some((wrong_dpi, fresh)), now).is_none());
+
+        let mut offscreen = anchor;
+        offscreen.geometry.target.x = 1920;
+        assert!(select_legacy_geometry(identity, Some((offscreen, fresh)), now).is_none());
+
+        let window_anchor = crate::focus::PopupAnchor {
+            source: AnchorSource::Window,
+            ..anchor
+        };
+        assert!(select_legacy_geometry(identity, Some((window_anchor, control)), now).is_none());
+
+        let pointer = crate::focus::PopupAnchor {
+            source: AnchorSource::Pointer,
+            ..anchor
+        };
+        let pointer_stamp = GeometryStamp {
+            source: GeometrySource::Pointer,
+            confidence: GeometryConfidence::Fallback,
+            ..fresh
+        };
+        assert!(select_legacy_geometry(identity, Some((pointer, pointer_stamp)), now).is_none());
+
+        let ime_anchor = crate::focus::PopupAnchor {
+            source: AnchorSource::InputMethodCaret,
+            ..anchor
+        };
+        let ime_stamp = GeometryStamp {
+            source: GeometrySource::ImmExclusion,
+            ..fresh
+        };
+        assert!(select_legacy_geometry(identity, Some((ime_anchor, ime_stamp)), now).is_some());
     }
 
     #[test]
@@ -1503,6 +2102,7 @@ mod tests {
             false,
             false,
             true,
+            false,
             true,
             1,
             false,
@@ -1510,5 +2110,22 @@ mod tests {
         .expect("an admitted TSF observer must remain scheduled");
         assert!(delay <= Duration::from_millis(50));
         assert!(Duration::from_millis(20) + delay < Duration::from_millis(150));
+    }
+
+    #[test]
+    fn tsf_callback_backoff_slows_polling_without_retiring_the_observer() {
+        let delay = next_poll_delay(
+            CaretProvider::Primary,
+            true,
+            false,
+            false,
+            true,
+            true,
+            true,
+            0,
+            true,
+        )
+        .expect("an admitted observer remains scheduled while callbacks drain");
+        assert_eq!(delay, Duration::from_millis(100));
     }
 }

@@ -25,6 +25,11 @@ Cancel keeps the saved choice. No schema migration is required for the new defau
   and `codex.exe`. These WebView2/TSF processes can tear down their input stack
   during Settings navigation while a third-party `WH_CALLWNDPROC` callback is
   in flight; the indicator stays on its legacy geometry path for those targets.
+  For the mode half of the badge, the worker may query the already-owned target
+  thread's existing IME window with bounded `WM_IME_CONTROL` reads. This does not
+  load a module, install a hook, read text, or authorize an insertion; if the
+  thread, process instance, foreground root, or conversion evidence cannot be
+  verified, the mode remains Unknown and the badge stays hidden.
 - Presentation decides freshness, suppression and 48-by-36-DIP badge placement.
   The label uses 18-DIP text, an 8-DIP radius and an 8-DIP caret gap.
 - The badge stays black with bold white text regardless of the Echo theme. Chinese
@@ -33,25 +38,62 @@ Cancel keeps the saved choice. No schema migration is required for the new defau
   is separate from the main card's buffer and frame-commit acknowledgements.
 
 Foreground/focus events invalidate samples. Mode is refreshed every 100ms while
-an input is valid; geometry events refresh the anchor and periodic revalidation
-checks identity/writability. Failed reads back off. Disabled observation releases
-hooks and stops sampling. Stale, unknown-mode, hidden, password and readonly
-targets do not show a badge. Generic window-only anchors are rejected. In
-`legacy`, a `Control`/`Window` rectangle is also rejected as a caret surrogate;
-this keeps a whole WeChat composer from producing a badge at its unrelated
-right edge. Real WeChat caret following still requires the explicitly selected
-`primary` provider and its native G4 gate; the default provider remains
-`legacy`. Warp has an explicit pointer-status fallback: when precise geometry is unavailable, show the
-verified mode near the current mouse pointer while its window is foreground. This does
-not assert an editable control or caret location. Alt+V uses the pointer captured
-at activation, with the existing work-area clamping. Other applications keep
-their existing placement policy.
+an input is valid; geometry events and a 100ms revalidation cadence refresh the
+anchor before the 150ms geometry TTL expires. Only a validated provider result
+updates the geometry timestamp; mode heartbeats never rejuvenate an old anchor.
+Hosted probes are coalesced to one pending query. During same-target geometry
+revalidation, an already visible badge keeps its current frame for at most 250ms;
+the desktop side does not move or re-show that frame. A stale geometry sample is
+never published as a new coordinate, and the badge hides once the hold expires or
+the target identity changes, until a fresh result arrives. Failed reads back off.
+Disabled observation releases hooks and stops sampling. Stale, unknown-mode, hidden,
+password and readonly targets do not show a new badge. Generic window-only anchors are
+rejected. In `legacy`, a `Control`/`Window` rectangle is also rejected as a caret
+surrogate; this keeps a whole WeChat composer from producing a badge at its
+unrelated right edge. A passive badge is admitted from a focused UIA/MSAA
+element only when it returns a live caret-like rectangle, or when the element
+exposes a focused writable `ValuePattern` and we can derive an explicitly
+estimated one-pixel editor caret from its current text end. The estimate uses
+the editor's own rectangle and value, never the pointer or the whole control
+rectangle, and exact native/UIA/MSAA/TSF geometry always wins. This lets rich
+editors remain visible for the indicator even when they are not safe for Quick
+Insert authorization. Warp has no passive pointer fallback: when its caret
+provider is not precise, the badge stays hidden instead of following the mouse.
+Alt+V may still use the pointer captured at activation for explicit plain-paste
+placement, with the existing work-area clamping. Other applications keep their
+existing placement policy.
+
+When a primary TSF observer reaches its bounded callback capacity, it backs off
+requests and keeps the last ready candidate only while its normal freshness and
+target identity checks remain valid. A target or context change retires that
+candidate immediately; callback capacity is never increased to hide a lifecycle
+failure.
 
 The TSF response rectangle is already in physical screen coordinates. Response
 word 26 is a host-resolved marker (`0`), not a scale factor: the host resolves
 the monitor, work area and effective DPI from that fresh caret rectangle using
 `MonitorFromRect`. It does not apply a second DPI multiplication or revive a
-fallback rectangle when TSF has no caret.
+fallback rectangle when TSF has no caret. The host also validates the returned
+view HWND against the live input process/thread, process instance, focused view,
+root ancestry and foreground before admitting the rectangle; the target's
+`Allowed` marker is required as well.
+
+WeChat's `WeChat.exe`/`Weixin.exe`/`WeChatAppEx.exe` WebView editor is
+fail-closed for the passive TSF observer. Echo never injects a caret observer
+into those processes, and a root `Control`/`Window` rectangle is never used as
+the caret. When WeChat reports no native `hwndFocus`, the worker may use the
+foreground root only for its existing IME status window and a live focused UIA
+element; the known same-process `CWebviewControlHostWnd` is also queried for
+`OBJID_CARET` as a bounded MSAA fallback. Exact native/UIA/MSAA rectangles are
+preferred. Some WeChat WebView builds expose a focused editable UIA element but
+return no collapsed text range and no MSAA caret. Echo keeps that editor visible
+using the `ValuePattern` text-end estimate, with an empty editor anchored at its
+content inset; it never uses the editor's far edge as a caret and never injects
+a TSF observer into WeChat. A live editor identity or whole `Control`/`Window`
+rectangle alone is not enough. A cached UIA editor is not reused for the
+indicator after each hosted probe loses live focus, so switching to a page
+without a composer hides the badge once instead of carrying the old coordinate
+into the new page.
 
 Chinese/native and alphanumeric conversion states are interpreted together with
 the input language. Missing or conflicting evidence is Unknown. A keyboard layout
@@ -139,8 +181,9 @@ Terminal positioning also checks a focused TSF document's display bounds and an
 explicit IMM candidate exclusion rectangle. Whole-window bounds, default floating
 IME positions, missing coordinates and off-window rectangles are rejected.
 The tested Warp window returned a valid mode but only whole-window TSF bounds and
-no usable IMM caret: its precise popup placement and badge remain unsupported in
-that scene. Do not report this as a successful Warp positioning fix.
+no usable IMM caret: its precise popup placement and passive badge remain
+unsupported in that scene. Do not report this as a successful Warp positioning
+fix; the safe result is hidden rather than mouse-following.
 
 Plain-paste popups retain their Esc/F6/Enter keyboard lease while focus remains in
 the terminal. Opening Settings retires that lease and activates the manager.
@@ -169,10 +212,11 @@ balanced client registration and edit sessions are not included in production.
 Evidence is local under `.local/echo/tsf-probe/results.log`; this observation applies
 to the tested Warp build/context, not every possible future Warp version.
 
-`tests/native/Invoke-WarpCompatibilityAcceptance.py` checks this fallback against
-an already running Warp with a separate synthetic Echo instance. It checks the
-actual pointer-relative coordinates, pointer placement, focus preservation, badge suppression
-and Esc lifecycle without typing commands or changing the clipboard. Set
+`tests/native/Invoke-WarpCompatibilityAcceptance.py` checks the safe no-caret
+behavior against an already running Warp with a separate synthetic Echo
+instance. It checks that the passive badge is suppressed when only the invalid
+whole-window TSF result is available, while explicit plain-paste placement keeps
+its captured pointer and focus-preservation behavior. Set
 `ECHO_WINDOWS_ACCEPTANCE=1` and supply `--executable` (native-test build) and a new
 `--evidence` directory. Physical Shift switching, split panes and mixed-DPI remain
 separate acceptance cases.

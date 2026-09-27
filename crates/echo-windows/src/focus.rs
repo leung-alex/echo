@@ -12,7 +12,9 @@ mod anchor;
 pub(crate) mod automation;
 mod placement;
 mod terminal;
-pub(crate) use anchor::{anchor_for_element, resolve_anchor};
+pub(crate) use anchor::{
+    anchor_for_element, estimate_editor_rect, precise_anchor_for_element_with_uia, resolve_anchor,
+};
 pub use placement::{
     expand_popup_stage, place_card, place_inline, place_inline_stage, PopupPlacement,
 };
@@ -22,6 +24,7 @@ pub enum AnchorSource {
     NativeCaret,
     AutomationCaret,
     AdjacentCharacter,
+    EditorLeadingEdge,
     AccessibleCaret,
     InputMethodCaret,
     InputControl,
@@ -34,6 +37,7 @@ impl AnchorSource {
             Self::NativeCaret => "native-caret",
             Self::AutomationCaret => "uia-caret",
             Self::AdjacentCharacter => "adjacent-character",
+            Self::EditorLeadingEdge => "editor-leading-edge",
             Self::AccessibleCaret => "msaa-caret",
             Self::InputMethodCaret => "input-method-caret",
             Self::InputControl => "input-control",
@@ -163,12 +167,25 @@ fn caret_rectangle(info: &GUITHREADINFO) -> Option<PhysicalRect> {
         valid_rect(r).then_some(r)
     }
 }
+
 impl FocusSnapshot {
     /// The passive badge may observe Echo's own input controls. Paste captures
     /// retain the default exclusion; this snapshot never authorizes insertion.
     pub(crate) fn capture_for_indicator() -> Self {
         let mut snapshot = Self::capture();
         snapshot.indicator_only = true;
+        // A native editor can expose a focused control without publishing a
+        // native caret rectangle. Keep the passive badge visible at the
+        // editor's content edge, but never publish the whole control (or the
+        // pointer) as if it were a caret. UIA/TSF exact providers can replace
+        // this estimate during the normal probe cycle.
+        if snapshot.anchor.source == AnchorSource::InputControl {
+            let control = snapshot.anchor.geometry.target;
+            snapshot.anchor = PopupAnchor {
+                geometry: geometry(estimate_editor_rect(control, None)),
+                source: AnchorSource::EditorLeadingEdge,
+            };
+        }
         snapshot
     }
     /// No COM, UI Automation, message sends, or clipboard reads on the hotkey thread.
@@ -248,6 +265,9 @@ impl FocusSnapshot {
         Duration::from_millis(if self.is_hosted_input() { 3000 } else { 650 })
     }
     pub(crate) fn is_hosted_input(&self) -> bool {
+        if self.indicator_only && self.is_wechat_indicator_target() {
+            return self.indicator_endpoint().is_some();
+        }
         unsafe {
             let mut owner = 0;
             let input = self.focused_handle as HWND;
@@ -283,6 +303,51 @@ impl FocusSnapshot {
         }
     }
 
+    /// WeChat's foreground shell can keep the real WebView editor in a
+    /// separate process without exposing a native GUI focus HWND.  The
+    /// passive indicator may observe the shell's existing IME window in that
+    /// state, but the endpoint is deliberately unavailable to paste or TSF
+    /// injection callers. Geometry still has to come from a focused UIA/MSAA
+    /// caret or the bounded editor-value estimate; the shell/window rectangle
+    /// is never used as a caret.
+    pub(crate) fn indicator_endpoint(&self) -> Option<InputStatusEndpoint> {
+        if !self.indicator_only
+            || self.window_id == 0
+            || self.process_id == 0
+            || self.process_started_at == 0
+        {
+            return None;
+        }
+        unsafe {
+            let root = self.window_id as HWND;
+            if GetForegroundWindow() != root || IsWindow(root) == 0 || IsIconic(root) != 0 {
+                return None;
+            }
+            let mut process = 0;
+            let thread = GetWindowThreadProcessId(root, &mut process);
+            if thread == 0
+                || process != self.process_id
+                || native::process_started_at(process) != Some(self.process_started_at)
+            {
+                return None;
+            }
+            if !self.is_wechat_indicator_target() {
+                return None;
+            }
+            // The WebView editor has no stable native focus HWND. Keep the
+            // shell root as the observation endpoint even when GUI focus
+            // alternates between null and the root during a UIA refresh.
+            // This endpoint is never exposed to paste or TSF injection.
+            Some(InputStatusEndpoint {
+                window: self.window_id,
+                input: self.window_id,
+                process,
+                started: self.process_started_at,
+                thread,
+            })
+        }
+    }
+
     pub(crate) fn owns_automation_input(
         &self,
         uia: &windows::Win32::UI::Accessibility::IUIAutomation,
@@ -305,6 +370,74 @@ impl FocusSnapshot {
                     }),
                 )
         }
+    }
+
+    /// Passive indicators may receive a focused WebView element whose UIA
+    /// provider is not attached below the top-level root returned by
+    /// `ElementFromHandle`.  For same-process WebView editors, the native
+    /// focus/identity checks already bind the element to this foreground
+    /// target; requiring the provider-tree walk here would hide a valid
+    /// collapsed caret.  Cross-process elements retain the stricter ancestry
+    /// and integrity validation used by activation.
+    pub(crate) fn owns_indicator_automation_input(
+        &self,
+        uia: &windows::Win32::UI::Accessibility::IUIAutomation,
+        element: &windows::Win32::UI::Accessibility::IUIAutomationElement,
+    ) -> bool {
+        let Some(endpoint) = self.indicator_endpoint().or_else(|| self.input_endpoint()) else {
+            return false;
+        };
+        let same_process =
+            unsafe { element.CurrentProcessId().ok() == Some(endpoint.process as i32) };
+        if !same_process {
+            // WeChat's Chromium accessibility provider may live in a
+            // WeChatAppEx child process while the foreground shell/root is
+            // WeChat.exe.  Keep this observation-only exception narrow: both
+            // sides must be a known WeChat executable instance, the child
+            // process start must still be queryable, and UIA must report a
+            // live focused, enabled, non-password element.  Its caret is
+            // validated against the foreground root rectangle by
+            // `precise_anchor_for_element` before publication.
+            if !self.indicator_only {
+                return self.owns_automation_input(uia, element);
+            }
+            let Some(element_process) = (unsafe { element.CurrentProcessId().ok() }) else {
+                return false;
+            };
+            let Ok(element_process) = u32::try_from(element_process) else {
+                return false;
+            };
+            if !wechat_process_id(endpoint.process) || !wechat_process_id(element_process) {
+                return false;
+            }
+            return self.current()
+                && native::process_started_at(element_process).is_some()
+                && unsafe {
+                    element
+                        .CurrentIsEnabled()
+                        .is_ok_and(|value| value.as_bool())
+                        && element
+                            .CurrentHasKeyboardFocus()
+                            .is_ok_and(|value| value.as_bool())
+                        && element
+                            .CurrentIsPassword()
+                            .is_ok_and(|value| !value.as_bool())
+                };
+        }
+        self.current()
+            && unsafe {
+                element
+                    .CurrentIsEnabled()
+                    .is_ok_and(|value| value.as_bool())
+                    && element
+                        .CurrentHasKeyboardFocus()
+                        .is_ok_and(|value| value.as_bool())
+                    && element
+                        .CurrentIsPassword()
+                        .is_ok_and(|value| !value.as_bool())
+            }
+            && endpoint.process == self.process_id
+            && endpoint.started == self.process_started_at
     }
     pub(crate) fn current(&self) -> bool {
         if self.window_id == 0
@@ -329,8 +462,42 @@ impl FocusSnapshot {
             }
             let mut info: GUITHREADINFO = std::mem::zeroed();
             info.cbSize = std::mem::size_of::<GUITHREADINFO>() as u32;
-            GetGUIThreadInfo(tid, &mut info) != 0 && info.hwndFocus as isize == self.focused_handle
+            if GetGUIThreadInfo(tid, &mut info) == 0 {
+                return false;
+            }
+            if self.is_wechat_indicator_target() {
+                let focus = info.hwndFocus;
+                if focus.is_null() || focus == hwnd {
+                    return true;
+                }
+                let mut focus_pid = 0;
+                return GetWindowThreadProcessId(focus, &mut focus_pid) != 0
+                    && focus_pid == self.process_id
+                    && GetAncestor(focus, GA_ROOT) == hwnd;
+            }
+            info.hwndFocus as isize == self.focused_handle
         }
+    }
+
+    fn is_wechat_indicator_target(&self) -> bool {
+        if !self.indicator_only
+            || self.window_id == 0
+            || self.process_id == 0
+            || self.process_started_at == 0
+        {
+            return false;
+        }
+        let Some(path) = native::process_path(self.process_id) else {
+            return false;
+        };
+        let Some(executable) = std::path::Path::new(&path)
+            .file_name()
+            .and_then(|name| name.to_str())
+        else {
+            return false;
+        };
+        native::window_class_name(win(self.window_id as HWND))
+            .is_some_and(|class| wechat_process_name(executable) && wechat_root_class(&class))
     }
     pub fn capture_target(&self) -> CapturedActivation {
         let mut result = CapturedActivation {
@@ -340,25 +507,28 @@ impl FocusSnapshot {
         if !self.current() || self.native_blocked {
             return result;
         }
-        let identity = if let Some(identity) = self.native_input.clone() {
-            Some(identity)
-        } else {
-            // UIA may verify identity even when Win32 already supplied the best anchor.
-            // Never replace an exact native caret with a whole input-control rectangle.
-            automation::query(
-                self.clone(),
-                self.anchor.source != AnchorSource::NativeCaret,
-            )
-            .map(|probe| {
-                if let Some((r, source)) = probe.anchor {
-                    result.anchor = PopupAnchor {
-                        geometry: geometry(r),
-                        source,
-                    };
-                }
-                probe.identity
-            })
-        };
+        // A native control identity authorizes the target, but it does not
+        // prove that Win32 supplied a caret rectangle.  Hosted editors such as
+        // WeChat and the Codex composer can expose their exact caret only
+        // through UIA/MSAA while the focused HWND still looks like a generic
+        // input control.  Always probe that geometry when the snapshot is not
+        // already an exact native caret, while retaining the native identity
+        // for the activation contract.
+        let probe = (self.anchor.source != AnchorSource::NativeCaret)
+            .then(|| automation::query(self.clone(), true))
+            .flatten();
+        if let Some((r, source)) = probe.as_ref().and_then(|value| value.anchor) {
+            if !matches!(source, AnchorSource::InputControl | AnchorSource::Window) {
+                result.anchor = PopupAnchor {
+                    geometry: geometry(r),
+                    source,
+                };
+            }
+        }
+        let identity = self
+            .native_input
+            .clone()
+            .or_else(|| probe.map(|value| value.identity));
         if !self.current() {
             return result;
         }
@@ -423,6 +593,28 @@ impl FocusSnapshot {
         ))
     }
 }
+
+fn wechat_process_name(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "wechat.exe" | "weixin.exe" | "wechatappex.exe"
+    )
+}
+
+fn wechat_process_id(process_id: u32) -> bool {
+    native::process_path(process_id)
+        .and_then(|path| {
+            std::path::Path::new(&path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(wechat_process_name)
+        })
+        .unwrap_or(false)
+}
+
+fn wechat_root_class(class: &str) -> bool {
+    matches!(class, "WeChatMainWndForPC" | "Chrome_WidgetWin_0")
+}
 /// Bounded MTA validation, used only when the captured identity is a UIA element.
 pub fn warm_accessibility() {
     automation::warm();
@@ -462,6 +654,19 @@ pub fn restore_after_dismiss(snapshot: &FocusSnapshot) {
 #[cfg(test)]
 mod hosted_input_tests {
     use super::*;
+
+    #[test]
+    fn wechat_indicator_allowlist_covers_shell_and_webview_processes() {
+        for process in ["WeChat.exe", "Weixin.exe", "WeChatAppEx.exe"] {
+            assert!(wechat_process_name(process));
+        }
+        for process in ["chrome.exe", "wechat-helper.exe"] {
+            assert!(!wechat_process_name(process));
+        }
+        assert!(wechat_root_class("WeChatMainWndForPC"));
+        assert!(wechat_root_class("Chrome_WidgetWin_0"));
+        assert!(!wechat_root_class("Edit"));
+    }
 
     /// Read-only live regression: explicitly focus an empty hosted search box.
     /// No clipboard, text input or window activation is performed by this test.

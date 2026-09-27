@@ -20,6 +20,10 @@ pub struct SessionState {
     pub next_sequence: u32,
     pub closed: bool,
     pub cancelled: bool,
+    /// A target/context/session identity changed while a request was in
+    /// flight.  A deadline timeout sets `cancelled` without setting this
+    /// flag, so a late same-target result cannot erase the last valid caret.
+    pub identity_invalidated: bool,
     pub outstanding_callbacks: u32,
 }
 
@@ -36,6 +40,7 @@ impl SessionState {
             next_sequence: 1,
             closed: false,
             cancelled: false,
+            identity_invalidated: false,
             outstanding_callbacks: 0,
         }
     }
@@ -60,6 +65,7 @@ impl SessionState {
         self.pending_sequence = Some(sequence);
         self.deadline_tick = now_tick.saturating_add(Self::DEADLINE_MS);
         self.cancelled = false;
+        self.identity_invalidated = false;
         self.outstanding_callbacks += 1;
         RequestDecision::Sent(sequence)
     }
@@ -107,6 +113,7 @@ impl SessionState {
         }
         self.context_epoch = epoch;
         self.cancelled = true;
+        self.identity_invalidated = true;
         true
     }
 
@@ -124,23 +131,31 @@ impl SessionState {
         if generation != 0 && generation != self.generation {
             self.generation = generation;
             self.cancelled = true;
+            self.identity_invalidated = true;
         }
     }
 
     pub fn replace_context(&mut self) {
         self.context_epoch = self.context_epoch.wrapping_add(1).max(1);
         self.cancelled = true;
+        self.identity_invalidated = true;
     }
 
     pub fn close(&mut self) {
         self.closed = true;
         self.cancelled = true;
+        self.identity_invalidated = true;
     }
 
     pub fn mark_target_closed(&mut self) {
         self.closed = true;
         self.cancelled = true;
+        self.identity_invalidated = true;
         self.pending_sequence = None;
+    }
+
+    pub const fn identity_invalidated(&self) -> bool {
+        self.identity_invalidated
     }
 }
 
@@ -165,6 +180,7 @@ mod tests {
         assert!(!state.complete(99, 1, 1, 10));
         assert_eq!(state.pending_sequence, Some(1));
         state.replace_context();
+        assert!(state.identity_invalidated());
         assert!(!state.complete(1, 1, 1, 10));
         assert_eq!(state.pending_sequence, None);
 
@@ -176,8 +192,18 @@ mod tests {
         let mut state = SessionState::new(1);
         assert_eq!(state.request(0), RequestDecision::Sent(1));
         state.close();
+        assert!(state.identity_invalidated());
         assert!(!state.complete(1, 1, 1, 10));
         assert_eq!(state.request(20), RequestDecision::Closed);
+    }
+
+    #[test]
+    fn deadline_cancellation_does_not_invalidate_same_target_candidate() {
+        let mut state = SessionState::new(1);
+        assert_eq!(state.request(0), RequestDecision::Sent(1));
+        state.expire(151);
+        assert!(!state.complete(1, 1, 1, 151));
+        assert!(!state.identity_invalidated());
     }
 
     #[test]
@@ -223,5 +249,17 @@ mod tests {
         state.next_sequence = u32::MAX - 1;
         assert_eq!(state.request(0), RequestDecision::Unavailable);
         assert!(state.closed);
+    }
+
+    #[test]
+    fn callback_count_can_resume_after_a_completed_response_reaches_the_cap() {
+        let mut state = SessionState::new(1);
+        state.outstanding_callbacks = SessionState::MAX_CALLBACKS;
+        assert_eq!(state.request(0), RequestDecision::Backoff);
+        state.sync_outstanding_callbacks(SessionState::MAX_CALLBACKS - 1);
+        assert_eq!(state.request(50), RequestDecision::Sent(1));
+        assert!(state.complete(1, 1, 1, 50));
+        state.sync_outstanding_callbacks(0);
+        assert_eq!(state.request(100), RequestDecision::Sent(2));
     }
 }

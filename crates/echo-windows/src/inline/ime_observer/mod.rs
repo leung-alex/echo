@@ -1,6 +1,7 @@
 //! Same-bitness, session-owned IMM/TSF observation on the verified editor thread.
 //! The embedded module has no keyboard hook and no edit/IME mutation operation.
 mod protocol;
+use echo_engine::{CompositionState, InputMode};
 use protocol::*;
 use sha2::{Digest, Sha256};
 use std::{
@@ -14,6 +15,7 @@ use std::{
 use windows_sys::Win32::{
     Foundation::*,
     System::{DataExchange::*, LibraryLoader::*, Memory::*, Threading::*},
+    UI::Input::{Ime::ImmGetDefaultIMEWnd, KeyboardAndMouse::GetKeyboardLayout},
     UI::WindowsAndMessaging::*,
 };
 
@@ -148,6 +150,46 @@ impl Observer {
             STATE_ONLY,
         )
     }
+
+    /// Read the target thread's conversion mode through its existing IME
+    /// window. This content-free fallback is used for blocked WebView hosts:
+    /// unlike `status_at`, it installs no hook and loads no module into the
+    /// target process. The IME window must still belong to the same target
+    /// thread/process and the input must remain foreground.
+    pub fn status_from_ime_window(
+        target: crate::focus::InputStatusEndpoint,
+    ) -> Option<(InputMode, CompositionState)> {
+        unsafe {
+            let input = target.input as HWND;
+            let mut process = 0;
+            if GetWindowThreadProcessId(input, &mut process) != target.thread
+                || process != target.process
+                || crate::windows_impl::process_started_at(process) != Some(target.started)
+                || GetAncestor(input, GA_ROOT) != GetForegroundWindow()
+            {
+                return None;
+            }
+            let ime = ImmGetDefaultIMEWnd(input);
+            if ime.is_null() {
+                return None;
+            }
+            let mut ime_process = 0;
+            let ime_thread = GetWindowThreadProcessId(ime, &mut ime_process);
+            if ime_thread != target.thread || ime_process != target.process {
+                return None;
+            }
+            let open = send_ime_control(ime, IMC_GETOPENSTATUS)? != 0;
+            let conversion = send_ime_control(ime, IMC_GETCONVERSIONMODE)? as u32;
+            let language = (GetKeyboardLayout(target.thread) as usize & 0x3ff) as u16;
+            let mode = match protocol::mode(language, Some((open, conversion))) {
+                1 => InputMode::Chinese,
+                2 => InputMode::English,
+                _ => return None,
+            };
+            Some((mode, CompositionState::Unknown))
+        }
+    }
+
     fn create(
         window: isize,
         input: isize,
@@ -340,6 +382,25 @@ impl Observer {
         }
     }
 }
+
+const WM_IME_CONTROL: u32 = 0x0283;
+const IMC_GETCONVERSIONMODE: usize = 0x0001;
+const IMC_GETOPENSTATUS: usize = 0x0005;
+
+unsafe fn send_ime_control(ime: HWND, command: usize) -> Option<usize> {
+    let mut result = 0;
+    (SendMessageTimeoutW(
+        ime,
+        WM_IME_CONTROL,
+        command,
+        0,
+        SMTO_ABORTIFHUNG | SMTO_ERRORONEXIT,
+        40,
+        &mut result,
+    ) != 0)
+        .then_some(result)
+}
+
 impl Drop for Observer {
     fn drop(&mut self) {
         unsafe {

@@ -1,4 +1,4 @@
-"""Warp pointer-status and popup placement acceptance. No text/clipboard mutation.
+"""Warp passive-badge suppression and explicit popup placement acceptance. No text/clipboard mutation.
 
 Requires an already running Warp. Only focus, pointer movement, Alt+V and Escape
 are used; all Echo state is isolated synthetic data. Does not certify caret following.
@@ -118,22 +118,16 @@ def main():
             activate(hwnd)
             pointer_x, pointer_y = host.left + 200, host.top + 200
             u.SetCursorPos(pointer_x, pointer_y)
-            def badge():
+            def no_badge():
                 value = call('input_indicator')
-                return value if value['visible'] and value['sample']['window'] == hwnd else None
-            first = wait(badge, 'Warp pointer badge')
-            assert first['label'] in ('中', 'EN') and u.GetForegroundWindow() == hwnd
-            scale = u.GetDpiForWindow(hwnd) / 96
-            expected = [pointer_x + 1 + round(8 * scale), pointer_y - round(44 * scale), round(48 * scale), round(36 * scale)]
-            first = wait(lambda: (v if (v := badge()) and v['rect'] == expected else None), 'badge follows pointer')
-            check('warp-pointer-mode-without-taking-focus', first)
+                return value if not value['visible'] else None
+            first = wait(no_badge, 'Warp badge suppression without a caret')
+            check('warp-no-passive-pointer-fallback', first)
             time.sleep(.15)
-            call('input_indicator_capture', file='warp-badge.png')
+            u.SetCursorPos(host.left + 700, host.top + 500)
             time.sleep(2)
-            second = wait(badge, 'stable Warp badge')
-            assert second['generation'] == first['generation'], 'self-induced focus invalidation loop'
-            assert second['counts'][0] - first['counts'][0] < 60, 'unbounded polling'
-            check('warp-observer-stays-stable', second)
+            second = wait(no_badge, 'Warp badge remains hidden while the pointer moves')
+            check('warp-no-mouse-following', second)
             assert u.GetForegroundWindow() == hwnd
             pointer_x, pointer_y = host.left + 200, host.top + 200
             u.SetCursorPos(pointer_x, pointer_y)
@@ -151,9 +145,9 @@ def main():
             assert u.GetWindowRect(popup, ctypes.byref(popup_rect))
             card_x = popup_rect.left + state['panel'][0] * state['scale_factor']
             assert abs(card_x - pointer_x) <= 2, (card_x, pointer_x)
-            wait(lambda: not call('input_indicator')['visible'], 'badge hides during Quick Insert')
+            wait(lambda: not call('input_indicator')['visible'], 'badge stays hidden during Quick Insert')
             call('capture', file='warp-popup.png')
-            check('warp-popup-uses-pointer-and-suppresses-badge', state['quick_insert'])
+            check('warp-popup-uses-captured-pointer-and-suppresses-badge', state['quick_insert'])
             assert u.GetForegroundWindow() == hwnd
             initial_space = state['space']
             key(9)
@@ -170,7 +164,7 @@ def main():
             key(27)
             wait(lambda: not call('metrics')['visible'], 'Esc hides plain-paste popup')
             check('plain-paste-escape-hides-popup', {'foreground_preserved': u.GetForegroundWindow() == hwnd})
-            wait(badge, 'badge resumes after Esc')
+            wait(no_badge, 'badge remains hidden after Esc without a caret')
             subprocess.run([str(executable), '--settings'], env=env, check=True, timeout=10,
                            creationflags=subprocess.CREATE_NO_WINDOW)
             state = wait(lambda: (s if (s := call('metrics'))['visible'] and s['route'] == 'settings' else None), 'settings')

@@ -2,7 +2,8 @@ mod domain;
 mod geometry;
 mod input_status;
 pub use geometry::{
-    arbitrate_geometry, geometry_is_fresh, invalid_reason, mode_is_fresh, GeometryCandidate,
+    arbitrate_geometry, geometry_is_fresh, invalid_reason, mode_is_fresh, validate_geometry,
+    GeometryCandidate, GEOMETRY_REVALIDATION_INTERVAL, GEOMETRY_TTL,
 };
 pub use input_status::{
     CompositionState, GeometryConfidence, GeometryIdentity, GeometryInvalidReason, GeometrySafety,

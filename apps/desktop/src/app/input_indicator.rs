@@ -11,6 +11,10 @@ const RETENTION_MS: u64 = 250;
 #[derive(Clone, Copy)]
 struct Retention {
     started_at: Instant,
+    /// Whether the badge was already visible when revalidation began. A
+    /// hidden badge must wait for a fresh observation instead of reappearing
+    /// with an old rectangle.
+    was_visible: bool,
 }
 
 fn tsf_json(value: Option<TsfDiagnostic>) -> serde_json::Value {
@@ -68,6 +72,17 @@ fn transient_unavailable(reason: echo_windows::input_indicator::UnavailableReaso
     )
 }
 
+fn same_target_revalidation(trigger: echo_windows::input_indicator::InvalidationTrigger) -> bool {
+    matches!(
+        trigger,
+        echo_windows::input_indicator::InvalidationTrigger::ObjectFocus
+            | echo_windows::input_indicator::InvalidationTrigger::Geometry
+            | echo_windows::input_indicator::InvalidationTrigger::Candidate
+            | echo_windows::input_indicator::InvalidationTrigger::HostedProbePending
+            | echo_windows::input_indicator::InvalidationTrigger::Polling
+    )
+}
+
 fn displayable_sample(
     sample: &InputStatus,
     generation: u64,
@@ -77,6 +92,9 @@ fn displayable_sample(
 ) -> bool {
     target_matches
         && if retaining {
+            // Retention keeps the already displayed mode/frame alive while a
+            // same-target revalidation is in flight. The sync path freezes
+            // placement and never re-shows a frame that was already hidden.
             sample.mode != InputMode::Unknown
         } else {
             echo_presentation::input_indicator::visible(sample, generation, false, now)
@@ -241,10 +259,11 @@ impl Indicator {
                 let target_matches = self.sample.is_some_and(|sample| {
                     echo_windows::input_indicator::foreground_matches(&sample)
                 });
-                if self.sample.is_some() && target_matches {
+                if same_target_revalidation(trigger) && self.sample.is_some() && target_matches {
                     if self.retention.is_none() {
                         self.retention = Some(Retention {
                             started_at: Instant::now(),
+                            was_visible: self.visible,
                         });
                         crate::indicator_trace::record(
                             "retention-start",
@@ -300,14 +319,17 @@ impl Indicator {
             Observation::Unavailable {
                 reason,
                 process_name,
-                trigger: _,
+                trigger,
                 elapsed_ms: _,
             } => {
                 self.process_name = process_name;
                 let target_matches = self.sample.is_some_and(|sample| {
                     echo_windows::input_indicator::foreground_matches(&sample)
                 });
-                if transient_unavailable(reason) && target_matches {
+                if same_target_revalidation(trigger)
+                    && transient_unavailable(reason)
+                    && target_matches
+                {
                     // A TSF/legacy read can briefly be unavailable while the
                     // same foreground target is still valid. Keep the last
                     // known mode through the bounded revalidation window so
@@ -316,6 +338,7 @@ impl Indicator {
                     if self.retention.is_none() {
                         self.retention = Some(Retention {
                             started_at: Instant::now(),
+                            was_visible: self.visible,
                         });
                         crate::indicator_trace::record(
                             "retention-start",
@@ -416,9 +439,28 @@ impl Indicator {
             self.pending_hide_reason = Some(reason);
         }
 
-        let sample = self.sample.filter(|sample| {
-            displayable_sample(sample, monitor.generation(), now, target_matches, retaining)
-        });
+        let retaining_visible = retaining
+            && self
+                .retention
+                .is_some_and(|retention| retention.was_visible);
+        let retention_keeps_hidden = retaining
+            && self
+                .retention
+                .is_some_and(|retention| !retention.was_visible);
+
+        let sample = (!retention_keeps_hidden)
+            .then(|| {
+                self.sample.filter(|sample| {
+                    displayable_sample(
+                        sample,
+                        monitor.generation(),
+                        now,
+                        target_matches,
+                        retaining_visible,
+                    )
+                })
+            })
+            .flatten();
         let Some((sample, rect)) = sample.and_then(|sample| {
             echo_presentation::input_indicator::place(&sample).map(|p| (sample, p))
         }) else {
@@ -472,7 +514,8 @@ impl Indicator {
             // to wake this passive window after a hide/show cycle.
             self.window.window().request_redraw();
         }
-        if self.position != Some(rect) {
+        let frozen_frame = retaining_visible;
+        if !frozen_frame && self.position != Some(rect) {
             self.window
                 .window()
                 .set_position(slint::PhysicalPosition::new(rect.x, rect.y));
@@ -492,7 +535,12 @@ impl Indicator {
                 }),
             );
         }
-        if !self.visible {
+        if !self.visible && !frozen_frame && retaining_visible {
+            // A visible retention frame may have been hidden by an unrelated
+            // shell transition; do not resurrect stale geometry.
+            return;
+        }
+        if !self.visible && !frozen_frame {
             if let Err(e) = self.show() {
                 eprintln!("Input indicator unavailable: {e}");
                 let _ = self.window.hide();
@@ -592,7 +640,10 @@ mod tests {
     #[test]
     fn retention_is_bounded_and_requires_the_same_target() {
         let start = Instant::now();
-        let retention = Some(Retention { started_at: start });
+        let retention = Some(Retention {
+            started_at: start,
+            was_visible: true,
+        });
         assert!(retention_active(
             retention,
             start + Duration::from_millis(250),
@@ -609,9 +660,13 @@ mod tests {
     #[test]
     fn repeated_revalidation_keeps_the_original_deadline() {
         let start = Instant::now();
-        let mut retention = Some(Retention { started_at: start });
+        let mut retention = Some(Retention {
+            started_at: start,
+            was_visible: true,
+        });
         retention.get_or_insert(Retention {
             started_at: start + Duration::from_millis(200),
+            was_visible: false,
         });
         assert_eq!(retention.unwrap().started_at, start);
         assert!(!retention_active(
@@ -634,6 +689,22 @@ mod tests {
         ));
         assert!(!transient_unavailable(
             echo_windows::input_indicator::UnavailableReason::PointerAnchorUnavailable
+        ));
+    }
+
+    #[test]
+    fn only_same_target_revalidation_triggers_the_visible_frame_hold() {
+        assert!(same_target_revalidation(
+            echo_windows::input_indicator::InvalidationTrigger::Geometry
+        ));
+        assert!(same_target_revalidation(
+            echo_windows::input_indicator::InvalidationTrigger::HostedProbePending
+        ));
+        assert!(!same_target_revalidation(
+            echo_windows::input_indicator::InvalidationTrigger::TargetChanged
+        ));
+        assert!(same_target_revalidation(
+            echo_windows::input_indicator::InvalidationTrigger::ObjectFocus
         ));
     }
 
@@ -685,5 +756,9 @@ mod tests {
             ..sample
         };
         assert!(!displayable_sample(&stale, 2, now, true, false));
+        // The existing visible frame may be held through a slow same-target
+        // revalidation; the sync path freezes its position and never shows a
+        // frame that was already hidden.
+        assert!(displayable_sample(&stale, 2, now, true, true));
     }
 }

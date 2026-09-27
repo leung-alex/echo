@@ -437,6 +437,59 @@ def main():
         initial = wait_indicator(lambda value: (value.get("sample") or {}).get("geometry", {}).get("source") == "TsfCaret", "initial TSF caret")
         validate_ready("G2-real-tsf-window-and-coordinate-chain", current_oracle, initial)
 
+        def indicator_trace_events():
+            path = root / "data/logs/input-indicator.jsonl"
+            if not path.exists():
+                return []
+            return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+        # A stable caret must stay visible while the worker refreshes geometry.
+        # This catches the old 150ms TTL / 500ms probe mismatch, which produced
+        # a deterministic hide/show cycle even though the target never moved.
+        stable_trace_before = indicator_trace_events()
+        stable_deadline = time.monotonic() + 0.8
+        stable_ages = []
+        stable_sequences = []
+        while time.monotonic() < stable_deadline:
+            assert_owned_fixture_foreground("stable caret revalidation")
+            value = echo_call({"verb": "input_indicator"})
+            if not value.get("visible"):
+                raise AssertionError(f"stable caret became hidden: {value}")
+            geometry = (value.get("sample") or {}).get("geometry") or {}
+            age = geometry.get("observed_age_ms")
+            sequence = int(geometry.get("sequence") or 0)
+            if age is None or int(age) > 150:
+                raise AssertionError(f"stable caret geometry exceeded TTL: {value}")
+            if sequence <= 0:
+                raise AssertionError(f"stable caret geometry was not refreshed: {value}")
+            stable_ages.append(int(age))
+            stable_sequences.append(sequence)
+            time.sleep(0.08)
+        # Trace events do not all carry the geometry sequence (visibility events
+        # are intentionally lightweight), so use the file boundary instead of
+        # filtering on a field that may be absent.
+        stable_trace = indicator_trace_events()[len(stable_trace_before) :]
+        stable_hides = [event for event in stable_trace if event.get("event") == "window-hide"]
+        stable_shows = [event for event in stable_trace if event.get("event") == "window-show"]
+        if stable_hides or stable_shows:
+            raise AssertionError(
+                f"stable caret visibility churn: hides={stable_hides} shows={stable_shows}"
+            )
+        if max(stable_sequences, default=0) <= min(stable_sequences, default=0):
+            raise AssertionError(
+                f"stable caret geometry sequence did not advance: {stable_sequences}"
+            )
+        check(
+            "G2-stable-caret-no-visibility-churn",
+            "PASS",
+            duration_ms=800,
+            hides=len(stable_hides),
+            shows=len(stable_shows),
+            max_geometry_age_ms=max(stable_ages, default=None),
+            geometry_sequence_min=min(stable_sequences, default=None),
+            geometry_sequence_max=max(stable_sequences, default=None),
+        )
+
         def capture_observer_identity():
             """Capture the injected observer while the real TSF observer is live."""
             if observer_info is None:

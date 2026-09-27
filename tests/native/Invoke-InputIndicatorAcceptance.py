@@ -117,14 +117,22 @@ def main():
         return value
 
     try:
-        echo = start(executable, '--background')
-        wait(lambda: (root / 'native-control').exists(), 'Echo test bridge')
         fixture = start(fixture_exe, str(root), 'Echo Input Indicator Fixture')
         wait(lambda: (root / 'native-ready.json').exists(), 'owned fixture')
+        # The production observer is intentionally fail-closed when a native
+        # acceptance root is present without an exact owned target. Resolve
+        # the fixture HWND first, then pass both identities to Echo before its
+        # first foreground sample. This keeps the acceptance run bounded to
+        # the process it just created and mirrors the real target-identity
+        # contract.
+        fixture_window = call(True, op='state')['window']
+        env['ECHO_NATIVE_TEST_TARGET_PID'] = str(fixture.pid)
+        env['ECHO_NATIVE_TEST_TARGET_HWND'] = str(fixture_window)
+        echo = start(executable, '--background')
+        wait(lambda: (root / 'native-control').exists(), 'Echo test bridge')
         call(True, op='reset', control='single', text='Synthetic input', start=3, length=0)
         # An existing foreground app can deny a newly launched fixture's activation.
         # Grant foreground permission, then target only this owned fixture HWND.
-        fixture_window = call(True, op='state')['window']
         user32.SetForegroundWindow.argtypes = [ctypes.c_void_p]
         user32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
         owner = ctypes.c_ulong()

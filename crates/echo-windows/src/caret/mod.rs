@@ -56,6 +56,11 @@ pub struct GeometryReply {
     /// Unavailable responses remain observable for diagnostics even when an
     /// epoch change intentionally invalidated the request.
     pub accepted: bool,
+    /// The target, context epoch, or focus/session identity changed while
+    /// this request was outstanding.  A normal deadline/late result leaves
+    /// this false so the caller can retain the last valid candidate until its
+    /// normal geometry TTL expires.
+    pub identity_invalidated: bool,
 }
 
 pub struct CaretObserver {
@@ -116,6 +121,13 @@ fn blocked_cross_process_target(endpoint: CaretEndpoint) -> Option<String> {
 }
 
 impl CaretObserver {
+    /// The passive indicator may still use validated UIA/MSAA geometry for a
+    /// blocked host, but it must never even allocate a mapping or attempt a
+    /// hook for that process.
+    pub(crate) fn endpoint_is_blocked(endpoint: CaretEndpoint) -> bool {
+        blocked_cross_process_target(endpoint).is_some()
+    }
+
     pub fn start(endpoint: CaretEndpoint) -> Result<Self, String> {
         if endpoint.root_window == 0
             || endpoint.input_window == 0
@@ -227,7 +239,11 @@ impl CaretObserver {
             .last_request_tick
             .is_some_and(|last| now_tick_ms.saturating_sub(last) < MIN_REQUEST_INTERVAL_MS)
         {
-            return RequestDecision::Backoff;
+            return if self.session.pending_sequence.is_some() {
+                RequestDecision::Pending
+            } else {
+                RequestDecision::Backoff
+            };
         }
         let decision = self.session.request(now_tick_ms);
         let RequestDecision::Sent(sequence) = decision else {
@@ -280,6 +296,13 @@ impl CaretObserver {
             _ => return None,
         };
         let sequence = words[1];
+        // Target-side final Release updates the same completed response.
+        // Observe its callback count even when no request remains pending;
+        // otherwise callback-cap backoff could never resume. This does not
+        // accept or republish its old geometry.
+        if self.session.pending_sequence.is_none() {
+            self.session.sync_outstanding_callbacks(words[30]);
+        }
         if !response_matches_session(status, sequence, self.session.pending_sequence) {
             return None;
         }
@@ -299,6 +322,7 @@ impl CaretObserver {
                 request_sequence: sequence,
                 response_words: words,
                 accepted: false,
+                identity_invalidated: true,
             });
         }
         let epoch = u64::from(words[10]) | (u64::from(words[11]) << 32);
@@ -306,18 +330,22 @@ impl CaretObserver {
         if epoch_changed {
             let _ = self.session.observe_context_epoch(epoch);
         }
+        let identity_invalidated = self.session.identity_invalidated() || epoch_changed;
         let accepted =
             self.session
                 .complete(sequence, self.endpoint.focus_generation, epoch, now_tick_ms);
         // word 30 is written by the target's actual EditSession Release path;
         // the reader must not infer a COM Release from response arrival.
         self.session.sync_outstanding_callbacks(words[30]);
-        (accepted || status == ReplyStatus::Unavailable).then_some(GeometryReply {
-            status,
-            request_sequence: sequence,
-            response_words: words,
-            accepted: accepted && !epoch_changed,
-        })
+        (accepted || matches!(status, ReplyStatus::Ready | ReplyStatus::Unavailable)).then_some(
+            GeometryReply {
+                status,
+                request_sequence: sequence,
+                response_words: words,
+                accepted: accepted && !epoch_changed,
+                identity_invalidated,
+            },
+        )
     }
 
     pub fn heartbeat(&self, now_tick_ms: u64) {
@@ -343,6 +371,15 @@ impl CaretObserver {
                 let _ = host_ffi::post_scheduler(self.scheduler_window, CLOSE_MESSAGE, 0);
             }
         }
+    }
+
+    /// A terminated/replaced process instance cannot release another callback
+    /// into this session. The process-start query is the same identity check
+    /// used during target admission; an unavailable instance is fail-closed
+    /// as exited so a retired observer cannot block a later target forever.
+    pub fn target_exited(&self) -> bool {
+        crate::windows_impl::process_started_at(self.endpoint.input_process)
+            .is_none_or(|started| started != self.endpoint.input_started)
     }
 
     pub fn endpoint(&self) -> CaretEndpoint {
