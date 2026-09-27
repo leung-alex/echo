@@ -1,7 +1,9 @@
 """Warp passive-badge suppression and explicit popup placement acceptance. No text/clipboard mutation.
 
 Requires an already running Warp. Only focus, pointer movement, Alt+V and Escape
-are used; all Echo state is isolated synthetic data. Does not certify caret following.
+are used; all Echo state is isolated synthetic data. The test accepts either a
+real caret or Warp's bounded input-lane estimate and checks badge stability
+without mouse following.
 """
 import argparse
 import ctypes
@@ -26,7 +28,6 @@ def main():
     (root / 'data/synthetic-fixture.json').write_text(json.dumps(dict(synthetic=True, capture_enabled=False)))
     executable = root / 'echo-terminal-test.exe'
     shutil.copy2(args.executable, executable)
-    env = dict(os.environ, ECHO_DATA_DIR=str(root / 'data'), ECHO_NATIVE_TEST_ROOT=str(root))
     u = ctypes.WinDLL('user32', use_last_error=True)
     pointer = ctypes.c_void_p
     u.GetForegroundWindow.restype = pointer
@@ -36,6 +37,35 @@ def main():
     u.GetWindowThreadProcessId.argtypes = [pointer, ctypes.POINTER(ctypes.c_ulong)]
     sequence = 0
     children, checks = [], []
+
+    # Bind the isolated observer to the exact Warp root before starting Echo.
+    # ECHO_NATIVE_TEST_ROOT enables the bridge and the observer's fail-closed
+    # target guard, so both target identities must be present at first capture.
+    u.IsWindowVisible.argtypes = [pointer]
+    u.GetClassNameW.argtypes = [pointer, ctypes.c_wchar_p, ctypes.c_int]
+    rows = []
+    @ctypes.WINFUNCTYPE(ctypes.c_int, pointer, pointer)
+    def visit(h, _):
+        pid = ctypes.c_ulong()
+        u.GetWindowThreadProcessId(h, ctypes.byref(pid))
+        cls = ctypes.create_unicode_buffer(128)
+        u.GetClassNameW(h, cls, 128)
+        try:
+            if cls.value == 'Window Class' and u.IsWindowVisible(h) and psutil.Process(pid.value).name().lower() == 'warp.exe':
+                rows.append((h, pid.value))
+        except psutil.Error:
+            pass
+        return 1
+    u.EnumWindows(visit, 0)
+    assert rows, 'NOT_RUN: Warp is not running'
+    warp_hwnd, warp_pid = rows[0]
+    env = dict(
+        os.environ,
+        ECHO_DATA_DIR=str(root / 'data'),
+        ECHO_NATIVE_TEST_ROOT=str(root),
+        ECHO_NATIVE_TEST_TARGET_PID=str(warp_pid),
+        ECHO_NATIVE_TEST_TARGET_HWND=str(warp_hwnd),
+    )
 
     def wait(probe, label, timeout=10):
         end = time.monotonic() + timeout
@@ -82,31 +112,35 @@ def main():
         (root / 'checks.json').write_text(json.dumps(checks, ensure_ascii=False, indent=2), encoding='utf-8')
         print('PASS', name, flush=True)
 
+    def expected_badge(sample):
+        geometry = sample['geometry']
+        target = geometry['rect']
+        work = geometry['work_area']
+        scale = lambda dip: max(1, round(dip * int(geometry['dpi'] or 96) / 96.0))
+        width, height, gap = scale(48), scale(36), scale(8)
+        work_x, work_y, work_width, work_height = map(int, work)
+        target_x, target_y, target_width, target_height = map(int, target)
+        right, bottom = work_x + work_width, work_y + work_height
+        x = target_x + target_width + gap
+        if x + width > right:
+            x = target_x - gap - width
+        y = target_y - gap - height
+        if y < work_y:
+            y = target_y + target_height + gap
+        return [
+            max(work_x, min(x, right - width)),
+            max(work_y, min(y, bottom - height)),
+            width,
+            height,
+        ]
+
     with open(root / 'echo.log', 'w', encoding='utf-8') as log:
         try:
             echo = subprocess.Popen([str(executable), '--background'], env=env, stdout=log, stderr=log,
                                     creationflags=subprocess.CREATE_NO_WINDOW)
             children.append(echo)
             wait(lambda: (root / 'native-control').exists(), 'test bridge')
-            u.IsWindowVisible.argtypes = [pointer]
-            u.GetClassNameW.argtypes = [pointer, ctypes.c_wchar_p, ctypes.c_int]
             u.ShowWindow.argtypes = [pointer, ctypes.c_int]
-            rows = []
-            @ctypes.WINFUNCTYPE(ctypes.c_int, pointer, pointer)
-            def visit(h, _):
-                pid = ctypes.c_ulong()
-                u.GetWindowThreadProcessId(h, ctypes.byref(pid))
-                cls = ctypes.create_unicode_buffer(128)
-                u.GetClassNameW(h, cls, 128)
-                try:
-                    if cls.value == 'Window Class' and u.IsWindowVisible(h) and psutil.Process(pid.value).name().lower() == 'warp.exe':
-                        rows.append((h, pid.value))
-                except psutil.Error:
-                    pass
-                return 1
-            u.EnumWindows(visit, 0)
-            assert rows, 'NOT_RUN: Warp is not running'
-            warp_hwnd, warp_pid = rows[0]
             hwnd = warp_hwnd
             u.ShowWindow(hwnd, 9)
             class Rect(ctypes.Structure):
@@ -118,16 +152,68 @@ def main():
             activate(hwnd)
             pointer_x, pointer_y = host.left + 200, host.top + 200
             u.SetCursorPos(pointer_x, pointer_y)
-            def no_badge():
+            first = call('input_indicator')
+            deadline = time.monotonic() + 2
+            while not first['visible'] and time.monotonic() < deadline:
+                time.sleep(.08)
+                first = call('input_indicator')
+            exact_sources = {'NativeCaret', 'UiaCaret', 'MsaaCaret', 'TsfCaret'}
+            accepted_sources = exact_sources | {'EditorLeadingEdge'}
+            def visible_badge():
                 value = call('input_indicator')
-                return value if not value['visible'] else None
-            first = wait(no_badge, 'Warp badge suppression without a caret')
-            check('warp-no-passive-pointer-fallback', first)
-            time.sleep(.15)
-            u.SetCursorPos(host.left + 700, host.top + 500)
-            time.sleep(2)
-            second = wait(no_badge, 'Warp badge remains hidden while the pointer moves')
-            check('warp-no-mouse-following', second)
+                return value if value['visible'] else None
+            badge_expected = False
+            if first['visible']:
+                sample = first.get('sample') or {}
+                geometry = sample.get('geometry') or {}
+                assert sample.get('window') == hwnd, first
+                assert geometry.get('source') in accepted_sources, first
+                assert first['label'] in ('中', 'EN'), first
+                assert u.GetForegroundWindow() == hwnd
+                expected = expected_badge(sample)
+                assert all(abs(int(actual) - int(wanted)) <= 2
+                           for actual, wanted in zip(first['rect'], expected)), (first, expected)
+                check('warp-badge-uses-exact-caret-or-stable-input-lane', first)
+                badge_expected = True
+                stable_rect = first['rect']
+                u.SetCursorPos(host.left + 700, host.top + 500)
+                time.sleep(1)
+                second = wait(visible_badge, 'Warp caret badge after pointer movement')
+                assert (second.get('sample') or {}).get('geometry', {}).get('source') in accepted_sources, second
+                assert second['rect'] == stable_rect, (stable_rect, second)
+                assert u.GetForegroundWindow() == hwnd
+                check('warp-badge-does-not-follow-mouse', second)
+            else:
+                u.SetCursorPos(host.left + 700, host.top + 500)
+                deadline = time.monotonic() + 2
+                second = call('input_indicator')
+                while not second['visible'] and time.monotonic() < deadline:
+                    time.sleep(.08)
+                    second = call('input_indicator')
+                if second['visible']:
+                    sample = second.get('sample') or {}
+                    geometry = sample.get('geometry') or {}
+                    assert sample.get('window') == hwnd, second
+                    assert geometry.get('source') in accepted_sources, second
+                    assert second['label'] in ('中', 'EN'), second
+                    assert u.GetForegroundWindow() == hwnd
+                    expected = expected_badge(sample)
+                    assert all(abs(int(actual) - int(wanted)) <= 2
+                               for actual, wanted in zip(second['rect'], expected)), (second, expected)
+                    check('warp-badge-uses-exact-caret-or-stable-input-lane', second)
+                    badge_expected = True
+                    stable_rect = second['rect']
+                    u.SetCursorPos(host.left + 200, host.top + 200)
+                    time.sleep(1)
+                    third = wait(visible_badge, 'Warp caret badge after provider bootstrap')
+                    assert (third.get('sample') or {}).get('geometry', {}).get('source') in accepted_sources, third
+                    assert third['rect'] == stable_rect, (stable_rect, third)
+                    assert u.GetForegroundWindow() == hwnd
+                    check('warp-badge-does-not-follow-mouse', third)
+                else:
+                    check('warp-no-passive-pointer-fallback', first)
+                    assert u.GetForegroundWindow() == hwnd
+                    check('warp-no-mouse-following', second)
             assert u.GetForegroundWindow() == hwnd
             pointer_x, pointer_y = host.left + 200, host.top + 200
             u.SetCursorPos(pointer_x, pointer_y)
@@ -164,7 +250,15 @@ def main():
             key(27)
             wait(lambda: not call('metrics')['visible'], 'Esc hides plain-paste popup')
             check('plain-paste-escape-hides-popup', {'foreground_preserved': u.GetForegroundWindow() == hwnd})
-            wait(no_badge, 'badge remains hidden after Esc without a caret')
+            if badge_expected:
+                resumed = wait(lambda: (s if (s := call('input_indicator'))['visible'] else None),
+                               'badge resumes after Esc')
+                assert (resumed.get('sample') or {}).get('geometry', {}).get('source') in accepted_sources, resumed
+                check('warp-badge-resumes-after-esc', resumed)
+            else:
+                resumed = call('input_indicator')
+                assert not resumed['visible'], resumed
+                check('warp-badge-remains-hidden-after-esc', resumed)
             subprocess.run([str(executable), '--settings'], env=env, check=True, timeout=10,
                            creationflags=subprocess.CREATE_NO_WINDOW)
             state = wait(lambda: (s if (s := call('metrics'))['visible'] and s['route'] == 'settings' else None), 'settings')

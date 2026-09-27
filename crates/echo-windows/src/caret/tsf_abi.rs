@@ -13,6 +13,7 @@ pub type Dword = u32;
 pub type Ulong = u32;
 pub type TfClientId = u32;
 pub type TfEditCookie = u32;
+pub type TfAnchor = u32;
 pub type Hwnd = ffi::Hwnd;
 
 #[repr(C)]
@@ -219,7 +220,14 @@ pub struct RangeVtbl {
         unsafe extern "system" fn(*mut c_void, *const Guid, *mut *mut c_void) -> Hresult,
     pub add_ref: unsafe extern "system" fn(*mut c_void) -> Ulong,
     pub release: unsafe extern "system" fn(*mut c_void) -> Ulong,
-    pub get_text: *const c_void,
+    pub get_text: unsafe extern "system" fn(
+        *mut c_void,
+        TfEditCookie,
+        Dword,
+        *mut u16,
+        Ulong,
+        *mut Ulong,
+    ) -> Hresult,
     pub set_text: *const c_void,
     pub get_formatted_text: *const c_void,
     pub get_embedded: *const c_void,
@@ -227,7 +235,8 @@ pub struct RangeVtbl {
     pub shift_start: *const c_void,
     pub shift_end: *const c_void,
     pub shift_start_to_range: *const c_void,
-    pub shift_end_to_range: *const c_void,
+    pub shift_end_to_range:
+        unsafe extern "system" fn(*mut c_void, TfEditCookie, *mut c_void, TfAnchor) -> Hresult,
     pub shift_start_region: *const c_void,
     pub shift_end_region: *const c_void,
     pub is_empty: unsafe extern "system" fn(*mut c_void, TfEditCookie, *mut Bool) -> Hresult,
@@ -290,6 +299,7 @@ pub const TF_S_ASYNC: Hresult = 0x0004_0300;
 pub const TF_ES_READ: Dword = 0x2;
 pub const TF_ES_ASYNC: Dword = 0x8;
 pub const TF_DEFAULT_SELECTION: u32 = u32::MAX;
+pub const TF_ANCHOR_START: TfAnchor = 0;
 pub const TF_SD_READONLY: Dword = 0x1;
 pub const TF_SD_LOADING: Dword = 0x2;
 pub const TF_SS_DISJOINTSEL: Dword = 0x1;

@@ -57,11 +57,14 @@ estimated one-pixel editor caret from its current text end. The estimate uses
 the editor's own rectangle and value, never the pointer or the whole control
 rectangle, and exact native/UIA/MSAA/TSF geometry always wins. This lets rich
 editors remain visible for the indicator even when they are not safe for Quick
-Insert authorization. Warp has no passive pointer fallback: when its caret
-provider is not precise, the badge stays hidden instead of following the mouse.
-Alt+V may still use the pointer captured at activation for explicit plain-paste
-placement, with the existing work-area clamping. Other applications keep their
-existing placement policy.
+Insert authorization. Warp may use a bounded command-input lane estimate when
+no precise caret provider is available. Its TSF observer reads the current
+prefix only inside the target process, converts that prefix to a bounded
+text-width estimate, and publishes only the resulting one-pixel geometry;
+command content never enters the Echo mailbox or logs. Alt+V may still use the
+pointer captured at activation for explicit plain-paste placement, with the
+existing work-area clamping. Other applications keep their existing placement
+policy.
 
 When a primary TSF observer reaches its bounded callback capacity, it backs off
 requests and keeps the last ready candidate only while its normal freshness and
@@ -180,10 +183,22 @@ Normal state sampling does not request geometry, text or a TSF edit session.
 Terminal positioning also checks a focused TSF document's display bounds and an
 explicit IMM candidate exclusion rectangle. Whole-window bounds, default floating
 IME positions, missing coordinates and off-window rectangles are rejected.
-The tested Warp window returned a valid mode but only whole-window TSF bounds and
-no usable IMM caret: its precise popup placement and passive badge remain
-unsupported in that scene. Do not report this as a successful Warp positioning
-fix; the safe result is hidden rather than mouse-following.
+Warp is excluded from this generic TSF geometry path because its tested
+`GetTextExt` result was a zero-height, off-screen rectangle that could otherwise
+replace a valid initial position during later sampling. The renderer-only
+observer instead creates a temporary TSF range from document start to the
+current collapsed selection and applies the same bounded editor-leading-edge
+estimate used for WeChat's writable ValuePattern path.
+Warp additionally retries the same verified foreground root through the bounded
+UIA/MSAA query when TSF returns only whole-window bounds. A native, UIA, MSAA or
+IME caret is accepted only when it is a small non-zero rectangle inside the Warp
+window and belongs to the current process/thread/HWND. The tested Warp build
+exposes none of those caret providers, so Echo uses a bounded
+`EditorLeadingEdge` estimate in the lower command-input lane. The estimate is
+root-relative and skips the left session rail; the bounded prefix read stays
+inside Warp and is discarded after measuring. An exact caret provider replaces
+the estimate when one becomes available. A captured pointer remains only the
+small-host fallback.
 
 Plain-paste popups retain their Esc/F6/Enter keyboard lease while focus remains in
 the terminal. Opening Settings retires that lease and activates the manager.
@@ -212,11 +227,11 @@ balanced client registration and edit sessions are not included in production.
 Evidence is local under `.local/echo/tsf-probe/results.log`; this observation applies
 to the tested Warp build/context, not every possible future Warp version.
 
-`tests/native/Invoke-WarpCompatibilityAcceptance.py` checks the safe no-caret
-behavior against an already running Warp with a separate synthetic Echo
-instance. It checks that the passive badge is suppressed when only the invalid
-whole-window TSF result is available, while explicit plain-paste placement keeps
-its captured pointer and focus-preservation behavior. Set
+`tests/native/Invoke-WarpCompatibilityAcceptance.py` checks an already running
+Warp with a separate synthetic Echo instance. When a real caret is exposed it
+checks the `EN`/`中` label and exact geometry; when the current renderer exposes
+no caret it checks placement from the bounded input-lane estimate.
+Explicit plain-paste placement continues to use its captured pointer. Set
 `ECHO_WINDOWS_ACCEPTANCE=1` and supply `--executable` (native-test build) and a new
 `--evidence` directory. Physical Shift switching, split panes and mixed-DPI remain
 separate acceptance cases.

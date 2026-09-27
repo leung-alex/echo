@@ -549,6 +549,165 @@ fn valid_rect(rect: &abi::Rect) -> bool {
     width >= 0 && height > 0 && width <= MAX_WIDTH && height <= MAX_HEIGHT
 }
 
+fn valid_screen_rect(rect: &abi::Rect) -> bool {
+    let width = i64::from(rect.right) - i64::from(rect.left);
+    let height = i64::from(rect.bottom) - i64::from(rect.top);
+    width > 0
+        && height > 0
+        && width <= 100_000
+        && height <= 100_000
+        && i64::from(rect.left).abs() < 16_000_000
+        && i64::from(rect.top).abs() < 16_000_000
+}
+
+unsafe fn renderer_only_warp_view(header: &protocol::Header, view: ffi::Hwnd) -> bool {
+    let root = header.root_hwnd as usize as ffi::Hwnd;
+    // The renderer's active TSF view need not use the same Win32 class as the
+    // top-level window.  The root identity/class check above is the app
+    // boundary; the view only has to remain under that already-verified root.
+    renderer_only_warp_root(header)
+        && !view.is_null()
+        && !root.is_null()
+        && ffi::GetAncestor(view, 2) == root
+}
+
+unsafe fn renderer_only_warp_root(header: &protocol::Header) -> bool {
+    if header.root_hwnd == 0 {
+        return false;
+    }
+    let root = header.root_hwnd as usize as ffi::Hwnd;
+    if root.is_null() {
+        return false;
+    }
+    let mut root_pid = 0_u32;
+    if ffi::GetWindowThreadProcessId(root, &mut root_pid) == 0 || root_pid != header.root_pid {
+        return false;
+    }
+    let mut class_name = [0_u16; 64];
+    let class_length = ffi::GetClassNameW(root, class_name.as_mut_ptr(), class_name.len() as i32);
+    if class_length <= 0
+        || String::from_utf16_lossy(&class_name[..class_length as usize]) != "Window Class"
+    {
+        return false;
+    }
+    true
+}
+
+fn estimate_warp_text_advance(units: &[u16], line_height: i32) -> i32 {
+    let wide = (line_height.saturating_mul(3) / 4).clamp(12, 24);
+    let ascii = (wide / 2).max(5);
+    let mut advance = 0_i32;
+    for decoded in char::decode_utf16(units.iter().copied()) {
+        let character = decoded.unwrap_or('\u{fffd}');
+        let width = if character == '\n' || character == '\r' {
+            advance = 0;
+            continue;
+        } else if character.is_control() {
+            0
+        } else if character.is_ascii_whitespace() {
+            (ascii / 2).max(2)
+        } else if character.is_ascii() {
+            ascii
+        } else {
+            wide
+        };
+        advance = advance.saturating_add(width);
+    }
+    advance
+}
+
+/// Warp does not implement ITfContextView::GetRangeFromPoint, but it does
+/// expose the document range through TSF.  Build a temporary range from the
+/// document start to the live collapsed selection, read only that range's
+/// UTF-16 length/content inside the target process, and drop it immediately.
+/// The content never crosses the observer mailbox; only the bounded estimated
+/// caret rectangle does.  This is the same editor-leading-edge strategy used
+/// for WeChat's ValuePattern path, with the provider-specific text source
+/// kept behind the renderer-only Warp identity check.
+unsafe fn warp_text_prefix_caret_rect(
+    header: &protocol::Header,
+    context: *mut c_void,
+    context_table: &abi::ContextVtbl,
+    view_window: ffi::Hwnd,
+    edit_cookie: abi::TfEditCookie,
+    selection: *mut c_void,
+) -> Option<[i32; 4]> {
+    if !renderer_only_warp_view(header, view_window) {
+        return None;
+    }
+    let mut window_rect = ffi::Rect {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+    let root = header.root_hwnd as usize as ffi::Hwnd;
+    if ffi::GetWindowRect(root, &mut window_rect) == 0 {
+        return None;
+    }
+    let screen = abi::Rect {
+        left: window_rect.left,
+        top: window_rect.top,
+        right: window_rect.right,
+        bottom: window_rect.bottom,
+    };
+    if !valid_screen_rect(&screen) {
+        return None;
+    }
+    let mut prefix = null_mut();
+    let start_hr = (context_table.get_start)(context, edit_cookie, &mut prefix);
+    if start_hr < 0 || prefix.is_null() {
+        abi::release(prefix);
+        return None;
+    }
+    let prefix_table = abi::vtable::<abi::RangeVtbl>(prefix);
+    let shift_hr = if prefix_table.is_null() {
+        abi::E_NOINTERFACE
+    } else {
+        ((*prefix_table).shift_end_to_range)(prefix, edit_cookie, selection, abi::TF_ANCHOR_START)
+    };
+    if shift_hr < 0 {
+        abi::release(prefix);
+        return None;
+    }
+    // A bounded buffer keeps this passive probe finite.  A larger prefix is
+    // deliberately rejected instead of publishing a silently truncated x.
+    let mut text = [0_u16; 4096];
+    let mut copied = 0_u32;
+    let text_hr = ((*prefix_table).get_text)(
+        prefix,
+        edit_cookie,
+        0,
+        text.as_mut_ptr(),
+        text.len() as u32,
+        &mut copied,
+    );
+    abi::release(prefix);
+    if text_hr < 0 || copied as usize > text.len() {
+        return None;
+    }
+    let width = screen.right.checked_sub(screen.left)?;
+    let height = screen.bottom.checked_sub(screen.top)?;
+    let lane_height = (height / 12).clamp(44, 96);
+    let line_height = (lane_height * 7 / 16).clamp(18, 28);
+    let lane_center = screen
+        .bottom
+        .checked_sub(lane_height)?
+        .checked_add((lane_height - line_height) / 2)?
+        .checked_add(line_height / 2)?;
+    let content_origin = (width / 4).clamp(240, 360);
+    let inset = (width / 64).clamp(16, 32);
+    let lane_left = screen
+        .left
+        .checked_add(content_origin)?
+        .checked_add(inset)?;
+    let max_x = screen.right.saturating_sub(8).saturating_sub(1);
+    let advance = estimate_warp_text_advance(&text[..copied as usize], line_height);
+    let x = lane_left.saturating_add(advance).min(max_x).max(lane_left);
+    let top = lane_center.saturating_sub(line_height / 2);
+    Some([x, top, x.saturating_add(1), top.saturating_add(line_height)])
+}
+
 /// TSF returns screen coordinates. For system/unaware views normalize each
 /// corner once; for per-monitor aware views the screen values are already
 /// physical. The opaque awareness handles are compared semantically.
@@ -943,6 +1102,17 @@ unsafe fn acquire_geometry(
         sensitivity::Sensitivity::Unknown
     };
     abi::release(property);
+    // Warp's renderer-only terminal document does not publish an input-scope
+    // property. Its passive badge never authorizes insertion or reads text,
+    // so the narrowly identified root may continue to the bounded, in-process
+    // prefix geometry estimate; all other unknown-sensitivity targets still
+    // fail closed.
+    let safety =
+        if safety == sensitivity::Sensitivity::Unknown && renderer_only_warp_root(&state.header) {
+            sensitivity::Sensitivity::Allowed
+        } else {
+            safety
+        };
     if safety != sensitivity::Sensitivity::Allowed {
         abi::release(selection.range);
         publish_unavailable(
@@ -995,6 +1165,24 @@ unsafe fn acquire_geometry(
     let text_ext_hr =
         ((*view_table).get_text_ext)(view, edit_cookie, selection.range, &mut raw, &mut clipped);
     let normalized = normalize_rect(view_window, &raw);
+    let native_rect = normalized.is_ok();
+    let normalized_reason = normalized.as_ref().err().copied();
+    let text_prefix_fallback = if text_ext_hr >= 0
+        && clipped == 0
+        && normalized_reason == Some(REASON_INVALID_RECTANGLE)
+    {
+        warp_text_prefix_caret_rect(
+            &state.header,
+            context,
+            &*context_table,
+            view_window,
+            edit_cookie,
+            selection.range,
+        )
+    } else {
+        None
+    };
+    let resolved = normalized.ok().or(text_prefix_fallback);
     let epoch_still_current =
         same_context(runtime, state) && live_context_matches(runtime, state) == Ok(true);
     let live_after = target_is_live(&state.header, view_window)
@@ -1018,12 +1206,12 @@ unsafe fn acquire_geometry(
             text_ext_hr,
             abi::S_OK,
         );
-    } else if let Err(reason) = normalized {
+    } else if resolved.is_none() {
         publish_unavailable(
             runtime,
             state.sequence,
             state.context_epoch,
-            reason,
+            normalized_reason.unwrap_or(REASON_INVALID_RECTANGLE),
             text_ext_hr,
             abi::S_OK,
         );
@@ -1049,7 +1237,7 @@ unsafe fn acquire_geometry(
             text_ext_hr,
             abi::S_OK,
         );
-    } else if let Ok([left, top, right, bottom]) = normalized {
+    } else if let Some([left, top, right, bottom]) = resolved {
         let mut response = response_base(
             RESPONSE_READY,
             state.sequence,
@@ -1060,12 +1248,22 @@ unsafe fn acquire_geometry(
         );
         let flags = 0_u32;
         response[2] = 1; // TsfCaret
-        response[3] = 1; // Exact
+        response[3] = if native_rect { 1 } else { 2 }; // 1=exact, 2=estimated
         response[7] = flags;
         response[8] = state.entry_tick as u32;
         response[9] = (state.entry_tick >> 32) as u32;
         response[12] = view_window as usize as u64 as u32;
         response[13] = (view_window as usize as u64 >> 32) as u32;
+        let raw = if native_rect {
+            raw
+        } else {
+            abi::Rect {
+                left,
+                top,
+                right,
+                bottom,
+            }
+        };
         response[14] = raw.left as u32;
         response[15] = raw.top as u32;
         response[16] = raw.right as u32;

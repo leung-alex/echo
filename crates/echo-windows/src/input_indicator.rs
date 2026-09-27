@@ -638,12 +638,12 @@ impl GeometryProbeState {
     }
 }
 
-/// Legacy geometry may keep the explicit IME caret path, but a generic
-/// control/window or pointer rectangle is not the insertion caret. Showing
-/// either would place the passive badge at an unrelated edge (for example,
-/// the far right of a WeChat composer or wherever the mouse happens to be).
+/// Legacy geometry may keep the explicit IME caret path. A generic
+/// control/window rectangle is not the insertion caret. Pointer geometry is
+/// admitted only through an explicit host fallback (currently Warp), and is
+/// validated below without entering caret-source arbitration.
 fn legacy_geometry_allowed(source: GeometrySource) -> bool {
-    !matches!(source, GeometrySource::Control | GeometrySource::Pointer)
+    source != GeometrySource::Control
 }
 
 fn anchor_source(source: GeometrySource) -> AnchorSource {
@@ -759,7 +759,10 @@ fn select_legacy_geometry(
     // the normal source arbitration order. They still share the same
     // freshness/identity gate; all caret-like providers go through the full
     // geometry validator so a whole Control rectangle cannot leak through.
-    if legacy_stamp.source == GeometrySource::ImmExclusion {
+    if matches!(
+        legacy_stamp.source,
+        GeometrySource::Pointer | GeometrySource::ImmExclusion
+    ) {
         let candidate = candidate_from_anchor(
             identity,
             legacy_anchor,
@@ -808,7 +811,7 @@ fn candidate_from_tsf(
         return None;
     }
     let words = reply.response_words;
-    if words[2] != 1 || words[3] != 1 || words[27] != 2 {
+    if words[2] != 1 || !matches!(words[3], 1 | 2) || words[27] != 2 {
         return None;
     }
     let view_window = u64::from(words[12]) | (u64::from(words[13]) << 32);
@@ -839,18 +842,35 @@ fn candidate_from_tsf(
     // rectangle itself.  This also handles a caret crossing onto another
     // monitor without retaining the legacy anchor's monitor metadata.
     let host_geometry = crate::focus::geometry(rect);
-    (rect.width >= 0 && rect.height > 0).then_some(GeometryCandidate::exact(
+    if rect.width < 0 || rect.height <= 0 {
+        return None;
+    }
+    let estimated = words[3] == 2;
+    let source = if estimated {
+        GeometrySource::EditorLeadingEdge
+    } else {
+        GeometrySource::TsfCaret
+    };
+    let confidence = geometry_confidence(source);
+    Some(GeometryCandidate {
         identity,
-        GeometrySource::TsfCaret,
-        echo_engine::InputTargetGeometry {
+        source,
+        confidence,
+        geometry: echo_engine::InputTargetGeometry {
             target: rect,
             work_area: host_geometry.work_area,
             dpi: host_geometry.dpi,
         },
         observed_at,
-        u64::from(reply.request_sequence),
-        u64::from(words[10]) | (u64::from(words[11]) << 32),
-    ))
+        sequence: u64::from(reply.request_sequence),
+        context_epoch: u64::from(words[10]) | (u64::from(words[11]) << 32),
+        safety: GeometrySafety::Allowed,
+        clipped: false,
+        interim_character: false,
+        noncollapsed_selection: false,
+        view_verified: true,
+        control: None,
+    })
 }
 
 fn select_primary_geometry(
@@ -1235,6 +1255,7 @@ unsafe fn run(s: Arc<Shared>, provider: CaretProvider) {
                     snapshot
                         .console_indicator()
                         .or_else(|| snapshot.terminal_tsf_indicator())
+                        .or_else(|| snapshot.warp_indicator())
                         .map(|(endpoint, anchor)| ((None, Some(endpoint)), anchor))
                         .or_else(|| {
                             let found = snapshot.capture_target();
@@ -1927,7 +1948,7 @@ mod tests {
     #[test]
     fn legacy_rejects_whole_control_fallback_but_keeps_explicit_special_paths() {
         assert!(!legacy_geometry_allowed(GeometrySource::Control));
-        assert!(!legacy_geometry_allowed(GeometrySource::Pointer));
+        assert!(legacy_geometry_allowed(GeometrySource::Pointer));
         assert!(legacy_geometry_allowed(GeometrySource::ImmExclusion));
         assert!(legacy_geometry_allowed(GeometrySource::UiaCaret));
     }
@@ -2081,7 +2102,7 @@ mod tests {
             confidence: GeometryConfidence::Fallback,
             ..fresh
         };
-        assert!(select_legacy_geometry(identity, Some((pointer, pointer_stamp)), now).is_none());
+        assert!(select_legacy_geometry(identity, Some((pointer, pointer_stamp)), now).is_some());
 
         let ime_anchor = crate::focus::PopupAnchor {
             source: AnchorSource::InputMethodCaret,

@@ -124,6 +124,8 @@ extern "system" {
     pub fn GetFocus() -> Hwnd;
     pub fn GetAncestor(window: Hwnd, flags: u32) -> Hwnd;
     pub fn GetForegroundWindow() -> Hwnd;
+    pub fn GetClassNameW(window: Hwnd, class_name: *mut u16, max_count: i32) -> i32;
+    pub fn GetWindowRect(window: Hwnd, rect: *mut Rect) -> i32;
     pub fn GetWindowThreadProcessId(window: Hwnd, pid: *mut u32) -> u32;
     pub fn GetWindowLongPtrW(window: Hwnd, index: i32) -> isize;
     pub fn SetWindowLongPtrW(window: Hwnd, index: i32, value: isize) -> isize;
