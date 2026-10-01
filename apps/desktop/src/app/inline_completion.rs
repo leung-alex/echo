@@ -2,13 +2,43 @@
 //! echo-windows; results still come from the retained-content domain service.
 use super::*;
 use echo_engine::InlineTicket;
-use echo_windows::inline::InlineEvent;
+use echo_windows::inline::{InlineEvent, PlainPasteTicket};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct PlainPasteIntent {
+    pub ticket: PlainPasteTicket,
+    pub space: SpaceId,
+    pub surface_epoch: u64,
+    pub result_revision: i64,
+    pub selection: RowKey,
+}
+
+impl PlainPasteIntent {
+    fn matches(
+        self,
+        ticket: PlainPasteTicket,
+        space: SpaceId,
+        surface_epoch: u64,
+        result_revision: i64,
+        selection: Option<RowKey>,
+    ) -> bool {
+        self.ticket == ticket
+            && self.space == space
+            && self.surface_epoch == surface_epoch
+            && self.result_revision == result_revision
+            && selection == Some(self.selection)
+    }
+}
+
 #[derive(Default)]
 pub(super) struct InlineUi {
     pub ticket: Option<InlineTicket>,
+    pub plain_ticket: Option<PlainPasteTicket>,
+    pub plain_intent: Option<PlainPasteIntent>,
     pub pending: bool,
     pub unavailable: bool,
     pub plain_paste: bool,
+    pub composition_source: &'static str,
     pub composing: bool,
     pub suspended: bool,
     pub above: Option<bool>,
@@ -19,6 +49,14 @@ pub(super) struct InlineUi {
 impl InlineUi {
     fn accepts_ticket(&self, ticket: InlineTicket, session: u64) -> bool {
         self.ticket.is_some_and(|previous| {
+            ticket.session == session
+                && previous.session == session
+                && ticket.revision >= previous.revision
+                && ticket.input_serial >= previous.input_serial
+        })
+    }
+    fn accepts_plain_ticket(&self, ticket: PlainPasteTicket, session: u64) -> bool {
+        self.plain_ticket.is_some_and(|previous| {
             ticket.session == session
                 && previous.session == session
                 && ticket.revision >= previous.revision
@@ -74,8 +112,11 @@ impl App {
     pub(super) fn inline_active(&self) -> bool {
         self.inline_ui.ticket.is_some() || self.inline_ui.unavailable
     }
+    pub(super) fn plain_paste_active(&self) -> bool {
+        self.inline_ui.plain_paste
+    }
     pub(super) fn popup_preserves_input_focus(&self) -> bool {
-        self.inline_active() || self.inline_ui.plain_paste
+        self.inline_active() || self.plain_paste_active()
     }
     pub(super) fn stop_inline(&mut self) -> bool {
         let _timing = crate::popup_timing::span("inline_retirement");
@@ -141,6 +182,56 @@ impl App {
             return;
         }
         match event {
+            InlineEvent::PlainPasteStarted {
+                ticket,
+                target,
+                anchor,
+                backend,
+                composing,
+                suspended,
+                composition_source,
+            } => {
+                crate::popup_timing::mark("target_identified");
+                if ticket.session != self.session.epoch || !self.inline_ui.pending {
+                    self.worker.inline.cancel(ticket.session);
+                    return;
+                }
+                self.inline_timer.stop();
+                self.inline_ui = InlineUi {
+                    plain_ticket: Some(ticket),
+                    plain_paste: true,
+                    composition_source,
+                    backend,
+                    composing,
+                    suspended,
+                    ..Default::default()
+                };
+                self.window.set_inline_mode(true);
+                self.popup_anchor = Some(anchor);
+                self.surface.set_space(SpaceId::HISTORY);
+                self.surface.set_query(String::new());
+                self.window.set_query("".into());
+                self.previews.clear();
+                self.deck.show(SpaceId::HISTORY);
+                self.render_navigation();
+                self.pending_scroll = Some(0.0);
+                self.compatibility_notice =
+                    Some("Plain paste mode: typing in this input does not filter history".into());
+                self.capture_pending = true;
+                self.set_busy();
+                self.handle(Event::Activated(
+                    ticket.session,
+                    Context::QuickInsert,
+                    Ok(crate::events::ActivationResult {
+                        target: Some(target),
+                        anchor: Some(anchor),
+                    }),
+                ));
+                self.report(
+                    "Plain paste mode · Enter inserts the selected item · Esc cancels · F6 browse and copy",
+                    false,
+                );
+            }
             InlineEvent::Started(start) => {
                 crate::popup_timing::mark("target_identified");
                 if start.ticket.session != self.session.epoch || !self.inline_ui.pending {
@@ -275,6 +366,42 @@ impl App {
                 }
                 self.prepare_window_geometry();
             }
+            InlineEvent::PlainPasteChanged {
+                ticket,
+                composing,
+                suspended,
+                composition_source,
+            } => {
+                if !self
+                    .inline_ui
+                    .accepts_plain_ticket(ticket, self.session.epoch)
+                {
+                    return;
+                }
+                let state_changed =
+                    self.inline_ui.composing != composing || self.inline_ui.suspended != suspended;
+                self.inline_ui.plain_ticket = Some(ticket);
+                self.inline_ui.composition_source = composition_source;
+                self.inline_ui.composing = composing;
+                self.inline_ui.suspended = suspended;
+                self.inline_results_ready();
+                if state_changed && composing {
+                    self.report(
+                        "Input method is composing · candidate keys stay with the input method",
+                        false,
+                    );
+                } else if state_changed && suspended {
+                    self.report(
+                        "IME state is unavailable · Enter is protected · F6 opens history for copying",
+                        false,
+                    );
+                } else if state_changed {
+                    self.report(
+                        "Plain paste is ready · Enter inserts the selected item",
+                        false,
+                    );
+                }
+            }
             InlineEvent::Navigate { session, delta } => {
                 if self.popup_preserves_input_focus()
                     && session == self.session.epoch
@@ -295,21 +422,72 @@ impl App {
                 }
             }
             InlineEvent::Confirm(ticket) => {
-                if self.inline_ui.ticket != Some(ticket)
-                    || !self.worker.inline.live(ticket)
-                    || self.session.busy()
-                    || !self.surface.ready
-                    || self.surface.loading
-                    || self.surface.selection.is_none()
-                    || !self.deck.can_insert(self.surface.space)
-                    || self.inline_ui.composing
-                    || self.inline_ui.suspended
-                {
+                let reject = if self.inline_ui.ticket != Some(ticket) {
+                    10
+                } else if !self.worker.inline.live(ticket) {
+                    11
+                } else if self.session.busy() {
+                    12
+                } else if !self.surface.ready {
+                    13
+                } else if self.surface.loading {
+                    14
+                } else if self.surface.selection.is_none() {
+                    15
+                } else if !self.deck.can_insert(self.surface.space) {
+                    16
+                } else if self.inline_ui.composing {
+                    17
+                } else if self.inline_ui.suspended {
+                    18
+                } else {
+                    0
+                };
+                if reject != 0 {
                     if ticket.session == self.session.epoch {
-                        self.report("Results changed; press Enter again on a current result. Nothing was sent.", false);
+                        self.report(&format!("Results changed; press Enter again on a current result. Nothing was sent. ({reject})"), false);
                     }
                     return;
                 }
+                self.execute(self.surface.selection.unwrap(), QuickInsertAction::Insert);
+            }
+            InlineEvent::PlainPasteConfirm(ticket) => {
+                let current_intent = self.inline_ui.plain_intent;
+                let intent_matches = current_intent.is_some_and(|intent| {
+                    intent.matches(
+                        ticket,
+                        self.surface.space,
+                        self.surface.query_epoch(),
+                        self.surface.revision,
+                        self.surface.selection,
+                    )
+                });
+                let invalid = self.inline_ui.plain_ticket != Some(ticket)
+                    || !self.worker.inline.plain_live(ticket)
+                    || !intent_matches
+                    || self.session.busy()
+                    || !self.surface.visible
+                    || !self.surface.ready
+                    || self.surface.loading
+                    || self.surface.dirty
+                    || self.surface.selection.is_none()
+                    || !self.deck.can_insert(self.surface.space)
+                    || self.window.get_modal()
+                    || self.inline_ui.composing
+                    || self.inline_ui.suspended;
+                if invalid {
+                    self.worker.inline.release_plain_confirmation(ticket);
+                    if ticket.session == self.session.epoch {
+                        self.report(
+                            "Results changed; press Enter again on a current result. Nothing was sent.",
+                            false,
+                        );
+                        self.inline_results_ready();
+                    }
+                    return;
+                }
+                // The ordinary execute path consumes the one-shot claim before
+                // queueing the typed plain operation.
                 self.execute(self.surface.selection.unwrap(), QuickInsertAction::Insert);
             }
             InlineEvent::Cancelled { session, reason } => {
@@ -381,8 +559,27 @@ impl App {
         ));
     }
 
-    pub(super) fn inline_results_ready(&self) {
-        if let Some(ticket) = self.inline_ui.ticket {
+    pub(super) fn inline_results_ready(&mut self) {
+        if let Some(ticket) = self.inline_ui.plain_ticket {
+            let ready = self.surface.visible
+                && self.surface.ready
+                && !self.surface.loading
+                && !self.surface.dirty
+                && self.surface.selection.is_some()
+                && !self.session.busy()
+                && !self.window.get_modal()
+                && self.deck.can_insert(self.surface.space)
+                && !self.inline_ui.composing
+                && !self.inline_ui.suspended;
+            self.inline_ui.plain_intent = ready.then(|| PlainPasteIntent {
+                ticket,
+                space: self.surface.space,
+                surface_epoch: self.surface.query_epoch(),
+                result_revision: self.surface.revision,
+                selection: self.surface.selection.unwrap(),
+            });
+            self.worker.inline.plain_results_ready(ticket, ready);
+        } else if let Some(ticket) = self.inline_ui.ticket {
             self.worker.inline.results_ready(
                 ticket,
                 self.surface.ready
@@ -397,19 +594,50 @@ impl App {
             );
         }
     }
+
+    pub(super) fn plain_insert_ready(&self, ticket: PlainPasteTicket, key: RowKey) -> bool {
+        self.inline_ui.plain_ticket == Some(ticket)
+            && self.inline_ui.plain_intent.is_some_and(|intent| {
+                intent.matches(
+                    ticket,
+                    self.surface.space,
+                    self.surface.query_epoch(),
+                    self.surface.revision,
+                    self.surface.selection,
+                ) && intent.selection == key
+            })
+            && self.surface.visible
+            && self.surface.ready
+            && !self.surface.loading
+            && !self.surface.dirty
+            && !self.session.busy()
+            && !self.window.get_modal()
+            && !self.inline_ui.composing
+            && !self.inline_ui.suspended
+            && self.deck.can_insert(self.surface.space)
+    }
     pub(super) fn execute_inline_item(&mut self, key: RowKey) {
         let Some(ticket) = self.inline_ui.ticket else {
             return;
         };
-        if !self.worker.inline.live(ticket)
-            || self.surface.loading
-            || !self.surface.ready
-            || self.inline_ui.composing
-            || self.inline_ui.suspended
-            || !self.deck.can_insert(self.surface.space)
-        {
+        let reject = if !self.worker.inline.live(ticket) {
+            1
+        } else if self.surface.loading {
+            2
+        } else if !self.surface.ready {
+            3
+        } else if self.inline_ui.composing {
+            4
+        } else if self.inline_ui.suspended {
+            5
+        } else if !self.deck.can_insert(self.surface.space) {
+            6
+        } else {
+            0
+        };
+        if reject != 0 {
             self.report(
-                "Input or results changed. Nothing was replaced or sent.",
+                &format!("Input or results changed. Nothing was replaced or sent. ({reject})"),
                 false,
             );
             return;
@@ -483,5 +711,71 @@ mod tests {
         ));
         assert!(!ui.accepts_ticket(current, 10));
         assert!(!InlineUi::default().accepts_ticket(current, 9));
+    }
+    #[test]
+    fn plain_paste_observations_are_session_scoped_and_monotonic() {
+        let current = PlainPasteTicket {
+            session: 9,
+            revision: 4,
+            input_serial: 12,
+        };
+        let ui = InlineUi {
+            plain_ticket: Some(current),
+            plain_paste: true,
+            ..Default::default()
+        };
+        assert!(ui.accepts_plain_ticket(current, 9));
+        assert!(ui.accepts_plain_ticket(
+            PlainPasteTicket {
+                revision: 5,
+                input_serial: 13,
+                ..current
+            },
+            9
+        ));
+        assert!(!ui.accepts_plain_ticket(
+            PlainPasteTicket {
+                revision: 3,
+                ..current
+            },
+            9
+        ));
+        assert!(!ui.accepts_plain_ticket(
+            PlainPasteTicket {
+                session: 8,
+                ..current
+            },
+            9
+        ));
+        assert!(!InlineUi::default().accepts_plain_ticket(current, 9));
+    }
+
+    #[test]
+    fn plain_intent_rejects_modal_space_result_or_selection_changes() {
+        let ticket = PlainPasteTicket {
+            session: 3,
+            revision: 8,
+            input_serial: 4,
+        };
+        let selection: RowKey = "h:200".parse().unwrap();
+        let intent = PlainPasteIntent {
+            ticket,
+            space: SpaceId::HISTORY,
+            surface_epoch: 11,
+            result_revision: 19,
+            selection,
+        };
+        assert!(intent.matches(ticket, SpaceId::HISTORY, 11, 19, Some(selection)));
+        assert!(!intent.matches(ticket, SpaceId::FAVORITES, 11, 19, Some(selection)));
+        assert!(!intent.matches(ticket, SpaceId::HISTORY, 12, 19, Some(selection)));
+        assert!(!intent.matches(ticket, SpaceId::HISTORY, 11, 20, Some(selection)));
+        assert!(!intent.matches(
+            ticket,
+            SpaceId::HISTORY,
+            11,
+            19,
+            Some("h:201".parse().unwrap())
+        ));
+        assert!(!intent.matches(ticket, SpaceId::HISTORY, 11, 19, None));
     }
 }

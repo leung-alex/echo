@@ -47,6 +47,7 @@ pub enum Work {
     TrimSearchCache(u64, u64),
     RetryHotkey,
     Execute(Operation, RowKey),
+    ExecutePlain(Operation, RowKey, echo_windows::inline::PlainPasteTicket),
     ExecuteInline(Operation, RowKey, echo_engine::InlineTicket),
     Mutate(u64, Mutation),
     Thumbnail(
@@ -74,6 +75,16 @@ fn advance_search_generation(epoch: &AtomicU64, work: &Work) -> u64 {
         epoch.load(Ordering::Acquire)
     }
 }
+
+fn plain_operation_allowed(
+    current_epoch: u64,
+    operation: Operation,
+    ticket: echo_windows::inline::PlainPasteTicket,
+) -> bool {
+    operation.action == QuickInsertAction::Insert
+        && current_epoch == operation.epoch
+        && operation.epoch == ticket.session
+}
 pub struct Worker {
     #[cfg(feature = "native-test")]
     pub capture_disabled: bool,
@@ -97,6 +108,7 @@ impl Worker {
         let inline = echo_windows::inline::InlineController::start(Arc::new(move |event| {
             inline_hub.post_inline(event)
         }))?;
+        inline.set_trace_log(path.join("logs").join("inline-trace.jsonl"));
         let worker_inline = inline.clone();
         let (sender, receiver) = mpsc::sync_channel(32);
         let (control, control_rx) = mpsc::sync_channel(8);
@@ -436,6 +448,19 @@ fn run(
                 };
                 hub.post(Event::Executed(operation, result));
             }
+            Work::ExecutePlain(operation, key, ticket) => {
+                let result =
+                    if !plain_operation_allowed(epoch.load(Ordering::Acquire), operation, ticket) {
+                        Err(QuickInsertError::InvalidTarget)
+                    } else {
+                        // The UI consumed the one-shot plain-paste authorization
+                        // before enqueueing this typed work item. The ordinary
+                        // quick-insert adapter still owns target identity,
+                        // clipboard, and delivery validation.
+                        services.quick.execute(key.source, key.id, operation.action)
+                    };
+                hub.post(Event::Executed(operation, result));
+            }
             Work::Execute(operation, key) => {
                 let result = if epoch.load(Ordering::Acquire) != operation.epoch {
                     Err(QuickInsertError::InvalidTarget)
@@ -714,6 +739,37 @@ mod tests {
             9
         );
         assert_eq!(epoch.load(Ordering::Acquire), 9);
+    }
+    #[test]
+    fn plain_operation_token_must_match_epoch_and_insert_action() {
+        let operation = Operation {
+            epoch: 7,
+            serial: 2,
+            action: QuickInsertAction::Insert,
+        };
+        let ticket = echo_windows::inline::PlainPasteTicket {
+            session: 7,
+            revision: 3,
+            input_serial: 4,
+        };
+        assert!(plain_operation_allowed(7, operation, ticket));
+        assert!(!plain_operation_allowed(8, operation, ticket));
+        assert!(!plain_operation_allowed(
+            7,
+            Operation {
+                action: QuickInsertAction::Copy,
+                ..operation
+            },
+            ticket,
+        ));
+        assert!(!plain_operation_allowed(
+            7,
+            operation,
+            echo_windows::inline::PlainPasteTicket {
+                session: 8,
+                ..ticket
+            },
+        ));
     }
     #[test]
     fn reordering_keeps_every_favorite_including_unloaded_pages() {

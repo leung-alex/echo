@@ -1813,6 +1813,40 @@ impl App {
             self.execute_inline_item(key);
             return;
         }
+        let mut plain_ticket = None;
+        if self.plain_paste_active() && action == QuickInsertAction::Insert {
+            let Some(ticket) = self.inline_ui.plain_ticket else {
+                return;
+            };
+            if !self.plain_insert_ready(ticket, key) {
+                self.report(
+                    "Results changed; press Enter again on a current result. Nothing was sent.",
+                    false,
+                );
+                return;
+            }
+            // Keyboard Enter reserves this before posting its event. A direct
+            // click reserves the same token here, so both paths share one
+            // freshness and composition contract.
+            if !self.worker.inline.plain_live(ticket)
+                && !self.worker.inline.reserve_plain_confirmation(ticket)
+            {
+                self.report(
+                    "Confirmation evidence expired or results changed. Nothing was sent.",
+                    false,
+                );
+                return;
+            }
+            if !self.worker.inline.consume_plain_confirmation(ticket) {
+                self.report(
+                    "Confirmation was already consumed or expired. Nothing was sent.",
+                    false,
+                );
+                return;
+            }
+            self.worker.inline.invalidate_results();
+            plain_ticket = Some(ticket);
+        }
         if !self.deck.can_insert(self.surface.space)
             || !self.surface.ready
             || self.mutation.is_some()
@@ -1843,12 +1877,22 @@ impl App {
         if action == QuickInsertAction::Insert {
             self.hide_window();
         }
-        if !self.send(Work::Execute(operation, key)) {
+        let work = plain_ticket.map_or_else(
+            || Work::Execute(operation, key),
+            |ticket| Work::ExecutePlain(operation, key, ticket),
+        );
+        if !self.send(work) {
             self.session.finish(operation, Err(()));
+            if plain_ticket.is_some() {
+                self.worker.inline.finish_plain_confirmation();
+            }
             self.set_busy();
             if action == QuickInsertAction::Insert {
                 let _ = self.show_window();
                 self.load(false);
+                if plain_ticket.is_some() {
+                    self.inline_results_ready();
+                }
             }
         }
     }
@@ -1860,6 +1904,11 @@ impl App {
         let completion = self
             .session
             .finish(operation, result.as_ref().copied().map_err(|_| ()));
+        let was_plain_insert =
+            self.plain_paste_active() && operation.action == QuickInsertAction::Insert;
+        if was_plain_insert {
+            self.worker.inline.finish_plain_confirmation();
+        }
         self.set_busy();
         match completion {
             Completion::Stale => {}

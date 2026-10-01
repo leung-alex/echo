@@ -472,12 +472,127 @@ pub(super) unsafe fn empty_paragraph_caret(
 /// Chromium UIA. Recognize the complete paragraph/range structure, including the
 /// sole generated text leaf used when the empty <br> is hidden. A label, class name,
 /// newline, or empty selection alone never authorizes trimming.
-pub(super) unsafe fn empty_decorated_paragraph_caret(
-    uia: &IUIAutomation,
-    editor: &IUIAutomationElement,
+fn blank_text_unit(unit: u16) -> bool {
+    unit == 0x200b
+        || char::from_u32(u32::from(unit)).is_some_and(char::is_whitespace)
+}
+
+/// Invisible format (Cf) characters like ZWSP, word joiner, BOM, and bidi
+/// marks are editor scaffolding, not user text. A document whose visible
+/// content is only readonly leaves plus these sentinels is still empty.
+pub(super) fn structural_text_unit(unit: u16) -> bool {
+    blank_text_unit(unit)
+        || matches!(
+            unit,
+            0x00ad | 0x200c..=0x200f | 0x202a..=0x202e | 0x2060..=0x2064 | 0x2066..=0x206f | 0xfeff
+        )
+}
+
+/// The caret inside a placeholder decoration may report at either edge of the
+/// generated text. Accept doc start or a position followed only by blanks.
+unsafe fn caret_before_blank_tail(
     doc: &IUIAutomationTextRange,
     selected: &IUIAutomationTextRange,
 ) -> bool {
+    let Ok(tail) = doc.Clone() else {
+        return false;
+    };
+    if tail
+        .MoveEndpointByRange(
+            TextPatternRangeEndpoint_Start,
+            selected,
+            TextPatternRangeEndpoint_End,
+        )
+        .is_err()
+    {
+        return false;
+    }
+    tail.GetText(-1)
+        .ok()
+        .is_some_and(|v| v.to_vec().iter().all(|u| blank_text_unit(*u)))
+}
+
+/// Every child of a placeholder-marked paragraph must be a generated
+/// decoration group (empty name and class) holding one text leaf, or a blank
+/// paragraph-mark leaf, and their texts must reconstruct the document range
+/// exactly. Real text next to the decoration always breaks the match.
+unsafe fn decorated_paragraph_text(
+    walker: &IUIAutomationTreeWalker,
+    pattern: &IUIAutomationTextPattern,
+    paragraph: &IUIAutomationElement,
+    raw: &[u16],
+) -> bool {
+    let mut pieces = Vec::new();
+    let mut decoration = false;
+    let mut child = walker.GetFirstChildElement(paragraph).ok();
+    for _ in 0..8 {
+        let Some(element) = child else {
+            break;
+        };
+        let next = walker.GetNextSiblingElement(&element).ok();
+        match element.CurrentControlType().ok() {
+            Some(role)
+                if role == UIA_GroupControlTypeId
+                    && element.CurrentName().is_ok_and(|name| name.is_empty())
+                    && element
+                        .CurrentClassName()
+                        .is_ok_and(|class| class.is_empty()) =>
+            {
+                // The decoration must be a single generated text leaf;
+                // deeper structure could hide real content.
+                let Ok(leaf) = walker.GetFirstChildElement(&element) else {
+                    return false;
+                };
+                if leaf.CurrentControlType().ok() != Some(UIA_TextControlTypeId)
+                    || walker.GetNextSiblingElement(&leaf).is_ok()
+                    || walker.GetFirstChildElement(&leaf).is_ok()
+                {
+                    return false;
+                }
+                let Ok(range) = pattern.RangeFromChild(&element) else {
+                    return false;
+                };
+                let Ok(text) = range.GetText(-1) else {
+                    return false;
+                };
+                pieces.extend_from_slice(&text.to_vec());
+                decoration = true;
+            }
+            Some(role) if role == UIA_TextControlTypeId => {
+                let Ok(range) = pattern.RangeFromChild(&element) else {
+                    return false;
+                };
+                let Ok(text) = range.GetText(-1) else {
+                    return false;
+                };
+                let units = text.to_vec();
+                if !units.iter().all(|u| blank_text_unit(*u)) {
+                    return false;
+                }
+                pieces.extend_from_slice(&units);
+            }
+            _ => return false,
+        }
+        child = next;
+    }
+    child.is_none() && decoration && pieces == raw
+}
+
+pub(super) unsafe fn empty_decorated_paragraph_caret(
+    uia: &IUIAutomation,
+    editor: &IUIAutomationElement,
+    pattern: &IUIAutomationTextPattern,
+    doc: &IUIAutomationTextRange,
+    selected: &IUIAutomationTextRange,
+) -> bool {
+    let at_doc_start = selected
+        .CompareEndpoints(
+            TextPatternRangeEndpoint_Start,
+            doc,
+            TextPatternRangeEndpoint_Start,
+        )
+        .ok()
+        == Some(0);
     if editor.CurrentAriaRole().map(|r| r.to_string()).as_deref() != Ok("textbox")
         || selected
             .CompareEndpoints(
@@ -487,14 +602,7 @@ pub(super) unsafe fn empty_decorated_paragraph_caret(
             )
             .ok()
             != Some(0)
-        || selected
-            .CompareEndpoints(
-                TextPatternRangeEndpoint_Start,
-                doc,
-                TextPatternRangeEndpoint_Start,
-            )
-            .ok()
-            != Some(0)
+        || !(at_doc_start || caret_before_blank_tail(doc, selected))
     {
         return false;
     }
@@ -561,7 +669,8 @@ pub(super) unsafe fn empty_decorated_paragraph_caret(
         .is_ok_and(|same| same.as_bool())
     {
         return raw.strip_prefix(&[10]) == Some(name.as_slice())
-            || raw.strip_prefix(&[13, 10]) == Some(name.as_slice());
+            || raw.strip_prefix(&[13, 10]) == Some(name.as_slice())
+            || decorated_paragraph_text(&walker, pattern, &paragraph, &raw);
     }
     // A decoration with a hidden <br> can be the entire document range. Chromium
     // retains its anonymous CSS-generated group between the paragraph and text.
@@ -634,6 +743,119 @@ pub(super) unsafe fn empty_decorated_paragraph_caret(
         return false;
     }
     result.is_ok()
+}
+
+/// A Chromium editor can render its empty hint as readonly text leaves inside
+/// the editable document (Devin). Every leaf of the single anonymous paragraph
+/// must be readonly or blank-only, at least one readonly leaf must carry real
+/// text, and the leaves must reconstruct the document exactly. Typed content
+/// is never a readonly leaf, so only that verified shape counts as empty.
+///
+/// The bit mask form reports which condition failed for field diagnosis:
+/// 0 role=textbox, 1 collapsed caret, 2 doc length in bounds, 3 value==doc,
+/// 4 single anonymous group child, 5 doc enclosed by it, 6 all-text leaves
+/// each blank-or-readonly with a real readonly hint, 7 leaves reconstruct doc.
+pub(super) unsafe fn readonly_hint_gate_mask(
+    uia: &IUIAutomation,
+    editor: &IUIAutomationElement,
+    pattern: &IUIAutomationTextPattern,
+    doc: &IUIAutomationTextRange,
+    selected: &IUIAutomationTextRange,
+) -> u32 {
+    let mut mask = 0u32;
+    if editor.CurrentAriaRole().map(|r| r.to_string()).as_deref() == Ok("textbox") {
+        mask |= 1;
+    }
+    if selected
+        .CompareEndpoints(
+            TextPatternRangeEndpoint_Start,
+            selected,
+            TextPatternRangeEndpoint_End,
+        )
+        .ok()
+        == Some(0)
+    {
+        mask |= 2;
+    }
+    let raw = doc.GetText(516).map(|t| t.to_vec()).unwrap_or_default();
+    if !raw.is_empty() && raw.len() <= 515 {
+        mask |= 4;
+    }
+    if editor
+        .GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
+        .and_then(|p| p.CurrentValue())
+        .is_ok_and(|value| value.to_vec() == raw)
+    {
+        mask |= 8;
+    }
+    let Ok(walker) = uia.RawViewWalker() else {
+        return mask;
+    };
+    let Ok(paragraph) = walker.GetFirstChildElement(editor) else {
+        return mask;
+    };
+    if walker.GetNextSiblingElement(&paragraph).is_err()
+        && paragraph.CurrentControlType().ok() == Some(UIA_GroupControlTypeId)
+        && paragraph.CurrentName().is_ok_and(|name| name.is_empty())
+        && paragraph.CurrentClassName().is_ok_and(|class| class.is_empty())
+    {
+        mask |= 16;
+    }
+    if doc
+        .GetEnclosingElement()
+        .ok()
+        .is_some_and(|enclosing| {
+            uia.CompareElements(&enclosing, &paragraph)
+                .is_ok_and(|same| same.as_bool())
+        })
+    {
+        mask |= 32;
+    }
+    let mut pieces = Vec::new();
+    let mut hint = false;
+    let mut leaves_ok = true;
+    let mut child = walker.GetFirstChildElement(&paragraph).ok();
+    for _ in 0..8 {
+        let Some(element) = child else {
+            break;
+        };
+        let next = walker.GetNextSiblingElement(&element).ok();
+        let units = pattern
+            .RangeFromChild(&element)
+            .and_then(|r| r.GetText(-1))
+            .map(|t| t.to_vec())
+            .unwrap_or_default();
+        let readonly = element
+            .CurrentAriaProperties()
+            .ok()
+            .is_some_and(|aria| aria.to_string().split(';').any(|p| p == "readonly=true"));
+        if element.CurrentControlType().ok() == Some(UIA_TextControlTypeId)
+            && (units.iter().all(|u| structural_text_unit(*u)) || readonly)
+        {
+            hint |= readonly && !units.iter().all(|u| structural_text_unit(*u));
+            pieces.extend_from_slice(&units);
+        } else {
+            leaves_ok = false;
+        }
+        child = next;
+    }
+    if child.is_none() && leaves_ok && hint {
+        mask |= 64;
+    }
+    if pieces == raw {
+        mask |= 128;
+    }
+    mask
+}
+
+pub(super) unsafe fn empty_readonly_hint_caret(
+    uia: &IUIAutomation,
+    editor: &IUIAutomationElement,
+    pattern: &IUIAutomationTextPattern,
+    doc: &IUIAutomationTextRange,
+    selected: &IUIAutomationTextRange,
+) -> bool {
+    readonly_hint_gate_mask(uia, editor, pattern, doc, selected) == 0xff
 }
 
 /// Compare semantic text positions when a provider uses parent/leaf boundary

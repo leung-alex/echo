@@ -238,6 +238,26 @@ impl Hub {
                     }
                 }
             }
+            if let Event::Inline(echo_windows::inline::InlineEvent::PlainPasteChanged {
+                ticket,
+                ..
+            }) = &event
+            {
+                if let Some(Event::Inline(echo_windows::inline::InlineEvent::PlainPasteChanged {
+                    ticket: previous,
+                    ..
+                })) = queue.back()
+                {
+                    if ticket.session == previous.session {
+                        if ticket.revision < previous.revision
+                            || ticket.input_serial < previous.input_serial
+                        {
+                            return;
+                        }
+                        queue.pop_back();
+                    }
+                }
+            }
             let duplicate = match &event {
                 Event::Command(Command::ViewportChanged) => queue
                     .iter()
@@ -398,6 +418,10 @@ pub struct DiagnosticReport {
     pub high_contrast: bool,
     pub system_animations: bool,
     pub on_battery: bool,
+    /// Content-free Quick Insert state: static labels, counters and decision
+    /// buckets only — no query text, composer content, titles, or handles.
+    pub inline_state: serde_json::Value,
+    pub inline_trace: Vec<serde_json::Value>,
 }
 
 #[cfg(test)]

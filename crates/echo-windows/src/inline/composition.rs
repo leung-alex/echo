@@ -52,6 +52,21 @@ impl CompositionEvidence {
             self.state
         }
     }
+
+    /// Plain-paste confirmation uses a short lease for every observed state.
+    /// Inline range inspection keeps its historical Active-only expiry policy;
+    /// this separate policy prevents an old Clear sample from authorizing a
+    /// later Enter after the worker or event queue was stalled.
+    pub fn plain_state_at(self, session: u64, serial: u64, now: Instant, lease: Duration) -> u8 {
+        if self.session != session
+            || self.input_serial != serial
+            || now.saturating_duration_since(self.observed_at) > lease
+        {
+            IME_UNKNOWN
+        } else {
+            self.state
+        }
+    }
 }
 
 #[cfg(test)]
@@ -147,5 +162,62 @@ mod tests {
             e.state_at(1, 2, now + Duration::from_millis(251)),
             IME_UNKNOWN
         );
+    }
+
+    #[test]
+    fn plain_clear_evidence_expires_and_a_new_clear_recovers() {
+        let now = Instant::now();
+        let clear = CompositionEvidence {
+            state: super::super::IME_CLEAR,
+            source: CompositionSource::TargetThread,
+            session: 5,
+            input_serial: 9,
+            observed_at: now,
+        };
+        let lease = Duration::from_millis(100);
+        assert_eq!(
+            clear.plain_state_at(5, 9, now, lease),
+            super::super::IME_CLEAR
+        );
+        assert_eq!(
+            clear.plain_state_at(5, 9, now + Duration::from_millis(101), lease),
+            IME_UNKNOWN
+        );
+        let refreshed = CompositionEvidence {
+            observed_at: now + Duration::from_millis(102),
+            ..clear
+        };
+        assert!(refreshed.can_publish(5, 9, Some(clear)));
+        assert_eq!(
+            refreshed.plain_state_at(5, 9, now + Duration::from_millis(102), lease),
+            super::super::IME_CLEAR
+        );
+    }
+
+    #[test]
+    fn plain_active_and_unknown_never_turn_into_clear_without_new_evidence() {
+        let now = Instant::now();
+        for state in [super::super::IME_ACTIVE, super::super::IME_UNKNOWN] {
+            let evidence = CompositionEvidence {
+                state,
+                source: CompositionSource::TargetThread,
+                session: 6,
+                input_serial: 10,
+                observed_at: now,
+            };
+            assert_eq!(
+                evidence.plain_state_at(6, 10, now, Duration::from_millis(100)),
+                state
+            );
+            assert_ne!(
+                evidence.plain_state_at(
+                    6,
+                    10,
+                    now + Duration::from_millis(101),
+                    Duration::from_millis(100)
+                ),
+                super::super::IME_CLEAR
+            );
+        }
     }
 }

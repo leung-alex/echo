@@ -1,6 +1,6 @@
 use super::*;
 use echo_engine::InlineTicket;
-use echo_windows::inline::InlineEvent;
+use echo_windows::inline::{InlineEvent, PlainPasteTicket};
 #[test]
 fn background_wait_keeps_bootstrap_events_and_wakes_without_slint() {
     let hub = Arc::new(Hub::default());
@@ -38,6 +38,18 @@ fn changed(revision: u64) -> Event {
         suspended: false,
     })
 }
+fn plain_changed(revision: u64) -> Event {
+    Event::Inline(InlineEvent::PlainPasteChanged {
+        ticket: PlainPasteTicket {
+            session: 7,
+            revision,
+            input_serial: revision,
+        },
+        composing: revision % 2 == 0,
+        suspended: false,
+        composition_source: "target-thread-idle",
+    })
+}
 #[test]
 fn adjacent_observations_coalesce_without_regressing() {
     let hub = Arc::new(Hub::default());
@@ -50,6 +62,20 @@ fn adjacent_observations_coalesce_without_regressing() {
         matches!(&events[0], Event::Inline(InlineEvent::Changed { ticket: t, query, .. })
         if *t == ticket(3) && query == "query-3")
     );
+}
+#[test]
+fn plain_paste_observations_coalesce_without_regressing() {
+    let hub = Arc::new(Hub::default());
+    hub.post(plain_changed(1));
+    hub.post(plain_changed(3));
+    hub.post(plain_changed(2));
+    let events = hub.take_test_events();
+    assert_eq!(events.len(), 1);
+    assert!(matches!(
+        &events[0],
+        Event::Inline(InlineEvent::PlainPasteChanged { ticket, .. })
+            if *ticket == PlainPasteTicket { session: 7, revision: 3, input_serial: 3 }
+    ));
 }
 #[test]
 fn confirmation_and_cancellation_are_coalescing_barriers() {

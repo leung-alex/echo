@@ -147,6 +147,7 @@ fn cmd_and_powershell_receive_plain_paste_without_executing_the_payload() {
         let deadline = Instant::now() + Duration::from_secs(4);
         let target = loop {
             match events.recv_timeout(Duration::from_millis(100)) {
+                Ok(InlineEvent::PlainPasteStarted { target, .. }) => break target,
                 Ok(InlineEvent::Unavailable {
                     captured_target: Some(target),
                     ..

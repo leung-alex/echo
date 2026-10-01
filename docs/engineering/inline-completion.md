@@ -16,6 +16,13 @@ pastes once into the original input through the existing ordinary paste adapter;
 delivery revalidates that same input. Read-only, password, unidentified, and
 non-editable controls remain ineligible. No application-name allowlist is used.
 
+When activation finds a collapsed caret at the end of an inline-capable editor,
+the initial query is the trailing alphanumeric token only; its UTF-16 prefix and
+suffix remain the replacement boundary. A caret inside existing text still starts
+an empty query. Active inline sessions also perform a bounded provider snapshot
+poll because Chromium composers may omit UIA text-change events; unchanged
+snapshots do not emit presentation updates.
+
 When UIA returns an unfocused host or misreports keyboard focusability, ordinary
 paste can resolve MSAA's direct focus chain in the captured native focus window
 and at most 32 descendant HWNDs. Multiple distinct focused inputs are rejected.

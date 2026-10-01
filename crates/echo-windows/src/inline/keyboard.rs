@@ -42,6 +42,7 @@ struct GuardLease {
     consumed_enter: bool,
     ime_enter: bool,
     enter_down: bool,
+    enter_borrow_fail: u8,
 }
 thread_local! { static GUARD: Cell<GuardLease> = Cell::new(GuardLease::default()); }
 
@@ -504,10 +505,27 @@ unsafe extern "system" fn keyboard(code: i32, w: WPARAM, l: LPARAM) -> LRESULT {
     } else {
         false
     };
+    // Content-free field diagnosis: tag the unrecorded Enter exits that run
+    // before the armed-session state is reachable.
+    let pre_record = |detail: u32| {
+        LOCAL.with(|slot| {
+            if let Ok(slot) = slot.try_borrow() {
+                if let Some(state) = slot.as_ref() {
+                    state.shared.record("enter-pre", detail);
+                }
+            }
+        });
+    };
     if input.vkCode == VK_RETURN as u32 && GUARD.with(|g| g.get().consumed_enter) {
+        if down {
+            pre_record(1);
+        }
         return if reentrant_enter(down) { 1 } else { 0 };
     }
     if input.vkCode == VK_RETURN as u32 && GUARD.with(|g| g.get().ime_enter) {
+        if down {
+            pre_record(2);
+        }
         if up {
             GUARD.with(|g| {
                 let mut lease = g.get();
@@ -521,10 +539,32 @@ unsafe extern "system" fn keyboard(code: i32, w: WPARAM, l: LPARAM) -> LRESULT {
     }
     let handled = LOCAL.with(|slot| {
         let Ok(mut slot) = slot.try_borrow_mut() else {
+            if input.vkCode == VK_RETURN as u32 {
+                GUARD.with(|g| {
+                    let mut lease = g.get();
+                    lease.enter_borrow_fail = lease.enter_borrow_fail.saturating_add(1);
+                    g.set(lease);
+                });
+            }
             return input.vkCode == VK_RETURN as u32 && reentrant_enter(down);
         };
         let Some(state) = slot.as_mut() else { return false; };
+        GUARD.with(|g| {
+            let mut lease = g.get();
+            if lease.enter_borrow_fail != 0 {
+                state
+                    .shared
+                    .record("enter-borrow-fail", u32::from(lease.enter_borrow_fail));
+                lease.enter_borrow_fail = 0;
+                g.set(lease);
+            }
+        });
         let key = input.vkCode as usize;
+        if key == VK_RETURN as usize {
+            state
+                .shared
+                .record("enter-seen", (down as u32) | (u32::from(state.swallowed[key]) << 8));
+        }
         let repeat = if key == VK_RETURN as usize { enter_repeat } else { state.down[key] };
         state.down[key] = down;
         if key == VK_F6 as usize && state.manual_history_key_down {
@@ -538,19 +578,43 @@ unsafe extern "system" fn keyboard(code: i32, w: WPARAM, l: LPARAM) -> LRESULT {
             return true;
         }
         if state.shared.editor_session.load(Ordering::Acquire) == state.session && state.session != 0 {
+            if down && key == VK_RETURN as usize {
+                state.shared.record("enter-path", 1);
+            }
             return false;
         }
         let session = state.shared.active.load(Ordering::Acquire);
-        if state.retiring { return false; }
+        if state.retiring {
+            if down && key == VK_RETURN as usize {
+                state.shared.record("enter-path", 2);
+            }
+            return false;
+        }
         if session == 0 || session != state.session {
             // Cancellation publication is not hook retirement. Until Disarm is
             // processed, the lease still protects Enter under the old popup.
-            return key == VK_RETURN as usize && reentrant_enter(down);
+            if key == VK_RETURN as usize {
+                let consumed = reentrant_enter(down);
+                if down {
+                    state
+                        .shared
+                        .record("enter-path", if consumed { 4 } else { 3 });
+                }
+                return consumed;
+            }
+            return false;
         }
         let target_match = state.target_match();
         if target_match != Some(true) {
             let consume = down && key == VK_RETURN as usize;
             if consume { GUARD.with(|g| { let mut lease = g.get(); lease.consumed_enter = true; g.set(lease); }); }
+            // Content-free bucket: 0 = identity unknown (dirty), 1 = definite
+            // mismatch (cancel). Enter reaches here only when it was consumed.
+            if down && key == VK_RETURN as usize {
+                state
+                    .shared
+                    .record("enter-guard", if target_match == Some(false) { 1 } else { 0 });
+            }
             if target_match == Some(false) {
                 state.shared.cancel(session, "Input focus changed; inline completion cancelled");
             } else {
@@ -579,9 +643,15 @@ unsafe extern "system" fn keyboard(code: i32, w: WPARAM, l: LPARAM) -> LRESULT {
         }
 
         if down && key == VK_RETURN as usize {
+            let plain_mode = state.shared.mode.load(Ordering::Acquire) == MODE_PLAIN_PASTE;
+            let ready = if plain_mode {
+                composition == IME_CLEAR && state.shared.plain_can_confirm()
+            } else {
+                composition == IME_CLEAR && state.shared.can_confirm()
+            };
             let decision = decide_key(KeyState { guarded: true, consumed_sequence: false,
                 ime_sequence: false, down, repeat, modified: state.mods() || state.shift(),
-                composing: composition == IME_ACTIVE, ready: composition == IME_CLEAR && state.shared.can_confirm() });
+                composing: composition == IME_ACTIVE, ready });
             state.shared.record("enter-decision", decision as u32);
             if decision == KeyDecision::PassToVerifiedIme {
                 GUARD.with(|g| { let mut lease = g.get(); lease.ime_enter = true; g.set(lease); });
@@ -589,8 +659,17 @@ unsafe extern "system" fn keyboard(code: i32, w: WPARAM, l: LPARAM) -> LRESULT {
             }
             GUARD.with(|g| { let mut lease = g.get(); lease.consumed_enter = true; g.set(lease); });
             if decision == KeyDecision::ConsumeAndConfirm {
-                let ticket = state.shared.ticket(); state.shared.selectable.store(false, Ordering::Release);
-                (state.shared.callback)(InlineEvent::Confirm(ticket));
+                if plain_mode {
+                    let ticket = state.shared.plain_ticket();
+                    if state.shared.claim_plain_confirmation(ticket) {
+                        (state.shared.callback)(InlineEvent::PlainPasteConfirm(ticket));
+                    } else {
+                        (state.shared.callback)(InlineEvent::Notice { session, text: "Confirmation evidence expired or results changed. Enter was not sent; press it again when ready." });
+                    }
+                } else {
+                    state.shared.selectable.store(false, Ordering::Release);
+                    (state.shared.callback)(InlineEvent::Confirm(state.shared.ticket()));
+                }
             } else {
                 (state.shared.callback)(InlineEvent::Notice { session, text: if composition == IME_UNKNOWN {
                     "IME state is not verified. Finish composition or press F6 for manual copying. Enter was not sent."
@@ -617,12 +696,15 @@ unsafe extern "system" fn keyboard(code: i32, w: WPARAM, l: LPARAM) -> LRESULT {
                 (state.shared.callback)(InlineEvent::Compatibility { session, reason: "Manual history browsing requested; the composer's typed query was kept".into() });
                 return true;
             }
-            if composition == IME_CLEAR && (key == VK_UP as usize || key == VK_DOWN as usize) && !state.shift() {
+            // Navigation changes Echo's own selection only. It is safe while
+            // composition is unknown because it neither confirms nor edits the
+            // host; Enter remains protected until the state is verified clear.
+            if composition != IME_ACTIVE && (key == VK_UP as usize || key == VK_DOWN as usize) && !state.shift() {
                 state.swallowed[key] = true;
                 (state.shared.callback)(InlineEvent::Navigate { session, delta: if key == VK_UP as usize { -1 } else { 1 } });
                 return true;
             }
-            if composition == IME_CLEAR && key == VK_TAB as usize {
+            if composition != IME_ACTIVE && key == VK_TAB as usize {
                 state.swallowed[key] = true;
                 (state.shared.callback)(InlineEvent::SwitchSpace { session, delta: if state.shift() { -1 } else { 1 } });
                 return true;
@@ -753,14 +835,16 @@ unsafe extern "system" fn win_event(
         }
         let related = hwnd as isize == state.shared.focus.load(Ordering::Acquire)
             || hwnd as isize == state.shared.window.load(Ordering::Acquire);
-        if related && event == EVENT_OBJECT_VALUECHANGE {
-            state.shared.dirty(&state.sender, id);
-        } else if related
-            && event == EVENT_OBJECT_LOCATIONCHANGE
-            && (object == OBJID_CARET || object == OBJID_WINDOW)
+        if related
+            && (event == EVENT_OBJECT_VALUECHANGE
+                || (event == EVENT_OBJECT_LOCATIONCHANGE
+                    && (object == OBJID_CARET || object == OBJID_WINDOW)))
         {
-            // Moving/blinking the caret is not text input. Re-read geometry
-            // without invalidating an activation snapshot or confirmation token.
+            // Provider value churn (upload progress chips, live regions) is not
+            // physical input. The next observe seals the real text diff through
+            // the range revision; keyboard input still invalidates instantly via
+            // input_changed. Treating every VALUECHANGE as input permanently
+            // outruns the confirmation ticket while an attachment uploads.
             let _ = state.sender.try_send(Request::Observe(id));
         }
     });
@@ -1068,6 +1152,7 @@ mod tests {
                 consumed_enter: false,
                 ime_enter: false,
                 enter_down: false,
+                enter_borrow_fail: 0,
             })
         });
         LOCAL.with(|slot| {
@@ -1116,6 +1201,7 @@ mod tests {
                     consumed_enter: false,
                     ime_enter: false,
                     enter_down: false,
+                    enter_borrow_fail: 0,
                 })
             });
             let event = KBDLLHOOKSTRUCT {

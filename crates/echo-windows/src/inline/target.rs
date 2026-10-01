@@ -41,15 +41,19 @@ pub(super) struct ImageObservation {
     pub objects: Vec<Vec<i32>>,
 }
 impl ImageObservation {
-    pub(super) fn adds_one_to(&self, before: &Self) -> bool {
+    /// A paste may create a preview plus overlay controls (ChatGPT adds two
+    /// substantial image elements for one pasted picture). Receipt is proven
+    /// by at least one new object while every pre-existing object survives.
+    pub(super) fn adds_to(&self, before: &Self) -> bool {
         self.scope == before.scope
-            && self
-                .objects
-                .iter()
-                .filter(|id| !before.objects.contains(id))
-                .count()
-                == 1
+            && self.objects.len() > before.objects.len()
             && before.objects.iter().all(|id| self.objects.contains(id))
+    }
+    /// A paste can rebuild the editable DOM so surviving elements get fresh
+    /// runtime ids. Net growth inside the same unchanged container still
+    /// proves receipt; a swap or loss without growth never does.
+    pub(super) fn grows_in_scope(&self, before: &Self) -> bool {
+        self.scope == before.scope && self.objects.len() > before.objects.len()
     }
 }
 enum Preedit {
@@ -139,9 +143,9 @@ impl Target {
         } else {
             let uia = uia.ok_or("Windows text accessibility is unavailable")?;
             unsafe {
-                let element = uia
-                    .GetFocusedElement()
-                    .map_err(|_| "The input does not expose its focused text element")?;
+                let (element, _legacy) =
+                    crate::focus::automation::focused_element_for_inline(uia, snapshot)
+                        .ok_or("The input does not expose its focused text element")?;
                 if !snapshot.owns_automation_input(uia, &element) || !inline_editable(&element) {
                     return Err(
                         "The input is protected, read-only, or not a verified text editor".into(),
@@ -403,7 +407,8 @@ impl Target {
                 "direct_child_count": a.uia.CreateTrueCondition().and_then(|c| a.element.FindAll(TreeScope_Children, &c)).and_then(|c| c.Length()).ok(),
                 "direct_children": direct_children,
                 "enclosing_id": doc.GetEnclosingElement().ok().and_then(|e| native::automation_runtime_id(&e)),
-                "empty_decorated": super::text_scope::empty_decorated_paragraph_caret(&a.uia, &a.element, &doc, &selected),
+                "empty_decorated": super::text_scope::empty_decorated_paragraph_caret(&a.uia, &a.element, &pattern, &doc, &selected),
+                "empty_readonly_hint": super::text_scope::empty_readonly_hint_caret(&a.uia, &a.element, &pattern, &doc, &selected),
             }))
         }
     }
@@ -476,6 +481,24 @@ impl Target {
             identity.is_some() && identity != self.paste_target.focused_control
         }
     }
+    /// Field diagnosis for placeholder normalization: which readonly-hint gate
+    /// rejected the current document. None for non-UIA targets.
+    pub(super) fn readonly_hint_gates(&self) -> Option<u32> {
+        let a = self.automation.as_ref()?;
+        unsafe {
+            let (pattern, doc) = live_document(a).ok()?;
+            let selected = single_selection(&pattern).ok()?;
+            let selected =
+                super::text_scope::bounded_selection(&a.uia, &a.element, &doc, &selected).ok()?;
+            Some(super::text_scope::readonly_hint_gate_mask(
+                &a.uia,
+                &a.element,
+                &pattern,
+                &doc,
+                &selected,
+            ))
+        }
+    }
     pub(super) fn snapshot(&self) -> Result<ComposerSnapshot, String> {
         if !self.current() {
             return Err("Original input control changed; nothing was replaced".into());
@@ -542,9 +565,9 @@ impl Target {
             if !sample.active {
                 return (IME_CLEAR, possible);
             }
-        } else if self.automation.is_some() && self.ime_observer.borrow().is_some() {
-            return (IME_UNKNOWN, possible);
         }
+        let thread_observer_unavailable =
+            tsf.is_none() && self.automation.is_some() && self.ime_observer.borrow().is_some();
         if let Some(edit) = self
             .automation
             .as_ref()
@@ -573,6 +596,9 @@ impl Target {
                     return (if active { IME_ACTIVE } else { IME_CLEAR }, possible);
                 }
             }
+        }
+        if thread_observer_unavailable {
+            return (IME_UNKNOWN, possible);
         }
         if tsf.is_some() {
             return (IME_ACTIVE, possible);
@@ -922,8 +948,14 @@ impl Target {
                 .uia
                 .ControlViewWalker()
                 .map_err(|_| "Image scope unavailable")?;
-            // Attachment previews may be siblings of the editable surface. Keep
-            // observation local to its immediate container and same process.
+            // Attachment previews may live outside the editable subtree;
+            // Devin mounts pasted files as a chip row beside the composer,
+            // so receipt objects can sit in a sibling branch of a nearby
+            // ancestor. Scan a bounded ancestor chain and merge the object
+            // identities from every level: deeper ancestors re-include the
+            // shallower subtrees, and dedup keeps each element once. The
+            // parent still proves the scope identity: its runtime id is
+            // stable even when the editable DOM is rebuilt.
             let parent = walker
                 .GetParentElement(&a.element)
                 .map_err(|_| "Image container unavailable")?;
@@ -937,47 +969,151 @@ impl Target {
             if parent_pid <= 0 || parent_pid != editor_pid {
                 return Err("Image container identity changed".into());
             }
+            let scope = native::automation_runtime_id(&parent)
+                .ok_or("Image container identity unavailable")?;
+            // Chromium does not always map an attachment to UIA_Image: hosts
+            // mount pasted previews as nested Document, Group, Custom or
+            // ListItem elements. Filtering control type inside UIA keeps the
+            // provider from materializing the whole subtree, which is what
+            // makes each verification poll cheap on a deep browser window.
+            let mut clauses = Vec::new();
+            for ct in [
+                UIA_ImageControlTypeId.0,
+                UIA_DocumentControlTypeId.0,
+                UIA_GroupControlTypeId.0,
+                UIA_CustomControlTypeId.0,
+                UIA_ListItemControlTypeId.0,
+            ] {
+                let clause = a
+                    .uia
+                    .CreatePropertyCondition(
+                        UIA_ControlTypePropertyId,
+                        &VARIANT::from(ct),
+                    )
+                    .map_err(|_| "Image observation unavailable")?;
+                clauses.push(Some(clause));
+            }
             let condition = a
                 .uia
-                .CreatePropertyCondition(
-                    UIA_ControlTypePropertyId,
-                    &VARIANT::from(UIA_ImageControlTypeId.0),
-                )
+                .CreateOrConditionFromNativeArray(&clauses)
                 .map_err(|_| "Image observation unavailable")?;
-            let elements = parent
-                .FindAll(TreeScope_Descendants, &condition)
-                .map_err(|_| "Image observation failed")?;
-            let count = elements
-                .Length()
-                .map_err(|_| "Image observation incomplete")?;
-            if count > 64 {
-                return Err("Image container is too broad for verified insertion".into());
-            }
-            let mut ids = Vec::new();
-            for index in 0..count {
-                let element = elements
-                    .GetElement(index)
-                    .map_err(|_| "Image disappeared during observation")?;
-                let rect = element
-                    .CurrentBoundingRectangle()
-                    .map_err(|_| "Image bounds unavailable")?;
-                // UIA labels toolbar glyphs as images too. Only substantial
-                // previews acknowledge an attachment; changing a send/stop icon
-                // neither proves receipt nor means an old attachment was lost.
-                let dpi = windows_sys::Win32::UI::HiDpi::GetDpiForWindow(self.control as _).max(96);
-                let minimum = (32 * dpi / 96) as i32;
-                if rect.right - rect.left < minimum || rect.bottom - rect.top < minimum {
-                    continue;
+            // UIA labels toolbar glyphs as images too, and Devin's attachment
+            // chips are slimmer than a 32px thumbnail. Below ~16px only caret
+            // or icon noise remains, which the before/after identity diff
+            // already excludes.
+            let dpi = windows_sys::Win32::UI::HiDpi::GetDpiForWindow(self.control as _).max(96);
+            let minimum = (16 * dpi / 96) as i32;
+            let mut ids: Vec<Vec<i32>> = Vec::new();
+            let mut level = parent;
+            for _ in 0..4 {
+                let Ok(elements) = level.FindAll(TreeScope_Descendants, &condition) else {
+                    break;
+                };
+                let Ok(count) = elements.Length() else {
+                    break;
+                };
+                if count > 2000 {
+                    break;
                 }
-                ids.push(
-                    native::automation_runtime_id(&element).ok_or("Image identity unavailable")?,
-                );
+                let mut level_ids: Vec<Vec<i32>> = Vec::new();
+                for index in 0..count {
+                    let Ok(element) = elements.GetElement(index) else {
+                        continue;
+                    };
+                    let Ok(rect) = element.CurrentBoundingRectangle() else {
+                        continue;
+                    };
+                    if rect.right - rect.left < minimum || rect.bottom - rect.top < minimum {
+                        continue;
+                    }
+                    let Some(id) = native::automation_runtime_id(&element) else {
+                        continue;
+                    };
+                    if !level_ids.contains(&id) {
+                        level_ids.push(id);
+                    }
+                }
+                // A deeper ancestor only counts while the merged set stays
+                // bounded; beyond that the extra chrome would drown the
+                // before/after diff. The closest container alone being that
+                // broad means no trustworthy scope exists.
+                if ids.len() + level_ids.iter().filter(|id| !ids.contains(id)).count() > 96 {
+                    if ids.is_empty() {
+                        return Err(
+                            "Image container is too broad for verified insertion".into()
+                        );
+                    }
+                    break;
+                }
+                for id in level_ids {
+                    if !ids.contains(&id) {
+                        ids.push(id);
+                    }
+                }
+                let Ok(next) = walker.GetParentElement(&level) else {
+                    break;
+                };
+                if next.CurrentProcessId().ok() != Some(parent_pid) {
+                    break;
+                }
+                level = next;
             }
             Ok(ImageObservation {
-                scope: native::automation_runtime_id(&parent)
-                    .ok_or("Image container identity unavailable")?,
+                scope,
                 objects: ids,
             })
+        }
+    }
+    /// Content-free diagnosis: control-type ids of substantial descendants at
+    /// each ancestor level of the editor, encoded as `level << 16 | ct`. Used
+    /// when attachment receipt is unproven; reveals which element actually
+    /// carried the image and how far above the composer it was mounted.
+    pub(super) fn image_scope_control_types(&self) -> Vec<i32> {
+        let Some(a) = self.automation.as_ref() else {
+            return Vec::new();
+        };
+        unsafe {
+            let Ok(walker) = a.uia.ControlViewWalker() else {
+                return Vec::new();
+            };
+            let Ok(true_condition) = a.uia.CreateTrueCondition() else {
+                return Vec::new();
+            };
+            let dpi = windows_sys::Win32::UI::HiDpi::GetDpiForWindow(self.control as _).max(96);
+            let minimum = (16 * dpi / 96) as i32;
+            let editor_pid = a.element.CurrentProcessId().ok();
+            let mut ids = Vec::new();
+            let mut scope = a.element.clone();
+            for level in 1..=4i32 {
+                let Ok(next) = walker.GetParentElement(&scope) else {
+                    break;
+                };
+                if next.CurrentProcessId().ok() != editor_pid {
+                    break;
+                }
+                scope = next;
+                let Ok(all) = scope.FindAll(TreeScope_Descendants, &true_condition) else {
+                    continue;
+                };
+                let Ok(count) = all.Length() else {
+                    continue;
+                };
+                for index in 0..count.min(2000) {
+                    let Ok(element) = all.GetElement(index) else {
+                        continue;
+                    };
+                    let (Ok(ct), Ok(rect)) = (
+                        element.CurrentControlType(),
+                        element.CurrentBoundingRectangle(),
+                    ) else {
+                        continue;
+                    };
+                    if rect.right - rect.left >= minimum && rect.bottom - rect.top >= minimum {
+                        ids.push((level << 16) | ct.0);
+                    }
+                }
+            }
+            ids
         }
     }
     pub(super) fn paste_image(&self) -> Result<(), String> {
@@ -1357,6 +1493,14 @@ unsafe fn automation_snapshot(target: &AutomationTarget) -> Result<ComposerSnaps
         || super::text_scope::empty_decorated_paragraph_caret(
             &target.uia,
             &target.element,
+            &pattern,
+            &doc,
+            &selected,
+        )
+        || super::text_scope::empty_readonly_hint_caret(
+            &target.uia,
+            &target.element,
+            &pattern,
             &doc,
             &selected,
         )

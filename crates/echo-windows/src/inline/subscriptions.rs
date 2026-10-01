@@ -21,7 +21,7 @@ struct Listener {
 }
 impl IUIAutomationEventHandler_Impl for Listener_Impl {
     fn HandleAutomationEvent(&self, _: Ref<IUIAutomationElement>, _: UIA_EVENT_ID) -> Result<()> {
-        self.shared.dirty(&self.sender, self.session);
+        self.shared.provider_changed(&self.sender, self.session);
         Ok(())
     }
 }
@@ -32,7 +32,7 @@ impl IUIAutomationPropertyChangedEventHandler_Impl for Listener_Impl {
         _: UIA_PROPERTY_ID,
         _: &VARIANT,
     ) -> Result<()> {
-        self.shared.dirty(&self.sender, self.session);
+        self.shared.provider_changed(&self.sender, self.session);
         Ok(())
     }
 }
@@ -47,7 +47,7 @@ impl IUIAutomationTextEditTextChangedEventHandler_Impl for Listener_Impl {
             && !self.shared.committing.load(Ordering::Acquire)
         {
             let observed_at = Instant::now();
-            self.shared.dirty(&self.sender, self.session);
+            self.shared.provider_changed(&self.sender, self.session);
             let input_serial = self.shared.input_serial.load(Ordering::Acquire);
             // Finalized is an invalidation; only a fresh target read may prove
             // Clear and authorize the final committed query.

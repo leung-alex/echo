@@ -191,7 +191,13 @@ unsafe fn probe(
     // would otherwise publish the old editor edge in the new view. Quick
     // Insert keeps its existing bounded provider cache; the indicator path
     // fails closed until a live focused editor/container is returned again.
-    let retained = (!snapshot.indicator_only)
+    // Quick Insert must resolve the current focused element on every
+    // activation. Chromium can keep reporting a cached contenteditable as
+    // focused while the user has moved to the page search box; reusing that
+    // provider would bind Enter to the old composer. The retained provider is
+    // observation-only and remains a fallback for the passive indicator.
+    let retained = snapshot
+        .indicator_only
         .then(|| {
             provider.as_ref().and_then(|(_, _, element)| {
                 native::automation_element_has_input_focus(element)
@@ -199,7 +205,7 @@ unsafe fn probe(
             })
         })
         .flatten();
-    if let Some((element, legacy)) = retained.or_else(|| focused_element(uia, snapshot)) {
+    if let Some((element, legacy)) = focused_element_for_inline(uia, snapshot).or(retained) {
         *provider = Some((snapshot.window_id, snapshot.focused_handle, element.clone()));
         if let Some(probe) = probe_element(uia, snapshot, geometry, &element, legacy) {
             return Some(probe);
@@ -260,7 +266,7 @@ unsafe fn focused_indicator_descendant(
 // misreport UIA IsKeyboardFocusable on the actual input. Follow MSAA's direct
 // focus chain instead of scanning the entire subtree. Capture and delivery use
 // the same resolver, and the converted element still needs UIA identity checks.
-unsafe fn focused_element(
+pub(crate) unsafe fn focused_element_for_inline(
     uia: &IUIAutomation,
     snapshot: &FocusSnapshot,
 ) -> Option<(IUIAutomationElement, bool)> {
@@ -396,7 +402,7 @@ pub(super) unsafe fn plain_paste_probe(
     uia: &IUIAutomation,
     snapshot: &FocusSnapshot,
 ) -> Option<Probe> {
-    let (element, legacy) = focused_element(uia, snapshot)?;
+    let (element, legacy) = focused_element_for_inline(uia, snapshot)?;
     let has_text = element
         .GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId)
         .is_ok();

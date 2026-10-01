@@ -257,6 +257,42 @@ impl App {
             high_contrast: self.environment.high_contrast,
             system_animations: self.environment.animations,
             on_battery: self.environment.on_battery,
+            inline_state: serde_json::json!({
+                "active": self.inline_ui.ticket.is_some(),
+                "popup": self.inline_active(),
+                "plain_paste": self.plain_paste_active(),
+                "unavailable": self.inline_ui.unavailable,
+                "pending": self.inline_ui.pending,
+                "composing": self.inline_ui.composing,
+                "suspended": self.inline_ui.suspended,
+                "provider": self.inline_ui.backend,
+                "composition_source": self.inline_ui.composition_source,
+                "readiness": self.worker.inline.readiness(),
+                "target_capabilities": self.worker.inline.capabilities().map(|c| serde_json::json!({
+                    "backend": c.backend,
+                    "can_read_query": c.can_read_query,
+                    "can_observe_selection": c.can_observe_selection,
+                    "advertises_exact_selection": c.advertises_exact_selection,
+                    "has_text_edit_pattern": c.has_text_edit_pattern,
+                    "exact_selection_verified": c.exact_selection_verified,
+                })),
+            }),
+            inline_trace: self
+                .worker
+                .inline
+                .diagnostics()
+                .iter()
+                .map(|e| {
+                    serde_json::json!({
+                        "us": e.elapsed_us,
+                        "kind": e.kind,
+                        "detail": e.detail,
+                        "session": e.session,
+                        "input_serial": e.input_serial,
+                        "observed_serial": e.observed_serial,
+                    })
+                })
+                .collect(),
         };
         self.report("Exporting redacted diagnostics…", false);
         self.send(Work::Diagnostics(report));

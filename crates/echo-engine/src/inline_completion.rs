@@ -57,11 +57,40 @@ impl QueryRange {
         snapshot.validate()?;
         let query = snapshot.text[snapshot.selection.clone()].to_vec();
         validate_query(&query)?;
+        let search_started = snapshot.selection.is_empty();
         Ok(Self {
             prefix: snapshot.text[..snapshot.selection.start].to_vec(),
             suffix: snapshot.text[snapshot.selection.end..].to_vec(),
             query,
-            search_started: snapshot.selection.is_empty(),
+            search_started,
+            revision: 1,
+        })
+    }
+    /// Re-enter after the begin-time context proved to be generated
+    /// decoration. A collapsed caret followed only by blanks or sentinels is
+    /// the effective end of the editable text, so the trailing word before it
+    /// is in-flight user input and resumes as the query.
+    pub fn resume(snapshot: &ComposerSnapshot) -> Result<Self, &'static str> {
+        snapshot.validate()?;
+        let at_effective_end = snapshot.selection.is_empty()
+            && snapshot.text[snapshot.selection.end..]
+                .iter()
+                .all(|unit| {
+                    *unit == 0x200b
+                        || char::from_u32(u32::from(*unit)).is_some_and(char::is_whitespace)
+                });
+        let (start, end) = if at_effective_end {
+            trailing_token_range(&snapshot.text, snapshot.selection.end)
+        } else {
+            (snapshot.selection.start, snapshot.selection.end)
+        };
+        let query = snapshot.text[start..end].to_vec();
+        validate_query(&query)?;
+        Ok(Self {
+            prefix: snapshot.text[..start].to_vec(),
+            suffix: snapshot.text[end..].to_vec(),
+            query,
+            search_started: true,
             revision: 1,
         })
     }
@@ -154,6 +183,52 @@ impl QueryRange {
             && actual.ends_with(&self.suffix)
             && &actual[self.prefix.len()..self.prefix.len() + inserted.len()] == inserted
     }
+    /// Same contract as `matches_replacement`, but units the adapter proves to
+    /// be host-generated structure (sentinels, decoration markers) carry no
+    /// content and are dropped on both sides before the exact comparison.
+    /// Significant text must still match verbatim, including order.
+    pub fn matches_replacement_except(
+        &self,
+        actual: &[u16],
+        inserted: &[u16],
+        ignored: impl Fn(u16) -> bool,
+    ) -> bool {
+        let strip = |units: &[u16]| {
+            units
+                .iter()
+                .copied()
+                .filter(|unit| !ignored(*unit))
+                .collect::<Vec<u16>>()
+        };
+        let mut expected = strip(&self.prefix);
+        expected.extend(strip(inserted));
+        expected.extend(strip(&self.suffix));
+        strip(actual) == expected
+    }
+}
+fn trailing_token_range(text: &[u16], caret: usize) -> (usize, usize) {
+    let Ok(value) = String::from_utf16(&text[..caret]) else {
+        return (caret, caret);
+    };
+    let mut units = 0usize;
+    let mut start = caret;
+    for ch in value.chars().rev() {
+        let width = ch.len_utf16();
+        units = units.saturating_add(width);
+        if ch.is_whitespace() {
+            break;
+        }
+        start = caret.saturating_sub(units);
+    }
+    let token = &text[start..caret];
+    if token
+        .iter()
+        .any(|unit| char::from_u32(u32::from(*unit)).is_some_and(char::is_alphanumeric))
+    {
+        (start, caret)
+    } else {
+        (caret, caret)
+    }
 }
 fn validate_query(query: &[u16]) -> Result<(), &'static str> {
     if query.len() > MAX_QUERY_UNITS {
@@ -231,6 +306,59 @@ mod tests {
             &"prefix: a@b.testsuffix".encode_utf16().collect::<Vec<_>>(),
             &"a@b.test".encode_utf16().collect::<Vec<_>>()
         ));
+    }
+    #[test]
+    fn collapsed_caret_never_seeds_a_replacement_range() {
+        // Opening on existing text starts an empty query; only the selection
+        // itself is ever a replacement span.
+        let q = QueryRange::begin(&snap("prefix: git", 11, 11)).unwrap();
+        assert_eq!(q.query(), "");
+        assert_eq!(q.span(), 11..11);
+        let q = QueryRange::begin(&snap("prefix: git\n", 11, 11)).unwrap();
+        assert_eq!(q.query(), "");
+        assert_eq!(q.span(), 11..11);
+    }
+    #[test]
+    fn collapsed_caret_inside_text_does_not_guess_a_replacement_range() {
+        let q = QueryRange::begin(&snap("prefixgit", 6, 6)).unwrap();
+        assert_eq!(q.query(), "");
+        assert_eq!(q.span(), 6..6);
+    }
+    #[test]
+    fn resume_before_blank_tail_seeds_the_trailing_token() {
+        // Providers may append a paragraph mark or decoration sentinel after
+        // the editable text; a caret in front of it is still at the end.
+        let mut q = QueryRange::resume(&snap("prefix: git\n", 11, 11)).unwrap();
+        assert_eq!(q.query(), "git");
+        assert_eq!(q.span(), 8..11);
+        q.observe(&snap("prefix: github\n", 14, 14)).unwrap();
+        assert_eq!(q.query(), "github");
+        assert_eq!(
+            q.seal(&snap("prefix: github\n", 14, 14), q.revision())
+                .unwrap(),
+            8..14
+        );
+        let q = QueryRange::resume(&snap("git\u{200b}", 3, 3)).unwrap();
+        assert_eq!(q.query(), "git");
+        assert_eq!(q.span(), 0..3);
+    }
+    #[test]
+    fn resume_before_nonblank_tail_stays_mid_text() {
+        let q = QueryRange::resume(&snap("prefix: git tail", 11, 11)).unwrap();
+        assert_eq!(q.query(), "");
+        assert_eq!(q.span(), 11..11);
+    }
+    #[test]
+    fn vanished_placeholder_context_can_be_rebound() {
+        // The adapter drops a stored context that vanished before the first
+        // real observation (it was decoration, not user text) and resumes on
+        // the live snapshot.
+        let mut q = QueryRange::begin(&snap("Ask anything\n", 11, 11)).unwrap();
+        assert_eq!(q.revision(), 1);
+        assert!(q.observe(&snap("g", 1, 1)).is_err());
+        let rebound = QueryRange::resume(&snap("g", 1, 1)).unwrap();
+        assert_eq!(rebound.query(), "g");
+        assert_eq!(rebound.span(), 0..1);
     }
     #[test]
     fn preexisting_selection_is_only_a_replacement_range() {
